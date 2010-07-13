@@ -1,0 +1,31 @@
+Fix crash when starting Compiz on i865 when using DRI1/UMS
+legacy support (by Chris Wilson for i8xx support).
+
+#0  0xaeefb6e2 in i830_update_tex_unit (intel=0x8b7be70, unit=<value optimized out>, ss3=0) at i830_texstate.c:186
+#1  0xaeefbcf3 in i830UpdateTextureState (intel=0x8b7be70) at i830_texstate.c:343
+#2  0xaef42339 in intelRunPipeline (ctx=0x8b7be70) at intel_tris.c:1067
+#3  0xaefebaf6 in _tnl_draw_prims (ctx=0x8b7be70, arrays=0x8b1ff24, prim=0xbfd3ac20, nr_prims=1, ib=0x0, min_index=0, max_index=3) at tnl/t_draw.c:467
+#4  0xaefebf59 in _tnl_vbo_draw_prims (ctx=0x8b7be70, arrays=0x8b1ff24, prim=0xbfd3ac20, nr_prims=1, ib=0x0, index_bounds_valid=1 '\001', min_index=0, max_index=3) at tnl/t_draw.c:376
+#5  0xaefe3641 in vbo_exec_DrawArrays (mode=7, start=0, count=4) at vbo/vbo_exec_array.c:524
+#6  0xaefda327 in neutral_DrawArrays (mode=7, start=0, count=4) at main/vtxfmt_tmp.h:327
+#7  0xb7324289 in __glXDisp_DrawArrays (pc=0x89ebb8c "") at ../../glx/render2.c:242
+#8  0xb731e0e4 in __glXDisp_Render (cl=0x8986f20, pc=0x89ebb5c "x") at ../../glx/glxcmds.c:1823
+#9  0xb73229e2 in __glXDispatch (client=0x8b2b528) at ../../glx/glxext.c:578
+#10 0x080740d7 in Dispatch () at ../../dix/dispatch.c:439
+#11 0x080668fa in main (argc=12, argv=0xbfd3aee4, envp=0xbfd3af18) at ../../dix/main.c:285
+
+---
+ src/mesa/drivers/dri/i915/i830_texstate.c |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+--- a/src/mesa/drivers/dri/i915/i830_texstate.c
++++ b/src/mesa/drivers/dri/i915/i830_texstate.c
+@@ -183,7 +183,7 @@ i830_update_tex_unit(struct intel_contex
+       (((firstImage->Height - 1) << TM0S1_HEIGHT_SHIFT) |
+        ((firstImage->Width - 1) << TM0S1_WIDTH_SHIFT) | format);
+ 
+-   if (intelObj->mt->region->tiling != I915_TILING_NONE) {
++   if (intelObj->mt && intelObj->mt->region->tiling != I915_TILING_NONE) {
+       state[I830_TEXREG_TM0S1] |= TM0S1_TILED_SURFACE;
+       if (intelObj->mt->region->tiling == I915_TILING_Y)
+ 	 state[I830_TEXREG_TM0S1] |= TM0S1_TILE_WALK;

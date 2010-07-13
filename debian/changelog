@@ -1,3 +1,10 @@
+mesa (7.7.1-4) UNRELEASED; urgency=low
+
+  * Add 07_fix_i915_dri1.patch to fix X server crash when starting Compiz
+    on i8xx when using legacy UMS/DRI1.
+
+ -- Brice Goglin <bgoglin@debian.org>  Tue, 13 Jul 2010 22:21:06 +0200
+
 mesa (7.7.1-3) unstable; urgency=medium
 
   * Pull from mesa_7_7_branch to get the fix for a regression introduced in
