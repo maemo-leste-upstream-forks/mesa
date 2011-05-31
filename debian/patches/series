@@ -4,3 +4,4 @@
 05_hurd-ftbfs.diff
 06_kfreebsd-ftbfs.diff
 07_fix_i915_dri1.patch
+08_glx-ignore-BadRequest-errors-from-DRI2Connect.diff

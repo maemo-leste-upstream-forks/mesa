@@ -1,0 +1,54 @@
+From 46f568ec04eacb500f4057c31453b5e80b4e8aaf Mon Sep 17 00:00:00 2001
+From: Julien Cristau <jcristau@debian.org>
+Date: Tue, 31 May 2011 16:02:21 +0200
+Subject: [PATCH] glx: ignore BadRequest errors from DRI2Connect
+
+They are expected for non-local clients.
+---
+ src/glx/x11/dri2.c |   14 +++++++++++++-
+ 1 files changed, 13 insertions(+), 1 deletions(-)
+
+Index: mesa/src/glx/x11/dri2.c
+===================================================================
+--- mesa.orig/src/glx/x11/dri2.c
++++ mesa/src/glx/x11/dri2.c
+@@ -54,6 +54,8 @@
+ static char dri2ExtensionName[] = DRI2_NAME;
+ static XExtensionInfo *dri2Info;
+ static XEXT_GENERATE_CLOSE_DISPLAY (DRI2CloseDisplay, dri2Info)
++static int
++DRI2Error(Display *dpy, xError *err, XExtCodes *codes, int *ret_code);
+ 
+ static /* const */ XExtensionHooks dri2ExtensionHooks = {
+   NULL,                   /* create_gc */
+@@ -65,7 +67,7 @@ static /* const */ XExtensionHooks dri2E
+   DRI2CloseDisplay,       /* close_display */
+   NULL,                   /* wire_to_event */
+   NULL,                   /* event_to_wire */
+-  NULL,                   /* error */
++  DRI2Error,              /* error */
+   NULL,                   /* error_string */
+ };
+ 
+@@ -75,6 +77,21 @@ static XEXT_GENERATE_FIND_DISPLAY (DRI2F
+                                    &dri2ExtensionHooks,
+                                    0, NULL)
+ 
++static int
++DRI2Error(Display *dpy, xError *err, XExtCodes *codes, int *ret_code)
++{
++    /* If the server is non-local DRI2Connect will raise BadRequest
++     * Swallow this so that DRI2Connect can signal this in its return code */
++    if (err->majorCode == codes->major_opcode &&
++	err->errorCode == BadRequest &&
++	err->minorCode == X_DRI2Connect) {
++	*ret_code = False;
++	return True;
++    }
++
++    return False;
++}
++
+ Bool
+ DRI2QueryExtension(Display * dpy, int *eventBase, int *errorBase)
+ {

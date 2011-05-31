@@ -1,3 +1,10 @@
+mesa (7.7.1-5) UNRELEASED; urgency=low
+
+  * glx: suppress BadRequest from DRI2Connect (which is expected for non-local
+    clients).
+
+ -- Julien Cristau <jcristau@debian.org>  Tue, 31 May 2011 15:08:18 +0200
+
 mesa (7.7.1-4) unstable; urgency=low
 
   [ Brice Goglin ]
