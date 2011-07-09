@@ -5,6 +5,8 @@ mesa (7.10.3-4~bpo60+1) UNRELEASED; urgency=low
     - Remove DEB_HOST_MULTIARCH from debian/rules.
     - Keep the .install.in → .install generation (to ease further
       updates), making it just delete “/$(DEB_HOST_MULTIARCH)”.
+    - Replace DEB_HOST_MULTIARCH with lib for the DRI-related entries,
+      those are special… (debian/libgl1-mesa-dri.install*.in)
     - Remove Multi-Arch and Pre-Depends fields.
     - Revert debhelper version bump accordingly.
   * Support upgrades from squeeze and to wheezy:
