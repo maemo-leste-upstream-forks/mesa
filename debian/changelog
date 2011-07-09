@@ -1,6 +1,12 @@
 mesa (7.10.3-4~bpo60+1) UNRELEASED; urgency=low
 
   * Rebuild for squeeze-backports.
+  * Drop multiarch support:
+    - Remove DEB_HOST_MULTIARCH from debian/rules.
+    - Keep the .install.in → .install generation (to ease further
+      updates), making it just delete “/$(DEB_HOST_MULTIARCH)”.
+    - Remove Multi-Arch and Pre-Depends fields.
+    - Revert debhelper version bump accordingly.
 
  -- Cyril Brulebois <kibi@debian.org>  Sat, 09 Jul 2011 14:54:41 +0200
 

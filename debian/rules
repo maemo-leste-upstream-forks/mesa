@@ -19,7 +19,6 @@ ifneq (,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
 	MAKEFLAGS += -j$(NUMJOBS)
 endif
 
-DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
 DEB_BUILD_ARCH     ?= $(shell dpkg-architecture -qDEB_BUILD_ARCH)
 DEB_HOST_ARCH      ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
 DEB_HOST_ARCH_OS   ?= $(shell dpkg-architecture -qDEB_HOST_ARCH_OS)
@@ -107,8 +106,8 @@ endif
 confflags-dri = \
 	--with-driver=dri \
 	--with-dri-drivers="$(DRI_DRIVERS)" \
-	--with-dri-driverdir=/usr/lib/$(DEB_HOST_MULTIARCH)/dri \
-	--with-dri-searchpath='/usr/lib/$(DEB_HOST_MULTIARCH)/dri:\$$$${ORIGIN}/dri:/usr/lib/dri' \
+	--with-dri-driverdir=/usr/lib/dri \
+	--with-dri-searchpath='/usr/lib/dri:\$$$${ORIGIN}/dri:/usr/lib/dri' \
 	--enable-glx-tls \
 	$(confflags_DIRECT_RENDERING) \
 	$(confflags_EGL) \
@@ -191,7 +190,7 @@ confflags-swx11+glu-i386-i686 = \
 	--disable-glut \
 	--disable-egl \
 	--enable-motif \
-	--libdir=/usr/lib/$(DEB_HOST_MULTIARCH)/i686/cmov \
+	--libdir=/usr/lib/i686/cmov \
 	CFLAGS="$(CFLAGS) -march=i686" \
 	CXXFLAGS="$(CXXFLAGS) -march=i686"
 
@@ -214,7 +213,7 @@ build: build-stamp
 build-stamp: $(BUILD_STAMPS)
 # Remove gallium drivers which replace existing classic drivers.
 # Intel gallium is significantly behind the classic mesa drivers...
-	rm -f build/dri/lib/$(DEB_HOST_MULTIARCH)/gallium/i915_dri.so
+	rm -f build/dri/lib/gallium/i915_dri.so
 	>$@
 
 $(STAMP)-build-%: configure
@@ -226,7 +225,7 @@ $(STAMP)-build-%: configure
 	cd $(DEB_BUILD_DIR)/$* && \
 	../../configure --prefix=/usr --mandir=\$${prefix}/share/man \
 	             --infodir=\$${prefix}/share/info --sysconfdir=/etc \
-	             --libdir=\$${prefix}/lib/$(DEB_HOST_MULTIARCH) \
+	             --libdir=\$${prefix}/lib \
 	             --localstatedir=/var $(confflags) $(confflags-$*)
 	cd $(DEB_BUILD_DIR)/$* && $(MAKE)
 	>$@
@@ -243,7 +242,7 @@ install: build
 	$(MAKE) -C $(DEB_BUILD_DIR)/dri DESTDIR=$(CURDIR)/debian/tmp/dri install
 	for file in debian/*.in; \
 	do \
-		sed -e"s,\$${DEB_HOST_MULTIARCH},$(DEB_HOST_MULTIARCH),g" \
+		sed -e"s,/\$${DEB_HOST_MULTIARCH},,g" \
 			$${file} > $${file%%.in}; \
 	done
 
@@ -281,11 +280,11 @@ binary-arch: install
 	# Classic DRI and Gallium DRI are mixed up together here
 	# Remove the whole tree to avoid false-positives in --list-missing, and
 	# install the right files manually.
-	rm -r debian/tmp/dri/usr/lib/$(DEB_HOST_MULTIARCH)/dri
+	rm -r debian/tmp/dri/usr/lib/dri
 
 	# Move nouveau_vieux alongside nouveau to install in dri-experimental package
 ifneq (,$(filter nouveau,$(DRI_DRIVERS)))
-	mv build/dri/$(DEB_HOST_MULTIARCH)/nouveau_vieux_dri.so build/dri/$(DEB_HOST_MULTIARCH)/gallium/
+	mv build/dri/nouveau_vieux_dri.so build/dri/gallium/
 endif
 
 	# Also get rid of other files which aren't installed. Do not
