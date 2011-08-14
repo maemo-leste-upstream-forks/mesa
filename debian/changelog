@@ -1,4 +1,4 @@
-mesa (7.10.3-4~bpo60+1) UNRELEASED; urgency=low
+mesa (7.10.3-4~bpo60+1) squeeze-backports; urgency=low
 
   * Rebuild for squeeze-backports.
   * Drop multiarch support:
@@ -14,7 +14,7 @@ mesa (7.10.3-4~bpo60+1) UNRELEASED; urgency=low
     - Add Provides: libgl1-mesa-*-no-multiarch to handle upgrades to
       wheezy (which has multiarch support).
 
- -- Cyril Brulebois <kibi@debian.org>  Sat, 09 Jul 2011 14:54:41 +0200
+ -- Cyril Brulebois <kibi@debian.org>  Sun, 14 Aug 2011 11:26:41 +0200
 
 mesa (7.10.3-4) unstable; urgency=medium
 
