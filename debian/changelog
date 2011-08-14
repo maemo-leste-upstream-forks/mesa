@@ -1,3 +1,9 @@
+mesa (7.10.3-4~bpo60+1) UNRELEASED; urgency=low
+
+  * Rebuild for squeeze-backports.
+
+ -- Cyril Brulebois <kibi@debian.org>  Sat, 09 Jul 2011 14:54:41 +0200
+
 mesa (7.10.3-4) unstable; urgency=medium
 
   [ Cyril Brulebois ]
