@@ -1,3 +1,9 @@
+mesa (8.0.5-4+deb7u1) wheezy-security; urgency=high
+
+  * integer overflows calculating memory needs for replies [CVE-2013-1993]
+
+ -- Julien Cristau <jcristau@debian.org>  Wed, 15 May 2013 21:18:58 +0200
+
 mesa (8.0.5-4) unstable; urgency=low
 
   * Cherry-pick commit 17f1cb1d99 (dri/nouveau: fix crash in
