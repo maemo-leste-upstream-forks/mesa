@@ -286,3 +286,9 @@ _mesa_GenerateMultiTexMipmapEXT(GLenum texunit, GLenum target)
    validate_params_and_generate_mipmap(texObj,
                                        "glGenerateMultiTexMipmapEXT");
 }
+
+void GLAPIENTRY
+_mesa_GenerateMipmapEXT(GLenum target)
+{
+   _mesa_GenerateMipmap(target);
+}

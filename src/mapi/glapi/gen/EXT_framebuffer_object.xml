@@ -70,7 +70,7 @@
     </enum>
     <enum name="INVALID_FRAMEBUFFER_OPERATION_EXT"        value="0x0506"/>
 
-    <function name="IsRenderbufferEXT" alias="IsRenderbuffer">
+    <function name="IsRenderbufferEXT">
         <param name="renderbuffer" type="GLuint"/>
 	<return type="GLboolean"/>
     </function>
@@ -81,30 +81,30 @@
         <glx rop="4316"/>
     </function>
 
-    <function name="DeleteRenderbuffersEXT" alias="DeleteRenderbuffers">
+    <function name="DeleteRenderbuffersEXT">
         <param name="n" type="GLsizei"/>
         <param name="renderbuffers" type="const GLuint *"/>
     </function>
 
-    <function name="GenRenderbuffersEXT" alias="GenRenderbuffers">
+    <function name="GenRenderbuffersEXT">
         <param name="n" type="GLsizei"/>
         <param name="renderbuffers" type="GLuint *"/>
     </function>
 
-    <function name="RenderbufferStorageEXT" alias="RenderbufferStorage">
+    <function name="RenderbufferStorageEXT">
         <param name="target" type="GLenum"/>
         <param name="internalformat" type="GLenum"/>
         <param name="width" type="GLsizei"/>
         <param name="height" type="GLsizei"/>
     </function>
 
-    <function name="GetRenderbufferParameterivEXT" alias="GetRenderbufferParameteriv">
+    <function name="GetRenderbufferParameterivEXT">
         <param name="target" type="GLenum"/>
         <param name="pname" type="GLenum"/>
         <param name="params" type="GLint *"/>
     </function>
 
-    <function name="IsFramebufferEXT" alias="IsFramebuffer">
+    <function name="IsFramebufferEXT">
         <param name="framebuffer" type="GLuint"/>
 	<return type="GLboolean"/>
     </function>
@@ -116,22 +116,22 @@
         <glx rop="4319"/>
     </function>
 
-    <function name="DeleteFramebuffersEXT" alias="DeleteFramebuffers">
+    <function name="DeleteFramebuffersEXT">
         <param name="n" type="GLsizei"/>
         <param name="framebuffers" type="const GLuint *"/>
     </function>
 
-    <function name="GenFramebuffersEXT" alias="GenFramebuffers">
+    <function name="GenFramebuffersEXT">
         <param name="n" type="GLsizei"/>
         <param name="framebuffers" type="GLuint *"/>
     </function>
 
-    <function name="CheckFramebufferStatusEXT" alias="CheckFramebufferStatus">
+    <function name="CheckFramebufferStatusEXT">
         <param name="target" type="GLenum"/>
 	<return type="GLenum"/>
     </function>
 
-    <function name="FramebufferTexture1DEXT" alias="FramebufferTexture1D">
+    <function name="FramebufferTexture1DEXT">
         <param name="target" type="GLenum"/>
         <param name="attachment" type="GLenum"/>
         <param name="textarget" type="GLenum"/>
@@ -139,7 +139,7 @@
         <param name="level" type="GLint"/>
     </function>
 
-    <function name="FramebufferTexture2DEXT" alias="FramebufferTexture2D">
+    <function name="FramebufferTexture2DEXT">
         <param name="target" type="GLenum"/>
         <param name="attachment" type="GLenum"/>
         <param name="textarget" type="GLenum"/>
@@ -147,7 +147,7 @@
         <param name="level" type="GLint"/>
     </function>
 
-    <function name="FramebufferTexture3DEXT" alias="FramebufferTexture3D">
+    <function name="FramebufferTexture3DEXT">
         <param name="target" type="GLenum"/>
         <param name="attachment" type="GLenum"/>
         <param name="textarget" type="GLenum"/>
@@ -156,21 +156,21 @@
         <param name="zoffset" type="GLint"/>
     </function>
 
-    <function name="FramebufferRenderbufferEXT" alias="FramebufferRenderbuffer">
+    <function name="FramebufferRenderbufferEXT">
         <param name="target" type="GLenum"/>
         <param name="attachment" type="GLenum"/>
         <param name="renderbuffertarget" type="GLenum"/>
         <param name="renderbuffer" type="GLuint"/>
     </function>
 
-    <function name="GetFramebufferAttachmentParameterivEXT" alias="GetFramebufferAttachmentParameteriv">
+    <function name="GetFramebufferAttachmentParameterivEXT">
         <param name="target" type="GLenum"/>
         <param name="attachment" type="GLenum"/>
         <param name="pname" type="GLenum"/>
         <param name="params" type="GLint *"/>
     </function>
 
-    <function name="GenerateMipmapEXT" alias="GenerateMipmap">
+    <function name="GenerateMipmapEXT">
         <param name="target" type="GLenum"/>
     </function>
 </category>
