@@ -1702,6 +1702,12 @@ offsets = {
     "MultiDrawArraysUserBuf": 1666,
     "MultiDrawElementsUserBuf": 1667,
     "TexPageCommitmentEXT": 1668,
+    "CurrentPaletteMatrixOES" : 1669,
+    "LoadPaletteFromModelViewMatrixOES" : 1670,
+    "MatrixIndexPointerOES" : 1671,
+    "WeightPointerOES" : 1672,
+    "RenderbufferStorageMultisampleIMG" : 1673,
+    "FramebufferTexture2DMultisampleIMG" : 1674,
 }
 
 functions = [

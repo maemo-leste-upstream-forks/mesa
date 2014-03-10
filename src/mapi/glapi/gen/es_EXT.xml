@@ -285,28 +285,25 @@
     <enum name="WEIGHT_ARRAY_BUFFER_BINDING_OES"          value="0x889E"/>
     <enum name="MATRIX_INDEX_ARRAY_BUFFER_BINDING_OES"    value="0x8B9E"/>
 
-    <function name="CurrentPaletteMatrixOES" alias="CurrentPaletteMatrixARB"
-	      exec="skip">
+    <function name="CurrentPaletteMatrixOES" es1="1.0" exec="dynamic">
         <param name="matrixpaletteindex" type="GLuint"/>
     </function>
 
-    <!-- no offset -->
-    <function name="LoadPaletteFromModelViewMatrixOES" exec="skip">
+    <function name="LoadPaletteFromModelViewMatrixOES" es1="1.0" exec="dynamic">
     </function>
 
-    <function name="MatrixIndexPointerOES" alias="MatrixIndexPointerARB"
-	      exec="skip">
+    <function name="MatrixIndexPointerOES" es1="1.0" exec="dynamic">
         <param name="size" type="GLint"/>
         <param name="type" type="GLenum"/>
         <param name="stride" type="GLsizei"/>
-        <param name="pointer" type="const GLvoid *"/>
+        <param name="pointer" type="GLvoid *"/>
     </function>
 
-    <function name="WeightPointerOES" alias="WeightPointerARB" exec="skip">
+    <function name="WeightPointerOES" es1="1.0" exec="dynamic">
         <param name="size" type="GLint"/>
         <param name="type" type="GLenum"/>
         <param name="stride" type="GLsizei"/>
-        <param name="pointer" type="const GLvoid *"/>
+        <param name="pointer" type="GLvoid *"/>
     </function>
 </category>
 
@@ -678,6 +675,32 @@
     <enum name="VERTEX_ARRAY_BINDING_OES"      count="1"  value="0x85B5">
         <size name="Get" mode="get"/>
     </enum>
+</category>
+
+<!-- 74. GL_IMG_multisampled_render_to_texture -->
+<category name="GL_IMG_multisampled_render_to_texture" number="74">
+    <enum name="RENDERBUFFER_SAMPLES_IMG"                   value="0x9133"/>
+    <enum name="FRAMEBUFFER_INCOMPLETE_MULTISAMPLE_IMG"     value="0x9134"/>
+    <enum name="MAX_SAMPLES_IMG"                            value="0x9135"/>
+    <enum name="TEXTURE_SAMPLES_IMG"                        value="0x9136"/>
+
+    <function name="RenderbufferStorageMultisampleIMG" es2="2.0" exec="dynamic">
+        <param name="target" type="GLenum"/>
+        <param name="samples" type="GLsizei"/>
+        <param name="internalformat" type="GLenum"/>
+        <param name="width" type="GLsizei"/>
+        <param name="height" type="GLsizei"/>
+    </function>
+
+    <function name="FramebufferTexture2DMultisampleIMG" es2="2.0"
+              exec="dynamic">
+        <param name="target" type="GLenum"/>
+        <param name="attachment" type="GLenum"/>
+        <param name="textarget" type="GLenum"/>
+        <param name="texture" type="GLuint"/>
+        <param name="level" type="GLint"/>
+        <param name="samples" type="GLsizei"/>
+    </function>
 </category>
 
 <!-- 87. GL_OES_EGL_image_external -->
