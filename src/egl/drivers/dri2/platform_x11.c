@@ -290,7 +290,8 @@ dri2_x11_create_surface(_EGLDisplay *disp, EGLint type, _EGLConfig *conf,
       dri2_surf->drawable = xcb_generate_id(dri2_dpy->conn);
       xcb_create_pixmap(dri2_dpy->conn, conf->BufferSize,
                        dri2_surf->drawable, dri2_dpy->screen->root,
-			dri2_surf->base.Width, dri2_surf->base.Height);
+                        dri2_surf->base.Width == 0 ? 1 : dri2_surf->base.Width,
+                        dri2_surf->base.Height == 0 ? 1 : dri2_surf->base.Height);
    } else {
       STATIC_ASSERT(sizeof(uintptr_t) == sizeof(native_surface));
       dri2_surf->drawable = (uintptr_t) native_surface;
