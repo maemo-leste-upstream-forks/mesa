@@ -1024,6 +1024,10 @@ dri2_setup_screen(_EGLDisplay *disp)
          disp->Extensions.EXT_image_dma_buf_import_modifiers = EGL_TRUE;
       }
 #endif
+      if (dri2_dpy->image->base.version >= 8 &&
+          dri2_dpy->image->createImageFromBuffer) {
+         disp->Extensions.IMG_cl_image = EGL_TRUE;
+      }
    }
 
    if (dri2_dpy->flush_control)
@@ -2465,17 +2469,13 @@ dri2_get_msc_rate_angle(_EGLDisplay *disp, _EGLSurface *surf,
    return dri2_dpy->vtbl->get_msc_rate(disp, surf, numerator, denominator);
 }
 
-/**
- * Set the error code after a call to
- * dri2_egl_image::dri_image::createImageFromTexture.
- */
 static void
-dri2_create_image_khr_texture_error(int dri_error)
+dri2_create_image_khr_error(int dri_error)
 {
    EGLint egl_error = egl_error_from_dri_image_error(dri_error);
 
    if (egl_error != EGL_SUCCESS)
-      _eglError(egl_error, "dri2_create_image_khr_texture");
+      _eglError(egl_error, "dri2_create_image_khr");
 }
 
 static _EGLImage *
@@ -2554,7 +2554,49 @@ dri2_create_image_khr_texture(_EGLDisplay *disp, _EGLContext *ctx,
                                               attrs.GLTextureLevel,
                                               &error,
                                               NULL);
-   dri2_create_image_khr_texture_error(error);
+   dri2_create_image_khr_error(error);
+
+   if (!dri2_img->dri_image) {
+      free(dri2_img);
+      return EGL_NO_IMAGE_KHR;
+   }
+   return &dri2_img->base;
+}
+
+static _EGLImage *
+dri2_create_image_img_buffer(_EGLDisplay *disp, _EGLContext *ctx,
+				   EGLenum target,
+				   EGLClientBuffer buffer,
+				   const EGLint *attr_list)
+{
+   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
+   struct dri2_egl_context *dri2_ctx = dri2_egl_context(ctx);
+   struct dri2_egl_image *dri2_img;
+   unsigned error;
+
+   switch (target) {
+   case EGL_CL_IMAGE_IMG:
+      break;
+   default:
+      _eglError(EGL_BAD_PARAMETER, "dri2_create_image_khr");
+      return EGL_NO_IMAGE_KHR;
+   }
+
+   dri2_img = malloc(sizeof *dri2_img);
+   if (!dri2_img) {
+      _eglError(EGL_BAD_ALLOC, "dri2_create_image_khr");
+      return EGL_NO_IMAGE_KHR;
+   }
+
+   _eglInitImage(&dri2_img->base, disp);
+
+   dri2_img->dri_image =
+      dri2_dpy->image->createImageFromBuffer(dri2_ctx->dri_context,
+                                              target,
+                                              buffer,
+                                              &error,
+                                              NULL);
+   dri2_create_image_khr_error(error);
 
    if (!dri2_img->dri_image) {
       free(dri2_img);
@@ -3300,6 +3342,8 @@ dri2_create_image_khr(_EGLDisplay *disp, _EGLContext *ctx, EGLenum target,
    case EGL_WAYLAND_BUFFER_WL:
       return dri2_create_image_wayland_wl_buffer(disp, ctx, buffer, attr_list);
 #endif
+   case EGL_CL_IMAGE_IMG:
+      return dri2_create_image_img_buffer(disp, ctx, target, buffer, attr_list);
    default:
       _eglError(EGL_BAD_PARAMETER, "dri2_create_image_khr");
       return EGL_NO_IMAGE_KHR;

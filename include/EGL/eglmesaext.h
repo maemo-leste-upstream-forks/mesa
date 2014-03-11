@@ -49,6 +49,11 @@ typedef EGLBoolean (EGLAPIENTRYP PFNEGLSWAPBUFFERSREGIONNOK) (EGLDisplay dpy, EG
 #define EGL_DRM_BUFFER_FORMAT_RGB565_MESA       0x3292
 #endif /* EGL_MESA_drm_image_formats */
 
+#ifndef EGL_IMG_cl_image
+#define EGL_IMG_cl_image 1
+#define EGL_CL_IMAGE_IMG			0x6010
+#endif /* Experimental eglCreateImageKHR target */
+
 #ifdef __cplusplus
 }
 #endif

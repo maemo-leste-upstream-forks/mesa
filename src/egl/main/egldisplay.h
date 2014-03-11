@@ -157,6 +157,8 @@ struct _egl_extensions
 
    EGLBoolean WL_bind_wayland_display;
    EGLBoolean WL_create_wayland_buffer_from_image;
+
+   EGLBoolean IMG_cl_image;
 };
 
 struct _egl_display

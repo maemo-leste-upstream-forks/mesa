@@ -613,6 +613,7 @@ _eglCreateExtensionsString(_EGLDisplay *disp)
    _EGL_CHECK_EXTENSION(WL_bind_wayland_display);
    _EGL_CHECK_EXTENSION(WL_create_wayland_buffer_from_image);
 
+   _EGL_CHECK_EXTENSION(IMG_cl_image);
 #undef _EGL_CHECK_EXTENSION
 }
 
