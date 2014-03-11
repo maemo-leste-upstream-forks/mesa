@@ -424,7 +424,11 @@ dri2_x11_destroy_surface(_EGLDisplay *disp, _EGLSurface *surf)
    dri2_dpy->core->destroyDrawable(dri2_surf->dri_drawable);
    
    if (dri2_dpy->dri2) {
-      xcb_dri2_destroy_drawable (dri2_dpy->conn, dri2_surf->drawable);
+      xcb_void_cookie_t cookie;
+
+      cookie = xcb_dri2_destroy_drawable_checked(dri2_dpy->conn,
+                                                 dri2_surf->drawable);
+      xcb_request_check(dri2_dpy->conn, cookie);
    } else {
       assert(dri2_dpy->swrast);
       swrastDestroyDrawable(dri2_dpy, dri2_surf);
