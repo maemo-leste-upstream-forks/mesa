@@ -2770,6 +2770,7 @@ dri2_num_fourcc_format_planes(EGLint format)
    case DRM_FORMAT_Y410:
    case DRM_FORMAT_Y412:
    case DRM_FORMAT_Y416:
+   case DRM_FORMAT_YVU444_PACK10_IMG:
       return 1;
 
    case DRM_FORMAT_NV12:
