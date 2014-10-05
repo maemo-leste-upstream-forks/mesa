@@ -1583,6 +1583,7 @@ strip_unwanted_llvm_flags() {
     # Use \> (marks the end of the word)
     echo `$1` | sed \
 	-e 's/-DNDEBUG\>//g' \
+	-e 's/-D_GNU_SOURCE\>//g' \
 	-e 's/-pedantic\>//g' \
 	-e 's/-Wcovered-switch-default\>//g' \
 	-e 's/-O.\>//g' \
@@ -1814,6 +1815,9 @@ if test -n "$with_gallium_drivers"; then
         case "x$driver" in
         xsvga)
             HAVE_GALLIUM_SVGA=yes
+            if test "x$have_libdrm" != xyes; then
+                AC_MSG_ERROR([Building svga requires libdrm >= $LIBDRM_REQUIRED])
+            fi
             GALLIUM_DRIVERS_DIRS="$GALLIUM_DRIVERS_DIRS svga softpipe"
             gallium_require_drm_loader
             gallium_check_st "svga/drm" "dri-vmwgfx" ""
