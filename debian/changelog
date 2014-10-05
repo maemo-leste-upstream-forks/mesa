@@ -1,8 +1,8 @@
-mesa (10.2.8-1) UNRELEASED; urgency=medium
+mesa (10.2.8-1) unstable; urgency=medium
 
   * New upstream release.
 
- -- Andreas Boll <andreas.boll.dev@gmail.com>  Fri, 12 Sep 2014 11:38:04 +0200
+ -- maximilian attems <maks@debian.org>  Sun, 05 Oct 2014 12:44:58 +0200
 
 mesa (10.2.6-1) unstable; urgency=medium
 
