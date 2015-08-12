@@ -1459,6 +1459,9 @@
 
 </category>
 
+<!-- 240. EXT_sparse_texture -->
+<xi:include href="EXT_sparse_texture.xml" xmlns:xi="http://www.w3.org/2001/XInclude"/>
+
 <category name="GL_OES_viewport_array" number="267">
     <function name="ViewportArrayvOES" es2="3.1" alias="ViewportArrayv">
         <param name="first" type="GLuint"/>

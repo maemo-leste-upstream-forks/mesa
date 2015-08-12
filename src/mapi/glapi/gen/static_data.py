@@ -1701,6 +1701,7 @@ offsets = {
     "DrawElementsUserBuf": 1665,
     "MultiDrawArraysUserBuf": 1666,
     "MultiDrawElementsUserBuf": 1667,
+    "TexPageCommitmentEXT": 1668,
 }
 
 functions = [
