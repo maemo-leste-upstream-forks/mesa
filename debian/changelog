@@ -2,6 +2,7 @@ mesa (11.1.1-2~bpo8+1) UNRELEASED; urgency=medium
 
   * Rebuild for jessie-backports.
   * Rebuild against llvm-3.5.
+  * Use libclc version from jessie.
 
  -- Andreas Boll <andreas.boll.dev@gmail.com>  Tue, 17 Nov 2015 11:54:23 +0100
 
