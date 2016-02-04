@@ -1488,6 +1488,9 @@
 <!-- 253. GL_EXT_shader_pixel_local_storage2 -->
 <xi:include href="EXT_shader_pixel_local_storage2.xml" xmlns:xi="http://www.w3.org/2001/XInclude"/>
 
+<!-- 255. GL_IMG_framebuffer_downsample -->
+<xi:include href="IMG_framebuffer_downsample.xml" xmlns:xi="http://www.w3.org/2001/XInclude"/>
+
 <category name="GL_OES_viewport_array" number="267">
     <function name="ViewportArrayvOES" es2="3.1" alias="ViewportArrayv">
         <param name="first" type="GLuint"/>

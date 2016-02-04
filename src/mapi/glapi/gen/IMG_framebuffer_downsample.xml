@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<!DOCTYPE OpenGLAPI SYSTEM "gl_API.dtd">
+
+<OpenGLAPI>
+
+<category name="GL_IMG_framebuffer_downsample" number="255">
+
+    <enum name="FRAMEBUFFER_INCOMPLETE_MULTISAMPLE_AND_DOWNSAMPLE_IMG"                    value="0x913C"/>
+    <enum name="NUM_DOWNSAMPLE_SCALES_IMG"                                                value="0x913D"/>
+    <enum name="DOWNSAMPLE_SCALES_IMG"                                                    value="0x913E"/>
+    <enum name="FRAMEBUFFER_ATTACHMENT_TEXTURE_SCALE_IMG"                                 value="0x913F"/>
+
+    <function name="FramebufferTexture2DDownsampleIMG" es1="1.0" es2="2.0"
+              exec="dynamic">
+        <param name="target" type="GLenum"/>
+        <param name="attachment" type="GLenum"/>
+        <param name="textarget" type="GLenum"/>
+        <param name="texture" type="GLuint"/>
+        <param name="level" type="GLint"/>
+        <param name="xscale" type="GLint"/>
+        <param name="yscale" type="GLint"/>
+    </function>
+
+    <function name="FramebufferTextureLayerDownsampleIMG" es1="1.0" es2="2.0"
+              exec="dynamic">
+        <param name="target" type="GLenum"/>
+        <param name="attachment" type="GLenum"/>
+        <param name="texture" type="GLuint"/>
+        <param name="level" type="GLint"/>
+        <param name="layer" type="GLint"/>
+        <param name="xscale" type="GLint"/>
+        <param name="yscale" type="GLint"/>
+    </function>
+
+</category>
+
+</OpenGLAPI>
