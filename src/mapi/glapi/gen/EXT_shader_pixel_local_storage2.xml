@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<!DOCTYPE OpenGLAPI SYSTEM "gl_API.dtd">
+
+<OpenGLAPI>
+
+<category name="EXT_shader_pixel_local_storage2" number="240">
+
+    <enum name="GL_MAX_SHADER_PIXEL_LOCAL_STORAGE_FAST_SIZE_EXT"                          value="0x8F63"/>
+    <enum name="GL_MAX_SHADER_PIXEL_LOCAL_STORAGE_SIZE_EXT"                               value="0x8F67"/>
+    <enum name="GL_SHADER_PIXEL_LOCAL_STORAGE_EXT"                                        value="0x8F64"/>
+    <enum name="GL_MAX_SHADER_COMBINED_LOCAL_STORAGE_FAST_SIZE_EXT"                       value="0x9650"/>
+    <enum name="GL_MAX_SHADER_COMBINED_LOCAL_STORAGE_SIZE_EXT"                            value="0x9651"/>
+    <enum name="GL_FRAMEBUFFER_INCOMPLETE_INSUFFICIENT_SHADER_COMBINED_LOCAL_STORAGE_EXT" value="0x9652"/>
+
+    <function name="ClearPixelLocalStorageuiEXT" es2="3.1" exec="dynamic">
+        <param name="offset" type="GLsizei"/>
+        <param name="n" type="GLsizei"/>
+        <param name="values" type="const GLuint *"/>
+    </function>
+
+    <function name="FramebufferPixelLocalStorageSizeEXT" es2="3.1"
+              exec="dynamic">
+        <param name="target" type="GLuint"/>
+        <param name="size" type="GLsizei"/>
+    </function>
+
+    <function name="GetFramebufferPixelLocalStorageSizeEXT" es2="3.1"
+              exec="dynamic">
+        <param name="target" type="GLuint"/>
+        <return type="GLsizei"/>
+    </function>
+
+</category>
+
+</OpenGLAPI>
