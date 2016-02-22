@@ -1,3 +1,9 @@
+mesa (11.1.2-1~bpo8+1) jessie-backports; urgency=medium
+
+  * Rebuild for jessie-backports.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Mon, 22 Feb 2016 17:30:33 +0100
+
 mesa (11.1.2-1) unstable; urgency=medium
 
   * New upstream release.
