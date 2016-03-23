@@ -2101,3 +2101,11 @@ _mesa_ProgramUniform4ui64vARB(GLuint program, GLint location,  GLsizei count, co
                                       "glProgramUniform4ui64vARB");
    _mesa_uniform(location, count, value, ctx, shProg, GLSL_TYPE_UINT64, 4);
 }
+
+void GLAPIENTRY
+_mesa_GetIntegeri_vIMG(GLenum target, GLuint index, GLint* data)
+{
+    GET_CURRENT_CONTEXT(ctx);
+
+    _mesa_error(ctx, GL_INVALID_OPERATION, "glGetIntegeri_vIMG");
+}

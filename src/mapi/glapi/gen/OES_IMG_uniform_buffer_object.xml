@@ -1,0 +1,124 @@
+<?xml version="1.0"?>
+<!DOCTYPE OpenGLAPI SYSTEM "gl_API.dtd">
+
+<OpenGLAPI>
+
+<category name="GL_IMG_uniform_buffer_object" number="57">
+
+<enum name="UNIFORM_BUFFER_IMG" value="0x8A11" />
+<enum name="UNIFORM_BUFFER_BINDING_IMG" value="0x8A28" />
+<enum name="UNIFORM_BUFFER_START_IMG" value="0x8A29" />
+<enum name="UNIFORM_BUFFER_SIZE_IMG" value="0x8A2A" />
+<enum name="MAX_VERTEX_UNIFORM_BLOCKS_IMG" value="0x8A2B" />
+<enum name="MAX_GEOMETRY_UNIFORM_BLOCKS_IMG" value="0x8A2C" />
+<enum name="MAX_FRAGMENT_UNIFORM_BLOCKS_IMG" value="0x8A2D" />
+<enum name="MAX_COMBINED_UNIFORM_BLOCKS_IMG" value="0x8A2E" />
+<enum name="MAX_UNIFORM_BUFFER_BINDINGS_IMG" value="0x8A2F" />
+<enum name="MAX_UNIFORM_BLOCK_SIZE_IMG" value="0x8A30" />
+<enum name="MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS_IMG" value="0x8A31" />
+<enum name="MAX_COMBINED_GEOMETRY_UNIFORM_COMPONENTS_IMG" value="0x8A32" />
+<enum name="MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS_IMG" value="0x8A33" />
+<enum name="UNIFORM_BUFFER_OFFSET_ALIGNMENT_IMG" value="0x8A34" />
+<enum name="ACTIVE_UNIFORM_BLOCK_MAX_NAME_LENGTH_IMG" value="0x8A35" />
+<enum name="ACTIVE_UNIFORM_BLOCKS_IMG" value="0x8A36" />
+<enum name="UNIFORM_TYPE_IMG" value="0x8A37" />
+<enum name="UNIFORM_SIZE_IMG" value="0x8A38" />
+<enum name="UNIFORM_NAME_LENGTH_IMG" value="0x8A39" />
+<enum name="UNIFORM_BLOCK_INDEX_IMG" value="0x8A3A" />
+<enum name="UNIFORM_OFFSET_IMG" value="0x8A3B" />
+<enum name="UNIFORM_ARRAY_STRIDE_IMG" value="0x8A3C" />
+<enum name="UNIFORM_MATRIX_STRIDE_IMG" value="0x8A3D" />
+<enum name="UNIFORM_IS_ROW_MAJOR_IMG" value="0x8A3E" />
+<enum name="UNIFORM_BLOCK_BINDING_IMG" value="0x8A3F" />
+<enum name="UNIFORM_BLOCK_DATA_SIZE_IMG" value="0x8A40" />
+<enum name="UNFIROM_BLOCK_NAME_LENGTH_IMG" value="0x8A41" />
+<enum name="UNIFORM_BLOCK_ACTIVE_UNIFORMS_IMG" value="0x8A42" />
+<enum name="UNIFORM_BLOCK_ACTIVE_UNIFORM_INDICES_IMG" value="0x8A43" />
+<enum name="UNIFORM_BLOCK_REFERENCED_BY_VERTEX_SHADER_IMG" value="0x8A44" />
+<enum name="UNIFORM_BLOCK_REFERENCED_BY_GEOMETRY_SHADER_IMG" value="0x8A45" />
+<enum name="UNIFORM_BLOCK_REFERENCED_BY_FRAGMENT_SHADER_IMG" value="0x8A46" />
+<enum name="INVALID_INDEX_IMG" value="0xFFFFFFFF" />
+
+<function name="GetUniformIndicesIMG" static_dispatch="false" es2="2.0"
+          alias="GetUniformIndices">
+    <param name="program" type="GLuint" />
+    <param name="uniformCount" type="GLsizei" />
+    <param name="uniformNames" type="const GLchar * const *" />
+    <param name="uniformIndices" type="GLuint *" />
+</function>
+
+<function name="GetActiveUniformsivIMG" static_dispatch="false" es2="2.0"
+          alias="GetActiveUniformsiv">
+    <param name="program" type="GLuint" />
+    <param name="uniformCount" type="GLsizei" />
+    <param name="uniformIndices" type="const GLuint *" />
+    <param name="pname" type="GLenum" />
+    <param name="params" type="GLint *" />
+</function>
+
+<function name="GetActiveUniformNameIMG" static_dispatch="false" es2="2.0"
+          alias="GetActiveUniformName">
+    <param name="program" type="GLuint" />
+    <param name="uniformIndex" type="GLuint" />
+    <param name="bufSize" type="GLsizei" />
+    <param name="length" type="GLsizei *" />
+    <param name="uniformName" type="GLchar *" />
+</function>
+
+<function name="GetUniformBlockIndexIMG" static_dispatch="false" es2="2.0"
+          alias="GetUniformBlockIndex">
+    <return type="GLuint"/>
+    <param name="program" type="GLuint" />
+    <param name="uniformBlockName" type="const GLchar *" />
+</function>
+
+<function name="GetActiveUniformBlockivIMG" static_dispatch="false" es2="2.0"
+          alias="GetActiveUniformBlockiv">
+    <param name="program" type="GLuint" />
+    <param name="uniformBlockIndex" type="GLuint" />
+    <param name="pname" type="GLenum" />
+    <param name="params" type="GLint *" />
+</function>
+
+<function name="GetActiveUniformBlockNameIMG" static_dispatch="false" es2="2.0"
+          alias="GetActiveUniformBlockName">
+    <param name="program" type="GLuint" />
+    <param name="uniformBlockIndex" type="GLuint" />
+    <param name="bufSize" type="GLsizei" />
+    <param name="length" type="GLsizei *" />
+    <param name="uniformBlockName" type="GLchar *" />
+</function>
+
+<function name="UniformBlockBindingIMG" static_dispatch="false" es2="2.0"
+          alias="UniformBlockBinding">
+    <param name="program" type="GLuint" />
+    <param name="uniformBlockIndex" type="GLuint" />
+    <param name="uniformBlockBinding" type="GLuint" />
+</function>
+
+<function name="GetIntegeri_vIMG" static_dispatch="false" es2="2.0"
+          offset="assign">
+    <param name="target" type="GLenum"/>
+    <param name="index" type="GLuint"/>
+    <param name="data" type="GLint*" output="true"/>
+</function>
+
+<function name="BindBufferRangeIMG" static_dispatch="false" es2="2.0"
+          alias="BindBufferRange">
+    <param name="target" type="GLenum"/>
+    <param name="index" type="GLuint"/>
+    <param name="buffer" type="GLuint"/>
+    <param name="offset" type="GLintptr"/>
+    <param name="size" type="GLsizeiptr"/>
+</function>
+
+<function name="BindBufferBaseIMG" static_dispatch="false" es2="2.0"
+          alias="BindBufferBase">
+    <param name="target" type="GLenum"/>
+    <param name="index" type="GLuint"/>
+    <param name="buffer" type="GLuint"/>
+</function>
+
+</category>
+
+</OpenGLAPI>

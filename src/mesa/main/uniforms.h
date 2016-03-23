@@ -39,6 +39,9 @@ extern "C" {
 struct gl_program;
 struct _glapi_table;
 
+void GLAPIENTRY
+_mesa_GetIntegeri_vIMG(GLenum target, GLuint index, GLint* data);
+
 void
 _mesa_uniform(GLint location, GLsizei count, const GLvoid *values,
               struct gl_context *, struct gl_shader_program *,
