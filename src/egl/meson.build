@@ -152,6 +152,11 @@ elif with_platform_windows
   incs_for_egl += [inc_wgl, inc_gallium, inc_gallium_aux]
   link_for_egl += libgallium_wgl
 endif
+if with_platform_null
+  files_egl += files('drivers/dri2/platform_null.c')
+  incs_for_egl += [inc_loader]
+  deps_for_egl += dep_libdrm
+endif
 
 if cc.has_function('mincore')
   c_args_for_egl += '-DHAVE_MINCORE'

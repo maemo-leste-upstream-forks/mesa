@@ -1281,6 +1281,9 @@ dri2_initialize(_EGLDisplay *disp)
    case _EGL_PLATFORM_DEVICE:
       ret = dri2_initialize_device(disp);
       break;
+   case _EGL_PLATFORM_NULL:
+      ret = dri2_initialize_null(disp);
+      break;
    case _EGL_PLATFORM_X11:
    case _EGL_PLATFORM_XCB:
       ret = dri2_initialize_x11(disp);
@@ -1342,8 +1345,6 @@ dri2_display_destroy(_EGLDisplay *disp)
          dri2_dpy->vtbl->close_screen_notify(disp);
       dri2_dpy->core->destroyScreen(dri2_dpy->dri_screen);
    }
-   if (dri2_dpy->fd >= 0)
-      close(dri2_dpy->fd);
 
    /* Don't dlclose the driver when building with the address sanitizer, so you
     * get good symbols from the leak reports.
@@ -1369,10 +1370,16 @@ dri2_display_destroy(_EGLDisplay *disp)
    case _EGL_PLATFORM_WAYLAND:
       dri2_teardown_wayland(dri2_dpy);
       break;
+   case _EGL_PLATFORM_NULL:
+      dri2_teardown_null(dri2_dpy);
+      break;
    default:
       /* TODO: add teardown for other platforms */
       break;
    }
+
+   if (dri2_dpy->fd >= 0)
+      close(dri2_dpy->fd);
 
    /* The drm platform does not create the screen/driver_configs but reuses
     * the ones from the gbm device. As such the gbm itself is responsible
