@@ -1485,6 +1485,9 @@
 <!-- 240. EXT_sparse_texture -->
 <xi:include href="EXT_sparse_texture.xml" xmlns:xi="http://www.w3.org/2001/XInclude"/>
 
+<!-- 250. GL_OVR_multiview_multisampled_render_to_texture -->
+<xi:include href="OVR_multiview_multisampled_render_to_texture.xml" xmlns:xi="http://www.w3.org/2001/XInclude"/>
+
 <!-- 253. GL_EXT_shader_pixel_local_storage2 -->
 <xi:include href="EXT_shader_pixel_local_storage2.xml" xmlns:xi="http://www.w3.org/2001/XInclude"/>
 
