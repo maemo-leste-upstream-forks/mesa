@@ -49,6 +49,21 @@ libwayland_drm = static_library(
   build_by_default : false,
 )
 
+install_data('wayland-drm.xml')
+
+pkg.generate(
+  filebase : 'wayland-drm',
+  name : 'Mesa Wayland Protocols',
+  description : 'Mesa Wayland protocol files',
+  version : meson.project_version(),
+  variables : [
+     'datarootdir=${prefix}/' + get_option('datadir'),
+     'pkgdatadir=${pc_sysrootdir}${datarootdir}/' + meson.project_name(),
+  ],
+  install_dir : '@0@/@1@/pkgconfig'.format(get_option('prefix'),
+                get_option('datadir')),
+)
+
 # linux-dmabuf isn't part of wayland-drm, but this happens to be the only
 # place which is a) guaranteed to be built when building either or both
 # of EGL and Vulkan WSI, and b) guaranteed to be included before both,

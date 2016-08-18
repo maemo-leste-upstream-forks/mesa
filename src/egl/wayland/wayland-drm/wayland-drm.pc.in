@@ -1,0 +1,7 @@
+prefix=@prefix@
+datarootdir=@datarootdir@
+pkgdatadir=${pc_sysrootdir}@datadir@/@PACKAGE@
+
+Name: @PACKAGE_NAME@ Wayland Protocols
+Description: @PACKAGE_NAME@ Wayland protocol files
+Version: @PACKAGE_VERSION@
