@@ -75,6 +75,8 @@ private:
    void emitLOAD(const Instruction *);
    void emitSTORE(const Instruction *);
    void emitMOV(const Instruction *);
+   void emitATOM(const Instruction *);
+   void emitCCTL(const Instruction *);
 
    void emitINTERP(const Instruction *);
    void emitAFETCH(const Instruction *);
@@ -110,7 +112,7 @@ private:
 
    void emitSET(const CmpInstruction *);
    void emitSLCT(const CmpInstruction *);
-   void emitSELP(const Instruction *);
+   void emitSELP(const CmpInstruction *);
 
    void emitTEXBAR(const Instruction *);
    void emitTEX(const TexInstruction *);
@@ -122,6 +124,7 @@ private:
    void emitPIXLD(const Instruction *);
 
    void emitBAR(const Instruction *);
+   void emitMEMBAR(const Instruction *);
 
    void emitFlow(const Instruction *);
 
@@ -430,6 +433,10 @@ CodeEmitterGK110::emitForm_21(const Instruction *i, uint32_t opc2,
          srcId(i->src(s), s ? ((s == 2) ? 42 : s1) : 10);
          break;
       default:
+         if (i->op == OP_SELP) {
+            assert(s == 2 && i->src(s).getFile() == FILE_PREDICATE);
+            srcId(i->src(s), 42);
+         }
          // ignore here, can be predicate or flags, but must not be address
          break;
       }
@@ -572,7 +579,7 @@ CodeEmitterGK110::emitIMUL(const Instruction *i)
    assert(!i->src(0).mod.neg() && !i->src(1).mod.neg());
    assert(!i->src(0).mod.abs() && !i->src(1).mod.abs());
 
-   if (isLIMM(i->src(1), TYPE_S32)) {
+   if (i->src(1).getFile() == FILE_IMMEDIATE) {
       emitForm_L(i, 0x280, 2, Modifier(0));
 
       if (i->subOp == NV50_IR_SUBOP_MUL_HIGH)
@@ -697,6 +704,10 @@ CodeEmitterGK110::emitIMAD(const Instruction *i)
 
    if (i->subOp == NV50_IR_SUBOP_MUL_HIGH)
       code[1] |= 1 << 25;
+
+   if (i->flagsDef >= 0) code[1] |= 1 << 18;
+   if (i->flagsSrc >= 0) code[1] |= 1 << 20;
+
    SAT_(35);
 }
 
@@ -739,6 +750,32 @@ CodeEmitterGK110::emitNOT(const Instruction *i)
 void
 CodeEmitterGK110::emitLogicOp(const Instruction *i, uint8_t subOp)
 {
+   if (i->def(0).getFile() == FILE_PREDICATE) {
+      code[0] = 0x00000002 | (subOp << 27);
+      code[1] = 0x84800000;
+
+      emitPredicate(i);
+
+      defId(i->def(0), 5);
+      srcId(i->src(0), 14);
+      if (i->src(0).mod == Modifier(NV50_IR_MOD_NOT)) code[0] |= 1 << 17;
+      srcId(i->src(1), 32);
+      if (i->src(1).mod == Modifier(NV50_IR_MOD_NOT)) code[1] |= 1 << 3;
+
+      if (i->defExists(1)) {
+         defId(i->def(1), 2);
+      } else {
+         code[0] |= 7 << 2;
+      }
+      // (a OP b) OP c
+      if (i->predSrc != 2 && i->srcExists(2)) {
+         code[1] |= subOp << 16;
+         srcId(i->src(2), 42);
+         if (i->src(2).mod == Modifier(NV50_IR_MOD_NOT)) code[1] |= 1 << 13;
+      } else {
+         code[1] |= 7 << 10;
+      }
+   } else
    if (isLIMM(i->src(1), TYPE_S32)) {
       emitForm_L(i, 0x200, 0, i->src(1).mod);
       code[1] |= subOp << 24;
@@ -1034,11 +1071,11 @@ CodeEmitterGK110::emitSLCT(const CmpInstruction *i)
    }
 }
 
-void CodeEmitterGK110::emitSELP(const Instruction *i)
+void CodeEmitterGK110::emitSELP(const CmpInstruction *i)
 {
    emitForm_21(i, 0x250, 0x050);
 
-   if ((i->cc == CC_NOT_P) ^ (bool)(i->src(2).mod & Modifier(NV50_IR_MOD_NOT)))
+   if ((i->setCond == CC_NOT_P) ^ (bool)(i->src(2).mod & Modifier(NV50_IR_MOD_NOT)))
       code[1] |= 1 << 13;
 }
 
@@ -1251,8 +1288,32 @@ CodeEmitterGK110::emitPIXLD(const Instruction *i)
 void
 CodeEmitterGK110::emitBAR(const Instruction *i)
 {
-   /* TODO */
-   emitNOP(i);
+   code[0] = 0x00000002;
+   code[1] = 0x85400000;
+
+   switch (i->subOp) {
+   case NV50_IR_SUBOP_BAR_ARRIVE:   code[1] |= 0x08; break;
+   case NV50_IR_SUBOP_BAR_RED_AND:  code[1] |= 0x50; break;
+   case NV50_IR_SUBOP_BAR_RED_OR:   code[1] |= 0x90; break;
+   case NV50_IR_SUBOP_BAR_RED_POPC: code[1] |= 0x10; break;
+   default:
+      code[1] |= 0x20;
+      assert(i->subOp == NV50_IR_SUBOP_BAR_SYNC);
+      break;
+   }
+
+   emitPredicate(i);
+
+   srcId(i->src(0), 10);
+   srcId(i->src(1), 23);
+}
+
+void CodeEmitterGK110::emitMEMBAR(const Instruction *i)
+{
+   code[0] = 0x00000002 | NV50_IR_SUBOP_MEMBAR_SCOPE(i->subOp) << 8;
+   code[1] = 0x7cc00000;
+
+   emitPredicate(i);
 }
 
 void
@@ -1586,6 +1647,10 @@ CodeEmitterGK110::emitSTORE(const Instruction *i)
 
    srcId(i->src(1), 2);
    srcId(i->src(0).getIndirect(0), 10);
+   if (i->src(0).getFile() == FILE_MEMORY_GLOBAL &&
+       i->src(0).isIndirect(0) &&
+       i->getIndirect(0, 0)->reg.size == 8)
+      code[1] |= 1 << 23;
 }
 
 void
@@ -1596,7 +1661,7 @@ CodeEmitterGK110::emitLOAD(const Instruction *i)
    switch (i->src(0).getFile()) {
    case FILE_MEMORY_GLOBAL: code[1] = 0xc0000000; code[0] = 0x00000000; break;
    case FILE_MEMORY_LOCAL:  code[1] = 0x7a000000; code[0] = 0x00000002; break;
-   case FILE_MEMORY_SHARED: code[1] = 0x7ac00000; code[0] = 0x00000002; break;
+   case FILE_MEMORY_SHARED: code[1] = 0x7a400000; code[0] = 0x00000002; break;
    case FILE_MEMORY_CONST:
       if (!i->src(0).isIndirect(0) && typeSizeof(i->dType) == 4) {
          emitMOV(i);
@@ -1627,7 +1692,13 @@ CodeEmitterGK110::emitLOAD(const Instruction *i)
    emitPredicate(i);
 
    defId(i->def(0), 2);
-   srcId(i->src(0).getIndirect(0), 10);
+   if (i->getIndirect(0, 0)) {
+      srcId(i->src(0).getIndirect(0), 10);
+      if (i->getIndirect(0, 0)->reg.size == 8)
+         code[1] |= 1 << 23;
+   } else {
+      code[0] |= 255 << 10;
+   }
 }
 
 uint8_t
@@ -1680,6 +1751,96 @@ CodeEmitterGK110::emitMOV(const Instruction *i)
       emitForm_C(i, 0x24c, 2);
       code[1] |= i->lanes << 10;
    }
+}
+
+static inline bool
+uses64bitAddress(const Instruction *ldst)
+{
+   return ldst->src(0).getFile() == FILE_MEMORY_GLOBAL &&
+      ldst->src(0).isIndirect(0) &&
+      ldst->getIndirect(0, 0)->reg.size == 8;
+}
+
+void
+CodeEmitterGK110::emitATOM(const Instruction *i)
+{
+   const bool hasDst = i->defExists(0);
+   const bool exch = i->subOp == NV50_IR_SUBOP_ATOM_EXCH;
+
+   code[0] = 0x00000002;
+   if (i->subOp == NV50_IR_SUBOP_ATOM_CAS)
+      code[1] = 0x77800000;
+   else
+      code[1] = 0x68000000;
+
+   switch (i->subOp) {
+   case NV50_IR_SUBOP_ATOM_CAS: break;
+   case NV50_IR_SUBOP_ATOM_EXCH: code[1] |= 0x04000000; break;
+   default: code[1] |= i->subOp << 23; break;
+   }
+
+   switch (i->dType) {
+   case TYPE_U32: break;
+   case TYPE_S32: code[1] |= 0x00100000; break;
+   case TYPE_U64: code[1] |= 0x00200000; break;
+   case TYPE_F32: code[1] |= 0x00300000; break;
+   case TYPE_B128: code[1] |= 0x00400000; break; /* TODO: U128 */
+   case TYPE_S64: code[1] |= 0x00500000; break;
+   default: assert(!"unsupported type"); break;
+   }
+
+   emitPredicate(i);
+
+   /* TODO: cas: check that src regs line up */
+   /* TODO: cas: flip bits if $r255 is used */
+   srcId(i->src(1), 23);
+
+   if (hasDst) {
+      defId(i->def(0), 2);
+   } else
+   if (!exch) {
+      code[0] |= 255 << 2;
+   }
+
+   if (hasDst || !exch) {
+      const int32_t offset = SDATA(i->src(0)).offset;
+      assert(offset < 0x80000 && offset >= -0x80000);
+      code[0] |= (offset & 1) << 31;
+      code[1] |= (offset & 0xffffe) >> 1;
+   } else {
+      srcAddr32(i->src(0), 31);
+   }
+
+   if (i->getIndirect(0, 0)) {
+      srcId(i->getIndirect(0, 0), 10);
+      if (i->getIndirect(0, 0)->reg.size == 8)
+         code[1] |= 1 << 19;
+   } else {
+      code[0] |= 255 << 10;
+   }
+}
+
+void
+CodeEmitterGK110::emitCCTL(const Instruction *i)
+{
+   int32_t offset = SDATA(i->src(0)).offset;
+
+   code[0] = 0x00000002 | (i->subOp << 2);
+
+   if (i->src(0).getFile() == FILE_MEMORY_GLOBAL) {
+      code[1] = 0x7b000000;
+   } else {
+      code[1] = 0x7c000000;
+      offset &= 0xffffff;
+   }
+   code[0] |= offset << 23;
+   code[1] |= offset >> 9;
+
+   if (uses64bitAddress(i))
+      code[1] |= 1 << 23;
+   srcId(i->src(0).getIndirect(0), 10);
+
+   emitPredicate(i);
 }
 
 bool
@@ -1811,7 +1972,7 @@ CodeEmitterGK110::emitInstruction(Instruction *insn)
       emitSET(insn->asCmp());
       break;
    case OP_SELP:
-      emitSELP(insn);
+      emitSELP(insn->asCmp());
       break;
    case OP_SLCT:
       emitSLCT(insn->asCmp());
@@ -1919,6 +2080,15 @@ CodeEmitterGK110::emitInstruction(Instruction *insn)
    case OP_BAR:
       emitBAR(insn);
       break;
+   case OP_MEMBAR:
+      emitMEMBAR(insn);
+      break;
+   case OP_ATOM:
+      emitATOM(insn);
+      break;
+   case OP_CCTL:
+      emitCCTL(insn);
+      break;
    case OP_PHI:
    case OP_UNION:
    case OP_CONSTRAINT:
@@ -1931,7 +2101,7 @@ CodeEmitterGK110::emitInstruction(Instruction *insn)
       ERROR("operation should have been lowered\n");
       return false;
    default:
-      ERROR("unknow op\n");
+      ERROR("unknown op: %u\n", insn->op);
       return false;
    }
 

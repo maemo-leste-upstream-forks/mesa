@@ -520,7 +520,7 @@ dri2GetCurrentContext()
    struct glx_context *gc = __glXGetCurrentContext();
    struct dri2_context *dri2Ctx = (struct dri2_context *)gc;
 
-   return dri2Ctx ? dri2Ctx->driContext : NULL;
+   return (gc != &dummyContext) ? dri2Ctx->driContext : NULL;
 }
 
 /**
@@ -1294,7 +1294,7 @@ dri2CreateScreen(int screen, struct glx_display * priv)
       __glXEnableDirectExtension(&psc->base, "GLX_OML_sync_control");
    }
 
-   /* DRI2 suports SubBuffer through DRI2CopyRegion, so it's always
+   /* DRI2 supports SubBuffer through DRI2CopyRegion, so it's always
     * available.*/
    psp->copySubBuffer = dri2CopySubBuffer;
    __glXEnableDirectExtension(&psc->base, "GLX_MESA_copy_sub_buffer");

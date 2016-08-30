@@ -348,13 +348,25 @@ iter_declaration(
       }
    }
 
-   if (decl->Declaration.File == TGSI_FILE_RESOURCE) {
+   if (decl->Declaration.File == TGSI_FILE_IMAGE) {
       TXT(", ");
-      ENM(decl->Resource.Resource, tgsi_texture_names);
-      if (decl->Resource.Writable)
+      ENM(decl->Image.Resource, tgsi_texture_names);
+      TXT(", ");
+      TXT(util_format_name(decl->Image.Format));
+      if (decl->Image.Writable)
          TXT(", WR");
-      if (decl->Resource.Raw)
+      if (decl->Image.Raw)
          TXT(", RAW");
+   }
+
+   if (decl->Declaration.File == TGSI_FILE_BUFFER) {
+      if (decl->Declaration.Atomic)
+         TXT(", ATOMIC");
+   }
+
+   if (decl->Declaration.File == TGSI_FILE_MEMORY) {
+      if (decl->Declaration.Shared)
+         TXT(", SHARED");
    }
 
    if (decl->Declaration.File == TGSI_FILE_SAMPLER_VIEW) {
@@ -420,6 +432,7 @@ tgsi_dump_declaration(
    const struct tgsi_full_declaration *decl )
 {
    struct dump_ctx ctx;
+   memset(&ctx, 0, sizeof(ctx));
 
    ctx.dump_printf = dump_ctx_printf;
 
@@ -468,6 +481,7 @@ void tgsi_dump_property(
    const struct tgsi_full_property *prop )
 {
    struct dump_ctx ctx;
+   memset(&ctx, 0, sizeof(ctx));
 
    ctx.dump_printf = dump_ctx_printf;
 
@@ -499,6 +513,7 @@ tgsi_dump_immediate(
    const struct tgsi_full_immediate *imm )
 {
    struct dump_ctx ctx;
+   memset(&ctx, 0, sizeof(ctx));
 
    ctx.dump_printf = dump_ctx_printf;
 
@@ -617,6 +632,16 @@ iter_instruction(
       }
    }
 
+   if (inst->Instruction.Memory) {
+      uint32_t qualifier = inst->Memory.Qualifier;
+      while (qualifier) {
+         int bit = ffs(qualifier) - 1;
+         qualifier &= ~(1U << bit);
+         TXT(", ");
+         ENM(bit, tgsi_memory_names);
+      }
+   }
+
    switch (inst->Instruction.Opcode) {
    case TGSI_OPCODE_IF:
    case TGSI_OPCODE_UIF:
@@ -649,6 +674,7 @@ tgsi_dump_instruction(
    uint instno )
 {
    struct dump_ctx ctx;
+   memset(&ctx, 0, sizeof(ctx));
 
    ctx.instno = instno;
    ctx.immno = instno;
@@ -674,6 +700,7 @@ void
 tgsi_dump_to_file(const struct tgsi_token *tokens, uint flags, FILE *file)
 {
    struct dump_ctx ctx;
+   memset(&ctx, 0, sizeof(ctx));
 
    ctx.iter.prolog = prolog;
    ctx.iter.iterate_instruction = iter_instruction;
@@ -744,6 +771,7 @@ tgsi_dump_str(
    size_t size)
 {
    struct str_dump_ctx ctx;
+   memset(&ctx, 0, sizeof(ctx));
 
    ctx.base.iter.prolog = prolog;
    ctx.base.iter.iterate_instruction = iter_instruction;
@@ -783,6 +811,7 @@ tgsi_dump_instruction_str(
    size_t size)
 {
    struct str_dump_ctx ctx;
+   memset(&ctx, 0, sizeof(ctx));
 
    ctx.base.instno = instno;
    ctx.base.immno = instno;
