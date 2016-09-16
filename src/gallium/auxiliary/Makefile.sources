@@ -310,7 +310,8 @@ C_SOURCES := \
 	util/u_upload_mgr.h \
 	util/u_vbuf.c \
 	util/u_vbuf.h \
-	util/u_video.h
+	util/u_video.h \
+	util/u_viewport.h
 
 NIR_SOURCES := \
 	nir/tgsi_to_nir.c \
@@ -353,6 +354,9 @@ VL_SOURCES := \
 VL_WINSYS_SOURCES := \
 	vl/vl_winsys_dri.c \
 	vl/vl_winsys_drm.c
+
+VL_WINSYS_DRI3_SOURCES := \
+	vl/vl_winsys_dri3.c
 
 VL_STUB_SOURCES := \
 	vl/vl_stubs.c

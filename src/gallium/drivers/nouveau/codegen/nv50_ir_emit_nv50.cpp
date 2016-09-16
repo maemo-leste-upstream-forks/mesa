@@ -882,8 +882,7 @@ CodeEmitterNV50::emitPFETCH(const Instruction *i)
 }
 
 static void
-interpApply(const InterpEntry *entry, uint32_t *code,
-      bool force_persample_interp, bool flatshade)
+interpApply(const FixupEntry *entry, uint32_t *code, const FixupData& data)
 {
    int ipa = entry->ipa;
    int encSize = entry->reg;
@@ -891,7 +890,7 @@ interpApply(const InterpEntry *entry, uint32_t *code,
 
    if ((ipa & NV50_IR_INTERP_SAMPLE_MASK) == NV50_IR_INTERP_DEFAULT &&
        (ipa & NV50_IR_INTERP_MODE_MASK) != NV50_IR_INTERP_FLAT) {
-      if (force_persample_interp) {
+      if (data.force_persample_interp) {
          if (encSize == 8)
             code[loc + 1] |= 1 << 16;
          else
@@ -2113,7 +2112,7 @@ makeInstructionLong(Instruction *insn)
    insn->encSize = 8;
 
    for (int i = fn->bbCount - 1; i >= 0 && fn->bbArray[i] != insn->bb; --i) {
-      fn->bbArray[i]->binPos += 4;
+      fn->bbArray[i]->binPos += adj;
    }
    fn->binSize += adj;
    insn->bb->binSize += adj;
@@ -2165,9 +2164,16 @@ replaceExitWithModifier(Function *func)
             return;
       }
    }
-   epilogue->binSize -= 8;
-   func->binSize -= 8;
+
+   int adj = epilogue->getExit()->encSize;
+   epilogue->binSize -= adj;
+   func->binSize -= adj;
    delete_Instruction(func->getProgram(), epilogue->getExit());
+
+   // There may be BB's that are laid out after the exit block
+   for (int i = func->bbCount - 1; i >= 0 && func->bbArray[i] != epilogue; --i) {
+      func->bbArray[i]->binPos -= adj;
+   }
 }
 
 void

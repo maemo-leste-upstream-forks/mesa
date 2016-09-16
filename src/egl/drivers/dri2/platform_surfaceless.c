@@ -68,7 +68,7 @@ surfaceless_get_buffers_with_format(__DRIdrawable * driDrawable,
       *width = dri2_surf->base.Width;
    if (height)
       *height = dri2_surf->base.Height;
-   *out_count = dri2_surf->buffer_count;;
+   *out_count = dri2_surf->buffer_count;
    return dri2_surf->buffers;
 }
 
@@ -157,6 +157,7 @@ cleanup_driver:
    close(dri2_dpy->fd);
 cleanup_display:
    free(dri2_dpy);
+   disp->DriverData = NULL;
 
    return _eglError(EGL_NOT_INITIALIZED, err);
 }

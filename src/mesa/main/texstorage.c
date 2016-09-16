@@ -179,9 +179,7 @@ clear_texture_fields(struct gl_context *ctx,
             return;
 	 }
 
-         _mesa_init_teximage_fields(ctx, texImage,
-                                    0, 0, 0, 0, /* w, h, d, border */
-                                    GL_NONE, MESA_FORMAT_NONE);
+         _mesa_clear_texture_image(ctx, texImage);
       }
    }
 }
@@ -358,11 +356,11 @@ tex_storage_error_check(struct gl_context *ctx,
    }
 
    /* additional checks for depth textures */
-   if (!_mesa_legal_texture_base_format_for_target(ctx, target, internalformat,
-                                                   dims, dsa ?
-                                                   "glTextureStorage" :
-                                                   "glTexStorage"))
+   if (!_mesa_legal_texture_base_format_for_target(ctx, target, internalformat)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "glTex%sStorage%uD(bad target for texture)",
+                  suffix, dims);
       return GL_TRUE;
+   }
 
    return GL_FALSE;
 }

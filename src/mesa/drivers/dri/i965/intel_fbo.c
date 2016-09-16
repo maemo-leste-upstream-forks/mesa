@@ -289,7 +289,7 @@ intel_alloc_private_renderbuffer_storage(struct gl_context * ctx, struct gl_rend
    rb->NumSamples = intel_quantize_num_samples(screen, rb->NumSamples);
    rb->Width = width;
    rb->Height = height;
-   rb->_BaseFormat = _mesa_base_fbo_format(ctx, internalFormat);
+   rb->_BaseFormat = _mesa_get_format_base_format(rb->Format);
 
    intel_miptree_release(&irb->mt);
 
@@ -373,6 +373,19 @@ intel_image_target_renderbuffer_storage(struct gl_context *ctx,
                                          MIPTREE_LAYOUT_DISABLE_AUX);
    if (!irb->mt)
       return;
+
+   /* Adjust the miptree's upper-left coordinate.
+    *
+    * FIXME: Adjusting the miptree's layout outside of
+    * intel_miptree_create_layout() is fragile. Plumb the adjustment through
+    * intel_miptree_create_layout() and brw_tex_layout().
+    */
+   irb->mt->level[0].level_x = image->tile_x;
+   irb->mt->level[0].level_y = image->tile_y;
+   irb->mt->level[0].slice[0].x_offset = image->tile_x;
+   irb->mt->level[0].slice[0].y_offset = image->tile_y;
+   irb->mt->total_width += image->tile_x;
+   irb->mt->total_height += image->tile_y;
 
    rb->InternalFormat = image->internal_format;
    rb->Width = image->width;
@@ -538,7 +551,7 @@ intel_renderbuffer_update_wrapper(struct brw_context *brw,
 
    if (!layered) {
       irb->layer_count = 1;
-   } else if (image->TexObject->NumLayers > 0) {
+   } else if (mt->target != GL_TEXTURE_3D && image->TexObject->NumLayers > 0) {
       irb->layer_count = image->TexObject->NumLayers;
    } else {
       irb->layer_count = mt->level[level].depth / layer_multiplier;
@@ -880,12 +893,7 @@ intel_blit_framebuffer(struct gl_context *ctx,
       return;
 
    if (brw->gen >= 8 && (mask & GL_STENCIL_BUFFER_BIT)) {
-      brw_meta_fbo_stencil_blit(brw_context(ctx), readFb, drawFb,
-                                srcX0, srcY0, srcX1, srcY1,
-                                dstX0, dstY0, dstX1, dstY1);
-      mask &= ~GL_STENCIL_BUFFER_BIT;
-      if (mask == 0x0)
-         return;
+      assert(!"Invalid blit");
    }
 
    /* Try using the BLT engine. */

@@ -785,6 +785,7 @@ loader_dri3_open(xcb_connection_t *conn,
    }
 
    fd = xcb_dri3_open_reply_fds(conn, reply)[0];
+   free(reply);
    fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
 
    return fd;
@@ -858,7 +859,8 @@ dri3_alloc_render_buffer(struct loader_dri3_drawable *draw, unsigned int format,
                                                       width, height,
                                                       format,
                                                       __DRI_IMAGE_USE_SHARE |
-                                                      __DRI_IMAGE_USE_SCANOUT,
+                                                      __DRI_IMAGE_USE_SCANOUT |
+                                                      __DRI_IMAGE_USE_BACKBUFFER,
                                                       buffer);
       pixmap_buffer = buffer->image;
 
@@ -878,7 +880,8 @@ dri3_alloc_render_buffer(struct loader_dri3_drawable *draw, unsigned int format,
         (draw->ext->image->createImage)(draw->dri_screen,
                                         width, height, format,
                                         __DRI_IMAGE_USE_SHARE |
-                                           __DRI_IMAGE_USE_LINEAR,
+                                        __DRI_IMAGE_USE_LINEAR |
+                                        __DRI_IMAGE_USE_BACKBUFFER,
                                         buffer);
       pixmap_buffer = buffer->linear_buffer;
 

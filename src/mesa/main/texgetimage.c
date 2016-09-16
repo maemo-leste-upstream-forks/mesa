@@ -502,13 +502,15 @@ get_tex_rgba_uncompressed(struct gl_context *ctx, GLuint dimensions,
           */
          if (format == rgba_format) {
             rgba = dest;
-         } else if (rgba == NULL) { /* Allocate the RGBA buffer only once */
+         } else {
             need_convert = true;
-            rgba = malloc(height * rgba_stride);
-            if (!rgba) {
-               _mesa_error(ctx, GL_OUT_OF_MEMORY, "glGetTexImage()");
-               ctx->Driver.UnmapTextureImage(ctx, texImage, img);
-               return;
+            if (rgba == NULL) { /* Allocate the RGBA buffer only once */
+               rgba = malloc(height * rgba_stride);
+               if (!rgba) {
+                  _mesa_error(ctx, GL_OUT_OF_MEMORY, "glGetTexImage()");
+                  ctx->Driver.UnmapTextureImage(ctx, texImage, img);
+                  return;
+               }
             }
          }
 
@@ -557,8 +559,7 @@ get_tex_rgba_uncompressed(struct gl_context *ctx, GLuint dimensions,
    }
 
 done:
-   if (rgba)
-      free(rgba);
+   free(rgba);
 }
 
 
@@ -1037,9 +1038,9 @@ dimensions_error_check(struct gl_context *ctx,
 
    /* Extra checks for compressed textures */
    {
-      GLuint bw, bh;
-      _mesa_get_format_block_size(texImage->TexFormat, &bw, &bh);
-      if (bw > 1 || bh > 1) {
+      GLuint bw, bh, bd;
+      _mesa_get_format_block_size_3d(texImage->TexFormat, &bw, &bh, &bd);
+      if (bw > 1 || bh > 1 || bd > 1) {
          /* offset must be multiple of block size */
          if (xoffset % bw != 0) {
             _mesa_error(ctx, GL_INVALID_VALUE,
@@ -1054,7 +1055,13 @@ dimensions_error_check(struct gl_context *ctx,
             }
          }
 
-         /* The size must be a multiple of bw x bh, or we must be using a
+         if (zoffset % bd != 0) {
+            _mesa_error(ctx, GL_INVALID_VALUE,
+                        "%s(zoffset = %d)", caller, zoffset);
+            return true;
+         }
+
+         /* The size must be a multiple of bw x bh x bd, or we must be using a
           * offset+size that exactly hits the edge of the image.
           */
          if ((width % bw != 0) &&
@@ -1068,6 +1075,13 @@ dimensions_error_check(struct gl_context *ctx,
              (yoffset + height != (GLint) texImage->Height)) {
             _mesa_error(ctx, GL_INVALID_VALUE,
                         "%s(height = %d)", caller, height);
+            return true;
+         }
+
+         if ((depth % bd != 0) &&
+             (zoffset + depth != (GLint) texImage->Depth)) {
+            _mesa_error(ctx, GL_INVALID_VALUE,
+                        "%s(depth = %d)", caller, depth);
             return true;
          }
       }

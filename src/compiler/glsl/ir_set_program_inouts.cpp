@@ -94,6 +94,8 @@ mark(struct gl_program *prog, ir_variable *var, int offset, int len,
     */
 
    for (int i = 0; i < len; i++) {
+      assert(var->data.location != -1);
+
       int idx = var->data.location + var->data.index + offset + i;
       bool is_patch_generic = var->data.patch &&
                               idx != VARYING_SLOT_TESS_LEVEL_INNER &&
@@ -149,7 +151,7 @@ void
 ir_set_program_inouts_visitor::mark_whole_variable(ir_variable *var)
 {
    const glsl_type *type = var->type;
-   bool vertex_input = false;
+   bool is_vertex_input = false;
    if (this->shader_stage == MESA_SHADER_GEOMETRY &&
        var->data.mode == ir_var_shader_in && type->is_array()) {
       type = type->fields.array;
@@ -175,9 +177,9 @@ ir_set_program_inouts_visitor::mark_whole_variable(ir_variable *var)
 
    if (this->shader_stage == MESA_SHADER_VERTEX &&
        var->data.mode == ir_var_shader_in)
-      vertex_input = true;
+      is_vertex_input = true;
 
-   mark(this->prog, var, 0, type->count_attribute_slots(vertex_input),
+   mark(this->prog, var, 0, type->count_attribute_slots(is_vertex_input),
         this->shader_stage);
 }
 
@@ -258,15 +260,19 @@ ir_set_program_inouts_visitor::try_mark_partial_variable(ir_variable *var,
     * lowering passes (do_vec_index_to_swizzle() gets rid of indexing into
     * vectors, and lower_packed_varyings() gets rid of structs that occur in
     * varyings).
+    *
+    * However, we don't use varying packing in all cases - tessellation
+    * shaders bypass it.  This means we'll see varying structs and arrays
+    * of structs here.  For now, we just give up so the caller marks the
+    * entire variable as used.
     */
    if (!(type->is_matrix() ||
         (type->is_array() &&
          (type->fields.array->is_numeric() ||
           type->fields.array->is_boolean())))) {
-      assert(!"Unexpected indexing in ir_set_program_inouts");
 
-      /* For safety in release builds, in case we ever encounter unexpected
-       * indexing, give up and let the caller mark the whole variable as used.
+      /* If we don't know how to handle this case, give up and let the
+       * caller mark the whole variable as used.
        */
       return false;
    }
