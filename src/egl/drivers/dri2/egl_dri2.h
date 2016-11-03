@@ -442,6 +442,7 @@ struct dri2_egl_surface
 #endif
       bool locked;
       int age;
+      bool committed;
 #ifdef HAVE_NULL_PLATFORM
    } color_buffers[DRI2_SURFACE_NUM_COLOR_BUFFERS], *back, *current, front_buffer;
 #else

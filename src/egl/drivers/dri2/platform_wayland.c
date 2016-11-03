@@ -269,6 +269,7 @@ wl_buffer_release(void *data, struct wl_buffer *buffer)
    }
 
    dri2_surf->color_buffers[i].locked = false;
+   dri2_surf->color_buffers[i].committed = false;
 }
 
 static const struct wl_buffer_listener wl_buffer_listener = {
@@ -979,7 +980,8 @@ dri2_wl_release_buffers(struct dri2_egl_surface *dri2_surf,
       }
 
       if (dri2_surf->color_buffers[i].wl_buffer) {
-         if (dri2_surf->color_buffers[i].locked) {
+         if (dri2_surf->color_buffers[i].locked &&
+             dri2_surf->color_buffers[i].committed) {
             dri2_surf->color_buffers[i].wl_release = true;
          } else {
             wl_buffer_destroy(dri2_surf->color_buffers[i].wl_buffer);
@@ -1839,6 +1841,7 @@ dri2_wl_swap_buffers_with_damage(_EGLDisplay *disp,
    }
 
    wl_surface_commit(dri2_surf->wl_surface_wrapper);
+   dri2_surf->current->committed = true;
 
    /* If we're not waiting for a frame callback then we'll at least throttle
     * to a sync callback so that we always give a chance for the compositor to
@@ -2762,6 +2765,7 @@ dri2_wl_swrast_commit_backbuffer(struct dri2_egl_surface *dri2_surf)
    wl_surface_damage(dri2_surf->wl_surface_wrapper,
                      0, 0, INT32_MAX, INT32_MAX);
    wl_surface_commit(dri2_surf->wl_surface_wrapper);
+   dri2_surf->current->committed = true;
 
    /* If we're not waiting for a frame callback then we'll at least throttle
     * to a sync callback so that we always give a chance for the compositor to
