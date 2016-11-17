@@ -3,6 +3,8 @@ mesa (12.0.4-2~bpo8+1) jessie-backports; urgency=medium
   * Rebuild for jessie-backports.
   * control, rules: Disable llvm/opencl on arm64 (llvm-toolchain-3.8
     FTBFS on arm64 in jessie-backports).
+  * control, rules: Disable llvm on ppc64el (llvm-toolchain-3.8 FTBFS on
+    ppc64el in jessie-backports).
 
  -- Andreas Boll <andreas.boll.dev@gmail.com>  Thu, 17 Nov 2016 15:17:36 +0100
 
