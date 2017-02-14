@@ -3,6 +3,7 @@ mesa (13.0.4-1~bpo8+1) jessie-backports; urgency=medium
   * Rebuild for jessie-backports.
   * Rebuild against llvm-3.8.
   * Disable llvm on armhf and ppc64el.
+  * Disable radv vulkan driver.
 
  -- Andreas Boll <andreas.boll.dev@gmail.com>  Tue, 14 Feb 2017 16:54:32 +0100
 
