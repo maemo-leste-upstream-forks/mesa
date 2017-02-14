@@ -107,7 +107,7 @@ _mesa_init_pipeline(struct gl_context *ctx)
  * Callback for deleting a pipeline object.  Called by _mesa_HashDeleteAll().
  */
 static void
-delete_pipelineobj_cb(GLuint id, void *data, void *userData)
+delete_pipelineobj_cb(UNUSED GLuint id, void *data, void *userData)
 {
    struct gl_pipeline_object *obj = (struct gl_pipeline_object *) data;
    struct gl_context *ctx = (struct gl_context *) userData;
@@ -469,10 +469,7 @@ _mesa_bind_pipeline(struct gl_context *ctx,
       FLUSH_VERTICES(ctx, _NEW_PROGRAM | _NEW_PROGRAM_CONSTANTS);
 
       for (i = 0; i < MESA_SHADER_STAGES; i++)
-         _mesa_shader_program_init_subroutine_defaults(ctx->_Shader->CurrentProgram[i]);
-
-      if (ctx->Driver.UseProgram)
-         ctx->Driver.UseProgram(ctx, NULL);
+         _mesa_shader_program_init_subroutine_defaults(ctx, ctx->_Shader->CurrentProgram[i]);
    }
 }
 
@@ -648,7 +645,8 @@ _mesa_GetProgramPipelineiv(GLuint pipeline, GLenum pname, GLint *params)
       *params = pipe->ActiveProgram ? pipe->ActiveProgram->Name : 0;
       return;
    case GL_INFO_LOG_LENGTH:
-      *params = pipe->InfoLog ? strlen(pipe->InfoLog) + 1 : 0;
+      *params = (pipe->InfoLog && pipe->InfoLog[0] != '\0') ?
+         strlen(pipe->InfoLog) + 1 : 0;
       return;
    case GL_VALIDATE_STATUS:
       *params = pipe->Validated;

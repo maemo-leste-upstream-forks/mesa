@@ -94,7 +94,7 @@ fd3_emit_const(struct fd_ringbuffer *ring, enum shader_t type,
 
 static void
 fd3_emit_const_bo(struct fd_ringbuffer *ring, enum shader_t type, boolean write,
-		uint32_t regid, uint32_t num, struct fd_bo **bos, uint32_t *offsets)
+		uint32_t regid, uint32_t num, struct pipe_resource **prscs, uint32_t *offsets)
 {
 	uint32_t i;
 
@@ -110,11 +110,11 @@ fd3_emit_const_bo(struct fd_ringbuffer *ring, enum shader_t type, boolean write,
 			CP_LOAD_STATE_1_STATE_TYPE(ST_CONSTANTS));
 
 	for (i = 0; i < num; i++) {
-		if (bos[i]) {
+		if (prscs[i]) {
 			if (write) {
-				OUT_RELOCW(ring, bos[i], offsets[i], 0, 0);
+				OUT_RELOCW(ring, fd_resource(prscs[i])->bo, offsets[i], 0, 0);
 			} else {
-				OUT_RELOC(ring, bos[i], offsets[i], 0, 0);
+				OUT_RELOC(ring, fd_resource(prscs[i])->bo, offsets[i], 0, 0);
 			}
 		} else {
 			OUT_RING(ring, 0xbad00000 | (i << 16));
@@ -143,16 +143,8 @@ emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
 			[SB_FRAG_TEX] = REG_A3XX_TPL1_TP_FS_BORDER_COLOR_BASE_ADDR,
 	};
 	struct fd3_context *fd3_ctx = fd3_context(ctx);
-	unsigned i, j, off;
-	void *ptr;
-
-	u_upload_alloc(fd3_ctx->border_color_uploader,
-			0, BORDER_COLOR_UPLOAD_SIZE,
-		       BORDER_COLOR_UPLOAD_SIZE, &off,
-			&fd3_ctx->border_color_buf,
-			&ptr);
-
-	fd_setup_border_colors(tex, ptr, tex_off[sb]);
+	bool needs_border = false;
+	unsigned i, j;
 
 	if (tex->num_samplers > 0) {
 		/* output sampler state: */
@@ -171,6 +163,8 @@ emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
 
 			OUT_RING(ring, sampler->texsamp0);
 			OUT_RING(ring, sampler->texsamp1);
+
+			needs_border |= sampler->needs_border;
 		}
 	}
 
@@ -213,8 +207,7 @@ emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
 					&dummy_view;
 			struct fd_resource *rsc = fd_resource(view->base.texture);
 			if (rsc && rsc->base.b.target == PIPE_BUFFER) {
-				OUT_RELOC(ring, rsc->bo, view->base.u.buf.first_element *
-						  util_format_get_blocksize(view->base.format), 0, 0);
+				OUT_RELOC(ring, rsc->bo, view->base.u.buf.offset, 0, 0);
 				j = 1;
 			} else {
 				unsigned start = fd_sampler_first_level(&view->base);
@@ -234,10 +227,23 @@ emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
 		}
 	}
 
-	OUT_PKT0(ring, bcolor_reg[sb], 1);
-	OUT_RELOC(ring, fd_resource(fd3_ctx->border_color_buf)->bo, off, 0, 0);
+	if (needs_border) {
+		unsigned off;
+		void *ptr;
 
-	u_upload_unmap(fd3_ctx->border_color_uploader);
+		u_upload_alloc(fd3_ctx->border_color_uploader,
+				0, BORDER_COLOR_UPLOAD_SIZE,
+			       BORDER_COLOR_UPLOAD_SIZE, &off,
+				&fd3_ctx->border_color_buf,
+				&ptr);
+
+		fd_setup_border_colors(tex, ptr, tex_off[sb]);
+
+		OUT_PKT0(ring, bcolor_reg[sb], 1);
+		OUT_RELOC(ring, fd_resource(fd3_ctx->border_color_buf)->bo, off, 0, 0);
+
+		u_upload_unmap(fd3_ctx->border_color_uploader);
+	}
 }
 
 /* emit texture state for mem->gmem restore operation.. eventually it would
@@ -510,7 +516,7 @@ fd3_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 		 */
 
 		OUT_PKT0(ring, REG_A3XX_RB_RENDER_CONTROL, 1);
-		OUT_RINGP(ring, val, &fd3_context(ctx)->rbrc_patches);
+		OUT_RINGP(ring, val, &ctx->batch->rbrc_patches);
 	}
 
 	if (dirty & (FD_DIRTY_ZSA | FD_DIRTY_STENCIL_REF)) {
@@ -587,7 +593,7 @@ fd3_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 			int i = ffs(planes) - 1;
 
 			planes &= ~(1U << i);
-			fd_wfi(ctx, ring);
+			fd_wfi(ctx->batch, ring);
 			OUT_PKT0(ring, REG_A3XX_GRAS_CL_USER_PLANE(count++), 4);
 			OUT_RING(ring, fui(ctx->ucp.ucp[i][0]));
 			OUT_RING(ring, fui(ctx->ucp.ucp[i][1]));
@@ -648,14 +654,14 @@ fd3_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 		OUT_RING(ring, A3XX_GRAS_SC_WINDOW_SCISSOR_BR_X(maxx - 1) |
 				A3XX_GRAS_SC_WINDOW_SCISSOR_BR_Y(maxy - 1));
 
-		ctx->max_scissor.minx = MIN2(ctx->max_scissor.minx, minx);
-		ctx->max_scissor.miny = MIN2(ctx->max_scissor.miny, miny);
-		ctx->max_scissor.maxx = MAX2(ctx->max_scissor.maxx, maxx);
-		ctx->max_scissor.maxy = MAX2(ctx->max_scissor.maxy, maxy);
+		ctx->batch->max_scissor.minx = MIN2(ctx->batch->max_scissor.minx, minx);
+		ctx->batch->max_scissor.miny = MIN2(ctx->batch->max_scissor.miny, miny);
+		ctx->batch->max_scissor.maxx = MAX2(ctx->batch->max_scissor.maxx, maxx);
+		ctx->batch->max_scissor.maxy = MAX2(ctx->batch->max_scissor.maxy, maxy);
 	}
 
 	if (dirty & FD_DIRTY_VIEWPORT) {
-		fd_wfi(ctx, ring);
+		fd_wfi(ctx->batch, ring);
 		OUT_PKT0(ring, REG_A3XX_GRAS_CL_VPORT_XOFFSET, 6);
 		OUT_RING(ring, A3XX_GRAS_CL_VPORT_XOFFSET(ctx->viewport.translate[0] - 0.5));
 		OUT_RING(ring, A3XX_GRAS_CL_VPORT_XSCALE(ctx->viewport.scale[0]));
@@ -668,9 +674,9 @@ fd3_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 	if (dirty & (FD_DIRTY_VIEWPORT | FD_DIRTY_RASTERIZER | FD_DIRTY_FRAMEBUFFER)) {
 		float zmin, zmax;
 		int depth = 24;
-		if (ctx->framebuffer.zsbuf) {
+		if (ctx->batch->framebuffer.zsbuf) {
 			depth = util_format_get_component_bits(
-					pipe_surface_format(ctx->framebuffer.zsbuf),
+					pipe_surface_format(ctx->batch->framebuffer.zsbuf),
 					UTIL_FORMAT_COLORSPACE_ZS, 0);
 		}
 		util_viewport_zmin_zmax(&ctx->viewport, ctx->rasterizer->clip_halfz,
@@ -690,7 +696,7 @@ fd3_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 	}
 
 	if (dirty & (FD_DIRTY_PROG | FD_DIRTY_FRAMEBUFFER | FD_DIRTY_BLEND_DUAL)) {
-		struct pipe_framebuffer_state *pfb = &ctx->framebuffer;
+		struct pipe_framebuffer_state *pfb = &ctx->batch->framebuffer;
 		int nr_cbufs = pfb->nr_cbufs;
 		if (fd3_blend_stateobj(ctx->blend)->rb_render_control &
 			A3XX_RB_RENDER_CONTROL_DUAL_COLOR_IN_ENABLE)
@@ -714,7 +720,8 @@ fd3_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 		uint32_t i;
 
 		for (i = 0; i < ARRAY_SIZE(blend->rb_mrt); i++) {
-			enum pipe_format format = pipe_surface_format(ctx->framebuffer.cbufs[i]);
+			enum pipe_format format =
+				pipe_surface_format(ctx->batch->framebuffer.cbufs[i]);
 			const struct util_format_description *desc =
 				util_format_description(format);
 			bool is_float = util_format_is_float(format);
@@ -774,7 +781,7 @@ fd3_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 	}
 
 	if (dirty & (FD_DIRTY_VERTTEX | FD_DIRTY_FRAGTEX))
-		fd_wfi(ctx, ring);
+		fd_wfi(ctx->batch, ring);
 
 	if (dirty & FD_DIRTY_VERTTEX) {
 		if (vp->has_samp)
@@ -797,10 +804,10 @@ fd3_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
  * state, there could have been a context switch between ioctls):
  */
 void
-fd3_emit_restore(struct fd_context *ctx)
+fd3_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
 {
+	struct fd_context *ctx = batch->ctx;
 	struct fd3_context *fd3_ctx = fd3_context(ctx);
-	struct fd_ringbuffer *ring = ctx->ring;
 	int i;
 
 	if (ctx->screen->gpu_id == 320) {
@@ -810,7 +817,7 @@ fd3_emit_restore(struct fd_context *ctx)
 		OUT_RING(ring, 0x00000000);
 	}
 
-	fd_wfi(ctx, ring);
+	fd_wfi(batch, ring);
 	OUT_PKT3(ring, CP_INVALIDATE_STATE, 1);
 	OUT_RING(ring, 0x00007fff);
 
@@ -880,7 +887,7 @@ fd3_emit_restore(struct fd_context *ctx)
 	OUT_RING(ring, A3XX_HLSQ_CONST_FSPRESV_RANGE_REG_STARTENTRY(0) |
 			A3XX_HLSQ_CONST_FSPRESV_RANGE_REG_ENDENTRY(0));
 
-	fd3_emit_cache_flush(ctx, ring);
+	fd3_emit_cache_flush(batch, ring);
 
 	OUT_PKT0(ring, REG_A3XX_GRAS_CL_CLIP_CNTL, 1);
 	OUT_RING(ring, 0x00000000);                  /* GRAS_CL_CLIP_CNTL */
@@ -917,7 +924,7 @@ fd3_emit_restore(struct fd_context *ctx)
 	OUT_PKT0(ring, REG_A3XX_PC_VSTREAM_CONTROL, 1);
 	OUT_RING(ring, 0x00000000);
 
-	fd_event_write(ctx, ring, CACHE_FLUSH);
+	fd_event_write(batch, ring, CACHE_FLUSH);
 
 	if (is_a3xx_p0(ctx->screen)) {
 		OUT_PKT3(ring, CP_DRAW_INDX, 3);
@@ -933,18 +940,15 @@ fd3_emit_restore(struct fd_context *ctx)
 	OUT_RING(ring, 0x00000000);
 	OUT_RING(ring, 0x00000000);
 
-	fd_wfi(ctx, ring);
+	fd_wfi(batch, ring);
 
-	fd_hw_query_enable(ctx, ring);
-
-	ctx->needs_rb_fbd = true;
+	fd_hw_query_enable(batch, ring);
 }
 
 static void
-fd3_emit_ib(struct fd_ringbuffer *ring, struct fd_ringmarker *start,
-		struct fd_ringmarker *end)
+fd3_emit_ib(struct fd_ringbuffer *ring, struct fd_ringbuffer *target)
 {
-	__OUT_IB(ring, true, start, end);
+	__OUT_IB(ring, true, target);
 }
 
 void

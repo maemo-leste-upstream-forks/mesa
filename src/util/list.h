@@ -71,12 +71,18 @@ static inline void list_addtail(struct list_head *item, struct list_head *list)
     list->prev = item;
 }
 
+static inline bool list_empty(struct list_head *list);
+
 static inline void list_replace(struct list_head *from, struct list_head *to)
 {
-    to->prev = from->prev;
-    to->next = from->next;
-    from->next->prev = to;
-    from->prev->next = to;
+    if (list_empty(from)) {
+        list_inithead(to);
+    } else {
+        to->prev = from->prev;
+        to->next = from->next;
+        from->next->prev = to;
+        from->prev->next = to;
+    }
 }
 
 static inline void list_del(struct list_head *item)
@@ -104,7 +110,7 @@ static inline bool list_empty(struct list_head *list)
  */
 static inline bool list_is_singular(const struct list_head *list)
 {
-   return list->next != NULL && list->next->next == list;
+   return list->next != NULL && list->next != list && list->next->next == list;
 }
 
 static inline unsigned list_length(struct list_head *list)

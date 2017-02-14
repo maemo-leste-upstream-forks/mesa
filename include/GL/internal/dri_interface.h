@@ -1094,7 +1094,7 @@ struct __DRIdri2ExtensionRec {
  * extensions.
  */
 #define __DRI_IMAGE "DRI_IMAGE"
-#define __DRI_IMAGE_VERSION 12
+#define __DRI_IMAGE_VERSION 13
 
 /**
  * These formats correspond to the similarly named MESA_FORMAT_*
@@ -1121,6 +1121,7 @@ struct __DRIdri2ExtensionRec {
 #define __DRI_IMAGE_FORMAT_XRGB2101010  0x1009
 #define __DRI_IMAGE_FORMAT_ARGB2101010  0x100a
 #define __DRI_IMAGE_FORMAT_SARGB8       0x100b
+#define __DRI_IMAGE_FORMAT_ARGB1555     0x100c
 
 #define __DRI_IMAGE_USE_SHARE		0x0001
 #define __DRI_IMAGE_USE_SCANOUT		0x0002
@@ -1148,6 +1149,7 @@ struct __DRIdri2ExtensionRec {
 
 #define __DRI_IMAGE_FOURCC_R8		0x20203852
 #define __DRI_IMAGE_FOURCC_GR88		0x38385247
+#define __DRI_IMAGE_FOURCC_ARGB1555	0x35315241
 #define __DRI_IMAGE_FOURCC_RGB565	0x36314752
 #define __DRI_IMAGE_FOURCC_ARGB8888	0x34325241
 #define __DRI_IMAGE_FOURCC_XRGB8888	0x34325258
@@ -1207,6 +1209,8 @@ struct __DRIdri2ExtensionRec {
                                                 * new fd. */
 #define __DRI_IMAGE_ATTRIB_FOURCC       0x2008 /* available in versions 11 */
 #define __DRI_IMAGE_ATTRIB_NUM_PLANES   0x2009 /* available in versions 11 */
+
+#define __DRI_IMAGE_ATTRIB_OFFSET 0x200A /* available in versions 13 */
 
 enum __DRIYUVColorSpace {
    __DRI_YUV_COLOR_SPACE_UNDEFINED = 0,

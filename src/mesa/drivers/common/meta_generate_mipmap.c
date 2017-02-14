@@ -182,6 +182,7 @@ _mesa_meta_GenerateMipmap(struct gl_context *ctx, GLenum target,
 
    _mesa_meta_begin(ctx, MESA_META_ALL & ~MESA_META_DRAW_BUFFERS);
    _mesa_ColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+   _mesa_Disable(GL_DITHER);
 
    /* Choose between glsl version and fixed function version of
     * GenerateMipmap function.
@@ -221,9 +222,17 @@ _mesa_meta_GenerateMipmap(struct gl_context *ctx, GLenum target,
                                 GL_LINEAR);
       _mesa_set_sampler_wrap(ctx, mipmap->samp_obj, GL_CLAMP_TO_EDGE,
                              GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE);
+   }
 
-      /* We don't want to encode or decode sRGB values; treat them as linear. */
-      _mesa_set_sampler_srgb_decode(ctx, mipmap->samp_obj, GL_SKIP_DECODE_EXT);
+   if (ctx->Extensions.EXT_texture_sRGB_decode) {
+      const struct gl_texture_image *baseImage =
+         _mesa_select_tex_image(texObj, target, texObj->BaseLevel);
+      const bool srgb =
+         _mesa_get_format_color_encoding(baseImage->TexFormat) == GL_SRGB;
+
+      _mesa_set_sampler_srgb_decode(ctx, mipmap->samp_obj,
+                                    srgb ? GL_DECODE_EXT : GL_SKIP_DECODE_EXT);
+      _mesa_set_framebuffer_srgb(ctx, srgb);
    }
 
    _mesa_bind_sampler(ctx, ctx->Texture.CurrentUnit, mipmap->samp_obj);

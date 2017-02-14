@@ -783,7 +783,7 @@ vtn_get_builtin_location(struct vtn_builder *b,
       *location = VARYING_SLOT_CLIP_DIST0; /* XXX CLIP_DIST1? */
       break;
    case SpvBuiltInCullDistance:
-      /* XXX figure this out */
+      *location = VARYING_SLOT_CULL_DIST0;
       break;
    case SpvBuiltInVertexIndex:
       *location = SYSTEM_VALUE_VERTEX_ID;
@@ -805,8 +805,12 @@ vtn_get_builtin_location(struct vtn_builder *b,
       set_mode_system_value(mode);
       break;
    case SpvBuiltInPrimitiveId:
-      *location = VARYING_SLOT_PRIMITIVE_ID;
-      *mode = nir_var_shader_out;
+      if (*mode == nir_var_shader_out) {
+         *location = VARYING_SLOT_PRIMITIVE_ID;
+      } else {
+         *location = SYSTEM_VALUE_PRIMITIVE_ID;
+         set_mode_system_value(mode);
+      }
       break;
    case SpvBuiltInInvocationId:
       *location = SYSTEM_VALUE_INVOCATION_ID;
@@ -896,10 +900,10 @@ apply_var_decoration(struct vtn_builder *b, nir_variable *nir_var,
    case SpvDecorationRelaxedPrecision:
       break; /* FIXME: Do nothing with this for now. */
    case SpvDecorationNoPerspective:
-      nir_var->data.interpolation = INTERP_QUALIFIER_NOPERSPECTIVE;
+      nir_var->data.interpolation = INTERP_MODE_NOPERSPECTIVE;
       break;
    case SpvDecorationFlat:
-      nir_var->data.interpolation = INTERP_QUALIFIER_FLAT;
+      nir_var->data.interpolation = INTERP_MODE_FLAT;
       break;
    case SpvDecorationCentroid:
       nir_var->data.centroid = true;
@@ -1054,7 +1058,7 @@ var_decoration_cb(struct vtn_builder *b, struct vtn_value *val, int member,
          is_vertex_input = false;
          location += VARYING_SLOT_VAR0;
       } else {
-         assert(!"Location must be on input or output variable");
+         unreachable("Location must be on input or output variable");
       }
 
       if (vtn_var->var) {

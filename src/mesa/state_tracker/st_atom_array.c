@@ -363,7 +363,7 @@ is_interleaved_arrays(const struct st_vertex_program *vp,
          if (bufObj != firstBufObj)
             return GL_FALSE; /* arrays in different VBOs */
 
-         if (abs(array->Ptr - firstPtr) > firstStride)
+         if (llabs(array->Ptr - firstPtr) > firstStride)
             return GL_FALSE; /* arrays start too far apart */
 
          if ((!_mesa_is_bufferobj(bufObj)) != userSpaceBuffer)
@@ -692,10 +692,5 @@ static void update_array(struct st_context *st)
 
 
 const struct st_tracked_state st_update_array = {
-   "st_update_array",					/* name */
-   {							/* dirty */
-      _NEW_CURRENT_ATTRIB,                              /* mesa */
-      ST_NEW_VERTEX_ARRAYS | ST_NEW_VERTEX_PROGRAM,     /* st */
-   },
    update_array						/* update */
 };

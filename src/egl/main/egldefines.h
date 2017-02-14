@@ -50,8 +50,6 @@ extern "C" {
 
 #define _EGL_VENDOR_STRING "Mesa Project"
 
-#define MIN2(A, B)  (((A) < (B)) ? (A) : (B))
-
 #ifdef __cplusplus
 }
 #endif

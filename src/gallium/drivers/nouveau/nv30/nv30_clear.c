@@ -101,7 +101,8 @@ nv30_clear(struct pipe_context *pipe, unsigned buffers,
 static void
 nv30_clear_render_target(struct pipe_context *pipe, struct pipe_surface *ps,
                          const union pipe_color_union *color,
-                         unsigned x, unsigned y, unsigned w, unsigned h)
+                         unsigned x, unsigned y, unsigned w, unsigned h,
+                         bool render_condition_enabled)
 {
    struct nv30_context *nv30 = nv30_context(pipe);
    struct nv30_surface *sf = nv30_surface(ps);
@@ -127,7 +128,7 @@ nv30_clear_render_target(struct pipe_context *pipe, struct pipe_surface *ps,
 
    refn.bo = mt->base.bo;
    refn.flags = NOUVEAU_BO_VRAM | NOUVEAU_BO_WR;
-   if (nouveau_pushbuf_space(push, 16, 1, 0) ||
+   if (nouveau_pushbuf_space(push, 32, 1, 0) ||
        nouveau_pushbuf_refn (push, &refn, 1))
       return;
 
@@ -160,7 +161,8 @@ nv30_clear_render_target(struct pipe_context *pipe, struct pipe_surface *ps,
 static void
 nv30_clear_depth_stencil(struct pipe_context *pipe, struct pipe_surface *ps,
                          unsigned buffers, double depth, unsigned stencil,
-                         unsigned x, unsigned y, unsigned w, unsigned h)
+                         unsigned x, unsigned y, unsigned w, unsigned h,
+                         bool render_condition_enabled)
 {
    struct nv30_context *nv30 = nv30_context(pipe);
    struct nv30_surface *sf = nv30_surface(ps);

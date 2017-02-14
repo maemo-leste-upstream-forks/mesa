@@ -970,6 +970,7 @@ _mesa_test_framebuffer_completeness(struct gl_context *ctx,
    fb->_AllColorBuffersFixedPoint = GL_TRUE;
    fb->_HasSNormOrFloatColorBuffer = GL_FALSE;
    fb->_HasAttachments = true;
+   fb->_IntegerBuffers = 0;
 
    /* Start at -2 to more easily loop over all attachment points.
     *  -2: depth buffer
@@ -1090,12 +1091,13 @@ _mesa_test_framebuffer_completeness(struct gl_context *ctx,
          continue;
       }
 
-      /* check if integer color */
-      fb->_IntegerColor = _mesa_is_format_integer_color(attFormat);
-
-      /* Update _AllColorBuffersFixedPoint and _HasSNormOrFloatColorBuffer. */
+      /* Update flags describing color buffer datatypes */
       if (i >= 0) {
          GLenum type = _mesa_get_format_datatype(attFormat);
+
+         /* check if integer color */
+         if (_mesa_is_format_integer_color(attFormat))
+            fb->_IntegerBuffers |= (1 << i);
 
          fb->_AllColorBuffersFixedPoint =
             fb->_AllColorBuffersFixedPoint &&
@@ -2140,7 +2142,7 @@ renderbuffer_storage(struct gl_context *ctx, struct gl_renderbuffer *rb,
       }
 
       if (sample_count_error != GL_NO_ERROR) {
-         _mesa_error(ctx, sample_count_error, "%s(samples)", func);
+         _mesa_error(ctx, sample_count_error, "%s(samples=%d)", func, samples);
          return;
       }
    }
@@ -2848,6 +2850,7 @@ reuse_framebuffer_texture_attachment(struct gl_framebuffer *fb,
    dst_att->Type = src_att->Type;
    dst_att->Complete = src_att->Complete;
    dst_att->TextureLevel = src_att->TextureLevel;
+   dst_att->CubeMapFace = src_att->CubeMapFace;
    dst_att->Zoffset = src_att->Zoffset;
    dst_att->Layered = src_att->Layered;
 }
@@ -2991,54 +2994,49 @@ check_textarget(struct gl_context *ctx, int dims, GLenum target,
 {
    bool err = false;
 
-   switch (dims) {
-   case 1:
-      switch (textarget) {
-      case GL_TEXTURE_1D:
-         break;
-      case GL_TEXTURE_1D_ARRAY:
-         err = !ctx->Extensions.EXT_texture_array;
-         break;
-      default:
-         err = true;
-      }
+   switch (textarget) {
+   case GL_TEXTURE_1D:
+      err = dims != 1;
       break;
-   case 2:
-      switch (textarget) {
-      case GL_TEXTURE_2D:
-         break;
-      case GL_TEXTURE_RECTANGLE:
-         err = _mesa_is_gles(ctx)
-            || !ctx->Extensions.NV_texture_rectangle;
-         break;
-      case GL_TEXTURE_CUBE_MAP_POSITIVE_X:
-      case GL_TEXTURE_CUBE_MAP_NEGATIVE_X:
-      case GL_TEXTURE_CUBE_MAP_POSITIVE_Y:
-      case GL_TEXTURE_CUBE_MAP_NEGATIVE_Y:
-      case GL_TEXTURE_CUBE_MAP_POSITIVE_Z:
-      case GL_TEXTURE_CUBE_MAP_NEGATIVE_Z:
-         err = !ctx->Extensions.ARB_texture_cube_map;
-         break;
-      case GL_TEXTURE_2D_ARRAY:
-         err = (_mesa_is_gles(ctx) && ctx->Version < 30)
-               || !ctx->Extensions.EXT_texture_array;
-         break;
-      case GL_TEXTURE_2D_MULTISAMPLE:
-      case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
-         err = (_mesa_is_gles(ctx) ||
-                !ctx->Extensions.ARB_texture_multisample) &&
-               !_mesa_is_gles31(ctx);
-         break;
-      default:
-         err = true;
-      }
+   case GL_TEXTURE_1D_ARRAY:
+      err = dims != 1 || !ctx->Extensions.EXT_texture_array;
       break;
-   case 3:
-      if (textarget != GL_TEXTURE_3D)
-         err = true;
+   case GL_TEXTURE_2D:
+      err = dims != 2;
+      break;
+   case GL_TEXTURE_2D_ARRAY:
+      err = dims != 2 || !ctx->Extensions.EXT_texture_array ||
+            (_mesa_is_gles(ctx) && ctx->Version < 30);
+      break;
+   case GL_TEXTURE_2D_MULTISAMPLE:
+   case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
+      err = dims != 2 ||
+            !ctx->Extensions.ARB_texture_multisample ||
+            (_mesa_is_gles(ctx) && ctx->Version < 31);
+      break;
+   case GL_TEXTURE_RECTANGLE:
+      err = dims != 2 || _mesa_is_gles(ctx) ||
+            !ctx->Extensions.NV_texture_rectangle;
+      break;
+   case GL_TEXTURE_CUBE_MAP:
+   case GL_TEXTURE_CUBE_MAP_ARRAY:
+      err = true;
+      break;
+   case GL_TEXTURE_CUBE_MAP_POSITIVE_X:
+   case GL_TEXTURE_CUBE_MAP_NEGATIVE_X:
+   case GL_TEXTURE_CUBE_MAP_POSITIVE_Y:
+   case GL_TEXTURE_CUBE_MAP_NEGATIVE_Y:
+   case GL_TEXTURE_CUBE_MAP_POSITIVE_Z:
+   case GL_TEXTURE_CUBE_MAP_NEGATIVE_Z:
+      err = dims != 2 || !ctx->Extensions.ARB_texture_cube_map;
+      break;
+   case GL_TEXTURE_3D:
+      err = dims != 3;
       break;
    default:
-      err = true;
+      _mesa_error(ctx, GL_INVALID_ENUM,
+                  "%s(unknown textarget 0x%x)", caller, textarget);
+      return false;
    }
 
    if (err) {

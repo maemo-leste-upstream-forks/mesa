@@ -1,3 +1,111 @@
+mesa (13.0.4-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Drop vl-zscan-fix-Fix-trivial-sign-compare-warnings.diff and r600-
+    sb-Fix-loop-optimization-related-hangs-on-eg.diff, upstream.
+  * Drop workaround-binutils-mips-844357.diff, binutils regression has
+    been fixed (Closes: #852030).
+  * Revert to debhelper compat 9 (Workaround for #851130).
+  * Update extend-diff-ignore.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Wed, 01 Feb 2017 15:36:10 +0100
+
+mesa (13.0.3-1) unstable; urgency=medium
+
+  [ Timo Aaltonen ]
+  * New upstream release.
+
+  [ Andreas Boll ]
+  * Add vl-zscan-fix-Fix-trivial-sign-compare-warnings.diff: Fixes mpeg2
+    decoding on radeon GPUs without native mpeg2 support (Closes:
+    #846297).  Thanks to Jörg-Volker Peetz for reporting and tracking
+    down this regression!
+  * Add r600-sb-Fix-loop-optimization-related-hangs-on-eg.diff: Fixes
+    GPU hangs on r600g (Evergreen and Northern Islands GPUs) in many
+    games.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Tue, 10 Jan 2017 17:38:23 +0200
+
+mesa (13.0.2-3) unstable; urgency=medium
+
+  * Fix typo to correctly disable asm on x32. Should fix FTBFS on x32.
+  * Add debian/source/format file.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Thu, 15 Dec 2016 16:42:25 +0100
+
+mesa (13.0.2-2) unstable; urgency=medium
+
+  * Bump llvm/libclang build-deps to >= 1:3.9.1.
+    - Enables support for OpenCL on AMD Polaris GPUs (Closes: #848173).
+  * Cherry-pick 6dc96de (cso: don't release sampler states that are
+    bound) from upstream master branch. Fixes random GPU hangs on
+    radeonsi (AMD Southern Islands and newer) in many games.
+  * Bump debhelper compat to 10.
+  * Stop passing --disable-silent-rules to configure, debhelper does
+    that for a while.
+  * Drop no longer needed dpkg-dev versioned build-dependency.
+  * Drop redundant cross-build detection, debhelper does this for us
+    already.
+  * Disable assembly usage on x32. Related to Bug #758094.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Thu, 15 Dec 2016 15:16:56 +0100
+
+mesa (13.0.2-1) unstable; urgency=medium
+
+  * New upstream release.
+  * workaround-binutils-mips-844357.diff: Add workaround for broken
+    binutils on mips*. Fixes invalid symbol table of libGL.so.1. See
+    also Bug #844357.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Tue, 29 Nov 2016 16:29:00 +0100
+
+mesa (13.0.1-2) unstable; urgency=medium
+
+  * Cherry-pick commit 1809f17 (mesa: Drop PATH_MAX usage.) from
+    upstream 13.0 branch. Should fix FTBFS on hurd (Closes: #843588).
+  * Enable extra HUD support for showing I/O stats of block/NIC devices.
+  * Enable HUD lmsensors support.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Mon, 28 Nov 2016 13:32:31 +0100
+
+mesa (13.0.1-1) experimental; urgency=medium
+
+  * New upstream release.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Mon, 14 Nov 2016 16:23:42 +0100
+
+mesa (13.0.0-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Make mesa-vulkan-drivers.install more generic. Should fix FTBFS on
+    some arches.
+  * rules: Remove superfluous linux check.
+  * rules: Remove vulkan_intel.h only where it get installed in tmp.
+    Should fix FTBFS on some more arches.
+  * source/local-options: Update extend-diff-ignore.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Wed, 02 Nov 2016 11:49:13 +0100
+
+mesa (13.0.0~rc2-1) experimental; urgency=medium
+
+  * New upstream release candidate.
+  * control, rules: Use llvm/clang 3.9 (Closes: #836913).
+  * control: Bump libclc dependencies.
+  * Bump libdrm-dev build-dep to 2.4.69 per configure.ac.
+  * Remove libudev-dev and libudev1 dependencies per configure.ac.
+  * Enable OpenCL on kfreebsd-* since we don't need udev anymore.
+  * Enable radv vulkan driver.
+  * control: Remove superfluous linux- prefix.
+  * not-installed: wglext.h got dropped from the tarball.
+  * mesa-common-dev: Remove mesa_glinterop.h, upstream doesn't install
+    it anymore.
+  * Update libgles2-mesa.symbols.
+  * Update libgl1-mesa-glx.symbols.
+  * source/local-options: Update extend-diff-ignore.
+  * Update mesa-vulkan-drivers.lintian-overrides.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Tue, 25 Oct 2016 10:59:08 +0200
+
 mesa (12.0.4-2~bpo8+1) jessie-backports; urgency=medium
 
   * Rebuild for jessie-backports.

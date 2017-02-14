@@ -337,7 +337,7 @@ vec4_gs_visitor::emit_control_data_bits()
       emit(ADD(dst_reg(prev_count), this->vertex_count,
                brw_imm_ud(0xffffffffu)));
       unsigned log2_bits_per_vertex =
-         _mesa_fls(c->control_data_bits_per_vertex);
+         util_last_bit(c->control_data_bits_per_vertex);
       emit(SHR(dst_reg(dword_index), prev_count,
                brw_imm_ud(6 - log2_bits_per_vertex)));
    }
@@ -626,7 +626,8 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
    shader = brw_postprocess_nir(shader, compiler->devinfo, is_scalar);
 
    prog_data->include_primitive_id =
-      (shader->info.inputs_read & VARYING_BIT_PRIMITIVE_ID) != 0;
+      (shader->info.inputs_read & VARYING_BIT_PRIMITIVE_ID) ||
+      (shader->info.system_values_read & (1 << SYSTEM_VALUE_PRIMITIVE_ID));
 
    prog_data->invocations = shader->info.gs.invocations;
 
@@ -779,7 +780,13 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
    if (compiler->devinfo->gen >= 8)
       output_size_bytes += 32;
 
-   assert(output_size_bytes >= 1);
+   /* Shaders can technically set max_vertices = 0, at which point we
+    * may have a URB size of 0 bytes.  Nothing good can come from that,
+    * so enforce a minimum size.
+    */
+   if (output_size_bytes == 0)
+      output_size_bytes = 1;
+
    unsigned max_output_size_bytes = GEN7_MAX_GS_URB_ENTRY_SIZE_BYTES;
    if (compiler->devinfo->gen == 6)
       max_output_size_bytes = GEN6_MAX_GS_URB_ENTRY_SIZE_BYTES;

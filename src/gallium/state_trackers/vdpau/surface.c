@@ -215,6 +215,9 @@ vlVdpVideoSurfaceGetBitsYCbCr(VdpVideoSurface surface,
    if (!pipe)
       return VDP_STATUS_INVALID_HANDLE;
 
+   if (!destination_data || !destination_pitches)
+       return VDP_STATUS_INVALID_POINTER;
+
    format = FormatYCBCRToPipe(destination_ycbcr_format);
    if (format == PIPE_FORMAT_NONE)
       return VDP_STATUS_INVALID_Y_CB_CR_FORMAT;
@@ -313,6 +316,9 @@ vlVdpVideoSurfacePutBitsYCbCr(VdpVideoSurface surface,
    if (!pipe)
       return VDP_STATUS_INVALID_HANDLE;
 
+   if (!source_data || !source_pitches)
+       return VDP_STATUS_INVALID_POINTER;
+
    pipe_mutex_lock(p_surf->device->mutex);
    if (p_surf->video_buffer == NULL || pformat != p_surf->video_buffer->buffer_format) {
 
@@ -353,11 +359,11 @@ vlVdpVideoSurfacePutBitsYCbCr(VdpVideoSurface surface,
             width, height, 1
          };
 
-         pipe->transfer_inline_write(pipe, sv->texture, 0,
-                                     PIPE_TRANSFER_WRITE, &dst_box,
-                                     source_data[i] + source_pitches[i] * j,
-                                     source_pitches[i] * sv->texture->array_size,
-                                     0);
+         pipe->texture_subdata(pipe, sv->texture, 0,
+                               PIPE_TRANSFER_WRITE, &dst_box,
+                               source_data[i] + source_pitches[i] * j,
+                               source_pitches[i] * sv->texture->array_size,
+                               0);
       }
    }
    pipe_mutex_unlock(p_surf->device->mutex);
@@ -389,7 +395,7 @@ vlVdpVideoSurfaceClear(vlVdpSurface *vlsurf)
          c.f[0] = c.f[1] = c.f[2] = c.f[3] = 0.5f;
 
       pipe->clear_render_target(pipe, surfaces[i], &c, 0, 0,
-                                surfaces[i]->width, surfaces[i]->height);
+                                surfaces[i]->width, surfaces[i]->height, false);
    }
    pipe->flush(pipe, NULL, 0);
 }
@@ -454,19 +460,24 @@ VdpStatus vlVdpVideoSurfaceDMABuf(VdpVideoSurface surface,
    }
 
    surf = p_surf->video_buffer->get_surfaces(p_surf->video_buffer)[plane];
-   pipe_mutex_unlock(p_surf->device->mutex);
-
-   if (!surf)
+   if (!surf) {
+      pipe_mutex_unlock(p_surf->device->mutex);
       return VDP_STATUS_RESOURCES;
+   }
 
    memset(&whandle, 0, sizeof(struct winsys_handle));
    whandle.type = DRM_API_HANDLE_TYPE_FD;
    whandle.layer = surf->u.tex.first_layer;
 
    pscreen = surf->texture->screen;
-   if (!pscreen->resource_get_handle(pscreen, surf->texture, &whandle,
-				     PIPE_HANDLE_USAGE_READ_WRITE))
+   if (!pscreen->resource_get_handle(pscreen, p_surf->device->context,
+                                     surf->texture, &whandle,
+                                     PIPE_HANDLE_USAGE_READ_WRITE)) {
+      pipe_mutex_unlock(p_surf->device->mutex);
       return VDP_STATUS_NO_IMPLEMENTATION;
+   }
+
+   pipe_mutex_unlock(p_surf->device->mutex);
 
    result->handle = whandle.handle;
    result->width = surf->width;
