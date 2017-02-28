@@ -1096,18 +1096,27 @@ back_bo_to_dri_buffer(struct dri2_egl_surface *dri2_surf, __DRIbuffer *buffer)
    struct dri2_egl_display *dri2_dpy =
       dri2_egl_display(dri2_surf->base.Resource.Display);
    __DRIimage *image;
-   int name, pitch;
+   int name, pitch, format;
 
    image = dri2_surf->back->dri_image;
 
    dri2_dpy->image->queryImage(image, __DRI_IMAGE_ATTRIB_NAME, &name);
    dri2_dpy->image->queryImage(image, __DRI_IMAGE_ATTRIB_STRIDE, &pitch);
+   dri2_dpy->image->queryImage(image, __DRI_IMAGE_ATTRIB_FORMAT, &format);
 
    buffer->attachment = __DRI_BUFFER_BACK_LEFT;
    buffer->name = name;
    buffer->pitch = pitch;
-   buffer->cpp = 4;
    buffer->flags = 0;
+
+   switch (format) {
+   case __DRI_IMAGE_FORMAT_RGB565:
+      buffer->cpp = 2;
+      break;
+   default:
+      buffer->cpp = 4;
+      break;
+   }
 }
 
 /* Value chosen empirically as a compromise between avoiding frequent
