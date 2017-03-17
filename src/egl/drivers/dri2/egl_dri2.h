@@ -398,6 +398,10 @@ struct dri2_egl_surface
    __DRIimage *front;
    unsigned int visual;
 
+#ifdef HAVE_WAYLAND_PLATFORM
+   void                 *swrast_front;
+#endif
+
    int out_fence_fd;
    EGLBoolean enable_out_fence;
 
