@@ -72,7 +72,7 @@ struct _egl_thread_info
 static inline EGLBoolean
 _eglIsApiValid(EGLenum api)
 {
-#ifdef ANDROID
+#ifndef HAVE_X11_PLATFORM
    /* OpenGL is not a valid/supported API on Android */
    return api == EGL_OPENGL_ES_API;
 #else
