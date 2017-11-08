@@ -1593,7 +1593,8 @@ dri2_wl_swap_buffers_with_damage(_EGLDisplay *disp,
    /* If the compositor doesn't support damage_buffer, we deliberately
     * ignore the damage region and post maximum damage, due to
     * https://bugs.freedesktop.org/78190 */
-   if (!n_rects || !try_damage_buffer(dri2_surf, rects, n_rects))
+   if (dri2_dpy->is_different_gpu ||
+       !n_rects || !try_damage_buffer(dri2_surf, rects, n_rects))
       wl_surface_damage(dri2_surf->wl_surface_wrapper,
                         0, 0, INT32_MAX, INT32_MAX);
 
