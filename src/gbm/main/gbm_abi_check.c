@@ -106,6 +106,21 @@ struct gbm_device_abi0 {
    struct gbm_device_v0_abi0 v0;
 };
 
+#define GBM_BACKEND_ABI_VERSION_abi1 1
+struct gbm_device_v1_abi1 {
+   int (*bo_blit)(struct gbm_bo *dst_bo, struct gbm_bo *src_bo,
+                  int dst_x0, int dst_y0, int dst_width, int dst_height,
+                  int src_x0, int src_y0, int src_width, int src_height,
+                  enum gbm_blit_flags flags);
+};
+
+struct gbm_device_abi1 {
+   /* Hack to make a gbm_device detectable by its first element. */
+   struct gbm_device *(*dummy)(int);
+   struct gbm_device_v0_abi0 v0;
+   struct gbm_device_v1_abi1 v1;
+};
+
 /**
  * GBM buffer object interface corresponding to GBM_BACKEND_ABI_VERSION = 0
  *
@@ -364,8 +379,11 @@ int main(int argc, char **argv)
    CHECK_MEMBER_CURRENT(gbm_device_v0, _abi0, surface_has_free_buffers);
    CHECK_MEMBER_CURRENT(gbm_device_v0, _abi0, surface_destroy);
 
+   CHECK_MEMBER_CURRENT(gbm_device_v1, _abi1, bo_blit);
+
    /* Size of ABI-versioned substructures verified by above member checks */
-   CHECK_SIZE_CURRENT  (gbm_device, _abi0);
+   CHECK_SIZE          (gbm_device, _abi0, _abi1);
+   CHECK_SIZE_CURRENT  (gbm_device, _abi1);
 
 
    /* Check current gbm_bo ABI against gbm_bo_abi0*/

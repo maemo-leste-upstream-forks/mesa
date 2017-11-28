@@ -1412,6 +1412,37 @@ gbm_dri_surface_destroy(struct gbm_surface *_surf)
    free(surf);
 }
 
+static int
+gbm_dri_bo_blit(struct gbm_bo *_dst_bo, struct gbm_bo *_src_bo,
+                int dst_x0, int dst_y0, int dst_width, int dst_height,
+                int src_x0, int src_y0, int src_width, int src_height,
+                enum gbm_blit_flags flags)
+{
+   struct gbm_dri_device *dri = gbm_dri_device(_dst_bo->gbm);
+   struct gbm_dri_bo *dst_bo = gbm_dri_bo(_dst_bo);
+   struct gbm_dri_bo *src_bo = gbm_dri_bo(_src_bo);
+
+   if (!dri->image || dri->image->base.version < 9 || !dri->image->blitImage) {
+      errno = ENOSYS;
+      return 0;
+   }
+
+   mtx_lock(&dri->mutex);
+   if (!dri->context)
+      dri->context = dri->dri2->createNewContext(dri->screen, NULL,
+                                                 NULL, NULL);
+   assert(dri->context);
+   mtx_unlock(&dri->mutex);
+
+   /* GBM flags and DRI flags are the same, so just pass them on */
+   dri->image->blitImage(dri->context, dst_bo->image, src_bo->image,
+                         dst_x0, dst_y0, dst_width, dst_height,
+                         src_x0, src_y0, src_width, src_height,
+                         flags);
+
+   return 1;
+}
+
 static void
 dri_destroy(struct gbm_device *gbm)
 {
@@ -1472,6 +1503,8 @@ dri_device_create(int fd, uint32_t gbm_backend_version)
    dri->base.v0.surface_destroy = gbm_dri_surface_destroy;
 
    dri->base.v0.name = "drm";
+
+   dri->base.v1.bo_blit = gbm_dri_bo_blit;
 
    dri->visual_table = gbm_dri_visuals_table;
    dri->num_visuals = ARRAY_SIZE(gbm_dri_visuals_table);

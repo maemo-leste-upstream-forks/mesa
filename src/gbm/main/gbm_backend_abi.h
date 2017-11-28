@@ -157,6 +157,13 @@ struct gbm_device_v0 {
    void (*surface_destroy)(struct gbm_surface *surface);
 };
 
+struct gbm_device_v1 {
+   int (*bo_blit)(struct gbm_bo *dst_bo, struct gbm_bo *src_bo,
+                  int dst_x0, int dst_y0, int dst_width, int dst_height,
+                  int src_x0, int src_y0, int src_width, int src_height,
+                  enum gbm_blit_flags flags);
+};
+
 /**
  * The device used for the memory allocation.
  *
@@ -169,6 +176,7 @@ struct gbm_device {
    /* Hack to make a gbm_device detectable by its first element. */
    struct gbm_device *(*dummy)(int);
    struct gbm_device_v0 v0;
+   struct gbm_device_v1 v1;
 };
 
 /**

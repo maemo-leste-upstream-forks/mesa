@@ -828,6 +828,37 @@ gbm_format_get_name(uint32_t gbm_format, struct gbm_format_name_desc *desc)
 }
 
 /**
+ * Blit from one buffer object to another
+ *
+ * \param dst_bo The destination buffer object
+ * \param src_bo The source buffer object
+ * \param dst_x0 The X coordinate (top left origin) of the destination rectangle
+ * \param dst_y0 The Y coordinate (top left origin) of the destination rectangle
+ * \param dst_width The width of the destination rectangle
+ * \param dst_height The height of the destination rectangle
+ * \param src_x0 The X coordinate (top left origin) of the source rectangle
+ * \param src_y0 The Y coordinate (top left origin) of the source rectangle
+ * \param src_width The width of the source rectangle
+ * \param src_height The height of the source rectangle
+ * \param flags The flags for the blit
+ * \return 1 on success, 0 otherwise
+ */
+GBM_EXPORT int
+gbm_bo_blit(struct gbm_bo *dst_bo, struct gbm_bo *src_bo,
+            int dst_x0, int dst_y0, int dst_width, int dst_height,
+            int src_x0, int src_y0, int src_width, int src_height,
+            enum gbm_blit_flags flags)
+{
+   if (dst_bo->gbm->v0.backend_version >= 1)
+      return dst_bo->gbm->v1.bo_blit(dst_bo, src_bo,
+                                     dst_x0, dst_y0, dst_width, dst_height,
+                                     src_x0, src_y0, src_width, src_height,
+                                     flags);
+   else
+      return 0;
+}
+
+/**
  * A global table of functions and global variables defined in the core GBM
  * code that need to be accessed directly by GBM backends.
  */

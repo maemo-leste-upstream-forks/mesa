@@ -266,6 +266,21 @@ enum gbm_bo_flags {
    GBM_BO_USE_FRONT_RENDERING = (1 << 6),
 };
 
+/**
+ * Flags to control the behaviour of a blit - these are passed to
+ * gbm_bo_blit().
+ */
+enum gbm_blit_flags {
+   /**
+    * Force blit execution in finite time
+    */
+   GBM_BLIT_FLAG_FLUSH  = 0x0001,
+   /**
+    * Flush, and wait for the blit to complete
+    */
+   GBM_BLIT_FLAG_FINISH = 0x0002
+};
+
 int
 gbm_device_get_fd(struct gbm_device *gbm);
 
@@ -461,6 +476,12 @@ gbm_surface_destroy(struct gbm_surface *surface);
 
 char *
 gbm_format_get_name(uint32_t gbm_format, struct gbm_format_name_desc *desc);
+
+int
+gbm_bo_blit(struct gbm_bo *dst_bo, struct gbm_bo *src_bo,
+            int dst_x0, int dst_y0, int dst_width, int dst_height,
+            int src_x0, int src_y0, int src_width, int src_height,
+            enum gbm_blit_flags flags);
 
 #ifdef __cplusplus
 }
