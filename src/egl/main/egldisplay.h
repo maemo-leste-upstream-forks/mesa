@@ -118,6 +118,7 @@ struct _egl_extensions
    EGLBoolean EXT_surface_CTA861_3_metadata;
    EGLBoolean EXT_surface_SMPTE2086_metadata;
    EGLBoolean EXT_swap_buffers_with_damage;
+   EGLBoolean EXT_yuv_surface;
 
    unsigned int IMG_context_priority;
 #define  __EGL_CONTEXT_PRIORITY_LOW_BIT    0

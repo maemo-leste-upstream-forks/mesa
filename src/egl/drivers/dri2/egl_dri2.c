@@ -316,6 +316,7 @@ static const EGLint dri2_to_egl_attribute_map[__DRI_ATTRIB_MAX] = {
    [__DRI_ATTRIB_MAX_SWAP_INTERVAL]     = EGL_MAX_SWAP_INTERVAL,
    [__DRI_ATTRIB_MIN_SWAP_INTERVAL]     = EGL_MIN_SWAP_INTERVAL,
    [__DRI_ATTRIB_YINVERTED]             = EGL_Y_INVERTED_NOK,
+   [__DRI_ATTRIB_YUV_NUMBER_OF_PLANES]  = EGL_YUV_NUMBER_OF_PLANES_EXT,
 };
 
 const __DRIconfig *
@@ -442,6 +443,8 @@ dri2_add_config(_EGLDisplay *disp, const __DRIconfig *dri_config, int id,
             value = EGL_RGB_BUFFER;
          else if (value & __DRI_ATTRIB_LUMINANCE_BIT)
             value = EGL_LUMINANCE_BUFFER;
+         else if (value & __DRI_ATTRIB_YUV_BIT)
+            value = EGL_YUV_BUFFER_EXT;
          else
             return NULL;
          base.ColorBufferType = value;
@@ -546,6 +549,73 @@ dri2_add_config(_EGLDisplay *disp, const __DRIconfig *dri_config, int id,
          if (disp->Extensions.KHR_mutable_render_buffer)
             surface_type |= EGL_MUTABLE_RENDER_BUFFER_BIT_KHR;
          break;
+
+      case __DRI_ATTRIB_YUV_ORDER:
+         if (value & __DRI_ATTRIB_YUV_ORDER_YUV_BIT)
+            value = EGL_YUV_ORDER_YUV_EXT;
+         else if (value & __DRI_ATTRIB_YUV_ORDER_YVU_BIT)
+            value = EGL_YUV_ORDER_YVU_EXT;
+         else if (value & __DRI_ATTRIB_YUV_ORDER_YUYV_BIT)
+            value = EGL_YUV_ORDER_YUYV_EXT;
+         else if (value & __DRI_ATTRIB_YUV_ORDER_UYVY_BIT)
+            value = EGL_YUV_ORDER_UYVY_EXT;
+         else if (value & __DRI_ATTRIB_YUV_ORDER_YVYU_BIT)
+            value = EGL_YUV_ORDER_YVYU_EXT;
+         else if (value & __DRI_ATTRIB_YUV_ORDER_VYUY_BIT)
+            value = EGL_YUV_ORDER_VYUY_EXT;
+         else if (value & __DRI_ATTRIB_YUV_ORDER_AYUV_BIT)
+            value = EGL_YUV_ORDER_AYUV_EXT;
+         else
+            value = EGL_NONE;
+         _eglSetConfigKey(&base, EGL_YUV_ORDER_EXT, value);
+         break;
+
+      case __DRI_ATTRIB_YUV_SUBSAMPLE:
+         if (value & __DRI_ATTRIB_YUV_SUBSAMPLE_4_2_0_BIT)
+            value = EGL_YUV_SUBSAMPLE_4_2_0_EXT;
+         else if (value & __DRI_ATTRIB_YUV_SUBSAMPLE_4_2_2_BIT)
+            value = EGL_YUV_SUBSAMPLE_4_2_2_EXT;
+         else if (value & __DRI_ATTRIB_YUV_SUBSAMPLE_4_4_4_BIT)
+            value = EGL_YUV_SUBSAMPLE_4_4_4_EXT;
+         else
+            value = EGL_NONE;
+         _eglSetConfigKey(&base, EGL_YUV_SUBSAMPLE_EXT, value);
+         break;
+
+      case __DRI_ATTRIB_YUV_DEPTH_RANGE:
+         if (value & __DRI_ATTRIB_YUV_DEPTH_RANGE_LIMITED_BIT)
+            value = EGL_YUV_DEPTH_RANGE_LIMITED_EXT;
+         else if (value & __DRI_ATTRIB_YUV_DEPTH_RANGE_FULL_BIT)
+            value = EGL_YUV_DEPTH_RANGE_FULL_EXT;
+         else
+            value = EGL_NONE;
+         _eglSetConfigKey(&base, EGL_YUV_DEPTH_RANGE_EXT, value);
+         break;
+
+      case __DRI_ATTRIB_YUV_CSC_STANDARD:
+         if (value & __DRI_ATTRIB_YUV_CSC_STANDARD_601_BIT)
+            value = EGL_YUV_CSC_STANDARD_601_EXT;
+         else if (value & __DRI_ATTRIB_YUV_CSC_STANDARD_709_BIT)
+            value = EGL_YUV_CSC_STANDARD_709_EXT;
+         else if (value & __DRI_ATTRIB_YUV_CSC_STANDARD_2020_BIT)
+            value = EGL_YUV_CSC_STANDARD_2020_EXT;
+         else
+            value = EGL_NONE;
+         _eglSetConfigKey(&base, EGL_YUV_CSC_STANDARD_EXT, value);
+         break;
+
+      case __DRI_ATTRIB_YUV_PLANE_BPP:
+         if (value & __DRI_ATTRIB_YUV_PLANE_BPP_0_BIT)
+            value = EGL_YUV_PLANE_BPP_0_EXT;
+         else if (value & __DRI_ATTRIB_YUV_PLANE_BPP_8_BIT)
+            value = EGL_YUV_PLANE_BPP_8_EXT;
+         else if (value & __DRI_ATTRIB_YUV_PLANE_BPP_10_BIT)
+            value = EGL_YUV_PLANE_BPP_10_EXT;
+         else
+            value = EGL_NONE;
+         _eglSetConfigKey(&base, EGL_YUV_PLANE_BPP_EXT, value);
+         break;
+
       default:
          key = dri2_to_egl_attribute_map[attrib];
          if (key != 0)
@@ -583,6 +653,17 @@ dri2_add_config(_EGLDisplay *disp, const __DRIconfig *dri_config, int id,
 
    base.RenderableType = disp->ClientAPIs;
    base.Conformant = disp->ClientAPIs;
+
+   /*
+    * We assume that if dri_config is YUV then GL_EXT_YUV_target must be
+    * supported, which requires OpenGL ES 3.0.
+    */
+   if (base.ColorBufferType == EGL_YUV_BUFFER_EXT) {
+      base.RenderableType &= EGL_OPENGL_ES3_BIT;
+      base.Conformant &= EGL_OPENGL_ES3_BIT;
+   }
+   if (!base.RenderableType)
+      return NULL;
 
    base.MinSwapInterval = dri2_dpy->min_swap_interval;
    base.MaxSwapInterval = dri2_dpy->max_swap_interval;
@@ -1042,6 +1123,8 @@ dri2_setup_screen(_EGLDisplay *disp)
    disp->Extensions.EXT_protected_content =
       dri2_renderer_query_integer(dri2_dpy,
                                   __DRI2_RENDERER_HAS_PROTECTED_CONTEXT);
+
+   disp->Extensions.EXT_yuv_surface = EGL_TRUE;
 }
 
 void

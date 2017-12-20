@@ -569,6 +569,7 @@ _eglCreateExtensionsString(_EGLDisplay *disp)
    _EGL_CHECK_EXTENSION(EXT_surface_CTA861_3_metadata);
    _EGL_CHECK_EXTENSION(EXT_surface_SMPTE2086_metadata);
    _EGL_CHECK_EXTENSION(EXT_swap_buffers_with_damage);
+   _EGL_CHECK_EXTENSION(EXT_yuv_surface);
 
    _EGL_CHECK_EXTENSION(IMG_context_priority);
 
