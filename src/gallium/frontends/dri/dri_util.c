@@ -302,7 +302,11 @@ driGetConfigAttribIndex(const __DRIconfig *config,
     SIMPLE_CASE(__DRI_ATTRIB_SAMPLES, samples);
     case __DRI_ATTRIB_RENDER_TYPE:
         /* no support for color index mode */
-        *value = __DRI_ATTRIB_RGBA_BIT;
+        if (config->modes.rgbMode)
+            *value = __DRI_ATTRIB_RGBA_BIT;
+        else
+            *value = __DRI_ATTRIB_YUV_BIT;
+
         if (config->modes.floatMode)
             *value |= __DRI_ATTRIB_FLOAT_BIT;
         break;
@@ -370,6 +374,12 @@ driGetConfigAttribIndex(const __DRIconfig *config,
     SIMPLE_CASE(__DRI_ATTRIB_GREEN_SHIFT, greenShift);
     SIMPLE_CASE(__DRI_ATTRIB_BLUE_SHIFT, blueShift);
     SIMPLE_CASE(__DRI_ATTRIB_ALPHA_SHIFT, alphaShift);
+    SIMPLE_CASE(__DRI_ATTRIB_YUV_ORDER, YUVOrder);
+    SIMPLE_CASE(__DRI_ATTRIB_YUV_NUMBER_OF_PLANES, YUVNumberOfPlanes);
+    SIMPLE_CASE(__DRI_ATTRIB_YUV_SUBSAMPLE, YUVSubsample);
+    SIMPLE_CASE(__DRI_ATTRIB_YUV_DEPTH_RANGE, YUVDepthRange);
+    SIMPLE_CASE(__DRI_ATTRIB_YUV_CSC_STANDARD, YUVCSCStandard);
+    SIMPLE_CASE(__DRI_ATTRIB_YUV_PLANE_BPP, YUVPlaneBPP);
     default:
         /* XXX log an error or smth */
         return GL_FALSE;

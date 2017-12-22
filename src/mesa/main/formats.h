@@ -617,6 +617,21 @@ typedef enum pipe_format mesa_format;
 #define MESA_FORMAT_ATC_RGB                      PIPE_FORMAT_ATC_RGB
 #define MESA_FORMAT_ATC_RGBA_EXPLICIT            PIPE_FORMAT_ATC_RGBA_EXPLICIT
 #define MESA_FORMAT_ATC_RGBA_INTERPOLATED        PIPE_FORMAT_ATC_RGBA_INTERPOLATED
+#define MESA_FORMAT_YVYU                         PIPE_FORMAT_YVYU
+#define MESA_FORMAT_VYUY                         PIPE_FORMAT_VYUY
+
+#define HAVE_MESA_FORMAT_YUV420_2PLANE
+#define MESA_FORMAT_YUV420_2PLANE                PIPE_FORMAT_NV12
+
+#define HAVE_MESA_FORMAT_YVU420_2PLANE
+#define MESA_FORMAT_YVU420_2PLANE                PIPE_FORMAT_NV21
+
+#define HAVE_MESA_FORMAT_YUV420_3PLANE
+#define MESA_FORMAT_YUV420_3PLANE                PIPE_FORMAT_IYUV
+
+#define HAVE_MESA_FORMAT_YVU420_3PLANE
+#define MESA_FORMAT_YVU420_3PLANE                PIPE_FORMAT_YV12
+
 #define MESA_FORMAT_COUNT                        PIPE_FORMAT_COUNT
 
 /* Packed to array format adapters */

@@ -27,7 +27,7 @@ import sys
 def get_gl_base_format(fmat):
    if fmat.name == 'MESA_FORMAT_NONE':
       return 'GL_NONE'
-   elif fmat.name in ['MESA_FORMAT_YCBCR', 'MESA_FORMAT_YCBCR_REV']:
+   elif fmat.name in ['MESA_FORMAT_YCBCR', 'MESA_FORMAT_YCBCR_REV', 'MESA_FORMAT_YUV420_2PLANE', 'MESA_FORMAT_YVU420_2PLANE', 'MESA_FORMAT_YUV420_3PLANE', 'MESA_FORMAT_YVU420_3PLANE', 'MESA_FORMAT_YVYU', 'MESA_FORMAT_VYUY']:
       return 'GL_YCBCR_MESA'
    elif fmat.has_channel('r'):
       if fmat.has_channel('g'):

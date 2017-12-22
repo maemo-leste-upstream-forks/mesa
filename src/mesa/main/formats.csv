@@ -92,6 +92,12 @@ MESA_FORMAT_A2R10G10B10_UNORM             , packed, 1, 1, 1, un2 , un10, un10, u
 
 MESA_FORMAT_YCBCR                         , other , 1, 1, 1, x16 ,     ,     ,     , xyzw, yuv
 MESA_FORMAT_YCBCR_REV                     , other , 1, 1, 1, x16 ,     ,     ,     , xyzw, yuv
+MESA_FORMAT_YUV420_2PLANE                 , other , 1, 1, 1, x8  ,     ,     ,     , y___, yuv
+MESA_FORMAT_YVU420_2PLANE                 , other , 1, 1, 1, x8  ,     ,     ,     , y___, yuv
+MESA_FORMAT_YUV420_3PLANE                 , other , 1, 1, 1, x8  ,     ,     ,     , y___, yuv
+MESA_FORMAT_YVU420_3PLANE                 , other , 1, 1, 1, x8  ,     ,     ,     , y___, yuv
+MESA_FORMAT_YVYU                          , other , 1, 1, 1, x16 ,     ,     ,     , xyzw, yuv
+MESA_FORMAT_VYUY                          , other , 1, 1, 1, x16 ,     ,     ,     , xyzw, yuv
 
 MESA_FORMAT_RG_RB_UNORM8                  , other , 2, 1, 1, x16 ,     ,     ,     , xyz1, rgb
 MESA_FORMAT_GR_BR_UNORM8                  , other , 2, 1, 1, x16 ,     ,     ,     , xyz1, rgb

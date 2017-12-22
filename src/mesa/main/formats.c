@@ -1019,6 +1019,8 @@ _mesa_uncompressed_format_to_type_and_comps(mesa_format format,
 
    case MESA_FORMAT_YCBCR:
    case MESA_FORMAT_YCBCR_REV:
+   case MESA_FORMAT_YVYU:
+   case MESA_FORMAT_VYUY:
    case MESA_FORMAT_RG_RB_UNORM8:
    case MESA_FORMAT_GR_BR_UNORM8:
       *datatype = GL_UNSIGNED_SHORT;
@@ -1446,6 +1448,17 @@ _mesa_format_matches_format_and_type(mesa_format mformat,
 {
    if (error)
       *error = GL_NO_ERROR;
+
+   switch (mformat) {
+   case MESA_FORMAT_YUV420_2PLANE:
+   case MESA_FORMAT_YVU420_2PLANE:
+   case MESA_FORMAT_YUV420_3PLANE:
+   case MESA_FORMAT_YVU420_3PLANE:
+      return false;
+
+   default:
+      break;
+   }
 
    if (_mesa_is_format_compressed(mformat)) {
       if (error)
