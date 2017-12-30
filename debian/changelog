@@ -1,3 +1,10 @@
+mesa (10.3.2-2) unstable; urgency=medium
+
+  * Enable git builds
+  * Enable llvmpipe on armhf and armel
+
+ -- Ivan J. <parazyd@dyne.org>  Sat, 30 Dec 2017 19:05:00 +0100
+
 mesa (10.3.2-1) unstable; urgency=medium
 
   [ Sven Joachim ]
