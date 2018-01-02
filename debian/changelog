@@ -1,3 +1,9 @@
+mesa (13.0.6-2) unstable; urgency=medium
+
+  * Enable git builds
+
+ -- Ivan J. <parazyd@dyne.org>  Tue, 02 Jan 2018 20:35:00 +0100
+
 mesa (13.0.6-1~bpo8+1) jessie-backports; urgency=medium
 
   * Rebuild for jessie-backports.

@@ -10,7 +10,7 @@ DEB_HOST_ARCH      ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
 DEB_HOST_ARCH_OS   ?= $(shell dpkg-architecture -qDEB_HOST_ARCH_OS)
 DEB_HOST_ARCH_CPU  ?= $(shell dpkg-architecture -qDEB_HOST_ARCH_CPU)
 
-ifeq (,$(filter $(DEB_HOST_ARCH), armhf))
+ifeq (,$(filter $(DEB_HOST_ARCH), armhf armel))
 buildflags = \
 	$(shell DEB_CFLAGS_MAINT_APPEND=-Wall DEB_CXXFLAGS_MAINT_APPEND=-Wall dpkg-buildflags --export=configure)
 else
@@ -74,15 +74,19 @@ else
     DRI_DRIVERS += r200 radeon
     GALLIUM_DRIVERS += r600 r300
   endif
-  ifneq (,$(filter $(DEB_HOST_ARCH),amd64 i386 kfreebsd-amd64 kfreebsd-i386 armhf))
+  ifneq (,$(filter $(DEB_HOST_ARCH),amd64 i386 kfreebsd-amd64 kfreebsd-i386))
 	# opencl needs LLVM and Clang, so only build it on the subset
 	# of arches where we have LLVM enabled.
 	# opencl on ppc64el is currently disabled (see #810913).
 	confflags_GALLIUM += --enable-opencl --enable-opencl-icd
   endif
 
+  ifneq (,$(filter $(DEB_HOST_ARCH),armhf armel))
+	confflags_GALLIUM += --disable-opencl --disable-opencl-icd
+  endif
+
   # LLVM is required for r300g, radeonsi and llvmpipe:
-  ifneq (,$(filter $(DEB_HOST_ARCH),amd64 i386 kfreebsd-amd64 kfreebsd-i386 armhf))
+  ifneq (,$(filter $(DEB_HOST_ARCH),amd64 i386 kfreebsd-amd64 kfreebsd-i386 armhf armel))
 	GALLIUM_DRIVERS += radeonsi
 	confflags_GALLIUM += --enable-gallium-llvm
 	confflags_GALLIUM += ac_cv_path_LLVM_CONFIG=llvm-config-3.8
