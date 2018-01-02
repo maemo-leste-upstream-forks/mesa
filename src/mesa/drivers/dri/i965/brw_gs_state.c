@@ -45,7 +45,7 @@ brw_upload_gs_unit(struct brw_context *brw)
 
    memset(gs, 0, sizeof(*gs));
 
-   /* BRW_NEW_PROGRAM_CACHE | CACHE_NEW_GS_PROG */
+   /* BRW_NEW_PROGRAM_CACHE | BRW_NEW_GS_PROG_DATA */
    if (brw->ff_gs.prog_active) {
       gs->thread0.grf_reg_count = (ALIGN(brw->ff_gs.prog_data->total_grf, 16) /
 				   16 - 1);
@@ -83,19 +83,22 @@ brw_upload_gs_unit(struct brw_context *brw)
    if (unlikely(INTEL_DEBUG & DEBUG_STATS))
       gs->thread4.stats_enable = 1;
 
-   gs->gs6.max_vp_index = brw->ctx.Const.MaxViewports - 1;
+   /* BRW_NEW_VIEWPORT_COUNT */
+   gs->gs6.max_vp_index = brw->clip.viewport_count - 1;
 
-   brw->state.dirty.cache |= CACHE_NEW_FF_GS_UNIT;
+   brw->ctx.NewDriverState |= BRW_NEW_GEN4_UNIT_STATE;
 }
 
 const struct brw_tracked_state brw_gs_unit = {
    .dirty = {
       .mesa  = 0,
-      .brw   = (BRW_NEW_BATCH |
-		BRW_NEW_PROGRAM_CACHE |
-		BRW_NEW_CURBE_OFFSETS |
-		BRW_NEW_URB_FENCE),
-      .cache = CACHE_NEW_FF_GS_PROG
+      .brw   = BRW_NEW_BATCH |
+               BRW_NEW_BLORP |
+               BRW_NEW_CURBE_OFFSETS |
+               BRW_NEW_FF_GS_PROG_DATA |
+               BRW_NEW_PROGRAM_CACHE |
+               BRW_NEW_URB_FENCE |
+               BRW_NEW_VIEWPORT_COUNT,
    },
    .emit = brw_upload_gs_unit,
 };

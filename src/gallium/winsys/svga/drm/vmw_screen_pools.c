@@ -1,5 +1,5 @@
 /**********************************************************
- * Copyright 2009 VMware, Inc.  All rights reserved.
+ * Copyright 2009-2015 VMware, Inc.  All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person
  * obtaining a copy of this software and associated documentation
@@ -124,7 +124,8 @@ vmw_mob_pools_init(struct vmw_winsys_screen *vws)
 
    vws->pools.mob_cache = 
       pb_cache_manager_create(vws->pools.gmr, 100000, 2.0f,
-                              VMW_BUFFER_USAGE_SHARED);
+                              VMW_BUFFER_USAGE_SHARED,
+                              64 * 1024 * 1024);
    if (!vws->pools.mob_cache)
       return FALSE;
 

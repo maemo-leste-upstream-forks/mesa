@@ -28,6 +28,7 @@
 #include "main/mtypes.h"
 #include "main/extensions.h"
 #include "main/context.h"
+#include "main/debug_output.h"
 #include "main/texobj.h"
 #include "main/teximage.h"
 #include "main/texstate.h"
@@ -39,6 +40,7 @@
 #include "st_texture.h"
 
 #include "st_context.h"
+#include "st_debug.h"
 #include "st_extensions.h"
 #include "st_format.h"
 #include "st_cb_fbo.h"
@@ -61,7 +63,7 @@
  * We'll only return non-null for window system framebuffers.
  * Note that this function may fail.
  */
-static INLINE struct st_framebuffer *
+static inline struct st_framebuffer *
 st_ws_framebuffer(struct gl_framebuffer *fb)
 {
    /* FBO cannot be casted.  See st_new_framebuffer */
@@ -73,7 +75,7 @@ st_ws_framebuffer(struct gl_framebuffer *fb)
 /**
  * Map an attachment to a buffer index.
  */
-static INLINE gl_buffer_index
+static inline gl_buffer_index
 attachment_to_buffer_index(enum st_attachment_type statt)
 {
    gl_buffer_index index;
@@ -109,7 +111,7 @@ attachment_to_buffer_index(enum st_attachment_type statt)
 /**
  * Map a buffer index to an attachment.
  */
-static INLINE enum st_attachment_type
+static inline enum st_attachment_type
 buffer_index_to_attachment(gl_buffer_index index)
 {
    enum st_attachment_type statt;
@@ -151,7 +153,7 @@ st_context_validate(struct st_context *st,
                     struct st_framebuffer *stread)
 {
     if (stdraw && stdraw->stamp != st->draw_stamp) {
-       st->dirty.st |= ST_NEW_FRAMEBUFFER;
+       st->dirty |= ST_NEW_FRAMEBUFFER;
        _mesa_resize_framebuffer(st->ctx, &stdraw->Base,
                                 stdraw->Base.Width,
                                 stdraw->Base.Height);
@@ -160,7 +162,7 @@ st_context_validate(struct st_context *st,
 
     if (stread && stread->stamp != st->read_stamp) {
        if (stread != stdraw) {
-          st->dirty.st |= ST_NEW_FRAMEBUFFER;
+          st->dirty |= ST_NEW_FRAMEBUFFER;
           _mesa_resize_framebuffer(st->ctx, &stread->Base,
                                    stread->Base.Width,
                                    stread->Base.Height);
@@ -368,6 +370,7 @@ st_visual_to_context_mode(const struct st_visual *visual,
 
       mode->rgbBits = mode->redBits +
          mode->greenBits + mode->blueBits + mode->alphaBits;
+      mode->sRGBCapable = util_format_is_srgb(visual->color_format);
    }
 
    if (visual->depth_stencil_format != PIPE_FORMAT_NONE) {
@@ -452,7 +455,8 @@ st_framebuffer_create(struct st_context *st,
           st_pipe_format_to_mesa_format(srgb_format) != MESA_FORMAT_NONE &&
           screen->is_format_supported(screen, srgb_format,
                                       PIPE_TEXTURE_2D, stfbi->visual->samples,
-                                      PIPE_BIND_RENDER_TARGET))
+                                      (PIPE_BIND_DISPLAY_TARGET |
+                                       PIPE_BIND_RENDER_TARGET)))
          mode.sRGBCapable = GL_TRUE;
    }
 
@@ -583,9 +587,6 @@ st_context_teximage(struct st_context_iface *stctxi,
    }
 
    pipe_resource_reference(&stImage->pt, tex);
-   stObj->width0 = width;
-   stObj->height0 = height;
-   stObj->depth0 = depth;
    stObj->surface_format = pipe_format;
 
    _mesa_dirty_texobj(ctx, texObj);
@@ -632,6 +633,7 @@ st_api_create_context(struct st_api *stapi, struct st_manager *smapi,
    struct pipe_context *pipe;
    struct gl_config mode;
    gl_api api;
+   unsigned ctx_flags = 0;
 
    if (!(stapi->profile_mask & (1 << attribs->profile)))
       return NULL;
@@ -652,10 +654,12 @@ st_api_create_context(struct st_api *stapi, struct st_manager *smapi,
    default:
       *error = ST_CONTEXT_ERROR_BAD_API;
       return NULL;
-      break;
    }
 
-   pipe = smapi->screen->context_create(smapi->screen, NULL);
+   if (attribs->flags & ST_CONTEXT_FLAG_ROBUST_ACCESS)
+      ctx_flags |= PIPE_CONTEXT_ROBUST_BUFFER_ACCESS;
+
+   pipe = smapi->screen->context_create(smapi->screen, NULL, ctx_flags);
    if (!pipe) {
       *error = ST_CONTEXT_ERROR_NO_MEMORY;
       return NULL;
@@ -669,22 +673,31 @@ st_api_create_context(struct st_api *stapi, struct st_manager *smapi,
       return NULL;
    }
 
-   if (attribs->flags & ST_CONTEXT_FLAG_DEBUG){
+   if (attribs->flags & ST_CONTEXT_FLAG_DEBUG) {
       if (!_mesa_set_debug_state_int(st->ctx, GL_DEBUG_OUTPUT, GL_TRUE)) {
          *error = ST_CONTEXT_ERROR_NO_MEMORY;
          return NULL;
       }
+
       st->ctx->Const.ContextFlags |= GL_CONTEXT_FLAG_DEBUG_BIT;
+
+      st_update_debug_callback(st);
    }
 
    if (attribs->flags & ST_CONTEXT_FLAG_FORWARD_COMPATIBLE)
       st->ctx->Const.ContextFlags |= GL_CONTEXT_FLAG_FORWARD_COMPATIBLE_BIT;
+   if (attribs->flags & ST_CONTEXT_FLAG_ROBUST_ACCESS)
+      st->ctx->Const.ContextFlags |= GL_CONTEXT_FLAG_ROBUST_ACCESS_BIT_ARB;
+   if (attribs->flags & ST_CONTEXT_FLAG_RESET_NOTIFICATION_ENABLED) {
+      st->ctx->Const.ResetStrategy = GL_LOSE_CONTEXT_ON_RESET_ARB;
+      st_install_device_reset_callback(st);
+   }
 
    /* need to perform version check */
    if (attribs->major > 1 || attribs->minor > 0) {
       /* Is the actual version less than the requested version?
        */
-      if (st->ctx->Version < attribs->major * 10 + attribs->minor) {
+      if (st->ctx->Version < attribs->major * 10U + attribs->minor) {
 	 *error = ST_CONTEXT_ERROR_BAD_VERSION;
          st_destroy_context(st);
          return NULL;
@@ -790,12 +803,6 @@ st_api_make_current(struct st_api *stapi, struct st_context_iface *stctxi,
    return ret;
 }
 
-static st_proc_t
-st_api_get_proc_address(struct st_api *stapi, const char *procname)
-{
-   return (st_proc_t) _glapi_get_proc_address(procname);
-}
-
 static void
 st_api_destroy(struct st_api *stapi)
 {
@@ -840,6 +847,7 @@ st_manager_get_egl_image_surface(struct st_context *st, void *eglimg)
       return NULL;
 
    u_surface_default_template(&surf_tmpl, stimg.texture);
+   surf_tmpl.format = stimg.format;
    surf_tmpl.u.tex.level = stimg.level;
    surf_tmpl.u.tex.first_layer = stimg.layer;
    surf_tmpl.u.tex.last_layer = stimg.layer;
@@ -891,7 +899,6 @@ st_manager_add_color_renderbuffer(struct st_context *st,
       break;
    default:
       return FALSE;
-      break;
    }
 
    if (!st_framebuffer_add_renderbuffer(stfb, idx))
@@ -919,8 +926,7 @@ static unsigned get_version(struct pipe_screen *screen,
    struct gl_extensions extensions = {0};
    GLuint version;
 
-   if ((api == API_OPENGL_COMPAT || api == API_OPENGL_CORE) &&
-       _mesa_override_gl_version_contextless(&consts, &api, &version)) {
+   if (_mesa_override_gl_version_contextless(&consts, &api, &version)) {
       return version;
    }
 
@@ -928,7 +934,7 @@ static unsigned get_version(struct pipe_screen *screen,
    _mesa_init_extensions(&extensions);
 
    st_init_limits(screen, &consts, &extensions);
-   st_init_extensions(screen, api, &consts, &extensions, options, GL_TRUE);
+   st_init_extensions(screen, &consts, &extensions, options, GL_TRUE);
 
    return _mesa_get_version(&extensions, &consts, api);
 }
@@ -948,20 +954,19 @@ st_api_query_versions(struct st_api *stapi, struct st_manager *sm,
 }
 
 static const struct st_api st_gl_api = {
-   "Mesa " PACKAGE_VERSION,
-   ST_API_OPENGL,
-   ST_PROFILE_DEFAULT_MASK |
-   ST_PROFILE_OPENGL_CORE_MASK |
-   ST_PROFILE_OPENGL_ES1_MASK |
-   ST_PROFILE_OPENGL_ES2_MASK |
-   0,
-   ST_API_FEATURE_MS_VISUALS_MASK,
-   st_api_destroy,
-   st_api_query_versions,
-   st_api_get_proc_address,
-   st_api_create_context,
-   st_api_make_current,
-   st_api_get_current,
+   .name = "Mesa " PACKAGE_VERSION,
+   .api = ST_API_OPENGL,
+   .profile_mask = ST_PROFILE_DEFAULT_MASK |
+                   ST_PROFILE_OPENGL_CORE_MASK |
+                   ST_PROFILE_OPENGL_ES1_MASK |
+                   ST_PROFILE_OPENGL_ES2_MASK |
+                   0,
+   .feature_mask = ST_API_FEATURE_MS_VISUALS_MASK,
+   .destroy = st_api_destroy,
+   .query_versions = st_api_query_versions,
+   .create_context = st_api_create_context,
+   .make_current = st_api_make_current,
+   .get_current = st_api_get_current,
 };
 
 struct st_api *

@@ -43,7 +43,7 @@ _mesa_SampleCoverage(GLclampf value, GLboolean invert)
 
    FLUSH_VERTICES(ctx, 0);
 
-   ctx->Multisample.SampleCoverageValue = (GLfloat) CLAMP(value, 0.0, 1.0);
+   ctx->Multisample.SampleCoverageValue = CLAMP(value, 0.0f, 1.0f);
    ctx->Multisample.SampleCoverageInvert = invert;
    ctx->NewState |= _NEW_MULTISAMPLE;
 }
@@ -127,14 +127,15 @@ _mesa_MinSampleShading(GLclampf value)
 {
    GET_CURRENT_CONTEXT(ctx);
 
-   if (!ctx->Extensions.ARB_sample_shading || !_mesa_is_desktop_gl(ctx)) {
+   if (!_mesa_has_ARB_sample_shading(ctx) &&
+       !_mesa_has_OES_sample_shading(ctx)) {
       _mesa_error(ctx, GL_INVALID_OPERATION, "glMinSampleShading");
       return;
    }
 
    FLUSH_VERTICES(ctx, 0);
 
-   ctx->Multisample.MinSampleShadingValue = CLAMP(value, 0.0, 1.0);
+   ctx->Multisample.MinSampleShadingValue = CLAMP(value, 0.0f, 1.0f);
    ctx->NewState |= _NEW_MULTISAMPLE;
 }
 
@@ -150,6 +151,20 @@ GLenum
 _mesa_check_sample_count(struct gl_context *ctx, GLenum target,
                          GLenum internalFormat, GLsizei samples)
 {
+   /* Section 4.4 (Framebuffer objects), page 198 of the OpenGL ES 3.0.0
+    * specification says:
+    *
+    *     "If internalformat is a signed or unsigned integer format and samples
+    *     is greater than zero, then the error INVALID_OPERATION is generated."
+    *
+    * This restriction is relaxed for OpenGL ES 3.1.
+    */
+   if ((ctx->API == API_OPENGLES2 && ctx->Version == 30) &&
+       _mesa_is_enum_format_integer(internalFormat)
+       && samples > 0) {
+      return GL_INVALID_OPERATION;
+   }
+
    /* If ARB_internalformat_query is supported, then treat its highest
     * returned sample count as the absolute maximum for this format; it is
     * allowed to exceed MAX_SAMPLES.
@@ -160,10 +175,15 @@ _mesa_check_sample_count(struct gl_context *ctx, GLenum target,
     * for <internalformat> then the error INVALID_OPERATION is generated."
     */
    if (ctx->Extensions.ARB_internalformat_query) {
-      GLint buffer[16];
-      int count = ctx->Driver.QuerySamplesForFormat(ctx, target,
-                                                    internalFormat, buffer);
-      int limit = count ? buffer[0] : -1;
+      GLint buffer[16] = {-1};
+      GLint limit;
+
+      ctx->Driver.QueryInternalFormat(ctx, target, internalFormat,
+                                      GL_SAMPLES, buffer);
+      /* since the query returns samples sorted in descending order,
+       * the first element is the greatest supported sample value.
+       */
+      limit = buffer[0];
 
       return samples > limit ? GL_INVALID_OPERATION : GL_NO_ERROR;
    }

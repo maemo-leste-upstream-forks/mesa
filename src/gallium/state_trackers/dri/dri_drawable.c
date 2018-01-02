@@ -231,11 +231,11 @@ dri_set_tex_buffer2(__DRIcontext *pDRICtx, GLint target,
       if (format == __DRI_TEXTURE_FORMAT_RGB)  {
          /* only need to cover the formats recognized by dri_fill_st_visual */
          switch (internal_format) {
-         case PIPE_FORMAT_B8G8R8A8_UNORM:
-            internal_format = PIPE_FORMAT_B8G8R8X8_UNORM;
+         case PIPE_FORMAT_BGRA8888_UNORM:
+            internal_format = PIPE_FORMAT_BGRX8888_UNORM;
             break;
-         case PIPE_FORMAT_A8R8G8B8_UNORM:
-            internal_format = PIPE_FORMAT_X8R8G8B8_UNORM;
+         case PIPE_FORMAT_ARGB8888_UNORM:
+            internal_format = PIPE_FORMAT_XRGB8888_UNORM;
             break;
          default:
             break;
@@ -279,7 +279,12 @@ dri_drawable_get_format(struct dri_drawable *drawable,
    case ST_ATTACHMENT_BACK_LEFT:
    case ST_ATTACHMENT_FRONT_RIGHT:
    case ST_ATTACHMENT_BACK_RIGHT:
-      *format = drawable->stvis.color_format;
+      /* Other pieces of the driver stack get confused and behave incorrectly
+       * when they get an sRGB drawable. st/mesa receives "drawable->stvis"
+       * though other means and handles it correctly, so we don't really need
+       * to use an sRGB format here.
+       */
+      *format = util_format_linear(drawable->stvis.color_format);
       *bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW;
       break;
    case ST_ATTACHMENT_DEPTH_STENCIL:
@@ -418,7 +423,7 @@ dri_postprocessing(struct dri_context *ctx,
    struct pipe_resource *src = drawable->textures[att];
    struct pipe_resource *zsbuf = drawable->textures[ST_ATTACHMENT_DEPTH_STENCIL];
 
-   if (ctx->pp && src && zsbuf)
+   if (ctx->pp && src)
       pp_run(ctx->pp, src, src, zsbuf);
 }
 
@@ -484,6 +489,14 @@ dri_flush(__DRIcontext *cPriv,
       }
 
       pipe->flush_resource(pipe, drawable->textures[ST_ATTACHMENT_BACK_LEFT]);
+
+      if (pipe->invalidate_resource &&
+          (flags & __DRI2_FLUSH_INVALIDATE_ANCILLARY)) {
+         if (drawable->textures[ST_ATTACHMENT_DEPTH_STENCIL])
+            pipe->invalidate_resource(pipe, drawable->textures[ST_ATTACHMENT_DEPTH_STENCIL]);
+         if (drawable->msaa_textures[ST_ATTACHMENT_DEPTH_STENCIL])
+            pipe->invalidate_resource(pipe, drawable->msaa_textures[ST_ATTACHMENT_DEPTH_STENCIL]);
+      }
    }
 
    flush_flags = 0;
@@ -512,7 +525,7 @@ dri_flush(__DRIcontext *cPriv,
 
       fence = swap_fences_pop_front(drawable);
       if (fence) {
-         (void) screen->fence_finish(screen, fence, PIPE_TIMEOUT_INFINITE);
+         (void) screen->fence_finish(screen, NULL, fence, PIPE_TIMEOUT_INFINITE);
          screen->fence_reference(screen, &fence, NULL);
       }
 

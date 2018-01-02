@@ -88,21 +88,19 @@ resource_get_transfer_method(struct pipe_resource *res,
 
    if (res->target == PIPE_BUFFER) {
       tiled = false;
-   }
-   else {
+   } else {
       struct ilo_texture *tex = ilo_texture(res);
       bool need_convert = false;
 
       /* we may need to convert on the fly */
-      if (tex->separate_s8 || tex->layout.format == PIPE_FORMAT_S8_UINT) {
+      if (tex->image.tiling == GEN8_TILING_W || tex->separate_s8) {
          /* on GEN6, separate stencil is enabled only when HiZ is */
-         if (is->dev.gen >= ILO_GEN(7) ||
-             ilo_texture_can_enable_hiz(tex, transfer->level,
-                transfer->box.z, transfer->box.depth)) {
+         if (ilo_dev_gen(&is->dev) >= ILO_GEN(7) ||
+             ilo_image_can_enable_aux(&tex->image, transfer->level)) {
             m = ILO_TRANSFER_MAP_SW_ZS;
             need_convert = true;
          }
-      } else if (tex->layout.format != tex->base.format) {
+      } else if (tex->image_format != tex->base.format) {
          m = ILO_TRANSFER_MAP_SW_CONVERT;
          need_convert = true;
       }
@@ -115,7 +113,7 @@ resource_get_transfer_method(struct pipe_resource *res,
          return true;
       }
 
-      tiled = (tex->layout.tiling != INTEL_TILING_NONE);
+      tiled = (tex->image.tiling != GEN6_TILING_NONE);
    }
 
    if (tiled)
@@ -132,17 +130,6 @@ resource_get_transfer_method(struct pipe_resource *res,
    *method = m;
 
    return true;
-}
-
-/**
- * Rename the bo of the resource.
- */
-static bool
-resource_rename_bo(struct pipe_resource *res)
-{
-   return (res->target == PIPE_BUFFER) ?
-      ilo_buffer_rename_bo(ilo_buffer(res)) :
-      ilo_texture_rename_bo(ilo_texture(res));
 }
 
 /**
@@ -193,7 +180,6 @@ xfer_alloc_staging_res(struct ilo_transfer *xfer)
    templ.array_size = box->depth;
    templ.nr_samples = 1;
    templ.usage = PIPE_USAGE_STAGING;
-   templ.bind = PIPE_BIND_TRANSFER_WRITE;
 
    if (xfer->base.usage & PIPE_TRANSFER_FLUSH_EXPLICIT) {
       templ.flags = PIPE_RESOURCE_FLAG_MAP_PERSISTENT |
@@ -203,8 +189,8 @@ xfer_alloc_staging_res(struct ilo_transfer *xfer)
    xfer->staging.res = res->screen->resource_create(res->screen, &templ);
 
    if (xfer->staging.res && xfer->staging.res->target != PIPE_BUFFER) {
-      assert(ilo_texture(xfer->staging.res)->layout.tiling ==
-            INTEL_TILING_NONE);
+      assert(ilo_texture(xfer->staging.res)->image.tiling ==
+            GEN6_TILING_NONE);
    }
 
    return (xfer->staging.res != NULL);
@@ -224,11 +210,11 @@ xfer_unblock(struct ilo_transfer *xfer, bool *resource_renamed)
    case ILO_TRANSFER_MAP_CPU:
    case ILO_TRANSFER_MAP_GTT:
       if (xfer->base.usage & PIPE_TRANSFER_UNSYNCHRONIZED) {
-         xfer->method = ILO_TRANSFER_MAP_GTT_UNSYNC;
+         xfer->method = ILO_TRANSFER_MAP_GTT_ASYNC;
          unblocked = true;
       }
       else if ((xfer->base.usage & PIPE_TRANSFER_DISCARD_WHOLE_RESOURCE) &&
-               resource_rename_bo(res)) {
+               ilo_resource_rename_bo(res)) {
          renamed = true;
          unblocked = true;
       }
@@ -238,7 +224,7 @@ xfer_unblock(struct ilo_transfer *xfer, bool *resource_renamed)
          unblocked = true;
       }
       break;
-   case ILO_TRANSFER_MAP_GTT_UNSYNC:
+   case ILO_TRANSFER_MAP_GTT_ASYNC:
    case ILO_TRANSFER_MAP_STAGING:
       unblocked = true;
       break;
@@ -281,24 +267,27 @@ xfer_alloc_staging_sys(struct ilo_transfer *xfer)
 static void *
 xfer_map(struct ilo_transfer *xfer)
 {
+   const struct ilo_vma *vma;
    void *ptr;
 
    switch (xfer->method) {
    case ILO_TRANSFER_MAP_CPU:
-      ptr = intel_bo_map(ilo_resource_get_bo(xfer->base.resource),
-            xfer->base.usage & PIPE_TRANSFER_WRITE);
+      vma = ilo_resource_get_vma(xfer->base.resource);
+      ptr = intel_bo_map(vma->bo, xfer->base.usage & PIPE_TRANSFER_WRITE);
       break;
    case ILO_TRANSFER_MAP_GTT:
-      ptr = intel_bo_map_gtt(ilo_resource_get_bo(xfer->base.resource));
+      vma = ilo_resource_get_vma(xfer->base.resource);
+      ptr = intel_bo_map_gtt(vma->bo);
       break;
-   case ILO_TRANSFER_MAP_GTT_UNSYNC:
-      ptr = intel_bo_map_unsynchronized(
-            ilo_resource_get_bo(xfer->base.resource));
+   case ILO_TRANSFER_MAP_GTT_ASYNC:
+      vma = ilo_resource_get_vma(xfer->base.resource);
+      ptr = intel_bo_map_gtt_async(vma->bo);
       break;
    case ILO_TRANSFER_MAP_STAGING:
       {
          const struct ilo_screen *is = ilo_screen(xfer->staging.res->screen);
-         struct intel_bo *bo = ilo_resource_get_bo(xfer->staging.res);
+
+         vma = ilo_resource_get_vma(xfer->staging.res);
 
          /*
           * We want a writable, optionally persistent and coherent, mapping
@@ -306,24 +295,28 @@ xfer_map(struct ilo_transfer *xfer)
           * this turns out to be fairly simple.
           */
          if (is->dev.has_llc)
-            ptr = intel_bo_map(bo, true);
+            ptr = intel_bo_map(vma->bo, true);
          else
-            ptr = intel_bo_map_gtt(bo);
+            ptr = intel_bo_map_gtt(vma->bo);
 
          if (ptr && xfer->staging.res->target == PIPE_BUFFER)
             ptr += (xfer->base.box.x % ILO_TRANSFER_MAP_BUFFER_ALIGNMENT);
-
       }
       break;
    case ILO_TRANSFER_MAP_SW_CONVERT:
    case ILO_TRANSFER_MAP_SW_ZS:
+      vma = NULL;
       ptr = xfer->staging.sys;
       break;
    default:
       assert(!"unknown mapping method");
+      vma = NULL;
       ptr = NULL;
       break;
    }
+
+   if (ptr && vma)
+      ptr = (void *) ((char *) ptr + vma->bo_offset);
 
    return ptr;
 }
@@ -337,11 +330,11 @@ xfer_unmap(struct ilo_transfer *xfer)
    switch (xfer->method) {
    case ILO_TRANSFER_MAP_CPU:
    case ILO_TRANSFER_MAP_GTT:
-   case ILO_TRANSFER_MAP_GTT_UNSYNC:
-      intel_bo_unmap(ilo_resource_get_bo(xfer->base.resource));
+   case ILO_TRANSFER_MAP_GTT_ASYNC:
+      intel_bo_unmap(ilo_resource_get_vma(xfer->base.resource)->bo);
       break;
    case ILO_TRANSFER_MAP_STAGING:
-      intel_bo_unmap(ilo_resource_get_bo(xfer->staging.res));
+      intel_bo_unmap(ilo_resource_get_vma(xfer->staging.res)->bo);
       break;
    default:
       break;
@@ -356,11 +349,11 @@ tex_get_box_origin(const struct ilo_texture *tex,
 {
    unsigned x, y;
 
-   ilo_layout_get_slice_pos(&tex->layout, level, box->z + slice, &x, &y);
+   ilo_image_get_slice_pos(&tex->image, level, box->z + slice, &x, &y);
    x += box->x;
    y += box->y;
 
-   ilo_layout_pos_to_mem(&tex->layout, x, y, mem_x, mem_y);
+   ilo_image_pos_to_mem(&tex->image, x, y, mem_x, mem_y);
 }
 
 static unsigned
@@ -371,13 +364,13 @@ tex_get_box_offset(const struct ilo_texture *tex, unsigned level,
 
    tex_get_box_origin(tex, level, 0, box, &mem_x, &mem_y);
 
-   return ilo_layout_mem_to_linear(&tex->layout, mem_x, mem_y);
+   return ilo_image_mem_to_linear(&tex->image, mem_x, mem_y);
 }
 
 static unsigned
 tex_get_slice_stride(const struct ilo_texture *tex, unsigned level)
 {
-   return ilo_layout_get_slice_stride(&tex->layout, level);
+   return ilo_image_get_slice_stride(&tex->image, level);
 }
 
 static unsigned
@@ -525,24 +518,22 @@ static tex_tile_offset_func
 tex_tile_choose_offset_func(const struct ilo_texture *tex,
                             unsigned *tiles_per_row)
 {
-   switch (tex->layout.tiling) {
-   case INTEL_TILING_X:
-      *tiles_per_row = tex->layout.bo_stride / 512;
-      return tex_tile_x_offset;
-   case INTEL_TILING_Y:
-      *tiles_per_row = tex->layout.bo_stride / 128;
-      return tex_tile_y_offset;
-   case INTEL_TILING_NONE:
+   switch (tex->image.tiling) {
    default:
-      /* W-tiling */
-      if (tex->layout.format == PIPE_FORMAT_S8_UINT) {
-         *tiles_per_row = tex->layout.bo_stride / 64;
-         return tex_tile_w_offset;
-      }
-      else {
-         *tiles_per_row = tex->layout.bo_stride;
-         return tex_tile_none_offset;
-      }
+      assert(!"unknown tiling");
+      /* fall through */
+   case GEN6_TILING_NONE:
+      *tiles_per_row = tex->image.bo_stride;
+      return tex_tile_none_offset;
+   case GEN6_TILING_X:
+      *tiles_per_row = tex->image.bo_stride / 512;
+      return tex_tile_x_offset;
+   case GEN6_TILING_Y:
+      *tiles_per_row = tex->image.bo_stride / 128;
+      return tex_tile_y_offset;
+   case GEN8_TILING_W:
+      *tiles_per_row = tex->image.bo_stride / 64;
+      return tex_tile_w_offset;
    }
 }
 
@@ -555,11 +546,14 @@ tex_staging_sys_map_bo(struct ilo_texture *tex,
    const bool prefer_cpu = (is->dev.has_llc || for_read_back);
    void *ptr;
 
-   if (prefer_cpu && (tex->layout.tiling == INTEL_TILING_NONE ||
+   if (prefer_cpu && (tex->image.tiling == GEN6_TILING_NONE ||
                       !linear_view))
-      ptr = intel_bo_map(tex->bo, !for_read_back);
+      ptr = intel_bo_map(tex->vma.bo, !for_read_back);
    else
-      ptr = intel_bo_map_gtt(tex->bo);
+      ptr = intel_bo_map_gtt(tex->vma.bo);
+
+   if (ptr)
+      ptr = (void *) ((char *) ptr + tex->vma.bo_offset);
 
    return ptr;
 }
@@ -567,7 +561,7 @@ tex_staging_sys_map_bo(struct ilo_texture *tex,
 static void
 tex_staging_sys_unmap_bo(struct ilo_texture *tex)
 {
-   intel_bo_unmap(tex->bo);
+   intel_bo_unmap(tex->vma.bo);
 }
 
 static bool
@@ -588,7 +582,7 @@ tex_staging_sys_zs_read(struct ilo_texture *tex,
 
    tile_offset = tex_tile_choose_offset_func(tex, &tiles_per_row);
 
-   assert(tex->layout.block_width == 1 && tex->layout.block_height == 1);
+   assert(tex->image.block_width == 1 && tex->image.block_height == 1);
 
    if (tex->separate_s8) {
       struct ilo_texture *s8_tex = tex->separate_s8;
@@ -606,7 +600,7 @@ tex_staging_sys_zs_read(struct ilo_texture *tex,
       s8_tile_offset = tex_tile_choose_offset_func(s8_tex, &s8_tiles_per_row);
 
       if (tex->base.format == PIPE_FORMAT_Z24_UNORM_S8_UINT) {
-         assert(tex->layout.format == PIPE_FORMAT_Z24X8_UNORM);
+         assert(tex->image_format == PIPE_FORMAT_Z24X8_UNORM);
 
          dst_cpp = 4;
          dst_s8_pos = 3;
@@ -614,7 +608,7 @@ tex_staging_sys_zs_read(struct ilo_texture *tex,
       }
       else {
          assert(tex->base.format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT);
-         assert(tex->layout.format == PIPE_FORMAT_Z32_FLOAT);
+         assert(tex->image_format == PIPE_FORMAT_Z32_FLOAT);
 
          dst_cpp = 8;
          dst_s8_pos = 4;
@@ -647,7 +641,7 @@ tex_staging_sys_zs_read(struct ilo_texture *tex,
                d[dst_s8_pos] = s8_src[s8_offset];
 
                d += dst_cpp;
-               x += tex->layout.block_size;
+               x += tex->image.block_size;
                s8_x++;
             }
 
@@ -660,7 +654,7 @@ tex_staging_sys_zs_read(struct ilo_texture *tex,
       tex_staging_sys_unmap_bo(s8_tex);
    }
    else {
-      assert(tex->layout.format == PIPE_FORMAT_S8_UINT);
+      assert(tex->image_format == PIPE_FORMAT_S8_UINT);
 
       for (slice = 0; slice < box->depth; slice++) {
          unsigned mem_x, mem_y;
@@ -715,7 +709,7 @@ tex_staging_sys_zs_write(struct ilo_texture *tex,
 
    tile_offset = tex_tile_choose_offset_func(tex, &tiles_per_row);
 
-   assert(tex->layout.block_width == 1 && tex->layout.block_height == 1);
+   assert(tex->image.block_width == 1 && tex->image.block_height == 1);
 
    if (tex->separate_s8) {
       struct ilo_texture *s8_tex = tex->separate_s8;
@@ -733,7 +727,7 @@ tex_staging_sys_zs_write(struct ilo_texture *tex,
       s8_tile_offset = tex_tile_choose_offset_func(s8_tex, &s8_tiles_per_row);
 
       if (tex->base.format == PIPE_FORMAT_Z24_UNORM_S8_UINT) {
-         assert(tex->layout.format == PIPE_FORMAT_Z24X8_UNORM);
+         assert(tex->image_format == PIPE_FORMAT_Z24X8_UNORM);
 
          src_cpp = 4;
          src_s8_pos = 3;
@@ -741,7 +735,7 @@ tex_staging_sys_zs_write(struct ilo_texture *tex,
       }
       else {
          assert(tex->base.format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT);
-         assert(tex->layout.format == PIPE_FORMAT_Z32_FLOAT);
+         assert(tex->image_format == PIPE_FORMAT_Z32_FLOAT);
 
          src_cpp = 8;
          src_s8_pos = 4;
@@ -774,7 +768,7 @@ tex_staging_sys_zs_write(struct ilo_texture *tex,
                s8_dst[s8_offset] = s[src_s8_pos];
 
                s += src_cpp;
-               x += tex->layout.block_size;
+               x += tex->image.block_size;
                s8_x++;
             }
 
@@ -787,7 +781,7 @@ tex_staging_sys_zs_write(struct ilo_texture *tex,
       tex_staging_sys_unmap_bo(s8_tex);
    }
    else {
-      assert(tex->layout.format == PIPE_FORMAT_S8_UINT);
+      assert(tex->image_format == PIPE_FORMAT_S8_UINT);
 
       for (slice = 0; slice < box->depth; slice++) {
          unsigned mem_x, mem_y;
@@ -845,8 +839,8 @@ tex_staging_sys_convert_write(struct ilo_texture *tex,
    else
       dst_slice_stride = 0;
 
-   if (unlikely(tex->layout.format == tex->base.format)) {
-      util_copy_box(dst, tex->layout.format, tex->layout.bo_stride,
+   if (unlikely(tex->image_format == tex->base.format)) {
+      util_copy_box(dst, tex->image_format, tex->image.bo_stride,
             dst_slice_stride, 0, 0, 0, box->width, box->height, box->depth,
             xfer->staging.sys, xfer->base.stride, xfer->base.layer_stride,
             0, 0, 0);
@@ -858,14 +852,14 @@ tex_staging_sys_convert_write(struct ilo_texture *tex,
 
    switch (tex->base.format) {
    case PIPE_FORMAT_ETC1_RGB8:
-      assert(tex->layout.format == PIPE_FORMAT_R8G8B8X8_UNORM);
+      assert(tex->image_format == PIPE_FORMAT_R8G8B8X8_UNORM);
 
       for (slice = 0; slice < box->depth; slice++) {
          const void *src =
             xfer->staging.sys + xfer->base.layer_stride * slice;
 
          util_format_etc1_rgb8_unpack_rgba_8unorm(dst,
-               tex->layout.bo_stride, src, xfer->base.stride,
+               tex->image.bo_stride, src, xfer->base.stride,
                box->width, box->height);
 
          dst += dst_slice_stride;
@@ -953,7 +947,7 @@ tex_map(struct ilo_transfer *xfer)
    switch (xfer->method) {
    case ILO_TRANSFER_MAP_CPU:
    case ILO_TRANSFER_MAP_GTT:
-   case ILO_TRANSFER_MAP_GTT_UNSYNC:
+   case ILO_TRANSFER_MAP_GTT_ASYNC:
       ptr = xfer_map(xfer);
       if (ptr) {
          const struct ilo_texture *tex = ilo_texture(xfer->base.resource);
@@ -961,7 +955,7 @@ tex_map(struct ilo_transfer *xfer)
          ptr += tex_get_box_offset(tex, xfer->base.level, &xfer->base.box);
 
          /* stride is for a block row, not a texel row */
-         xfer->base.stride = tex->layout.bo_stride;
+         xfer->base.stride = tex->image.bo_stride;
          /* note that slice stride is not always available */
          xfer->base.layer_stride = (xfer->base.box.depth > 1) ?
             tex_get_slice_stride(tex, xfer->base.level) : 0;
@@ -971,7 +965,7 @@ tex_map(struct ilo_transfer *xfer)
       ptr = xfer_map(xfer);
       if (ptr) {
          const struct ilo_texture *staging = ilo_texture(xfer->staging.res);
-         xfer->base.stride = staging->layout.bo_stride;
+         xfer->base.stride = staging->image.bo_stride;
          xfer->base.layer_stride = tex_get_slice_stride(staging, 0);
       }
       break;
@@ -1044,12 +1038,12 @@ copy_staging_resource(struct ilo_context *ilo,
 }
 
 static bool
-is_bo_busy(struct ilo_context *ilo, struct intel_bo *bo, bool *need_flush)
+is_bo_busy(struct ilo_context *ilo, struct intel_bo *bo, bool *need_submit)
 {
-   const bool referenced = intel_bo_has_reloc(ilo->cp->bo, bo);
+   const bool referenced = ilo_builder_has_reloc(&ilo->cp->builder, bo);
 
-   if (need_flush)
-      *need_flush = referenced;
+   if (need_submit)
+      *need_submit = referenced;
 
    if (referenced)
       return true;
@@ -1065,44 +1059,45 @@ static bool
 choose_transfer_method(struct ilo_context *ilo, struct ilo_transfer *xfer)
 {
    struct pipe_resource *res = xfer->base.resource;
-   bool need_flush;
+   bool need_submit;
 
    if (!resource_get_transfer_method(res, &xfer->base, &xfer->method))
       return false;
 
    /* see if we can avoid blocking */
-   if (is_bo_busy(ilo, ilo_resource_get_bo(res), &need_flush)) {
+   if (is_bo_busy(ilo, ilo_resource_get_vma(res)->bo, &need_submit)) {
       bool resource_renamed;
 
       if (!xfer_unblock(xfer, &resource_renamed)) {
          if (xfer->base.usage & PIPE_TRANSFER_DONTBLOCK)
             return false;
 
-         /* flush to make bo really busy so that map() correctly blocks */
-         if (need_flush)
-            ilo_cp_flush(ilo->cp, "syncing for transfers");
+         /* submit to make bo really busy and map() correctly blocks */
+         if (need_submit)
+            ilo_cp_submit(ilo->cp, "syncing for transfers");
       }
 
       if (resource_renamed)
-         ilo_mark_states_with_resource_renamed(ilo, res);
+         ilo_state_vector_resource_renamed(&ilo->state_vector, res);
    }
 
    return true;
 }
 
 static void
-buf_pwrite(struct ilo_context *ilo, struct ilo_buffer *buf,
+buf_pwrite(struct ilo_context *ilo, struct pipe_resource *res,
            unsigned usage, int offset, int size, const void *data)
 {
-   bool need_flush;
+   struct ilo_buffer_resource *buf = ilo_buffer_resource(res);
+   bool need_submit;
 
    /* see if we can avoid blocking */
-   if (is_bo_busy(ilo, buf->bo, &need_flush)) {
+   if (is_bo_busy(ilo, buf->vma.bo, &need_submit)) {
       bool unblocked = false;
 
       if ((usage & PIPE_TRANSFER_DISCARD_WHOLE_RESOURCE) &&
-          ilo_buffer_rename_bo(buf)) {
-         ilo_mark_states_with_resource_renamed(ilo, &buf->base);
+          ilo_resource_rename_bo(res)) {
+         ilo_state_vector_resource_renamed(&ilo->state_vector, res);
          unblocked = true;
       }
       else {
@@ -1112,19 +1107,22 @@ buf_pwrite(struct ilo_context *ilo, struct ilo_buffer *buf,
           * allocate a staging buffer to hold the data and pipelined copy it
           * over
           */
-         templ = buf->base;
+         templ = *res;
          templ.width0 = size;
          templ.usage = PIPE_USAGE_STAGING;
-         templ.bind = PIPE_BIND_TRANSFER_WRITE;
+         templ.bind = 0;
          staging = ilo->base.screen->resource_create(ilo->base.screen, &templ);
          if (staging) {
+            const struct ilo_vma *staging_vma = ilo_resource_get_vma(staging);
             struct pipe_box staging_box;
 
-            intel_bo_pwrite(ilo_buffer(staging)->bo, 0, size, data);
+            /* offset by staging_vma->bo_offset for pwrite */
+            intel_bo_pwrite(staging_vma->bo, staging_vma->bo_offset,
+                  size, data);
 
             u_box_1d(0, size, &staging_box);
             ilo_blitter_blt_copy_resource(ilo->blitter,
-                  &buf->base, 0, offset, 0, 0,
+                  res, 0, offset, 0, 0,
                   staging, 0, &staging_box);
 
             pipe_resource_reference(&staging, NULL);
@@ -1133,12 +1131,13 @@ buf_pwrite(struct ilo_context *ilo, struct ilo_buffer *buf,
          }
       }
 
-      /* flush to make bo really busy so that pwrite() correctly blocks */
-      if (!unblocked && need_flush)
-         ilo_cp_flush(ilo->cp, "syncing for pwrites");
+      /* submit to make bo really busy and pwrite() correctly blocks */
+      if (!unblocked && need_submit)
+         ilo_cp_submit(ilo->cp, "syncing for pwrites");
    }
 
-   intel_bo_pwrite(buf->bo, offset, size, data);
+   /* offset by buf->vma.bo_offset for pwrite */
+   intel_bo_pwrite(buf->vma.bo, buf->vma.bo_offset + offset, size, data);
 }
 
 static void
@@ -1184,7 +1183,7 @@ ilo_transfer_unmap(struct pipe_context *pipe,
 
    pipe_resource_reference(&xfer->base.resource, NULL);
 
-   util_slab_free(&ilo->transfer_mempool, xfer);
+   slab_free_st(&ilo->transfer_mempool, xfer);
 }
 
 static void *
@@ -1200,7 +1199,7 @@ ilo_transfer_map(struct pipe_context *pipe,
    void *ptr;
 
    /* note that xfer is not zero'd */
-   xfer = util_slab_alloc(&ilo->transfer_mempool);
+   xfer = slab_alloc_st(&ilo->transfer_mempool);
    if (!xfer) {
       *transfer = NULL;
       return NULL;
@@ -1226,7 +1225,7 @@ ilo_transfer_map(struct pipe_context *pipe,
 
    if (!ptr) {
       pipe_resource_reference(&xfer->base.resource, NULL);
-      util_slab_free(&ilo->transfer_mempool, xfer);
+      slab_free_st(&ilo->transfer_mempool, xfer);
       *transfer = NULL;
       return NULL;
    }
@@ -1236,32 +1235,15 @@ ilo_transfer_map(struct pipe_context *pipe,
    return ptr;
 }
 
-static void
-ilo_transfer_inline_write(struct pipe_context *pipe,
-                          struct pipe_resource *res,
-                          unsigned level,
-                          unsigned usage,
-                          const struct pipe_box *box,
-                          const void *data,
-                          unsigned stride,
-                          unsigned layer_stride)
+static void ilo_buffer_subdata(struct pipe_context *pipe,
+                               struct pipe_resource *resource,
+                               unsigned usage, unsigned offset,
+                               unsigned size, const void *data)
 {
-   if (likely(res->target == PIPE_BUFFER) &&
-       !(usage & PIPE_TRANSFER_UNSYNCHRONIZED)) {
-      /* they should specify just an offset and a size */
-      assert(level == 0);
-      assert(box->y == 0);
-      assert(box->z == 0);
-      assert(box->height == 1);
-      assert(box->depth == 1);
-
-      buf_pwrite(ilo_context(pipe), ilo_buffer(res),
-            usage, box->x, box->width, data);
-   }
-   else {
-      u_default_transfer_inline_write(pipe, res,
-            level, usage, box, data, stride, layer_stride);
-   }
+   if (usage & PIPE_TRANSFER_UNSYNCHRONIZED)
+      u_default_buffer_subdata(pipe, resource, usage, offset, size, data);
+   else
+      buf_pwrite(ilo_context(pipe), resource, usage, offset, size, data);
 }
 
 /**
@@ -1273,5 +1255,6 @@ ilo_init_transfer_functions(struct ilo_context *ilo)
    ilo->base.transfer_map = ilo_transfer_map;
    ilo->base.transfer_flush_region = ilo_transfer_flush_region;
    ilo->base.transfer_unmap = ilo_transfer_unmap;
-   ilo->base.transfer_inline_write = ilo_transfer_inline_write;
+   ilo->base.buffer_subdata = ilo_buffer_subdata;
+   ilo->base.texture_subdata = u_default_texture_subdata;
 }

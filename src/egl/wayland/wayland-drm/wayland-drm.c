@@ -197,7 +197,7 @@ drm_authenticate(struct wl_client *client,
 		wl_resource_post_event(resource, WL_DRM_AUTHENTICATED);
 }
 
-const static struct wl_drm_interface drm_interface = {
+static const struct wl_drm_interface drm_interface = {
 	drm_authenticate,
 	drm_create_buffer,
         drm_create_planar_buffer,
@@ -265,6 +265,8 @@ wayland_drm_init(struct wl_display *display, char *device_name,
 	struct wl_drm *drm;
 
 	drm = malloc(sizeof *drm);
+	if (!drm)
+		return NULL;
 
 	drm->display = display;
 	drm->device_name = strdup(device_name);

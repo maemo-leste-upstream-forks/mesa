@@ -65,7 +65,7 @@
 #include "util/u_format.h"
 #include "util/u_dump.h"
 #include "util/u_string.h"
-#include "util/u_simple_list.h"
+#include "util/simple_list.h"
 #include "util/u_dual_blend.h"
 #include "os/os_time.h"
 #include "pipe/p_shader_tokens.h"
@@ -134,7 +134,7 @@ generate_quad_mask(struct gallivm_state *gallivm,
     * XXX: We'll need a different path for 16 x u8
     */
    assert(fs_type.width == 32);
-   assert(fs_type.length <= Elements(bits));
+   assert(fs_type.length <= ARRAY_SIZE(bits));
    mask_type = lp_int_type(fs_type);
 
    /*
@@ -174,10 +174,10 @@ generate_quad_mask(struct gallivm_state *gallivm,
 
    for (i = 0; i < fs_type.length / 4; i++) {
       unsigned j = 2 * (i % 2) + (i / 2) * 8;
-      bits[4*i + 0] = LLVMConstInt(i32t, 1 << (j + 0), 0);
-      bits[4*i + 1] = LLVMConstInt(i32t, 1 << (j + 1), 0);
-      bits[4*i + 2] = LLVMConstInt(i32t, 1 << (j + 4), 0);
-      bits[4*i + 3] = LLVMConstInt(i32t, 1 << (j + 5), 0);
+      bits[4*i + 0] = LLVMConstInt(i32t, 1ULL << (j + 0), 0);
+      bits[4*i + 1] = LLVMConstInt(i32t, 1ULL << (j + 1), 0);
+      bits[4*i + 2] = LLVMConstInt(i32t, 1ULL << (j + 4), 0);
+      bits[4*i + 3] = LLVMConstInt(i32t, 1ULL << (j + 5), 0);
    }
    mask = LLVMBuildAnd(builder, mask, LLVMConstVector(bits, fs_type.length), "");
 
@@ -238,6 +238,54 @@ lp_llvm_viewport(LLVMValueRef context_ptr,
 }
 
 
+static LLVMValueRef
+lp_build_depth_clamp(struct gallivm_state *gallivm,
+                     LLVMBuilderRef builder,
+                     struct lp_type type,
+                     LLVMValueRef context_ptr,
+                     LLVMValueRef thread_data_ptr,
+                     LLVMValueRef z)
+{
+   LLVMValueRef viewport, min_depth, max_depth;
+   LLVMValueRef viewport_index;
+   struct lp_build_context f32_bld;
+
+   assert(type.floating);
+   lp_build_context_init(&f32_bld, gallivm, type);
+
+   /*
+    * Assumes clamping of the viewport index will occur in setup/gs. Value
+    * is passed through the rasterization stage via lp_rast_shader_inputs.
+    *
+    * See: draw_clamp_viewport_idx and lp_clamp_viewport_idx for clamping
+    *      semantics.
+    */
+   viewport_index = lp_jit_thread_data_raster_state_viewport_index(gallivm,
+                       thread_data_ptr);
+
+   /*
+    * Load the min and max depth from the lp_jit_context.viewports
+    * array of lp_jit_viewport structures.
+    */
+   viewport = lp_llvm_viewport(context_ptr, gallivm, viewport_index);
+
+   /* viewports[viewport_index].min_depth */
+   min_depth = LLVMBuildExtractElement(builder, viewport,
+                  lp_build_const_int32(gallivm, LP_JIT_VIEWPORT_MIN_DEPTH), "");
+   min_depth = lp_build_broadcast_scalar(&f32_bld, min_depth);
+
+   /* viewports[viewport_index].max_depth */
+   max_depth = LLVMBuildExtractElement(builder, viewport,
+                  lp_build_const_int32(gallivm, LP_JIT_VIEWPORT_MAX_DEPTH), "");
+   max_depth = lp_build_broadcast_scalar(&f32_bld, max_depth);
+
+   /*
+    * Clamp to the min and max depth values for the given viewport.
+    */
+   return lp_build_clamp(&f32_bld, z, min_depth, max_depth);
+}
+
+
 /**
  * Generate the fragment shader, depth/stencil test, and alpha tests.
  */
@@ -260,7 +308,8 @@ generate_fs_loop(struct gallivm_state *gallivm,
 {
    const struct util_format_description *zs_format_desc = NULL;
    const struct tgsi_token *tokens = shader->base.tokens;
-   LLVMTypeRef vec_type;
+   struct lp_type int_type = lp_int_type(type);
+   LLVMTypeRef vec_type, int_vec_type;
    LLVMValueRef mask_ptr, mask_val;
    LLVMValueRef consts_ptr, num_consts_ptr;
    LLVMValueRef z;
@@ -295,7 +344,7 @@ generate_fs_loop(struct gallivm_state *gallivm,
       zs_format_desc = util_format_description(key->zsbuf_format);
       assert(zs_format_desc);
 
-      if (!shader->info.base.writes_z) {
+      if (!shader->info.base.writes_z && !shader->info.base.writes_stencil) {
          if (key->alpha.enabled ||
              key->blend.alpha_to_coverage ||
              shader->info.base.uses_kill) {
@@ -329,11 +378,14 @@ generate_fs_loop(struct gallivm_state *gallivm,
       depth_mode = 0;
    }
 
+   vec_type = lp_build_vec_type(gallivm, type);
+   int_vec_type = lp_build_vec_type(gallivm, int_type);
 
    stencil_refs[0] = lp_jit_context_stencil_ref_front_value(gallivm, context_ptr);
    stencil_refs[1] = lp_jit_context_stencil_ref_back_value(gallivm, context_ptr);
-
-   vec_type = lp_build_vec_type(gallivm, type);
+   /* convert scalar stencil refs into vectors */
+   stencil_refs[0] = lp_build_broadcast(gallivm, int_vec_type, stencil_refs[0]);
+   stencil_refs[1] = lp_build_broadcast(gallivm, int_vec_type, stencil_refs[1]);
 
    consts_ptr = lp_jit_context_constants(gallivm, context_ptr);
    num_consts_ptr = lp_jit_context_num_constants(gallivm, context_ptr);
@@ -379,6 +431,13 @@ generate_fs_loop(struct gallivm_state *gallivm,
    z = interp->pos[2];
 
    if (depth_mode & EARLY_DEPTH_TEST) {
+      /*
+       * Clamp according to ARB_depth_clamp semantics.
+       */
+      if (key->depth_clamp) {
+         z = lp_build_depth_clamp(gallivm, builder, type, context_ptr,
+                                  thread_data_ptr, z);
+      }
       lp_build_depth_stencil_load_swizzled(gallivm, type,
                                            zs_format_desc, key->resource_1d,
                                            depth_ptr, depth_stride,
@@ -417,7 +476,8 @@ generate_fs_loop(struct gallivm_state *gallivm,
    lp_build_tgsi_soa(gallivm, tokens, type, &mask,
                      consts_ptr, num_consts_ptr, &system_values,
                      interp->inputs,
-                     outputs, sampler, &shader->info.base, NULL);
+                     outputs, context_ptr, thread_data_ptr,
+                     sampler, &shader->info.base, NULL);
 
    /* Alpha test */
    if (key->alpha.enabled) {
@@ -461,54 +521,27 @@ generate_fs_loop(struct gallivm_state *gallivm,
       int pos0 = find_output_by_semantic(&shader->info.base,
                                          TGSI_SEMANTIC_POSITION,
                                          0);
-
+      int s_out = find_output_by_semantic(&shader->info.base,
+                                          TGSI_SEMANTIC_STENCIL,
+                                          0);
       if (pos0 != -1 && outputs[pos0][2]) {
          z = LLVMBuildLoad(builder, outputs[pos0][2], "output.z");
+      }
+      /*
+       * Clamp according to ARB_depth_clamp semantics.
+       */
+      if (key->depth_clamp) {
+         z = lp_build_depth_clamp(gallivm, builder, type, context_ptr,
+                                  thread_data_ptr, z);
+      }
 
-         /*
-          * Clamp according to ARB_depth_clamp semantics.
-          */
-         if (key->depth_clamp) {
-            LLVMValueRef viewport, min_depth, max_depth;
-            LLVMValueRef viewport_index;
-            struct lp_build_context f32_bld;
-
-            assert(type.floating);
-            lp_build_context_init(&f32_bld, gallivm, type);
-
-            /*
-             * Assumes clamping of the viewport index will occur in setup/gs. Value
-             * is passed through the rasterization stage via lp_rast_shader_inputs.
-             *
-             * See: draw_clamp_viewport_idx and lp_clamp_viewport_idx for clamping
-             *      semantics.
-             */
-            viewport_index = lp_jit_thread_data_raster_state_viewport_index(gallivm,
-                                thread_data_ptr);
-
-            /*
-             * Load the min and max depth from the lp_jit_context.viewports
-             * array of lp_jit_viewport structures.
-             */
-            viewport = lp_llvm_viewport(context_ptr, gallivm, viewport_index);
-
-            /* viewports[viewport_index].min_depth */
-            min_depth = LLVMBuildExtractElement(builder, viewport,
-                           lp_build_const_int32(gallivm, LP_JIT_VIEWPORT_MIN_DEPTH),
-                           "");
-            min_depth = lp_build_broadcast_scalar(&f32_bld, min_depth);
-
-            /* viewports[viewport_index].max_depth */
-            max_depth = LLVMBuildExtractElement(builder, viewport,
-                           lp_build_const_int32(gallivm, LP_JIT_VIEWPORT_MAX_DEPTH),
-                           "");
-            max_depth = lp_build_broadcast_scalar(&f32_bld, max_depth);
-
-            /*
-             * Clamp to the min and max depth values for the given viewport.
-             */
-            z = lp_build_clamp(&f32_bld, z, min_depth, max_depth);
-         }
+      if (s_out != -1 && outputs[s_out][1]) {
+         /* there's only one value, and spec says to discard additional bits */
+         LLVMValueRef s_max_mask = lp_build_const_int_vec(gallivm, int_type, 255);
+         stencil_refs[0] = LLVMBuildLoad(builder, outputs[s_out][1], "output.s");
+         stencil_refs[0] = LLVMBuildBitCast(builder, stencil_refs[0], int_vec_type, "");
+         stencil_refs[0] = LLVMBuildAnd(builder, stencil_refs[0], s_max_mask, "");
+         stencil_refs[1] = stencil_refs[0];
       }
 
       lp_build_depth_stencil_load_swizzled(gallivm, type,
@@ -630,7 +663,7 @@ generate_fs_twiddle(struct gallivm_state *gallivm,
    src_count = num_fs * src_channels;
 
    assert(pixels == 2 || pixels == 1);
-   assert(num_fs * src_channels <= Elements(src));
+   assert(num_fs * src_channels <= ARRAY_SIZE(src));
 
    /*
     * Transpose from SoA -> AoS
@@ -770,7 +803,7 @@ load_unswizzled_block(struct gallivm_state *gallivm,
 
       dst[i] = LLVMBuildLoad(builder, dst_ptr, "");
 
-      lp_set_load_alignment(dst[i], dst_alignment);
+      LLVMSetAlignment(dst[i], dst_alignment);
    }
 }
 
@@ -814,7 +847,7 @@ store_unswizzled_block(struct gallivm_state *gallivm,
 
       src_ptr = LLVMBuildStore(builder, src[i], src_ptr);
 
-      lp_set_store_alignment(src_ptr, src_alignment);
+      LLVMSetAlignment(src_ptr, src_alignment);
    }
 }
 
@@ -824,7 +857,7 @@ store_unswizzled_block(struct gallivm_state *gallivm,
  *
  * A format which has irregular channel sizes such as R3_G3_B2 or R5_G6_B5.
  */
-static INLINE boolean
+static inline boolean
 is_arithmetic_format(const struct util_format_description *format_desc)
 {
    boolean arith = false;
@@ -844,7 +877,7 @@ is_arithmetic_format(const struct util_format_description *format_desc)
  * to floats for blending, and furthermore has "natural" packed AoS -> unpacked
  * SoA conversion.
  */
-static INLINE boolean
+static inline boolean
 format_expands_to_float_soa(const struct util_format_description *format_desc)
 {
    if (format_desc->format == PIPE_FORMAT_R11G11B10_FLOAT ||
@@ -860,7 +893,7 @@ format_expands_to_float_soa(const struct util_format_description *format_desc)
  *
  * e.g. RGBA16F = 4x half-float and R3G3B2 = 1x byte
  */
-static INLINE void
+static inline void
 lp_mem_type_from_format_desc(const struct util_format_description *format_desc,
                              struct lp_type* type)
 {
@@ -908,7 +941,7 @@ lp_mem_type_from_format_desc(const struct util_format_description *format_desc,
  *
  * e.g. RGBA16F = 4x float, R3G3B2 = 3x byte
  */
-static INLINE void
+static inline void
 lp_blend_type_from_format_desc(const struct util_format_description *format_desc,
                                struct lp_type* type)
 {
@@ -980,7 +1013,7 @@ lp_blend_type_from_format_desc(const struct util_format_description *format_desc
  *
  * but we try to avoid division and multiplication through shifts.
  */
-static INLINE LLVMValueRef
+static inline LLVMValueRef
 scale_bits(struct gallivm_state *gallivm,
            int src_bits,
            int dst_bits,
@@ -1092,7 +1125,7 @@ scale_bits(struct gallivm_state *gallivm,
 /**
  * If RT is a smallfloat (needing denorms) format
  */
-static INLINE int
+static inline int
 have_smallfloat_format(struct lp_type dst_type,
                        enum pipe_format format)
 {
@@ -1585,7 +1618,7 @@ generate_unswizzled_blend(struct gallivm_state *gallivm,
    LLVMValueRef fs_src[4][TGSI_NUM_CHANNELS];
    LLVMValueRef fs_src1[4][TGSI_NUM_CHANNELS];
    LLVMValueRef src_alpha[4 * 4];
-   LLVMValueRef src1_alpha[4 * 4];
+   LLVMValueRef src1_alpha[4 * 4] = { NULL };
    LLVMValueRef src_mask[4 * 4];
    LLVMValueRef src[4 * 4];
    LLVMValueRef src1[4 * 4];
@@ -1666,15 +1699,7 @@ generate_unswizzled_blend(struct gallivm_state *gallivm,
    partial_mask |= !variant->opaque;
    i32_zero = lp_build_const_int32(gallivm, 0);
 
-#if HAVE_LLVM < 0x0302
-   /*
-    * undef triggers a crash in LLVMBuildTrunc in convert_from_blend_type in some
-    * cases (seen with r10g10b10a2, 128bit wide vectors) (only used for 1d case).
-    */
-   undef_src_val = lp_build_zero(gallivm, fs_type);
-#else
    undef_src_val = lp_build_undef(gallivm, fs_type);
-#endif
 
    row_type.length = fs_type.length;
    vector_width    = dst_type.floating ? lp_native_vector_width : lp_integer_vector_width;
@@ -2212,14 +2237,8 @@ generate_fragment(struct llvmpipe_context *lp,
    }
 
    /* check if writes to cbuf[0] are to be copied to all cbufs */
-   cbuf0_write_all = FALSE;
-   for (i = 0;i < shader->info.base.num_properties; i++) {
-      if (shader->info.base.properties[i].name ==
-          TGSI_PROPERTY_FS_COLOR0_WRITES_ALL_CBUFS) {
-         cbuf0_write_all = TRUE;
-         break;
-      }
-   }
+   cbuf0_write_all =
+     shader->info.base.properties[TGSI_PROPERTY_FS_COLOR0_WRITES_ALL_CBUFS];
 
    /* TODO: actually pick these based on the fs and color buffer
     * characteristics. */
@@ -2265,7 +2284,7 @@ generate_fragment(struct llvmpipe_context *lp,
    arg_types[12] = int32_type;                         /* depth_stride */
 
    func_type = LLVMFunctionType(LLVMVoidTypeInContext(gallivm->context),
-                                arg_types, Elements(arg_types), 0);
+                                arg_types, ARRAY_SIZE(arg_types), 0);
 
    function = LLVMAddFunction(gallivm->module, func_name, func_type);
    LLVMSetFunctionCallConv(function, LLVMCCallConv);
@@ -2275,7 +2294,7 @@ generate_fragment(struct llvmpipe_context *lp,
    /* XXX: need to propagate noalias down into color param now we are
     * passing a pointer-to-pointer?
     */
-   for(i = 0; i < Elements(arg_types); ++i)
+   for(i = 0; i < ARRAY_SIZE(arg_types); ++i)
       if(LLVMGetTypeKind(arg_types[i]) == LLVMPointerTypeKind)
          LLVMAddAttribute(LLVMGetParam(function, i), LLVMNoAliasAttribute);
 
@@ -2301,8 +2320,8 @@ generate_fragment(struct llvmpipe_context *lp,
    lp_build_name(dady_ptr, "dady");
    lp_build_name(color_ptr_ptr, "color_ptr_ptr");
    lp_build_name(depth_ptr, "depth");
-   lp_build_name(thread_data_ptr, "thread_data");
    lp_build_name(mask_input, "mask_input");
+   lp_build_name(thread_data_ptr, "thread_data");
    lp_build_name(stride_ptr, "stride_ptr");
    lp_build_name(depth_stride, "depth_stride");
 
@@ -2316,7 +2335,7 @@ generate_fragment(struct llvmpipe_context *lp,
    LLVMPositionBuilderAtEnd(builder, block);
 
    /* code generated texture sampling */
-   sampler = lp_llvm_sampler_soa_create(key->state, context_ptr);
+   sampler = lp_llvm_sampler_soa_create(key->state);
 
    num_fs = 16 / fs_type.length; /* number of loops per 4x4 stamp */
    /* for 1d resources only run "upper half" of stamp */
@@ -2329,6 +2348,8 @@ generate_fragment(struct llvmpipe_context *lp,
       LLVMValueRef mask_store = lp_build_array_alloca(gallivm, mask_type,
                                                       num_loop, "mask_store");
       LLVMValueRef color_store[PIPE_MAX_COLOR_BUFS][TGSI_NUM_CHANNELS];
+      boolean pixel_center_integer =
+         shader->info.base.properties[TGSI_PROPERTY_FS_COORD_PIXEL_CENTER];
 
       /*
        * The shader input interpolation info is not explicitely baked in the
@@ -2339,7 +2360,8 @@ generate_fragment(struct llvmpipe_context *lp,
                                gallivm,
                                shader->info.base.num_inputs,
                                inputs,
-                               shader->info.base.pixel_center_integer,
+                               pixel_center_integer,
+                               key->depth_clamp,
                                builder, fs_type,
                                a0_ptr, dadx_ptr, dady_ptr,
                                x, y);
@@ -2559,13 +2581,13 @@ generate_variant(struct llvmpipe_context *lp,
    char module_name[64];
 
    variant = CALLOC_STRUCT(lp_fragment_shader_variant);
-   if(!variant)
+   if (!variant)
       return NULL;
 
    util_snprintf(module_name, sizeof(module_name), "fs%u_variant%u",
                  shader->no, shader->variants_created);
 
-   variant->gallivm = gallivm_create(module_name);
+   variant->gallivm = gallivm_create(module_name, lp->context);
    if (!variant->gallivm) {
       FREE(variant);
       return NULL;
@@ -2691,34 +2713,35 @@ llvmpipe_create_fs_state(struct pipe_context *pipe,
 
       switch (shader->info.base.input_interpolate[i]) {
       case TGSI_INTERPOLATE_CONSTANT:
-	 shader->inputs[i].interp = LP_INTERP_CONSTANT;
-	 break;
+         shader->inputs[i].interp = LP_INTERP_CONSTANT;
+         break;
       case TGSI_INTERPOLATE_LINEAR:
-	 shader->inputs[i].interp = LP_INTERP_LINEAR;
-	 break;
+         shader->inputs[i].interp = LP_INTERP_LINEAR;
+         break;
       case TGSI_INTERPOLATE_PERSPECTIVE:
-	 shader->inputs[i].interp = LP_INTERP_PERSPECTIVE;
-	 break;
+         shader->inputs[i].interp = LP_INTERP_PERSPECTIVE;
+         break;
       case TGSI_INTERPOLATE_COLOR:
-	 shader->inputs[i].interp = LP_INTERP_COLOR;
-	 break;
+         shader->inputs[i].interp = LP_INTERP_COLOR;
+         break;
       default:
-	 assert(0);
-	 break;
+         assert(0);
+         break;
       }
 
       switch (shader->info.base.input_semantic_name[i]) {
       case TGSI_SEMANTIC_FACE:
-	 shader->inputs[i].interp = LP_INTERP_FACING;
-	 break;
+         shader->inputs[i].interp = LP_INTERP_FACING;
+         break;
       case TGSI_SEMANTIC_POSITION:
-	 /* Position was already emitted above
-	  */
-	 shader->inputs[i].interp = LP_INTERP_POSITION;
-	 shader->inputs[i].src_index = 0;
-	 continue;
+         /* Position was already emitted above
+          */
+         shader->inputs[i].interp = LP_INTERP_POSITION;
+         shader->inputs[i].src_index = 0;
+         continue;
       }
 
+      /* XXX this is a completely pointless index map... */
       shader->inputs[i].src_index = i+1;
    }
 
@@ -2831,16 +2854,23 @@ llvmpipe_delete_fs_state(struct pipe_context *pipe, void *fs)
 static void
 llvmpipe_set_constant_buffer(struct pipe_context *pipe,
                              uint shader, uint index,
-                             struct pipe_constant_buffer *cb)
+                             const struct pipe_constant_buffer *cb)
 {
    struct llvmpipe_context *llvmpipe = llvmpipe_context(pipe);
    struct pipe_resource *constants = cb ? cb->buffer : NULL;
 
    assert(shader < PIPE_SHADER_TYPES);
-   assert(index < Elements(llvmpipe->constants[shader]));
+   assert(index < ARRAY_SIZE(llvmpipe->constants[shader]));
 
    /* note: reference counting */
    util_copy_constant_buffer(&llvmpipe->constants[shader][index], cb);
+
+   if (constants) {
+       if (!(constants->bind & PIPE_BIND_CONSTANT_BUFFER)) {
+         debug_printf("Illegal set constant without bind flag\n");
+         constants->bind |= PIPE_BIND_CONSTANT_BUFFER;
+      }
+   }
 
    if (shader == PIPE_SHADER_VERTEX ||
        shader == PIPE_SHADER_GEOMETRY) {
@@ -2864,8 +2894,9 @@ llvmpipe_set_constant_buffer(struct pipe_context *pipe,
       draw_set_mapped_constant_buffer(llvmpipe->draw, shader,
                                       index, data, size);
    }
-
-   llvmpipe->dirty |= LP_NEW_CONSTANTS;
+   else {
+      llvmpipe->dirty |= LP_NEW_FS_CONSTANTS;
+   }
 
    if (cb && cb->user_buffer) {
       pipe_resource_reference(&constants, NULL);
@@ -2876,7 +2907,7 @@ llvmpipe_set_constant_buffer(struct pipe_context *pipe,
 /**
  * Return the blend factor equivalent to a destination alpha of one.
  */
-static INLINE unsigned
+static inline unsigned
 force_dst_alpha_one(unsigned factor, boolean clamped_zero)
 {
    switch(factor) {
@@ -2936,6 +2967,13 @@ make_variant_key(struct llvmpipe_context *lp,
     * depth_clip == 0 implies depth clamping is enabled.
     *
     * When clip_halfz is enabled, then always clamp the depth values.
+    *
+    * XXX: This is incorrect for GL, but correct for d3d10 (depth
+    * clamp is always active in d3d10, regardless if depth clip is
+    * enabled or not).
+    * (GL has an always-on [0,1] clamp on fs depth output instead
+    * to ensure the depth values stay in range. Doesn't look like
+    * we do that, though...)
     */
    if (lp->rasterizer->clip_halfz) {
       key->depth_clamp = 1;
@@ -3022,7 +3060,7 @@ make_variant_key(struct llvmpipe_context *lp,
           * Also, force rgb/alpha func/factors match, to make AoS blending
           * easier.
           */
-         if (format_desc->swizzle[3] > UTIL_FORMAT_SWIZZLE_W ||
+         if (format_desc->swizzle[3] > PIPE_SWIZZLE_W ||
              format_desc->swizzle[3] == format_desc->swizzle[0]) {
             /* Doesn't cover mixed snorm/unorm but can't render to them anyway */
             boolean clamped_zero = !util_format_is_float(format) &&

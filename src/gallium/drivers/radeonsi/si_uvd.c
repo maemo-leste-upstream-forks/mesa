@@ -44,7 +44,7 @@ struct pipe_video_buffer *si_video_buffer_create(struct pipe_context *pipe,
 {
 	struct si_context *ctx = (struct si_context *)pipe;
 	struct r600_texture *resources[VL_NUM_COMPONENTS] = {};
-	struct radeon_surface *surfaces[VL_NUM_COMPONENTS] = {};
+	struct radeon_surf *surfaces[VL_NUM_COMPONENTS] = {};
 	struct pb_buffer **pbs[VL_NUM_COMPONENTS] = {};
 	const enum pipe_format *resource_formats;
 	struct pipe_video_buffer template;
@@ -97,17 +97,15 @@ struct pipe_video_buffer *si_video_buffer_create(struct pipe_context *pipe,
 		pbs[i] = &resources[i]->resource.buf;
 	}
 
-	rvid_join_surfaces(ctx->b.ws, templ.bind, pbs, surfaces);
+	rvid_join_surfaces(ctx->b.ws, pbs, surfaces);
 
 	for (i = 0; i < VL_NUM_COMPONENTS; ++i) {
 		if (!resources[i])
 			continue;
 
-		/* recreate the CS handle */
-		resources[i]->resource.cs_buf = ctx->b.ws->buffer_get_cs_handle(
-			resources[i]->resource.buf);
+		/* reset the address */
 		resources[i]->resource.gpu_address = ctx->b.ws->buffer_get_virtual_address(
-			resources[i]->resource.cs_buf);
+			resources[i]->resource.buf);
 	}
 
 	template.height *= array_size;
@@ -115,13 +113,13 @@ struct pipe_video_buffer *si_video_buffer_create(struct pipe_context *pipe,
 
 error:
 	for (i = 0; i < VL_NUM_COMPONENTS; ++i)
-		pipe_resource_reference((struct pipe_resource **)&resources[i], NULL);
+		r600_texture_reference(&resources[i], NULL);
 
 	return NULL;
 }
 
 /* set the decoding target buffer offsets */
-static struct radeon_winsys_cs_handle* si_uvd_set_dtb(struct ruvd_msg *msg, struct vl_video_buffer *buf)
+static struct pb_buffer* si_uvd_set_dtb(struct ruvd_msg *msg, struct vl_video_buffer *buf)
 {
 	struct r600_texture *luma = (struct r600_texture *)buf->resources[0];
 	struct r600_texture *chroma = (struct r600_texture *)buf->resources[1];
@@ -130,18 +128,18 @@ static struct radeon_winsys_cs_handle* si_uvd_set_dtb(struct ruvd_msg *msg, stru
 
 	ruvd_set_dt_surfaces(msg, &luma->surface, &chroma->surface);
 
-	return luma->resource.cs_buf;
+	return luma->resource.buf;
 }
 
 /* get the radeon resources for VCE */
 static void si_vce_get_buffer(struct pipe_resource *resource,
-			      struct radeon_winsys_cs_handle **handle,
-			      struct radeon_surface **surface)
+			      struct pb_buffer **handle,
+			      struct radeon_surf **surface)
 {
 	struct r600_texture *res = (struct r600_texture *)resource;
 
 	if (handle)
-		*handle = res->resource.cs_buf;
+		*handle = res->resource.buf;
 
 	if (surface)
 		*surface = &res->surface;

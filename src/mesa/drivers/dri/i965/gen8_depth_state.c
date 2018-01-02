@@ -28,6 +28,8 @@
 #include "brw_context.h"
 #include "brw_state.h"
 #include "brw_defines.h"
+#include "brw_wm.h"
+#include "main/framebuffer.h"
 
 /**
  * Helper function to emit depth related command packets.
@@ -40,7 +42,6 @@ emit_depth_packets(struct brw_context *brw,
                    bool depth_writable,
                    struct intel_mipmap_tree *stencil_mt,
                    bool stencil_writable,
-                   uint32_t stencil_offset,
                    bool hiz,
                    uint32_t width,
                    uint32_t height,
@@ -48,13 +49,15 @@ emit_depth_packets(struct brw_context *brw,
                    uint32_t lod,
                    uint32_t min_array_element)
 {
+   uint32_t mocs_wb = brw->gen >= 9 ? SKL_MOCS_WB : BDW_MOCS_WB;
+
    /* Skip repeated NULL depth/stencil emits (think 2D rendering). */
    if (!depth_mt && !stencil_mt && brw->no_depth_or_stencil) {
       assert(brw->hw_ctx);
       return;
    }
 
-   intel_emit_depth_stall_flushes(brw);
+   brw_emit_depth_stall_flushes(brw);
 
    /* _NEW_BUFFERS, _NEW_DEPTH, _NEW_STENCIL */
    BEGIN_BATCH(8);
@@ -73,7 +76,7 @@ emit_depth_packets(struct brw_context *brw,
       OUT_BATCH(0);
    }
    OUT_BATCH(((width - 1) << 4) | ((height - 1) << 18) | lod);
-   OUT_BATCH(((depth - 1) << 21) | (min_array_element << 10) | BDW_MOCS_WB);
+   OUT_BATCH(((depth - 1) << 21) | (min_array_element << 10) | mocs_wb);
    OUT_BATCH(0);
    OUT_BATCH(((depth - 1) << 21) | (depth_mt ? depth_mt->qpitch >> 2 : 0));
    ADVANCE_BATCH();
@@ -87,12 +90,13 @@ emit_depth_packets(struct brw_context *brw,
       OUT_BATCH(0);
       ADVANCE_BATCH();
    } else {
+      assert(depth_mt);
       BEGIN_BATCH(5);
       OUT_BATCH(GEN7_3DSTATE_HIER_DEPTH_BUFFER << 16 | (5 - 2));
-      OUT_BATCH((depth_mt->hiz_mt->pitch - 1) | BDW_MOCS_WB << 25);
-      OUT_RELOC64(depth_mt->hiz_mt->bo,
+      OUT_BATCH((depth_mt->hiz_buf->pitch - 1) | mocs_wb << 25);
+      OUT_RELOC64(depth_mt->hiz_buf->bo,
                   I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER, 0);
-      OUT_BATCH(depth_mt->hiz_mt->qpitch >> 2);
+      OUT_BATCH(depth_mt->hiz_buf->qpitch >> 2);
       ADVANCE_BATCH();
    }
 
@@ -121,11 +125,10 @@ emit_depth_packets(struct brw_context *brw,
        * page (which would imply that it does).  Experiments with the hardware
        * indicate that it does.
        */
-      OUT_BATCH(HSW_STENCIL_ENABLED | BDW_MOCS_WB << 22 |
+      OUT_BATCH(HSW_STENCIL_ENABLED | mocs_wb << 22 |
                 (2 * stencil_mt->pitch - 1));
       OUT_RELOC64(stencil_mt->bo,
-                  I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER,
-                  stencil_offset);
+                  I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER, 0);
       OUT_BATCH(stencil_mt ? stencil_mt->qpitch >> 2 : 0);
       ADVANCE_BATCH();
    }
@@ -187,6 +190,18 @@ gen8_emit_depth_stencil_hiz(struct brw_context *brw,
    case GL_TEXTURE_3D:
       assert(mt);
       depth = MAX2(mt->logical_depth0, 1);
+      surftype = translate_tex_target(gl_target);
+      break;
+   case GL_TEXTURE_1D_ARRAY:
+   case GL_TEXTURE_1D:
+      if (brw->gen >= 9) {
+         /* WaDisable1DDepthStencil. Skylake+ doesn't support 1D depth
+          * textures but it does allow pretending it's a 2D texture
+          * instead.
+          */
+         surftype = BRW_SURFACE_2D;
+         break;
+      }
       /* fallthrough */
    default:
       surftype = translate_tex_target(gl_target);
@@ -205,9 +220,174 @@ gen8_emit_depth_stencil_hiz(struct brw_context *brw,
    emit_depth_packets(brw, depth_mt, brw_depthbuffer_format(brw), surftype,
                       ctx->Depth.Mask != 0,
                       stencil_mt, ctx->Stencil._WriteEnabled,
-                      brw->depthstencil.stencil_offset,
                       hiz, width, height, depth, lod, min_array_element);
 }
+
+/**
+ * Should we set the PMA FIX ENABLE bit?
+ *
+ * To avoid unnecessary depth related stalls, we need to set this bit.
+ * However, there is a very complicated formula which governs when it
+ * is legal to do so.  This function computes that.
+ *
+ * See the documenation for the CACHE_MODE_1 register, bit 11.
+ */
+static bool
+pma_fix_enable(const struct brw_context *brw)
+{
+   const struct gl_context *ctx = &brw->ctx;
+   /* BRW_NEW_FS_PROG_DATA */
+   const struct brw_wm_prog_data *wm_prog_data =
+      brw_wm_prog_data(brw->wm.base.prog_data);
+   /* _NEW_BUFFERS */
+   struct intel_renderbuffer *depth_irb =
+      intel_get_renderbuffer(ctx->DrawBuffer, BUFFER_DEPTH);
+
+   /* 3DSTATE_WM::ForceThreadDispatch is never used. */
+   const bool wm_force_thread_dispatch = false;
+
+   /* 3DSTATE_RASTER::ForceSampleCount is never used. */
+   const bool raster_force_sample_count_nonzero = false;
+
+   /* _NEW_BUFFERS:
+    * 3DSTATE_DEPTH_BUFFER::SURFACE_TYPE != NULL &&
+    * 3DSTATE_DEPTH_BUFFER::HIZ Enable
+    */
+   const bool hiz_enabled = depth_irb && intel_renderbuffer_has_hiz(depth_irb);
+
+   /* 3DSTATE_WM::Early Depth/Stencil Control != EDSC_PREPS (2). */
+   const bool edsc_not_preps = !wm_prog_data->early_fragment_tests;
+
+   /* 3DSTATE_PS_EXTRA::PixelShaderValid is always true. */
+   const bool pixel_shader_valid = true;
+
+   /* !(3DSTATE_WM_HZ_OP::DepthBufferClear ||
+    *   3DSTATE_WM_HZ_OP::DepthBufferResolve ||
+    *   3DSTATE_WM_HZ_OP::Hierarchical Depth Buffer Resolve Enable ||
+    *   3DSTATE_WM_HZ_OP::StencilBufferClear)
+    *
+    * HiZ operations are done outside of the normal state upload, so they're
+    * definitely not happening now.
+    */
+   const bool in_hiz_op = false;
+
+   /* _NEW_DEPTH:
+    * DEPTH_STENCIL_STATE::DepthTestEnable
+    */
+   const bool depth_test_enabled = depth_irb && ctx->Depth.Test;
+
+   /* _NEW_DEPTH:
+    * 3DSTATE_WM_DEPTH_STENCIL::DepthWriteEnable &&
+    * 3DSTATE_DEPTH_BUFFER::DEPTH_WRITE_ENABLE.
+    */
+   const bool depth_writes_enabled = ctx->Depth.Mask;
+
+   /* _NEW_STENCIL:
+    * !DEPTH_STENCIL_STATE::Stencil Buffer Write Enable ||
+    * !3DSTATE_DEPTH_BUFFER::Stencil Buffer Enable ||
+    * !3DSTATE_STENCIL_BUFFER::Stencil Buffer Enable
+    */
+   const bool stencil_writes_enabled = ctx->Stencil._WriteEnabled;
+
+   /* 3DSTATE_PS_EXTRA::Pixel Shader Computed Depth Mode != PSCDEPTH_OFF */
+   const bool ps_computes_depth =
+      wm_prog_data->computed_depth_mode != BRW_PSCDEPTH_OFF;
+
+   /* BRW_NEW_FS_PROG_DATA:        3DSTATE_PS_EXTRA::PixelShaderKillsPixels
+    * BRW_NEW_FS_PROG_DATA:        3DSTATE_PS_EXTRA::oMask Present to RenderTarget
+    * _NEW_MULTISAMPLE:         3DSTATE_PS_BLEND::AlphaToCoverageEnable
+    * _NEW_COLOR:               3DSTATE_PS_BLEND::AlphaTestEnable
+    *
+    * 3DSTATE_WM_CHROMAKEY::ChromaKeyKillEnable is always false.
+    * 3DSTATE_WM::ForceKillPix != ForceOff is always true.
+    */
+   const bool kill_pixel =
+      wm_prog_data->uses_kill ||
+      wm_prog_data->uses_omask ||
+      (_mesa_is_multisample_enabled(ctx) && ctx->Multisample.SampleAlphaToCoverage) ||
+      ctx->Color.AlphaEnabled;
+
+   /* The big formula in CACHE_MODE_1::NP PMA FIX ENABLE. */
+   return !wm_force_thread_dispatch &&
+          !raster_force_sample_count_nonzero &&
+          hiz_enabled &&
+          edsc_not_preps &&
+          pixel_shader_valid &&
+          !in_hiz_op &&
+          depth_test_enabled &&
+          (ps_computes_depth ||
+           (kill_pixel && (depth_writes_enabled || stencil_writes_enabled)));
+}
+
+void
+gen8_write_pma_stall_bits(struct brw_context *brw, uint32_t pma_stall_bits)
+{
+   struct gl_context *ctx = &brw->ctx;
+
+   /* If we haven't actually changed the value, bail now to avoid unnecessary
+    * pipeline stalls and register writes.
+    */
+   if (brw->pma_stall_bits == pma_stall_bits)
+      return;
+
+   brw->pma_stall_bits = pma_stall_bits;
+
+   /* According to the PIPE_CONTROL documentation, software should emit a
+    * PIPE_CONTROL with the CS Stall and Depth Cache Flush bits set prior
+    * to the LRI.  If stencil buffer writes are enabled, then a Render Cache
+    * Flush is also necessary.
+    */
+   const uint32_t render_cache_flush =
+      ctx->Stencil._WriteEnabled ? PIPE_CONTROL_RENDER_TARGET_FLUSH : 0;
+   brw_emit_pipe_control_flush(brw,
+                               PIPE_CONTROL_CS_STALL |
+                               PIPE_CONTROL_DEPTH_CACHE_FLUSH |
+                               render_cache_flush);
+
+   /* CACHE_MODE_1 is a non-privileged register. */
+   BEGIN_BATCH(3);
+   OUT_BATCH(MI_LOAD_REGISTER_IMM | (3 - 2));
+   OUT_BATCH(GEN7_CACHE_MODE_1);
+   OUT_BATCH(GEN8_HIZ_PMA_MASK_BITS | pma_stall_bits);
+   ADVANCE_BATCH();
+
+   /* After the LRI, a PIPE_CONTROL with both the Depth Stall and Depth Cache
+    * Flush bits is often necessary.  We do it regardless because it's easier.
+    * The render cache flush is also necessary if stencil writes are enabled.
+    */
+   brw_emit_pipe_control_flush(brw,
+                               PIPE_CONTROL_DEPTH_STALL |
+                               PIPE_CONTROL_DEPTH_CACHE_FLUSH |
+                               render_cache_flush);
+
+}
+
+static void
+gen8_emit_pma_stall_workaround(struct brw_context *brw)
+{
+   uint32_t bits = 0;
+
+   if (brw->gen >= 9)
+      return;
+
+   if (pma_fix_enable(brw))
+      bits |= GEN8_HIZ_NP_PMA_FIX_ENABLE | GEN8_HIZ_NP_EARLY_Z_FAILS_DISABLE;
+
+   gen8_write_pma_stall_bits(brw, bits);
+}
+
+const struct brw_tracked_state gen8_pma_fix = {
+   .dirty = {
+      .mesa = _NEW_BUFFERS |
+              _NEW_COLOR |
+              _NEW_DEPTH |
+              _NEW_MULTISAMPLE |
+              _NEW_STENCIL,
+      .brw = BRW_NEW_BLORP |
+             BRW_NEW_FS_PROG_DATA,
+   },
+   .emit = gen8_emit_pma_stall_workaround
+};
 
 /**
  * Emit packets to perform a depth/HiZ resolve or fast depth/stencil clear.
@@ -217,10 +397,14 @@ gen8_emit_depth_stencil_hiz(struct brw_context *brw,
  */
 void
 gen8_hiz_exec(struct brw_context *brw, struct intel_mipmap_tree *mt,
-              unsigned int level, unsigned int layer, enum gen6_hiz_op op)
+              unsigned int level, unsigned int layer, enum blorp_hiz_op op)
 {
-   if (op == GEN6_HIZ_OP_NONE)
+   if (op == BLORP_HIZ_OP_NONE)
       return;
+
+   /* Disable the PMA stall fix since we're about to do a HiZ operation. */
+   if (brw->gen == 8)
+      gen8_write_pma_stall_bits(brw, 0);
 
    assert(mt->first_level == 0);
    assert(mt->logical_depth0 >= 1);
@@ -231,6 +415,16 @@ gen8_hiz_exec(struct brw_context *brw, struct intel_mipmap_tree *mt,
     */
    uint32_t surface_width  = ALIGN(mt->logical_width0,  level == 0 ? 8 : 1);
    uint32_t surface_height = ALIGN(mt->logical_height0, level == 0 ? 4 : 1);
+
+   /* From the documentation for 3DSTATE_WM_HZ_OP: "3DSTATE_MULTISAMPLE packet
+    * must be used prior to this packet to change the Number of Multisamples.
+    * This packet must not be used to change Number of Multisamples in a
+    * rendering sequence."
+    */
+   if (brw->num_samples != mt->num_samples) {
+      gen8_emit_3dstate_multisample(brw, mt->num_samples);
+      brw->NewGLState |= _NEW_MULTISAMPLE;
+   }
 
    /* The basic algorithm is:
     * - If needed, emit 3DSTATE_{DEPTH,HIER_DEPTH,STENCIL}_BUFFER and
@@ -244,7 +438,7 @@ gen8_hiz_exec(struct brw_context *brw, struct intel_mipmap_tree *mt,
                       brw_depth_format(brw, mt->format),
                       BRW_SURFACE_2D,
                       true, /* depth writes */
-                      NULL, false, 0, /* no stencil for now */
+                      NULL, false, /* no stencil for now */
                       true, /* hiz */
                       surface_width,
                       surface_height,
@@ -273,16 +467,28 @@ gen8_hiz_exec(struct brw_context *brw, struct intel_mipmap_tree *mt,
    uint32_t dw1 = 0;
 
    switch (op) {
-   case GEN6_HIZ_OP_DEPTH_RESOLVE:
+   case BLORP_HIZ_OP_DEPTH_RESOLVE:
       dw1 |= GEN8_WM_HZ_DEPTH_RESOLVE;
       break;
-   case GEN6_HIZ_OP_HIZ_RESOLVE:
+   case BLORP_HIZ_OP_HIZ_RESOLVE:
       dw1 |= GEN8_WM_HZ_HIZ_RESOLVE;
       break;
-   case GEN6_HIZ_OP_DEPTH_CLEAR:
+   case BLORP_HIZ_OP_DEPTH_CLEAR:
       dw1 |= GEN8_WM_HZ_DEPTH_CLEAR;
+
+      /* The "Clear Rectangle X Max" (and Y Max) fields are exclusive,
+       * rather than inclusive, and limited to 16383.  This means that
+       * for a 16384x16384 render target, we would miss the last row
+       * or column of pixels along the edge.
+       *
+       * To work around this, we have to set the "Full Surface Depth
+       * and Stencil Clear" bit.  We can do this in all cases because
+       * we always clear the full rectangle anyway.  We'll need to
+       * change this if we ever add scissored clear support.
+       */
+      dw1 |= GEN8_WM_HZ_FULL_SURFACE_DEPTH_CLEAR;
       break;
-   case GEN6_HIZ_OP_NONE:
+   case BLORP_HIZ_OP_NONE:
       unreachable("Should not get here.");
    }
 
@@ -304,7 +510,7 @@ gen8_hiz_exec(struct brw_context *brw, struct intel_mipmap_tree *mt,
     */
    brw_emit_pipe_control_write(brw,
                                PIPE_CONTROL_WRITE_IMMEDIATE,
-                               brw->batch.workaround_bo, 0, 0, 0);
+                               brw->workaround_bo, 0, 0, 0);
 
    /* Emit 3DSTATE_WM_HZ_OP again to disable the state overrides. */
    BEGIN_BATCH(5);
@@ -315,6 +521,22 @@ gen8_hiz_exec(struct brw_context *brw, struct intel_mipmap_tree *mt,
    OUT_BATCH(0);
    ADVANCE_BATCH();
 
+   /*
+    * From the Broadwell PRM, volume 7, "Depth Buffer Clear":
+    *
+    *  Depth buffer clear pass using any of the methods (WM_STATE, 3DSTATE_WM
+    *  or 3DSTATE_WM_HZ_OP) must be followed by a PIPE_CONTROL command with
+    *  DEPTH_STALL bit and Depth FLUSH bits "set" before starting to render.
+    *  DepthStall and DepthFlush are not needed between consecutive depth
+    *  clear passes nor is it required if th e depth clear pass was done with
+    *  "full_surf_clear" bit set in the 3DSTATE_WM_HZ_OP.
+    *
+    *  TODO: Such as the spec says, this could be conditional.
+    */
+   brw_emit_pipe_control_flush(brw, 
+                               PIPE_CONTROL_DEPTH_CACHE_FLUSH |
+                               PIPE_CONTROL_DEPTH_STALL);
+
    /* Mark this buffer as needing a TC flush, as we've rendered to it. */
    brw_render_cache_set_add_bo(brw, mt->bo);
 
@@ -324,5 +546,5 @@ gen8_hiz_exec(struct brw_context *brw, struct intel_mipmap_tree *mt,
     *
     * Setting _NEW_DEPTH and _NEW_BUFFERS covers it, but is rather overkill.
     */
-   brw->state.dirty.mesa |= _NEW_DEPTH | _NEW_BUFFERS;
+   brw->NewGLState |= _NEW_DEPTH | _NEW_BUFFERS;
 }

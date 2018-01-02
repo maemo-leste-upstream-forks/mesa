@@ -24,6 +24,7 @@
  *
  */
 
+#include <stdio.h>
 #include "main/mtypes.h"
 #include "main/fbobject.h"
 
@@ -34,7 +35,7 @@
 
 #include "drivers/common/meta.h"
 
-const char const *nouveau_vendor_string = "Nouveau";
+const char * const nouveau_vendor_string = "Nouveau";
 
 const char *
 nouveau_get_renderer_string(unsigned chipset)

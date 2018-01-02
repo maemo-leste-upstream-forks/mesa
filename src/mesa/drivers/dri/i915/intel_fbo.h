@@ -85,14 +85,12 @@ struct intel_renderbuffer
  * NULL will be returned if the rb isn't really an intel_renderbuffer.
  * This is determined by checking the ClassID.
  */
-static INLINE struct intel_renderbuffer *
+static inline struct intel_renderbuffer *
 intel_renderbuffer(struct gl_renderbuffer *rb)
 {
    struct intel_renderbuffer *irb = (struct intel_renderbuffer *) rb;
-   if (irb && irb->Base.Base.ClassID == INTEL_RB_CLASS) {
-      /*_mesa_warning(NULL, "Returning non-intel Rb\n");*/
+   if (irb && irb->Base.Base.ClassID == INTEL_RB_CLASS)
       return irb;
-   }
    else
       return NULL;
 }
@@ -106,7 +104,7 @@ intel_renderbuffer(struct gl_renderbuffer *rb)
  * If the attached renderbuffer is a wrapper, then return wrapped
  * renderbuffer.
  */
-static INLINE struct intel_renderbuffer *
+static inline struct intel_renderbuffer *
 intel_get_renderbuffer(struct gl_framebuffer *fb, gl_buffer_index attIndex)
 {
    struct gl_renderbuffer *rb;
@@ -121,7 +119,7 @@ intel_get_renderbuffer(struct gl_framebuffer *fb, gl_buffer_index attIndex)
 }
 
 
-static INLINE mesa_format
+static inline mesa_format
 intel_rb_format(const struct intel_renderbuffer *rb)
 {
    return rb->Base.Base.Format;

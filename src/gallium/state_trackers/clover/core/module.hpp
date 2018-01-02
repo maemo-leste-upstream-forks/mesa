@@ -23,7 +23,8 @@
 #ifndef CLOVER_CORE_MODULE_HPP
 #define CLOVER_CORE_MODULE_HPP
 
-#include "util/compat.hpp"
+#include <vector>
+#include <string>
 
 namespace clover {
    struct module {
@@ -40,14 +41,14 @@ namespace clover {
          };
 
          section(resource_id id, enum type type, size_t size,
-                 const compat::vector<char> &data) :
+                 const std::vector<char> &data) :
                  id(id), type(type), size(size), data(data) { }
          section() : id(0), type(text), size(0), data() { }
 
          resource_id id;
          type type;
          size_t size;
-         compat::vector<char> data;
+         std::vector<char> data;
       };
 
       struct argument {
@@ -68,47 +69,57 @@ namespace clover {
             sign_ext
          };
 
+         enum semantic {
+            general,
+            grid_dimension,
+            grid_offset,
+            image_size,
+            image_format
+         };
+
          argument(enum type type, size_t size,
                   size_t target_size, size_t target_align,
-                  enum ext_type ext_type) :
+                  enum ext_type ext_type,
+                  enum semantic semantic = general) :
             type(type), size(size),
             target_size(target_size), target_align(target_align),
-            ext_type(ext_type) { }
+            ext_type(ext_type), semantic(semantic) { }
 
          argument(enum type type, size_t size) :
             type(type), size(size),
             target_size(size), target_align(1),
-            ext_type(zero_ext) { }
+            ext_type(zero_ext), semantic(general) { }
 
          argument() : type(scalar), size(0),
                       target_size(0), target_align(1),
-                      ext_type(zero_ext) { }
+                      ext_type(zero_ext), semantic(general) { }
 
          type type;
          size_t size;
          size_t target_size;
          size_t target_align;
          ext_type ext_type;
+         semantic semantic;
       };
 
       struct symbol {
-         symbol(const compat::vector<char> &name, resource_id section,
-                size_t offset, const compat::vector<argument> &args) :
+         symbol(const std::string &name, resource_id section,
+                size_t offset, const std::vector<argument> &args) :
                 name(name), section(section), offset(offset), args(args) { }
          symbol() : name(), section(0), offset(0), args() { }
 
-         compat::vector<char> name;
+         std::string name;
          resource_id section;
          size_t offset;
-         compat::vector<argument> args;
+         std::vector<argument> args;
       };
 
-      void serialize(compat::ostream &os) const;
-      static module deserialize(compat::istream &is);
+      void serialize(std::ostream &os) const;
+      static module deserialize(std::istream &is);
       size_t size() const;
 
-      compat::vector<symbol> syms;
-      compat::vector<section> secs;
+      std::vector<symbol> syms;
+      std::vector<section> secs;
    };
 }
 

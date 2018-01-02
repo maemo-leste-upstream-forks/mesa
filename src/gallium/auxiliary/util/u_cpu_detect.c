@@ -52,7 +52,7 @@
 #include <machine/cpu.h>
 #endif
 
-#if defined(PIPE_OS_FREEBSD)
+#if defined(PIPE_OS_FREEBSD) || defined(PIPE_OS_DRAGONFLY)
 #include <sys/types.h>
 #include <sys/sysctl.h>
 #endif
@@ -179,10 +179,10 @@ static int has_cpuid(void)
  * @sa cpuid.h included in gcc-4.3 onwards.
  * @sa http://msdn.microsoft.com/en-us/library/hskdteyh.aspx
  */
-static INLINE void
+static inline void
 cpuid(uint32_t ax, uint32_t *p)
 {
-#if (defined(PIPE_CC_GCC) || defined(PIPE_CC_SUNPRO)) && defined(PIPE_ARCH_X86)
+#if defined(PIPE_CC_GCC) && defined(PIPE_ARCH_X86)
    __asm __volatile (
      "xchgl %%ebx, %1\n\t"
      "cpuid\n\t"
@@ -193,7 +193,7 @@ cpuid(uint32_t ax, uint32_t *p)
        "=d" (p[3])
      : "0" (ax)
    );
-#elif (defined(PIPE_CC_GCC) || defined(PIPE_CC_SUNPRO)) && defined(PIPE_ARCH_X86_64)
+#elif defined(PIPE_CC_GCC) && defined(PIPE_ARCH_X86_64)
    __asm __volatile (
      "cpuid\n\t"
      : "=a" (p[0]),
@@ -216,10 +216,10 @@ cpuid(uint32_t ax, uint32_t *p)
  * @sa cpuid.h included in gcc-4.4 onwards.
  * @sa http://msdn.microsoft.com/en-us/library/hskdteyh%28v=vs.90%29.aspx
  */
-static INLINE void
+static inline void
 cpuid_count(uint32_t ax, uint32_t cx, uint32_t *p)
 {
-#if (defined(PIPE_CC_GCC) || defined(PIPE_CC_SUNPRO)) && defined(PIPE_ARCH_X86)
+#if defined(PIPE_CC_GCC) && defined(PIPE_ARCH_X86)
    __asm __volatile (
      "xchgl %%ebx, %1\n\t"
      "cpuid\n\t"
@@ -230,7 +230,7 @@ cpuid_count(uint32_t ax, uint32_t cx, uint32_t *p)
        "=d" (p[3])
      : "0" (ax), "2" (cx)
    );
-#elif (defined(PIPE_CC_GCC) || defined(PIPE_CC_SUNPRO)) && defined(PIPE_ARCH_X86_64)
+#elif defined(PIPE_CC_GCC) && defined(PIPE_ARCH_X86_64)
    __asm __volatile (
      "cpuid\n\t"
      : "=a" (p[0]),
@@ -250,7 +250,7 @@ cpuid_count(uint32_t ax, uint32_t cx, uint32_t *p)
 }
 
 
-static INLINE uint64_t xgetbv(void)
+static inline uint64_t xgetbv(void)
 {
 #if defined(PIPE_CC_GCC)
    uint32_t eax, edx;
@@ -272,7 +272,7 @@ static INLINE uint64_t xgetbv(void)
 
 
 #if defined(PIPE_ARCH_X86)
-static INLINE boolean sse2_has_daz(void)
+PIPE_ALIGN_STACK static inline boolean sse2_has_daz(void)
 {
    struct {
       uint32_t pad1[7];
@@ -281,10 +281,9 @@ static INLINE boolean sse2_has_daz(void)
    } PIPE_ALIGN_VAR(16) fxarea;
 
    fxarea.mxcsr_mask = 0;
-#if (defined(PIPE_CC_GCC) || defined(PIPE_CC_SUNPRO))
+#if defined(PIPE_CC_GCC)
    __asm __volatile ("fxsave %0" : "+m" (fxarea));
-#elif (defined(PIPE_CC_MSVC) && _MSC_VER >= 1700) || defined(PIPE_CC_ICL)
-   /* 1700 = Visual Studio 2012 */
+#elif defined(PIPE_CC_MSVC) || defined(PIPE_CC_ICL)
    _fxsave(&fxarea);
 #else
    fxarea.mxcsr_mask = 0;
@@ -314,7 +313,7 @@ util_cpu_detect(void)
    }
 #elif defined(PIPE_OS_UNIX) && defined(_SC_NPROCESSORS_ONLN)
    util_cpu_caps.nr_cpus = sysconf(_SC_NPROCESSORS_ONLN);
-   if (util_cpu_caps.nr_cpus == -1)
+   if (util_cpu_caps.nr_cpus == ~0u)
       util_cpu_caps.nr_cpus = 1;
 #elif defined(PIPE_OS_BSD)
    {
@@ -369,7 +368,8 @@ util_cpu_detect(void)
          util_cpu_caps.has_avx    = ((regs2[2] >> 28) & 1) && // AVX
                                     ((regs2[2] >> 27) & 1) && // OSXSAVE
                                     ((xgetbv() & 6) == 6);    // XMM & YMM
-         util_cpu_caps.has_f16c   = (regs2[2] >> 29) & 1;
+         util_cpu_caps.has_f16c   = ((regs2[2] >> 29) & 1) && util_cpu_caps.has_avx;
+         util_cpu_caps.has_fma    = ((regs2[2] >> 12) & 1) && util_cpu_caps.has_avx;
          util_cpu_caps.has_mmx2   = util_cpu_caps.has_sse; /* SSE cpus supports mmxext too */
 #if defined(PIPE_ARCH_X86_64)
          util_cpu_caps.has_daz = 1;
@@ -409,8 +409,12 @@ util_cpu_detect(void)
       }
 
       if (regs[0] >= 0x80000006) {
+         /* should we really do this if the clflush size above worked? */
+         unsigned int cacheline;
          cpuid(0x80000006, regs2);
-         util_cpu_caps.cacheline = regs2[2] & 0xFF;
+         cacheline = regs2[2] & 0xFF;
+         if (cacheline > 0)
+            util_cpu_caps.cacheline = cacheline;
       }
 
       if (!util_cpu_caps.has_sse) {

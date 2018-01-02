@@ -23,8 +23,9 @@
  */
 
 #include "main/glheader.h"
-#include "main/colormac.h"
+#include "main/macros.h"
 #include "main/samplerobj.h"
+#include "main/teximage.h"
 #include "program/prog_instruction.h"
 
 #include "s_context.h"
@@ -116,8 +117,7 @@ fetch_texel_deriv( struct gl_context *ctx, const GLfloat texcoord[4],
    const struct gl_texture_object *texObj = texUnit->_Current;
 
    if (texObj) {
-      const struct gl_texture_image *texImg =
-         texObj->Image[0][texObj->BaseLevel];
+      const struct gl_texture_image *texImg = _mesa_base_tex_image(texObj);
       const struct swrast_texture_image *swImg =
          swrast_texture_image_const(texImg);
       const struct gl_sampler_object *samp = _mesa_get_samplerobj(ctx, unit);
@@ -189,12 +189,6 @@ init_machine(struct gl_context *ctx, struct gl_program_machine *machine,
 
    machine->CurElement = col;
 
-   /* init condition codes */
-   machine->CondCodes[0] = COND_EQ;
-   machine->CondCodes[1] = COND_EQ;
-   machine->CondCodes[2] = COND_EQ;
-   machine->CondCodes[3] = COND_EQ;
-
    /* init call stack */
    machine->StackDepth = 0;
 
@@ -243,9 +237,9 @@ run_program(struct gl_context *ctx, SWspan *span, GLuint start, GLuint end)
             /* Store result depth/z */
             if (outputsWritten & BITFIELD64_BIT(FRAG_RESULT_DEPTH)) {
                const GLfloat depth = machine->Outputs[FRAG_RESULT_DEPTH][2];
-               if (depth <= 0.0)
+               if (depth <= 0.0F)
                   span->array->z[i] = 0;
-               else if (depth >= 1.0)
+               else if (depth >= 1.0F)
                   span->array->z[i] = ctx->DrawBuffer->_DepthMax;
                else
                   span->array->z[i] =
@@ -273,7 +267,7 @@ _swrast_exec_fragment_program( struct gl_context *ctx, SWspan *span )
 
    /* incoming colors should be floats */
    if (program->Base.InputsRead & VARYING_BIT_COL0) {
-      ASSERT(span->array->ChanType == GL_FLOAT);
+      assert(span->array->ChanType == GL_FLOAT);
    }
 
    run_program(ctx, span, 0, span->end);

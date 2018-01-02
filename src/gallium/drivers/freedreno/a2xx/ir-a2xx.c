@@ -146,7 +146,7 @@ void * ir2_shader_assemble(struct ir2_shader *shader, struct ir2_shader_info *in
 		goto fail;
 	}
 
-	ptr = dwords = calloc(1, 4 * info->sizedwords);
+	ptr = dwords = calloc(4, info->sizedwords);
 
 	/* second pass, emit CF program in pairs: */
 	for (i = 0; i < shader->cfs_count; i += 2) {
@@ -403,7 +403,7 @@ static int instr_emit_alu(struct ir2_instruction *instr, uint32_t *dwords,
 	assert((src2_reg->flags & IR2_REG_EXPORT) == 0);
 	assert(!src2_reg->swizzle || (strlen(src2_reg->swizzle) == 4));
 
-	if (instr->alu.vector_opc == ~0) {
+	if (instr->alu.vector_opc == (instr_vector_opc_t)~0) {
 		alu->vector_opc          = MAXv;
 		alu->vector_write_mask   = 0;
 	} else {
@@ -431,7 +431,7 @@ static int instr_emit_alu(struct ir2_instruction *instr, uint32_t *dwords,
 	alu->vector_clamp        = instr->alu.vector_clamp;
 	alu->scalar_clamp        = instr->alu.scalar_clamp;
 
-	if (instr->alu.scalar_opc != ~0) {
+	if (instr->alu.scalar_opc != (instr_scalar_opc_t)~0) {
 		struct ir2_register *sdst_reg = instr->regs[reg++];
 
 		reg_update_stats(sdst_reg, info, true);
@@ -439,7 +439,8 @@ static int instr_emit_alu(struct ir2_instruction *instr, uint32_t *dwords,
 		assert(sdst_reg->flags == dst_reg->flags);
 
 		if (src3_reg) {
-			assert(src3_reg == instr->regs[reg++]);
+			assert(src3_reg == instr->regs[reg]);
+			reg++;
 		} else {
 			src3_reg = instr->regs[reg++];
 		}

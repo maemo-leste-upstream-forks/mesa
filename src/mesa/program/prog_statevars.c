@@ -29,6 +29,7 @@
  */
 
 
+#include <stdio.h>
 #include "main/glheader.h"
 #include "main/context.h"
 #include "main/blend.h"
@@ -39,6 +40,10 @@
 #include "prog_statevars.h"
 #include "prog_parameter.h"
 #include "main/samplerobj.h"
+#include "main/framebuffer.h"
+
+
+#define ONE_DIV_SQRT_LN2 (1.201122408786449815)
 
 
 /**
@@ -50,17 +55,19 @@
  */
 static void
 _mesa_fetch_state(struct gl_context *ctx, const gl_state_index state[],
-                  GLfloat *value)
+                  gl_constant_value *val)
 {
+   GLfloat *value = &val->f;
+
    switch (state[0]) {
    case STATE_MATERIAL:
       {
          /* state[1] is either 0=front or 1=back side */
          const GLuint face = (GLuint) state[1];
          const struct gl_material *mat = &ctx->Light.Material;
-         ASSERT(face == 0 || face == 1);
+         assert(face == 0 || face == 1);
          /* we rely on tokens numbered so that _BACK_ == _FRONT_+ 1 */
-         ASSERT(MAT_ATTRIB_FRONT_AMBIENT + 1 == MAT_ATTRIB_BACK_AMBIENT);
+         assert(MAT_ATTRIB_FRONT_AMBIENT + 1 == MAT_ATTRIB_BACK_AMBIENT);
          /* XXX we could get rid of this switch entirely with a little
           * work in arbprogparse.c's parse_state_single_item().
           */
@@ -170,7 +177,7 @@ _mesa_fetch_state(struct gl_context *ctx, const gl_state_index state[],
          const GLuint ln = (GLuint) state[1];
          const GLuint face = (GLuint) state[2];
          GLint i;
-         ASSERT(face == 0 || face == 1);
+         assert(face == 0 || face == 1);
          switch (state[3]) {
             case STATE_AMBIENT:
                for (i = 0; i < 3; i++) {
@@ -240,14 +247,14 @@ _mesa_fetch_state(struct gl_context *ctx, const gl_state_index state[],
       {
          /* state[1] is the texture unit */
          const GLuint unit = (GLuint) state[1];
-         if (_mesa_get_clamp_fragment_color(ctx))
+         if (_mesa_get_clamp_fragment_color(ctx, ctx->DrawBuffer))
             COPY_4V(value, ctx->Texture.Unit[unit].EnvColor);
          else
             COPY_4V(value, ctx->Texture.Unit[unit].EnvColorUnclamped);
       }
       return;
    case STATE_FOG_COLOR:
-      if (_mesa_get_clamp_fragment_color(ctx))
+      if (_mesa_get_clamp_fragment_color(ctx, ctx->DrawBuffer))
          COPY_4V(value, ctx->Fog.Color);
       else
          COPY_4V(value, ctx->Fog.ColorUnclamped);
@@ -295,10 +302,8 @@ _mesa_fetch_state(struct gl_context *ctx, const gl_state_index state[],
          const gl_state_index modifier = state[4];
          const GLfloat *m;
          GLuint row, i;
-         ASSERT(firstRow >= 0);
-         ASSERT(firstRow < 4);
-         ASSERT(lastRow >= 0);
-         ASSERT(lastRow < 4);
+         assert(firstRow < 4);
+         assert(lastRow < 4);
          if (mat == STATE_MODELVIEW_MATRIX) {
             matrix = ctx->ModelviewMatrixStack.Top;
          }
@@ -309,11 +314,11 @@ _mesa_fetch_state(struct gl_context *ctx, const gl_state_index state[],
             matrix = &ctx->_ModelProjectMatrix;
          }
          else if (mat == STATE_TEXTURE_MATRIX) {
-            ASSERT(index < Elements(ctx->TextureMatrixStack));
+            assert(index < ARRAY_SIZE(ctx->TextureMatrixStack));
             matrix = ctx->TextureMatrixStack[index].Top;
          }
          else if (mat == STATE_PROGRAM_MATRIX) {
-            ASSERT(index < Elements(ctx->ProgramMatrixStack));
+            assert(index < ARRAY_SIZE(ctx->ProgramMatrixStack));
             matrix = ctx->ProgramMatrixStack[index].Top;
          }
          else {
@@ -350,7 +355,7 @@ _mesa_fetch_state(struct gl_context *ctx, const gl_state_index state[],
       }
       return;
    case STATE_NUM_SAMPLES:
-      ((int *)value)[0] = ctx->DrawBuffer->Visual.samples;
+      val[0].i = MAX2(1, _mesa_geometric_samples(ctx->DrawBuffer));
       return;
    case STATE_DEPTH_RANGE:
       value[0] = ctx->ViewportArray[0].Near;                /* near       */
@@ -472,7 +477,7 @@ _mesa_fetch_state(struct gl_context *ctx, const gl_state_index state[],
           * single MAD.
           * linear: fogcoord * -1/(end-start) + end/(end-start)
           * exp: 2^-(density/ln(2) * fogcoord)
-          * exp2: 2^-((density/(ln(2)^2) * fogcoord)^2)
+          * exp2: 2^-((density/(sqrt(ln(2))) * fogcoord)^2)
           */
          value[0] = (ctx->Fog.End == ctx->Fog.Start)
             ? 1.0f : (GLfloat)(-1.0F / (ctx->Fog.End - ctx->Fog.Start));
@@ -499,7 +504,7 @@ _mesa_fetch_state(struct gl_context *ctx, const gl_state_index state[],
                minImplSize = ctx->Const.MinPointSizeAA;
                maxImplSize = ctx->Const.MaxPointSize;
             }
-            else if (ctx->Point.SmoothFlag || ctx->Multisample._Enabled) {
+            else if (ctx->Point.SmoothFlag || _mesa_is_multisample_enabled(ctx)) {
                minImplSize = ctx->Const.MinPointSizeAA;
                maxImplSize = ctx->Const.MaxPointSizeAA;
             }
@@ -591,6 +596,21 @@ _mesa_fetch_state(struct gl_context *ctx, const gl_state_index state[],
             value[2] = 1.0F;
             value[3] = 0.0F;
          }
+         return;
+
+      case STATE_TCS_PATCH_VERTICES_IN:
+         val[0].i = ctx->TessCtrlProgram.patch_vertices;
+         return;
+
+      case STATE_TES_PATCH_VERTICES_IN:
+         if (ctx->TessCtrlProgram._Current)
+            val[0].i = ctx->TessCtrlProgram._Current->VerticesOut;
+         else
+            val[0].i = ctx->TessCtrlProgram.patch_vertices;
+         return;
+
+      case STATE_ADVANCED_BLENDING_MODE:
+         val[0].i = ctx->Color.BlendEnabled ? ctx->Color._AdvancedBlendMode : 0;
          return;
 
       /* XXX: make sure new tokens added here are also handled in the 
@@ -702,6 +722,9 @@ _mesa_program_state_flags(const gl_state_index state[STATE_LENGTH])
       case STATE_FB_SIZE:
       case STATE_FB_WPOS_Y_TRANSFORM:
          return _NEW_BUFFERS;
+
+      case STATE_ADVANCED_BLENDING_MODE:
+         return _NEW_COLOR;
 
       default:
          /* unknown state indexes are silently ignored and
@@ -909,6 +932,9 @@ append_token(char *dst, gl_state_index k)
    case STATE_FB_WPOS_Y_TRANSFORM:
       append(dst, "FbWposYTransform");
       break;
+   case STATE_ADVANCED_BLENDING_MODE:
+      append(dst, "AdvancedBlendingMode");
+      break;
    default:
       /* probably STATE_INTERNAL_DRIVER+i (driver private state) */
       append(dst, "driverState");
@@ -1043,7 +1069,7 @@ _mesa_program_state_string(const gl_state_index state[STATE_LENGTH])
       break;
    }
 
-   return _mesa_strdup(str);
+   return strdup(str);
 }
 
 
@@ -1068,7 +1094,7 @@ _mesa_load_state_parameters(struct gl_context *ctx,
       if (paramList->Parameters[i].Type == PROGRAM_STATE_VAR) {
          _mesa_fetch_state(ctx,
 			   paramList->Parameters[i].StateIndexes,
-                           &paramList->ParameterValues[i][0].f);
+                           &paramList->ParameterValues[i][0]);
       }
    }
 }

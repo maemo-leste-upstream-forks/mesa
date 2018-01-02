@@ -37,13 +37,15 @@
  */
 #define MAX_MOVS 8 /**< The maximum number of MOVs to attempt to match. */
 
+using namespace brw;
+
 /**
  * Scans forwards from an IF counting consecutive MOV instructions in the
  * "then" and "else" blocks of the if statement.
  *
- * A pointer to the fs_inst* for IF is passed as the <if_inst> argument. The
- * function stores pointers to the MOV instructions in the <then_mov> and
- * <else_mov> arrays.
+ * A pointer to the bblock_t following the IF is passed as the <then_block>
+ * argument. The function stores pointers to the MOV instructions in the
+ * <then_mov> and <else_mov> arrays.
  *
  * \return the minimum number of MOVs found in the two branches or zero if
  *         an error occurred.
@@ -62,26 +64,23 @@
  */
 static int
 count_movs_from_if(fs_inst *then_mov[MAX_MOVS], fs_inst *else_mov[MAX_MOVS],
-                   fs_inst *if_inst, fs_inst *else_inst)
+                   bblock_t *then_block, bblock_t *else_block)
 {
-   fs_inst *m = if_inst;
-
-   assert(m->opcode == BRW_OPCODE_IF);
-   m = (fs_inst *) m->next;
-
    int then_movs = 0;
-   while (then_movs < MAX_MOVS && m->opcode == BRW_OPCODE_MOV) {
-      then_mov[then_movs] = m;
-      m = (fs_inst *) m->next;
+   foreach_inst_in_block(fs_inst, inst, then_block) {
+      if (then_movs == MAX_MOVS || inst->opcode != BRW_OPCODE_MOV)
+         break;
+
+      then_mov[then_movs] = inst;
       then_movs++;
    }
 
-   m = (fs_inst *) else_inst->next;
-
    int else_movs = 0;
-   while (else_movs < MAX_MOVS && m->opcode == BRW_OPCODE_MOV) {
-      else_mov[else_movs] = m;
-      m = (fs_inst *) m->next;
+   foreach_inst_in_block(fs_inst, inst, else_block) {
+      if (else_movs == MAX_MOVS || inst->opcode != BRW_OPCODE_MOV)
+         break;
+
+      else_mov[else_movs] = inst;
       else_movs++;
    }
 
@@ -127,44 +126,34 @@ fs_visitor::opt_peephole_sel()
 {
    bool progress = false;
 
-   calculate_cfg();
-
    foreach_block (block, cfg) {
       /* IF instructions, by definition, can only be found at the ends of
        * basic blocks.
        */
-      fs_inst *if_inst = (fs_inst *) block->end;
+      fs_inst *if_inst = (fs_inst *)block->end();
       if (if_inst->opcode != BRW_OPCODE_IF)
          continue;
-
-      if (!block->else_inst)
-         continue;
-
-      fs_inst *else_inst = (fs_inst *) block->else_inst;
-      assert(else_inst->opcode == BRW_OPCODE_ELSE);
 
       fs_inst *else_mov[MAX_MOVS] = { NULL };
       fs_inst *then_mov[MAX_MOVS] = { NULL };
 
-      int movs = count_movs_from_if(then_mov, else_mov, if_inst, else_inst);
+      bblock_t *then_block = block->next();
+      bblock_t *else_block = NULL;
+      foreach_list_typed(bblock_link, child, link, &block->children) {
+         if (child->block != then_block) {
+            if (child->block->prev()->end()->opcode == BRW_OPCODE_ELSE) {
+               else_block = child->block;
+            }
+            break;
+         }
+      }
+      if (else_block == NULL)
+         continue;
+
+      int movs = count_movs_from_if(then_mov, else_mov, then_block, else_block);
 
       if (movs == 0)
          continue;
-
-      fs_inst *sel_inst[MAX_MOVS] = { NULL };
-      fs_inst *mov_imm_inst[MAX_MOVS] = { NULL };
-
-      enum brw_predicate predicate;
-      bool predicate_inverse;
-      if (brw->gen == 6 && if_inst->conditional_mod) {
-         /* For Sandybridge with IF with embedded comparison */
-         predicate = BRW_PREDICATE_NORMAL;
-         predicate_inverse = false;
-      } else {
-         /* Separate CMP and IF instructions */
-         predicate = if_inst->predicate;
-         predicate_inverse = if_inst->predicate_inverse;
-      }
 
       /* Generate SEL instructions for pairs of MOVs to a common destination. */
       for (int i = 0; i < movs; i++) {
@@ -173,8 +162,13 @@ fs_visitor::opt_peephole_sel()
 
          /* Check that the MOVs are the right form. */
          if (!then_mov[i]->dst.equals(else_mov[i]->dst) ||
+             then_mov[i]->exec_size != else_mov[i]->exec_size ||
+             then_mov[i]->group != else_mov[i]->group ||
+             then_mov[i]->force_writemask_all != else_mov[i]->force_writemask_all ||
              then_mov[i]->is_partial_write() ||
-             else_mov[i]->is_partial_write()) {
+             else_mov[i]->is_partial_write() ||
+             then_mov[i]->conditional_mod != BRW_CONDITIONAL_NONE ||
+             else_mov[i]->conditional_mod != BRW_CONDITIONAL_NONE) {
             movs = i;
             break;
          }
@@ -184,9 +178,17 @@ fs_visitor::opt_peephole_sel()
             movs = i;
             break;
          }
+      }
+
+      if (movs == 0)
+         continue;
+
+      for (int i = 0; i < movs; i++) {
+         const fs_builder ibld = fs_builder(this, then_block, then_mov[i])
+                                 .at(block, if_inst);
 
          if (then_mov[i]->src[0].equals(else_mov[i]->src[0])) {
-            sel_inst[i] = MOV(then_mov[i]->dst, then_mov[i]->src[0]);
+            ibld.MOV(then_mov[i]->dst, then_mov[i]->src[0]);
          } else {
             /* Only the last source register can be a constant, so if the MOV
              * in the "then" clause uses a constant, we need to put it in a
@@ -194,34 +196,18 @@ fs_visitor::opt_peephole_sel()
              */
             fs_reg src0(then_mov[i]->src[0]);
             if (src0.file == IMM) {
-               src0 = fs_reg(this, glsl_type::float_type);
+               src0 = vgrf(glsl_type::float_type);
                src0.type = then_mov[i]->src[0].type;
-               mov_imm_inst[i] = MOV(src0, then_mov[i]->src[0]);
+               ibld.MOV(src0, then_mov[i]->src[0]);
             }
 
-            sel_inst[i] = SEL(then_mov[i]->dst, src0, else_mov[i]->src[0]);
-            sel_inst[i]->predicate = predicate;
-            sel_inst[i]->predicate_inverse = predicate_inverse;
+            set_predicate_inv(if_inst->predicate, if_inst->predicate_inverse,
+                              ibld.SEL(then_mov[i]->dst, src0,
+                                       else_mov[i]->src[0]));
          }
-      }
 
-      if (movs == 0)
-         continue;
-
-      /* Emit a CMP if our IF used the embedded comparison */
-      if (brw->gen == 6 && if_inst->conditional_mod) {
-         fs_inst *cmp_inst = CMP(reg_null_d, if_inst->src[0], if_inst->src[1],
-                                 if_inst->conditional_mod);
-         if_inst->insert_before(cmp_inst);
-      }
-
-      for (int i = 0; i < movs; i++) {
-         if (mov_imm_inst[i])
-            if_inst->insert_before(mov_imm_inst[i]);
-         if_inst->insert_before(sel_inst[i]);
-
-         then_mov[i]->remove();
-         else_mov[i]->remove();
+         then_mov[i]->remove(then_block);
+         else_mov[i]->remove(else_block);
       }
 
       progress = true;

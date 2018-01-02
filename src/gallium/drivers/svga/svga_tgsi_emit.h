@@ -28,6 +28,7 @@
 
 #include "tgsi/tgsi_scan.h"
 #include "svga_hw_reg.h"
+#include "svga_shader.h"
 #include "svga_tgsi.h"
 #include "svga3d_shaderdefs.h"
 
@@ -83,6 +84,9 @@ struct svga_shader_emitter
 
    int dynamic_branching_level;
 
+   unsigned num_output_writes;
+   boolean constant_color_output;
+
    boolean in_main_func;
 
    boolean created_common_immediate;
@@ -130,6 +134,11 @@ struct svga_shader_emitter
    struct svga_arl_consts arl_consts[12];
    int num_arl_consts;
    int current_arl;
+
+   unsigned pstipple_sampler_unit;
+
+   int num_samplers;
+   uint8_t sampler_target[PIPE_MAX_SAMPLERS];
 };
 
 
@@ -147,6 +156,9 @@ svga_shader_emit_opcode(struct svga_shader_emitter *emit,
 boolean
 svga_shader_emit_instructions(struct svga_shader_emitter *emit,
                               const struct tgsi_token *tokens);
+
+boolean
+svga_shader_emit_samplers_decl(struct svga_shader_emitter *emit);
 
 boolean
 svga_translate_decl_sm30(struct svga_shader_emitter *emit,
@@ -167,7 +179,7 @@ svga_translate_decl_sm30(struct svga_shader_emitter *emit,
 
 
 /** Emit the given SVGA3dShaderInstToken opcode */
-static INLINE boolean
+static inline boolean
 emit_instruction(struct svga_shader_emitter *emit,
                  SVGA3dShaderInstToken opcode)
 {
@@ -176,7 +188,7 @@ emit_instruction(struct svga_shader_emitter *emit,
 
 
 /** Generate a SVGA3dShaderInstToken for the given SVGA3D shader opcode */
-static INLINE SVGA3dShaderInstToken
+static inline SVGA3dShaderInstToken
 inst_token(unsigned opcode)
 {
    SVGA3dShaderInstToken inst;
@@ -192,7 +204,7 @@ inst_token(unsigned opcode)
  * Generate a SVGA3dShaderInstToken for the given SVGA3D shader opcode
  * with the predication flag set.
  */
-static INLINE SVGA3dShaderInstToken
+static inline SVGA3dShaderInstToken
 inst_token_predicated(unsigned opcode)
 {
    SVGA3dShaderInstToken inst;
@@ -209,7 +221,7 @@ inst_token_predicated(unsigned opcode)
  * Generate a SVGA3dShaderInstToken for a SETP instruction (set predicate)
  * using the given comparison operator (one of SVGA3DOPCOMP_xx).
  */
-static INLINE SVGA3dShaderInstToken
+static inline SVGA3dShaderInstToken
 inst_token_setp(unsigned operator)
 {
    SVGA3dShaderInstToken inst;
@@ -227,7 +239,7 @@ inst_token_setp(unsigned operator)
  * Note that this function is used to create tokens for output registers,
  * temp registers AND constants (see emit_def_const()).
  */
-static INLINE SVGA3dShaderDestToken
+static inline SVGA3dShaderDestToken
 dst_register(unsigned file, int number)
 {
    SVGA3dShaderDestToken dest;
@@ -255,7 +267,7 @@ dst_register(unsigned file, int number)
  * Apply a writemask to the given SVGA3dShaderDestToken, returning a
  * new SVGA3dShaderDestToken.
  */
-static INLINE SVGA3dShaderDestToken
+static inline SVGA3dShaderDestToken
 writemask(SVGA3dShaderDestToken dest, unsigned mask)
 {
    assert(dest.mask & mask);
@@ -265,7 +277,7 @@ writemask(SVGA3dShaderDestToken dest, unsigned mask)
 
 
 /** Create a SVGA3dShaderSrcToken given a register file and number */
-static INLINE SVGA3dShaderSrcToken
+static inline SVGA3dShaderSrcToken
 src_token(unsigned file, int number)
 {
    SVGA3dShaderSrcToken src;
@@ -289,7 +301,7 @@ src_token(unsigned file, int number)
 
 
 /** Create a src_register given a register file and register number */
-static INLINE struct src_register
+static inline struct src_register
 src_register(unsigned file, int number)
 {
    struct src_register src;
@@ -301,7 +313,7 @@ src_register(unsigned file, int number)
 }
 
 /** Translate src_register into SVGA3dShaderDestToken */
-static INLINE SVGA3dShaderDestToken
+static inline SVGA3dShaderDestToken
 dst(struct src_register src)
 {
    return dst_register(SVGA3dShaderGetRegType(src.base.value), src.base.num);
@@ -309,7 +321,7 @@ dst(struct src_register src)
 
 
 /** Translate SVGA3dShaderDestToken to a src_register */
-static INLINE struct src_register
+static inline struct src_register
 src(SVGA3dShaderDestToken dst)
 {
    return src_register(SVGA3dShaderGetRegType(dst.value), dst.num);

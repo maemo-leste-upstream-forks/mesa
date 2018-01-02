@@ -41,7 +41,8 @@ enum special_regs {
 	SV_ALU_PRED = 128,
 	SV_EXEC_MASK,
 	SV_AR_INDEX,
-	SV_VALID_MASK
+	SV_VALID_MASK,
+	SV_GEOMETRY_EMIT
 };
 
 class node;
@@ -61,6 +62,13 @@ struct sel_chan
 
 	static unsigned sel(unsigned idx) { return (idx-1) >> 2; }
 	static unsigned chan(unsigned idx) { return (idx-1) & 3; }
+
+	sel_chan(unsigned bank, unsigned index,
+			 unsigned chan, alu_kcache_index_mode index_mode)
+		: id(sel_chan((bank << 12) | index | ((unsigned)index_mode << 28), chan).id) {}
+	unsigned kcache_index_mode() const { return sel() >> 28; }
+	unsigned kcache_sel() const { return sel() & 0x0fffffffu; }
+	unsigned kcache_bank() const { return kcache_sel() >> 12; }
 };
 
 inline sb_ostream& operator <<(sb_ostream& o, sel_chan r) {
@@ -255,8 +263,6 @@ public:
 	}
 };
 
-class value;
-
 enum value_kind {
 	VLK_REG,
 	VLK_REL_REG,
@@ -425,8 +431,6 @@ inline value_flags& operator &=(value_flags &l, value_flags r) {
 	return l;
 }
 
-struct value;
-
 sb_ostream& operator << (sb_ostream &o, value &v);
 
 typedef uint32_t value_hash;
@@ -442,14 +446,15 @@ enum use_kind {
 };
 
 struct use_info {
-	use_info *next;
 	node *op;
 	use_kind kind;
 	int arg;
 
-	use_info(node *n, use_kind kind, int arg, use_info* next)
-		: next(next), op(n), kind(kind), arg(arg) {}
+	use_info(node *n, use_kind kind, int arg)
+		: op(n), kind(kind), arg(arg) {}
 };
+
+typedef std::list< use_info * > uselist;
 
 enum constraint_kind {
 	CK_SAME_REG,
@@ -459,7 +464,7 @@ enum constraint_kind {
 
 class shader;
 class sb_value_pool;
-class ra_chunk;
+struct ra_chunk;
 class ra_constraint;
 
 class value {
@@ -494,7 +499,7 @@ public:
 	value_hash ghash;
 
 	node *def, *adef;
-	use_info *uses;
+	uselist uses;
 
 	ra_constraint *constraint;
 	ra_chunk *chunk;
@@ -505,6 +510,9 @@ public:
 
 	bool is_AR() {
 		return is_special_reg() && select == sel_chan(SV_AR_INDEX, 0);
+	}
+	bool is_geometry_emit() {
+		return is_special_reg() && select == sel_chan(SV_GEOMETRY_EMIT, 0);
 	}
 
 	node* any_def() {
@@ -578,6 +586,7 @@ public:
 	}
 
 	void add_use(node *n, use_kind kind, int arg);
+	void remove_use(const node *n);
 
 	value_hash hash();
 	value_hash rel_hash();
@@ -783,8 +792,8 @@ public:
 	void replace_with(node *n);
 	void remove();
 
-	virtual value_hash hash();
-	value_hash hash_src();
+	virtual value_hash hash() const;
+	value_hash hash_src() const;
 
 	virtual bool fold_dispatch(expr_handler *ex);
 
@@ -1089,7 +1098,8 @@ typedef std::vector<repeat_node*> repeat_vec;
 class region_node : public container_node {
 protected:
 	region_node(unsigned id) : container_node(NT_REGION, NST_LIST), region_id(id),
-			loop_phi(), phi(), vars_defined(), departs(), repeats() {}
+			loop_phi(), phi(), vars_defined(), departs(), repeats(), src_loop()
+			{}
 public:
 	unsigned region_id;
 
@@ -1101,12 +1111,16 @@ public:
 	depart_vec departs;
 	repeat_vec repeats;
 
+	// true if region was created for loop in the parser, sometimes repeat_node
+	// may be optimized away so we need to remember this information
+	bool src_loop;
+
 	virtual bool accept(vpass &p, bool enter);
 
 	unsigned dep_count() { return departs.size(); }
 	unsigned rep_count() { return repeats.size() + 1; }
 
-	bool is_loop() { return !repeats.empty(); }
+	bool is_loop() { return src_loop || !repeats.empty(); }
 
 	container_node* get_entry_code_location() {
 		node *p = first;

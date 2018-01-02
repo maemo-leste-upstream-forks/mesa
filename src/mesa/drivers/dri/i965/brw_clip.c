@@ -29,7 +29,6 @@
   *   Keith Whitwell <keithw@vmware.com>
   */
 
-#include "main/glheader.h"
 #include "main/macros.h"
 #include "main/enums.h"
 
@@ -62,7 +61,7 @@ static void compile_clip_prog( struct brw_context *brw,
 
    /* Begin the compilation:
     */
-   brw_init_compile(brw, &c.func, mem_ctx);
+   brw_init_codegen(&brw->screen->devinfo, &c.func, mem_ctx);
 
    c.func.single_program_flow = 1;
 
@@ -117,12 +116,13 @@ static void compile_clip_prog( struct brw_context *brw,
 
    if (unlikely(INTEL_DEBUG & DEBUG_CLIP)) {
       fprintf(stderr, "clip:\n");
-      brw_disassemble(brw, c.func.store, 0, program_size, stderr);
+      brw_disassemble(&brw->screen->devinfo, c.func.store,
+                      0, program_size, stderr);
       fprintf(stderr, "\n");
    }
 
    brw_upload_cache(&brw->cache,
-		    BRW_CLIP_PROG,
+		    BRW_CACHE_CLIP_PROG,
 		    &c.key, sizeof(c.key),
 		    program, program_size,
 		    &c.prog_data, sizeof(c.prog_data),
@@ -132,11 +132,22 @@ static void compile_clip_prog( struct brw_context *brw,
 
 /* Calculate interpolants for triangle and line rasterization.
  */
-static void
+void
 brw_upload_clip_prog(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
    struct brw_clip_prog_key key;
+
+   if (!brw_state_dirty(brw,
+                        _NEW_BUFFERS |
+                        _NEW_LIGHT |
+                        _NEW_POLYGON |
+                        _NEW_TRANSFORM,
+                        BRW_NEW_BLORP |
+                        BRW_NEW_INTERPOLATION_MAP |
+                        BRW_NEW_REDUCED_PRIMITIVE |
+                        BRW_NEW_VUE_MAP_GEOM_OUT))
+      return;
 
    memset(&key, 0, sizeof(key));
 
@@ -222,10 +233,10 @@ brw_upload_clip_prog(struct brw_context *brw)
 	       /* _NEW_POLYGON, _NEW_BUFFERS */
 	       key.offset_units = ctx->Polygon.OffsetUnits * ctx->DrawBuffer->_MRD * 2;
 	       key.offset_factor = ctx->Polygon.OffsetFactor * ctx->DrawBuffer->_MRD;
+	       key.offset_clamp = ctx->Polygon.OffsetClamp * ctx->DrawBuffer->_MRD;
 	    }
 
-	    switch (ctx->Polygon.FrontFace) {
-	    case GL_CCW:
+	    if (!ctx->Polygon._FrontBit) {
 	       key.fill_ccw = fill_front;
 	       key.fill_cw = fill_back;
 	       key.offset_ccw = offset_front;
@@ -233,8 +244,7 @@ brw_upload_clip_prog(struct brw_context *brw)
 	       if (ctx->Light.Model.TwoSide &&
 		   key.fill_cw != CLIP_CULL)
 		  key.copy_bfc_cw = 1;
-	       break;
-	    case GL_CW:
+	    } else {
 	       key.fill_cw = fill_front;
 	       key.fill_ccw = fill_back;
 	       key.offset_cw = offset_front;
@@ -242,29 +252,14 @@ brw_upload_clip_prog(struct brw_context *brw)
 	       if (ctx->Light.Model.TwoSide &&
 		   key.fill_ccw != CLIP_CULL)
 		  key.copy_bfc_ccw = 1;
-	       break;
 	    }
 	 }
       }
    }
 
-   if (!brw_search_cache(&brw->cache, BRW_CLIP_PROG,
+   if (!brw_search_cache(&brw->cache, BRW_CACHE_CLIP_PROG,
 			 &key, sizeof(key),
 			 &brw->clip.prog_offset, &brw->clip.prog_data)) {
       compile_clip_prog( brw, &key );
    }
 }
-
-
-const struct brw_tracked_state brw_clip_prog = {
-   .dirty = {
-      .mesa  = (_NEW_LIGHT |
-		_NEW_TRANSFORM |
-		_NEW_POLYGON |
-		_NEW_BUFFERS),
-      .brw   = (BRW_NEW_REDUCED_PRIMITIVE |
-                BRW_NEW_VUE_MAP_GEOM_OUT |
-                BRW_NEW_INTERPOLATION_MAP)
-   },
-   .emit = brw_upload_clip_prog
-};

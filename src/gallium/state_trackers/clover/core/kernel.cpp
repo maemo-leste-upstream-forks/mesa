@@ -33,24 +33,8 @@ kernel::kernel(clover::program &prog, const std::string &name,
    program(prog), _name(name), exec(*this),
    program_ref(prog._kernel_ref_counter) {
    for (auto &marg : margs) {
-      if (marg.type == module::argument::scalar)
-         _args.emplace_back(new scalar_argument(marg.size));
-      else if (marg.type == module::argument::global)
-         _args.emplace_back(new global_argument);
-      else if (marg.type == module::argument::local)
-         _args.emplace_back(new local_argument);
-      else if (marg.type == module::argument::constant)
-         _args.emplace_back(new constant_argument);
-      else if (marg.type == module::argument::image2d_rd ||
-               marg.type == module::argument::image3d_rd)
-         _args.emplace_back(new image_rd_argument);
-      else if (marg.type == module::argument::image2d_wr ||
-               marg.type == module::argument::image3d_wr)
-         _args.emplace_back(new image_wr_argument);
-      else if (marg.type == module::argument::sampler)
-         _args.emplace_back(new sampler_argument);
-      else
-         throw error(CL_INVALID_KERNEL_DEFINITION);
+      if (marg.semantic == module::argument::general)
+         _args.emplace_back(argument::create(marg));
    }
 }
 
@@ -67,10 +51,11 @@ kernel::launch(command_queue &q,
                const std::vector<size_t> &grid_offset,
                const std::vector<size_t> &grid_size,
                const std::vector<size_t> &block_size) {
-   const auto m = program().binary(q.device());
+   const auto m = program().build(q.device()).binary;
    const auto reduced_grid_size =
       map(divides(), grid_size, block_size);
-   void *st = exec.bind(&q);
+   void *st = exec.bind(&q, grid_offset);
+   struct pipe_grid_info info = {};
 
    // The handles are created during exec_context::bind(), so we need make
    // sure to call exec_context::bind() before retrieving them.
@@ -90,11 +75,14 @@ kernel::launch(command_queue &q,
    q.pipe->set_global_binding(q.pipe, 0, exec.g_buffers.size(),
                               exec.g_buffers.data(), g_handles.data());
 
-   q.pipe->launch_grid(q.pipe,
-                       pad_vector(q, block_size, 1).data(),
-                       pad_vector(q, reduced_grid_size, 1).data(),
-                       find(name_equals(_name), m.syms).offset,
-                       exec.input.data());
+   // Fill information for the launch_grid() call.
+   info.work_dim = grid_size.size();
+   copy(pad_vector(q, block_size, 1), info.block);
+   copy(pad_vector(q, reduced_grid_size, 1), info.grid);
+   info.pc = find(name_equals(_name), m.syms).offset;
+   info.input = exec.input.data();
+
+   q.pipe->launch_grid(q.pipe, &info);
 
    q.pipe->set_global_binding(q.pipe, 0, exec.g_buffers.size(), NULL, NULL);
    q.pipe->set_compute_resources(q.pipe, 0, exec.resources.size(), NULL);
@@ -102,6 +90,8 @@ kernel::launch(command_queue &q,
                              exec.sviews.size(), NULL);
    q.pipe->bind_sampler_states(q.pipe, PIPE_SHADER_COMPUTE, 0,
                                exec.samplers.size(), NULL);
+
+   q.pipe->memory_barrier(q.pipe, PIPE_BARRIER_GLOBAL_BUFFER);
    exec.unbind();
 }
 
@@ -152,7 +142,7 @@ kernel::args() const {
 
 const module &
 kernel::module(const command_queue &q) const {
-   return program().binary(q.device());
+   return program().build(q.device()).binary;
 }
 
 kernel::exec_context::exec_context(kernel &kern) :
@@ -165,17 +155,69 @@ kernel::exec_context::~exec_context() {
 }
 
 void *
-kernel::exec_context::bind(intrusive_ptr<command_queue> _q) {
+kernel::exec_context::bind(intrusive_ptr<command_queue> _q,
+                           const std::vector<size_t> &grid_offset) {
    std::swap(q, _q);
 
    // Bind kernel arguments.
-   auto &m = kern.program().binary(q->device());
+   auto &m = kern.program().build(q->device()).binary;
    auto margs = find(name_equals(kern.name()), m.syms).args;
    auto msec = find(type_equals(module::section::text), m.secs);
+   auto explicit_arg = kern._args.begin();
 
-   for_each([=](kernel::argument &karg, const module::argument &marg) {
-               karg.bind(*this, marg);
-            }, kern.args(), margs);
+   for (auto &marg : margs) {
+      switch (marg.semantic) {
+      case module::argument::general:
+         (*(explicit_arg++))->bind(*this, marg);
+         break;
+
+      case module::argument::grid_dimension: {
+         const cl_uint dimension = grid_offset.size();
+         auto arg = argument::create(marg);
+
+         arg->set(sizeof(dimension), &dimension);
+         arg->bind(*this, marg);
+         break;
+      }
+      case module::argument::grid_offset: {
+         for (cl_uint x : pad_vector(*q, grid_offset, 0)) {
+            auto arg = argument::create(marg);
+
+            arg->set(sizeof(x), &x);
+            arg->bind(*this, marg);
+         }
+         break;
+      }
+      case module::argument::image_size: {
+         auto img = dynamic_cast<image_argument &>(**(explicit_arg - 1)).get();
+         std::vector<cl_uint> image_size{
+               static_cast<cl_uint>(img->width()),
+               static_cast<cl_uint>(img->height()),
+               static_cast<cl_uint>(img->depth())};
+         for (auto x : image_size) {
+            auto arg = argument::create(marg);
+
+            arg->set(sizeof(x), &x);
+            arg->bind(*this, marg);
+         }
+         break;
+      }
+      case module::argument::image_format: {
+         auto img = dynamic_cast<image_argument &>(**(explicit_arg - 1)).get();
+         cl_image_format fmt = img->format();
+         std::vector<cl_uint> image_format{
+               static_cast<cl_uint>(fmt.image_channel_data_type),
+               static_cast<cl_uint>(fmt.image_channel_order)};
+         for (auto x : image_format) {
+            auto arg = argument::create(marg);
+
+            arg->set(sizeof(x), &x);
+            arg->bind(*this, marg);
+         }
+         break;
+      }
+      }
+   }
 
    // Create a new compute state if anything changed.
    if (!st || q != _q ||
@@ -184,7 +226,8 @@ kernel::exec_context::bind(intrusive_ptr<command_queue> _q) {
       if (st)
          _q->pipe->delete_compute_state(_q->pipe, st);
 
-      cs.prog = msec.data.begin();
+      cs.ir_type = q->device().ir_format();
+      cs.prog = &(msec.data[0]);
       cs.req_local_mem = mem_local;
       cs.req_input_mem = input.size();
       st = q->pipe->create_compute_state(q->pipe, &cs);
@@ -283,6 +326,36 @@ namespace {
    }
 }
 
+std::unique_ptr<kernel::argument>
+kernel::argument::create(const module::argument &marg) {
+   switch (marg.type) {
+   case module::argument::scalar:
+      return std::unique_ptr<kernel::argument>(new scalar_argument(marg.size));
+
+   case module::argument::global:
+      return std::unique_ptr<kernel::argument>(new global_argument);
+
+   case module::argument::local:
+      return std::unique_ptr<kernel::argument>(new local_argument);
+
+   case module::argument::constant:
+      return std::unique_ptr<kernel::argument>(new constant_argument);
+
+   case module::argument::image2d_rd:
+   case module::argument::image3d_rd:
+      return std::unique_ptr<kernel::argument>(new image_rd_argument);
+
+   case module::argument::image2d_wr:
+   case module::argument::image3d_wr:
+      return std::unique_ptr<kernel::argument>(new image_wr_argument);
+
+   case module::argument::sampler:
+      return std::unique_ptr<kernel::argument>(new sampler_argument);
+
+   }
+   throw error(CL_INVALID_KERNEL_DEFINITION);
+}
+
 kernel::argument::argument() : _set(false) {
 }
 
@@ -301,6 +374,9 @@ kernel::scalar_argument::scalar_argument(size_t size) : size(size) {
 
 void
 kernel::scalar_argument::set(size_t size, const void *value) {
+   if (!value)
+      throw error(CL_INVALID_ARG_VALUE);
+
    if (size != this->size)
       throw error(CL_INVALID_ARG_SIZE);
 
@@ -369,6 +445,9 @@ kernel::local_argument::set(size_t size, const void *value) {
    if (value)
       throw error(CL_INVALID_ARG_VALUE);
 
+   if (!size)
+      throw error(CL_INVALID_ARG_SIZE);
+
    _storage = size;
    _set = true;
 }
@@ -428,6 +507,9 @@ kernel::constant_argument::unbind(exec_context &ctx) {
 
 void
 kernel::image_rd_argument::set(size_t size, const void *value) {
+   if (!value)
+      throw error(CL_INVALID_ARG_VALUE);
+
    if (size != sizeof(cl_mem))
       throw error(CL_INVALID_ARG_SIZE);
 
@@ -456,6 +538,9 @@ kernel::image_rd_argument::unbind(exec_context &ctx) {
 
 void
 kernel::image_wr_argument::set(size_t size, const void *value) {
+   if (!value)
+      throw error(CL_INVALID_ARG_VALUE);
+
    if (size != sizeof(cl_mem))
       throw error(CL_INVALID_ARG_SIZE);
 
@@ -484,6 +569,9 @@ kernel::image_wr_argument::unbind(exec_context &ctx) {
 
 void
 kernel::sampler_argument::set(size_t size, const void *value) {
+   if (!value)
+      throw error(CL_INVALID_SAMPLER);
+
    if (size != sizeof(cl_sampler))
       throw error(CL_INVALID_ARG_SIZE);
 

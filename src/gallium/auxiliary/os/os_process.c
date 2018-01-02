@@ -43,6 +43,10 @@
 #warning unexpected platform in os_process.c
 #endif
 
+#if defined(PIPE_OS_LINUX)
+#  include <fcntl.h>
+#endif
+
 
 /**
  * Return the name of the current process.
@@ -54,36 +58,47 @@ boolean
 os_get_process_name(char *procname, size_t size)
 {
    const char *name;
+
+   /* First, check if the GALLIUM_PROCESS_NAME env var is set to
+    * override the normal process name query.
+    */
+   name = os_get_option("GALLIUM_PROCESS_NAME");
+
+   if (!name) {
+      /* do normal query */
+
 #if defined(PIPE_SUBSYSTEM_WINDOWS_USER)
-   char szProcessPath[MAX_PATH];
-   char *lpProcessName;
-   char *lpProcessExt;
+      char szProcessPath[MAX_PATH];
+      char *lpProcessName;
+      char *lpProcessExt;
 
-   GetModuleFileNameA(NULL, szProcessPath, Elements(szProcessPath));
+      GetModuleFileNameA(NULL, szProcessPath, ARRAY_SIZE(szProcessPath));
 
-   lpProcessName = strrchr(szProcessPath, '\\');
-   lpProcessName = lpProcessName ? lpProcessName + 1 : szProcessPath;
+      lpProcessName = strrchr(szProcessPath, '\\');
+      lpProcessName = lpProcessName ? lpProcessName + 1 : szProcessPath;
 
-   lpProcessExt = strrchr(lpProcessName, '.');
-   if (lpProcessExt) {
-      *lpProcessExt = '\0';
-   }
+      lpProcessExt = strrchr(lpProcessName, '.');
+      if (lpProcessExt) {
+         *lpProcessExt = '\0';
+      }
 
-   name = lpProcessName;
+      name = lpProcessName;
 
 #elif defined(__GLIBC__) || defined(__CYGWIN__)
-   name = program_invocation_short_name;
+      name = program_invocation_short_name;
 #elif defined(PIPE_OS_BSD) || defined(PIPE_OS_APPLE)
-   /* *BSD and OS X */
-   name = getprogname();
+      /* *BSD and OS X */
+      name = getprogname();
 #elif defined(PIPE_OS_HAIKU)
-   image_info info;
-   get_image_info(B_CURRENT_TEAM, &info);
-   name = info.name;
+      image_info info;
+      get_image_info(B_CURRENT_TEAM, &info);
+      name = info.name;
 #else
 #warning unexpected platform in os_process.c
-   return FALSE;
+      return FALSE;
 #endif
+
+   }
 
    assert(size > 0);
    assert(procname);
@@ -96,4 +111,48 @@ os_get_process_name(char *procname, size_t size)
    else {
       return FALSE;
    }
+}
+
+
+/**
+ * Return the command line for the calling process.  This is basically
+ * the argv[] array with the arguments separated by spaces.
+ * \param cmdline  returns the command line string
+ * \param size  size of the cmdline buffer
+ * \return  TRUE or FALSE for success, failure
+ */
+boolean
+os_get_command_line(char *cmdline, size_t size)
+{
+#if defined(PIPE_SUBSYSTEM_WINDOWS_USER)
+   const char *args = GetCommandLine();
+   if (args) {
+      strncpy(cmdline, args, size);
+      // make sure we terminate the string
+      cmdline[size - 1] = 0;
+      return TRUE;
+   }
+#elif defined(PIPE_OS_LINUX)
+   int f = open("/proc/self/cmdline", O_RDONLY);
+   if (f) {
+      const int n = read(f, cmdline, size - 1);
+      int i;
+      assert(n < size);
+      // The arguments are separated by '\0' chars.  Convert them to spaces.
+      for (i = 0; i < n; i++) {
+         if (cmdline[i] == 0) {
+            cmdline[i] = ' ';
+         }
+      }
+      // terminate the string
+      cmdline[n] = 0;
+      close(f);
+      return TRUE;
+   }
+#endif
+
+   /* XXX to-do: implement this function for other operating systems */
+
+   cmdline[0] = 0;
+   return FALSE;
 }

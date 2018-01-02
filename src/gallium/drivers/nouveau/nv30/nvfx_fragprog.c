@@ -3,7 +3,6 @@
 #include "pipe/p_defines.h"
 #include "pipe/p_state.h"
 #include "util/u_dynarray.h"
-#include "util/u_linkage.h"
 #include "util/u_inlines.h"
 #include "util/u_debug.h"
 
@@ -45,14 +44,13 @@ struct nvfx_fpc {
    struct util_dynarray label_relocs;
 };
 
-static INLINE struct nvfx_reg
+static inline struct nvfx_reg
 temp(struct nvfx_fpc *fpc)
 {
    int idx = __builtin_ctzll(~fpc->r_temps);
 
    if (idx >= fpc->max_temps) {
       NOUVEAU_ERR("out of temps!!\n");
-      assert(0);
       return nvfx_reg(NVFXSR_TEMP, 0);
    }
 
@@ -61,7 +59,7 @@ temp(struct nvfx_fpc *fpc)
    return nvfx_reg(NVFXSR_TEMP, idx);
 }
 
-static INLINE void
+static inline void
 release_temps(struct nvfx_fpc *fpc)
 {
    fpc->r_temps &= ~fpc->r_temps_discard;
@@ -328,6 +326,8 @@ nv40_fp_rep(struct nvfx_fpc *fpc, unsigned count, unsigned target)
         //util_dynarray_append(&fpc->loop_stack, unsigned, target);
 }
 
+#if 0
+/* documentation only */
 /* warning: this only works forward, and probably only if not inside any IF */
 static void
 nv40_fp_bra(struct nvfx_fpc *fpc, unsigned target)
@@ -353,6 +353,7 @@ nv40_fp_bra(struct nvfx_fpc *fpc, unsigned target)
         reloc.location = fpc->inst_offset + 3;
         util_dynarray_append(&fpc->label_relocs, struct nvfx_relocation, reloc);
 }
+#endif
 
 static void
 nv40_fp_brk(struct nvfx_fpc *fpc)
@@ -371,7 +372,7 @@ nv40_fp_brk(struct nvfx_fpc *fpc)
    hw[3] = 0;
 }
 
-static INLINE struct nvfx_src
+static inline struct nvfx_src
 tgsi_src(struct nvfx_fpc *fpc, const struct tgsi_full_src_register *fsrc)
 {
    struct nvfx_src src;
@@ -413,7 +414,7 @@ tgsi_src(struct nvfx_fpc *fpc, const struct tgsi_full_src_register *fsrc)
    return src;
 }
 
-static INLINE struct nvfx_reg
+static inline struct nvfx_reg
 tgsi_dst(struct nvfx_fpc *fpc, const struct tgsi_full_dst_register *fdst) {
    switch (fdst->Register.File) {
    case TGSI_FILE_OUTPUT:
@@ -428,7 +429,7 @@ tgsi_dst(struct nvfx_fpc *fpc, const struct tgsi_full_dst_register *fdst) {
    }
 }
 
-static INLINE int
+static inline int
 tgsi_mask(uint tgsi)
 {
    int mask = 0;
@@ -440,7 +441,7 @@ tgsi_mask(uint tgsi)
    return mask;
 }
 
-static boolean
+static bool
 nvfx_fragprog_parse_instruction(struct nvfx_fpc *fpc,
             const struct tgsi_full_instruction *finst)
 {
@@ -453,7 +454,7 @@ nvfx_fragprog_parse_instruction(struct nvfx_fpc *fpc,
    int i;
 
    if (finst->Instruction.Opcode == TGSI_OPCODE_END)
-      return TRUE;
+      return true;
 
    for (i = 0; i < finst->Instruction.NumSrcRegs; i++) {
       const struct tgsi_full_src_register *fsrc;
@@ -472,10 +473,10 @@ nvfx_fragprog_parse_instruction(struct nvfx_fpc *fpc,
       switch (fsrc->Register.File) {
       case TGSI_FILE_INPUT:
          if(fpc->fp->info.input_semantic_name[fsrc->Register.Index] == TGSI_SEMANTIC_FOG && (0
-               || fsrc->Register.SwizzleX == PIPE_SWIZZLE_ALPHA
-               || fsrc->Register.SwizzleY == PIPE_SWIZZLE_ALPHA
-               || fsrc->Register.SwizzleZ == PIPE_SWIZZLE_ALPHA
-               || fsrc->Register.SwizzleW == PIPE_SWIZZLE_ALPHA
+               || fsrc->Register.SwizzleX == PIPE_SWIZZLE_W
+               || fsrc->Register.SwizzleY == PIPE_SWIZZLE_W
+               || fsrc->Register.SwizzleZ == PIPE_SWIZZLE_W
+               || fsrc->Register.SwizzleW == PIPE_SWIZZLE_W
                )) {
             /* hardware puts 0 in fogcoord.w, but GL/Gallium want 1 there */
             struct nvfx_src addend = nvfx_src(nvfx_fp_imm(fpc, 0, 0, 0, 1));
@@ -523,13 +524,13 @@ nvfx_fragprog_parse_instruction(struct nvfx_fpc *fpc,
          break;
       default:
          NOUVEAU_ERR("bad src file\n");
-         return FALSE;
+         return false;
       }
    }
 
    dst  = tgsi_dst(fpc, &finst->Dst[0]);
    mask = tgsi_mask(finst->Dst[0].Register.WriteMask);
-   sat  = (finst->Instruction.Saturate == TGSI_SAT_ZERO_ONE);
+   sat  = finst->Instruction.Saturate;
 
    switch (finst->Instruction.Opcode) {
    case TGSI_OPCODE_ABS:
@@ -684,19 +685,6 @@ nvfx_fragprog_parse_instruction(struct nvfx_fpc *fpc,
    case TGSI_OPCODE_RCP:
       nvfx_fp_emit(fpc, arith(sat, RCP, dst, mask, src[0], none, none));
       break;
-   case TGSI_OPCODE_RFL:
-      if(!fpc->is_nv4x)
-         nvfx_fp_emit(fpc, arith(0, RFL_NV30, dst, mask, src[0], src[1], none));
-      else {
-         tmp = nvfx_src(temp(fpc));
-         nvfx_fp_emit(fpc, arith(0, DP3, tmp.reg, NVFX_FP_MASK_X, src[0], src[0], none));
-         nvfx_fp_emit(fpc, arith(0, DP3, tmp.reg, NVFX_FP_MASK_Y, src[0], src[1], none));
-         insn = arith(0, DIV, tmp.reg, NVFX_FP_MASK_Z, swz(tmp, Y, Y, Y, Y), swz(tmp, X, X, X, X), none);
-         insn.scale = NVFX_FP_OP_DST_SCALE_2X;
-         nvfx_fp_emit(fpc, insn);
-         nvfx_fp_emit(fpc, arith(sat, MAD, dst, mask, swz(tmp, Z, Z, Z, Z), src[0], neg(src[1])));
-      }
-      break;
    case TGSI_OPCODE_RSQ:
       if(!fpc->is_nv4x)
          nvfx_fp_emit(fpc, arith(sat, RSQ_NV30, dst, mask, abs(swz(src[0], X, X, X, X)), none, none));
@@ -727,9 +715,6 @@ nvfx_fragprog_parse_instruction(struct nvfx_fpc *fpc,
       break;
    case TGSI_OPCODE_SEQ:
       nvfx_fp_emit(fpc, arith(sat, SEQ, dst, mask, src[0], src[1], none));
-      break;
-   case TGSI_OPCODE_SFL:
-      nvfx_fp_emit(fpc, arith(sat, SFL, dst, mask, src[0], src[1], none));
       break;
    case TGSI_OPCODE_SGE:
       nvfx_fp_emit(fpc, arith(sat, SGE, dst, mask, src[0], src[1], none));
@@ -768,9 +753,6 @@ nvfx_fragprog_parse_instruction(struct nvfx_fpc *fpc,
       }
       break;
    }
-   case TGSI_OPCODE_STR:
-      nvfx_fp_emit(fpc, arith(sat, STR, dst, mask, src[0], src[1], none));
-      break;
    case TGSI_OPCODE_SUB:
       nvfx_fp_emit(fpc, arith(sat, ADD, dst, mask, src[0], neg(src[1]), none));
       break;
@@ -840,13 +822,6 @@ nvfx_fragprog_parse_instruction(struct nvfx_fpc *fpc,
       break;
    }
 
-   case TGSI_OPCODE_BRA:
-      /* This can in limited cases be implemented with an IF with the else and endif labels pointing to the target */
-      /* no state tracker uses this, so don't implement this for now */
-      assert(0);
-      nv40_fp_bra(fpc, finst->Label.Label);
-      break;
-
    case TGSI_OPCODE_BGNSUB:
    case TGSI_OPCODE_ENDSUB:
       /* nothing to do here */
@@ -892,12 +867,12 @@ nvfx_fragprog_parse_instruction(struct nvfx_fpc *fpc,
 
         default:
       NOUVEAU_ERR("invalid opcode %d\n", finst->Instruction.Opcode);
-      return FALSE;
+      return false;
    }
 
 out:
    release_temps(fpc);
-   return TRUE;
+   return true;
 nv3x_cflow:
    {
       static int warned = 0;
@@ -911,7 +886,7 @@ nv3x_cflow:
    goto out;
 }
 
-static boolean
+static bool
 nvfx_fragprog_parse_decl_input(struct nvfx_fpc *fpc,
                                const struct tgsi_full_declaration *fdec)
 {
@@ -941,17 +916,17 @@ nvfx_fragprog_parse_decl_input(struct nvfx_fpc *fpc,
    case TGSI_SEMANTIC_GENERIC:
    case TGSI_SEMANTIC_PCOORD:
       /* will be assigned to remaining TC slots later */
-      return TRUE;
+      return true;
    default:
       assert(0);
-      return FALSE;
+      return false;
    }
 
    fpc->r_input[idx] = nvfx_reg(NVFXSR_INPUT, hw);
-   return TRUE;
+   return true;
 }
 
-static boolean
+static bool
 nvfx_fragprog_assign_generic(struct nvfx_fpc *fpc,
                              const struct tgsi_full_declaration *fdec)
 {
@@ -978,16 +953,16 @@ nvfx_fragprog_assign_generic(struct nvfx_fpc *fpc,
             }
             hw = NVFX_FP_OP_INPUT_SRC_TC(hw);
             fpc->r_input[idx] = nvfx_reg(NVFXSR_INPUT, hw);
-            return TRUE;
+            return true;
          }
       }
-      return FALSE;
+      return false;
    default:
-      return TRUE;
+      return true;
    }
 }
 
-static boolean
+static bool
 nvfx_fragprog_parse_decl_output(struct nvfx_fpc *fpc,
             const struct tgsi_full_declaration *fdec)
 {
@@ -1008,20 +983,20 @@ nvfx_fragprog_parse_decl_output(struct nvfx_fpc *fpc,
       }
       if(hw > ((fpc->is_nv4x) ? 4 : 2)) {
          NOUVEAU_ERR("bad rcol index\n");
-         return FALSE;
+         return false;
       }
       break;
    default:
       NOUVEAU_ERR("bad output semantic\n");
-      return FALSE;
+      return false;
    }
 
    fpc->r_result[idx] = nvfx_reg(NVFXSR_OUTPUT, hw);
    fpc->r_temps |= (1ULL << hw);
-   return TRUE;
+   return true;
 }
 
-static boolean
+static bool
 nvfx_fragprog_prepare(struct nvfx_fpc *fpc)
 {
    struct tgsi_parse_context p;
@@ -1105,17 +1080,17 @@ nvfx_fragprog_prepare(struct nvfx_fpc *fpc)
       fpc->r_temps_discard = 0ULL;
    }
 
-   return TRUE;
+   return true;
 
 out_err:
    FREE(fpc->r_temp);
    fpc->r_temp = NULL;
 
    tgsi_parse_free(&p);
-   return FALSE;
+   return false;
 }
 
-DEBUG_GET_ONCE_BOOL_OPTION(nvfx_dump_fp, "NVFX_DUMP_FP", FALSE)
+DEBUG_GET_ONCE_BOOL_OPTION(nvfx_dump_fp, "NVFX_DUMP_FP", false)
 
 void
 _nvfx_fragprog_translate(uint16_t oclass, struct nv30_fragprog *fp)
@@ -1124,7 +1099,7 @@ _nvfx_fragprog_translate(uint16_t oclass, struct nv30_fragprog *fp)
    struct nvfx_fpc *fpc = NULL;
    struct util_dynarray insns;
 
-   fp->translated = FALSE;
+   fp->translated = false;
    fp->point_sprite_control = 0;
    fp->vp_or = 0;
 
@@ -1138,24 +1113,12 @@ _nvfx_fragprog_translate(uint16_t oclass, struct nv30_fragprog *fp)
    fpc->num_regs = 2;
    memset(fp->texcoord, 0xff, sizeof(fp->texcoord));
 
-   for (unsigned i = 0; i < fp->info.num_properties; ++i) {
-      switch (fp->info.properties[i].name) {
-      case TGSI_PROPERTY_FS_COORD_ORIGIN:
-         if (fp->info.properties[i].data[0])
-            fp->coord_conventions |= NV30_3D_COORD_CONVENTIONS_ORIGIN_INVERTED;
-         break;
-      case TGSI_PROPERTY_FS_COORD_PIXEL_CENTER:
-         if (fp->info.properties[i].data[0])
-            fp->coord_conventions |= NV30_3D_COORD_CONVENTIONS_CENTER_INTEGER;
-         break;
-      case TGSI_PROPERTY_FS_COLOR0_WRITES_ALL_CBUFS:
-         if (fp->info.properties[i].data[0])
-            fp->rt_enable |= NV30_3D_RT_ENABLE_MRT;
-         break;
-      default:
-         break;
-      }
-   }
+   if (fp->info.properties[TGSI_PROPERTY_FS_COORD_ORIGIN])
+      fp->coord_conventions |= NV30_3D_COORD_CONVENTIONS_ORIGIN_INVERTED;
+   if (fp->info.properties[TGSI_PROPERTY_FS_COORD_PIXEL_CENTER])
+      fp->coord_conventions |= NV30_3D_COORD_CONVENTIONS_CENTER_INTEGER;
+   if (fp->info.properties[TGSI_PROPERTY_FS_COLOR0_WRITES_ALL_CBUFS])
+      fp->rt_enable |= NV30_3D_RT_ENABLE_MRT;
 
    if (!nvfx_fragprog_prepare(fpc))
       goto out_err;
@@ -1218,11 +1181,11 @@ _nvfx_fragprog_translate(uint16_t oclass, struct nv30_fragprog *fp)
       debug_printf("\n");
    }
 
-   fp->translated = TRUE;
+   fp->translated = true;
 
 out:
    tgsi_parse_free(&parse);
-   if(fpc)
+   if (fpc)
    {
       FREE(fpc->r_temp);
       FREE(fpc->r_imm);
@@ -1239,18 +1202,4 @@ out_err:
    _debug_printf("Error: failed to compile this fragment program:\n");
    tgsi_dump(fp->pipe.tokens, 0);
    goto out;
-}
-
-static inline void
-nvfx_fp_memcpy(void* dst, const void* src, size_t len)
-{
-#ifndef PIPE_ARCH_BIG_ENDIAN
-   memcpy(dst, src, len);
-#else
-   size_t i;
-   for(i = 0; i < len; i += 4) {
-      uint32_t v = *(uint32_t*)((char*)src + i);
-      *(uint32_t*)((char*)dst + i) = (v >> 16) | (v << 16);
-   }
-#endif
 }

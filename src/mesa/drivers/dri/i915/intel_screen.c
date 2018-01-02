@@ -489,9 +489,7 @@ intel_query_image(__DRIimage *image, int attrib, int *value)
       *value = image->planar_format->components;
       return true;
    case __DRI_IMAGE_ATTRIB_FD:
-      if (drm_intel_bo_gem_export_to_prime(image->region->bo, value) == 0)
-         return true;
-      return false;
+      return !drm_intel_bo_gem_export_to_prime(image->region->bo, value);
   default:
       return false;
    }
@@ -750,6 +748,9 @@ i915_query_renderer_integer(__DRIscreen *psp, int param, unsigned int *value)
    case __DRI2_RENDERER_UNIFIED_MEMORY_ARCHITECTURE:
       value[0] = 1;
       return 0;
+   case __DRI2_RENDERER_HAS_TEXTURE_3D:
+      value[0] = 1;
+      return 0;
    default:
       return driQueryRendererIntegerCommon(psp, param, value);
    }
@@ -786,6 +787,7 @@ static const __DRI2rendererQueryExtension intelRendererQueryExtension = {
 
 static const __DRIextension *intelScreenExtensions[] = {
     &intelTexBufferExtension.base,
+    &intelFenceExtension.base,
     &intelFlushExtension.base,
     &intelImageExtension.base,
     &intelRendererQueryExtension.base,
@@ -969,7 +971,7 @@ intelCreateContext(gl_api api,
       return false;
    }
 
-   if (IS_9XX(intelScreen->deviceID)) {
+   if (IS_GEN3(intelScreen->deviceID)) {
       success = i915CreateContext(api, mesaVis, driContextPriv,
                                   major_version, minor_version, flags,
                                   error, sharedContextPrivate);
@@ -1081,7 +1083,7 @@ intel_screen_make_configs(__DRIscreen *dri_screen)
                                      num_depth_stencil_bits,
                                      back_buffer_modes, 2,
                                      singlesample_samples, 1,
-                                     false);
+                                     false, false);
       configs = driConcatConfigs(configs, new_configs);
    }
 
@@ -1103,7 +1105,7 @@ intel_screen_make_configs(__DRIscreen *dri_screen)
                                      depth_bits, stencil_bits, 1,
                                      back_buffer_modes, 1,
                                      singlesample_samples, 1,
-                                     true);
+                                     true, false);
       configs = driConcatConfigs(configs, new_configs);
    }
 
@@ -1177,7 +1179,7 @@ __DRIconfig **intelInitScreen2(__DRIscreen *psp)
 
    intelScreen->deviceID = drm_intel_bufmgr_gem_get_devid(intelScreen->bufmgr);
 
-   if (IS_9XX(intelScreen->deviceID)) {
+   if (IS_GEN3(intelScreen->deviceID)) {
       intelScreen->gen = 3;
    } else {
       intelScreen->gen = 2;

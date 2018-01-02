@@ -29,7 +29,7 @@
 #include "util/u_math.h"
 #include "util/u_memory.h"
 #include "util/u_inlines.h"
-#include "util/u_simple_list.h"
+#include "util/simple_list.h"
 #include "util/u_format.h"
 #include "lp_scene.h"
 #include "lp_fence.h"
@@ -174,6 +174,7 @@ lp_scene_begin_rasterization(struct lp_scene *scene)
                                                      cbuf->u.tex.level,
                                                      cbuf->u.tex.first_layer,
                                                      LP_TEX_USAGE_READ_WRITE);
+         scene->cbufs[i].format_bytes = util_format_get_blocksize(cbuf->format);
       }
       else {
          struct llvmpipe_resource *lpr = llvmpipe_resource(cbuf->texture);
@@ -182,6 +183,7 @@ lp_scene_begin_rasterization(struct lp_scene *scene)
          scene->cbufs[i].layer_stride = 0;
          scene->cbufs[i].map = lpr->data;
          scene->cbufs[i].map += cbuf->u.buf.first_element * pixstride;
+         scene->cbufs[i].format_bytes = util_format_get_blocksize(cbuf->format);
       }
    }
 
@@ -194,6 +196,7 @@ lp_scene_begin_rasterization(struct lp_scene *scene)
                                                zsbuf->u.tex.level,
                                                zsbuf->u.tex.first_layer,
                                                LP_TEX_USAGE_READ_WRITE);
+      scene->zsbuf.format_bytes = util_format_get_blocksize(zsbuf->format);
    }
 }
 
@@ -334,7 +337,7 @@ lp_scene_new_data_block( struct lp_scene *scene )
    }
    else {
       struct data_block *block = MALLOC_STRUCT(data_block);
-      if (block == NULL)
+      if (!block)
          return NULL;
       
       scene->scene_size += sizeof *block;

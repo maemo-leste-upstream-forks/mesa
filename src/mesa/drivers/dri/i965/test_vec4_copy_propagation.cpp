@@ -24,6 +24,7 @@
 #include <gtest/gtest.h>
 #include "brw_vec4.h"
 #include "brw_vs.h"
+#include "program/program.h"
 
 using namespace brw;
 
@@ -33,27 +34,28 @@ class copy_propagation_test : public ::testing::Test {
    virtual void SetUp();
 
 public:
-   struct brw_context *brw;
+   struct brw_compiler *compiler;
+   struct gen_device_info *devinfo;
    struct gl_context *ctx;
    struct gl_shader_program *shader_prog;
-   struct brw_vertex_program *vp;
+   struct brw_vue_prog_data *prog_data;
    vec4_visitor *v;
 };
 
 class copy_propagation_vec4_visitor : public vec4_visitor
 {
 public:
-   copy_propagation_vec4_visitor(struct brw_context *brw,
-                                  struct gl_shader_program *shader_prog)
-      : vec4_visitor(brw, NULL, NULL, NULL, NULL, shader_prog,
-                     MESA_SHADER_VERTEX, NULL,
-                     false, false /* no_spills */,
-                     ST_NONE, ST_NONE, ST_NONE)
+   copy_propagation_vec4_visitor(struct brw_compiler *compiler,
+                                 nir_shader *shader,
+                                 struct brw_vue_prog_data *prog_data)
+      : vec4_visitor(compiler, NULL, NULL, prog_data, shader, NULL,
+                     false /* no_spills */, -1)
    {
+      prog_data->dispatch_mode = DISPATCH_MODE_4X2_DUAL_OBJECT;
    }
 
 protected:
-   virtual dst_reg *make_reg_for_system_value(ir_variable *ir)
+   virtual dst_reg *make_reg_for_system_value(int location)
    {
       unreachable("Not reached");
    }
@@ -64,11 +66,6 @@ protected:
    }
 
    virtual void emit_prolog()
-   {
-      unreachable("Not reached");
-   }
-
-   virtual void emit_program_code()
    {
       unreachable("Not reached");
    }
@@ -92,18 +89,17 @@ protected:
 
 void copy_propagation_test::SetUp()
 {
-   brw = (struct brw_context *)calloc(1, sizeof(*brw));
-   ctx = &brw->ctx;
+   ctx = (struct gl_context *)calloc(1, sizeof(*ctx));
+   compiler = (struct brw_compiler *)calloc(1, sizeof(*compiler));
+   devinfo = (struct gen_device_info *)calloc(1, sizeof(*devinfo));
+   prog_data = (struct brw_vue_prog_data *)calloc(1, sizeof(*prog_data));
+   compiler->devinfo = devinfo;
 
-   vp = ralloc(NULL, struct brw_vertex_program);
+   nir_shader *shader = nir_shader_create(NULL, MESA_SHADER_VERTEX, NULL);
 
-   shader_prog = ralloc(NULL, struct gl_shader_program);
+   v = new copy_propagation_vec4_visitor(compiler, shader, prog_data);
 
-   v = new copy_propagation_vec4_visitor(brw, shader_prog);
-
-   _mesa_init_vertex_program(ctx, &vp->program, GL_VERTEX_SHADER, 0);
-
-   brw->gen = 4;
+   devinfo->gen = 4;
 }
 
 static void
@@ -116,6 +112,7 @@ copy_propagation(vec4_visitor *v)
       v->dump_instructions();
    }
 
+   v->calculate_cfg();
    v->opt_copy_propagation();
 
    if (print) {
@@ -146,7 +143,7 @@ TEST_F(copy_propagation_test, test_swizzle_swizzle)
 
    copy_propagation(v);
 
-   EXPECT_EQ(test_mov->src[0].reg, a.reg);
+   EXPECT_EQ(test_mov->src[0].nr, a.nr);
    EXPECT_EQ(test_mov->src[0].swizzle, BRW_SWIZZLE4(SWIZZLE_Z,
                                                     SWIZZLE_W,
                                                     SWIZZLE_X,
@@ -164,7 +161,7 @@ TEST_F(copy_propagation_test, test_swizzle_writemask)
                                                       SWIZZLE_X,
                                                       SWIZZLE_Z))));
 
-   v->emit(v->MOV(writemask(a, WRITEMASK_XYZ), src_reg(1.0f)));
+   v->emit(v->MOV(writemask(a, WRITEMASK_XYZ), brw_imm_f(1.0f)));
 
    vec4_instruction *test_mov =
       v->MOV(c, swizzle(src_reg(b), BRW_SWIZZLE4(SWIZZLE_W,
@@ -176,7 +173,7 @@ TEST_F(copy_propagation_test, test_swizzle_writemask)
    copy_propagation(v);
 
    /* should not copy propagate */
-   EXPECT_EQ(test_mov->src[0].reg, b.reg);
+   EXPECT_EQ(test_mov->src[0].nr, b.nr);
    EXPECT_EQ(test_mov->src[0].swizzle, BRW_SWIZZLE4(SWIZZLE_W,
                                                     SWIZZLE_W,
                                                     SWIZZLE_W,

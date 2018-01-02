@@ -39,9 +39,14 @@ gen6_upload_scissor_state(struct brw_context *brw)
    const bool render_to_fbo = _mesa_is_user_fbo(ctx->DrawBuffer);
    struct gen6_scissor_rect *scissor;
    uint32_t scissor_state_offset;
+   const unsigned int fb_width= _mesa_geometric_width(ctx->DrawBuffer);
+   const unsigned int fb_height = _mesa_geometric_height(ctx->DrawBuffer);
+
+   /* BRW_NEW_VIEWPORT_COUNT */
+   const unsigned viewport_count = brw->clip.viewport_count;
 
    scissor = brw_state_batch(brw, AUB_TRACE_SCISSOR_STATE,
-			     sizeof(*scissor) * ctx->Const.MaxViewports, 32,
+			     sizeof(*scissor) * viewport_count, 32,
                              &scissor_state_offset);
 
    /* _NEW_SCISSOR | _NEW_BUFFERS | _NEW_VIEWPORT */
@@ -53,10 +58,14 @@ gen6_upload_scissor_state(struct brw_context *brw)
     * Note that the hardware's coordinates are inclusive, while Mesa's min is
     * inclusive but max is exclusive.
     */
-   for (unsigned i = 0; i < ctx->Const.MaxViewports; i++) {
+   for (unsigned i = 0; i < viewport_count; i++) {
       int bbox[4];
 
-      _mesa_scissor_bounding_box(ctx, ctx->DrawBuffer, i, bbox);
+      bbox[0] = MAX2(ctx->ViewportArray[i].X, 0);
+      bbox[1] = MIN2(bbox[0] + ctx->ViewportArray[i].Width, fb_width);
+      bbox[2] = MAX2(ctx->ViewportArray[i].Y, 0);
+      bbox[3] = MIN2(bbox[2] + ctx->ViewportArray[i].Height, fb_height);
+      _mesa_intersect_scissor_bounding_box(ctx, i, bbox);
 
       if (bbox[0] == bbox[1] || bbox[2] == bbox[3]) {
          /* If the scissor was out of bounds and got clamped to 0 width/height
@@ -80,8 +89,8 @@ gen6_upload_scissor_state(struct brw_context *brw)
          /* memory: Y=0=top */
          scissor[i].xmin = bbox[0];
          scissor[i].xmax = bbox[1] - 1;
-         scissor[i].ymin = ctx->DrawBuffer->Height - bbox[3];
-         scissor[i].ymax = ctx->DrawBuffer->Height - bbox[2] - 1;
+         scissor[i].ymin = fb_height - bbox[3];
+         scissor[i].ymax = fb_height - bbox[2] - 1;
       }
    }
    BEGIN_BATCH(2);
@@ -92,9 +101,12 @@ gen6_upload_scissor_state(struct brw_context *brw)
 
 const struct brw_tracked_state gen6_scissor_state = {
    .dirty = {
-      .mesa = _NEW_SCISSOR | _NEW_BUFFERS | _NEW_VIEWPORT,
-      .brw = BRW_NEW_BATCH,
-      .cache = 0,
+      .mesa = _NEW_BUFFERS |
+              _NEW_SCISSOR |
+              _NEW_VIEWPORT,
+      .brw = BRW_NEW_BATCH |
+             BRW_NEW_BLORP |
+             BRW_NEW_VIEWPORT_COUNT,
    },
    .emit = gen6_upload_scissor_state,
 };

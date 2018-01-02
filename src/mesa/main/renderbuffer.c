@@ -38,6 +38,8 @@
 void
 _mesa_init_renderbuffer(struct gl_renderbuffer *rb, GLuint name)
 {
+   GET_CURRENT_CONTEXT(ctx);
+
    mtx_init(&rb->Mutex, mtx_plain);
 
    rb->ClassID = 0;
@@ -53,7 +55,23 @@ _mesa_init_renderbuffer(struct gl_renderbuffer *rb, GLuint name)
    rb->Width = 0;
    rb->Height = 0;
    rb->Depth = 0;
-   rb->InternalFormat = GL_RGBA;
+
+   /* In GL 3, the initial format is GL_RGBA according to Table 6.26
+    * on page 302 of the GL 3.3 spec.
+    *
+    * In GLES 3, the initial format is GL_RGBA4 according to Table 6.15
+    * on page 258 of the GLES 3.0.4 spec.
+    *
+    * If the context is current, set the initial format based on the
+    * specs. If the context is not current, we cannot determine the
+    * API, so default to GL_RGBA.
+    */
+   if (ctx && _mesa_is_gles3(ctx)) {
+      rb->InternalFormat = GL_RGBA4;
+   } else {
+      rb->InternalFormat = GL_RGBA;
+   }
+
    rb->Format = MESA_FORMAT_NONE;
 }
 
@@ -154,9 +172,8 @@ _mesa_reference_renderbuffer_(struct gl_renderbuffer **ptr,
       struct gl_renderbuffer *oldRb = *ptr;
 
       mtx_lock(&oldRb->Mutex);
-      ASSERT(oldRb->RefCount > 0);
+      assert(oldRb->RefCount > 0);
       oldRb->RefCount--;
-      /*printf("RB DECR %p (%d) to %d\n", (void*) oldRb, oldRb->Name, oldRb->RefCount);*/
       deleteFlag = (oldRb->RefCount == 0);
       mtx_unlock(&oldRb->Mutex);
 
@@ -173,7 +190,6 @@ _mesa_reference_renderbuffer_(struct gl_renderbuffer **ptr,
       /* reference new renderbuffer */
       mtx_lock(&rb->Mutex);
       rb->RefCount++;
-      /*printf("RB INCR %p (%d) to %d\n", (void*) rb, rb->Name, rb->RefCount);*/
       mtx_unlock(&rb->Mutex);
       *ptr = rb;
    }

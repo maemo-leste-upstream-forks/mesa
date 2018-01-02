@@ -28,11 +28,11 @@
 #ifndef U_HELPERS_H
 #define U_HELPERS_H
 
+#include "pipe/p_state.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#include "pipe/p_state.h"
 
 void util_set_vertex_buffers_mask(struct pipe_vertex_buffer *dst,
                                   uint32_t *enabled_buffers,
@@ -43,6 +43,9 @@ void util_set_vertex_buffers_count(struct pipe_vertex_buffer *dst,
                                    unsigned *dst_count,
                                    const struct pipe_vertex_buffer *src,
                                    unsigned start_slot, unsigned count);
+
+void util_set_index_buffer(struct pipe_index_buffer *dst,
+                           const struct pipe_index_buffer *src);
 
 #ifdef __cplusplus
 }

@@ -22,8 +22,6 @@
  * IN THE SOFTWARE.
  */
 
-#include <stdio.h>
-
 #include "os/os_misc.h"
 #include "pipe/p_defines.h"
 #include "pipe/p_screen.h"
@@ -32,7 +30,11 @@
 #include "util/u_debug.h"
 #include "util/u_memory.h"
 #include "util/u_format.h"
+#include "util/u_hash_table.h"
+#include "util/ralloc.h"
 
+#include <xf86drm.h>
+#include "vc4_drm.h"
 #include "vc4_screen.h"
 #include "vc4_context.h"
 #include "vc4_resource.h"
@@ -44,6 +46,8 @@ static const struct debug_named_value debug_options[] = {
           "Dump generated QPU instructions" },
         { "qir",      VC4_DEBUG_QIR,
           "Dump QPU IR during program compile" },
+        { "nir",      VC4_DEBUG_NIR,
+          "Dump NIR during program compile" },
         { "tgsi",     VC4_DEBUG_TGSI,
           "Dump TGSI during program compile" },
         { "shaderdb", VC4_DEBUG_SHADERDB,
@@ -52,6 +56,15 @@ static const struct debug_named_value debug_options[] = {
           "Print during performance-related events" },
         { "norast",   VC4_DEBUG_NORAST,
           "Skip actual hardware execution of commands" },
+        { "always_flush", VC4_DEBUG_ALWAYS_FLUSH,
+          "Flush after each draw call" },
+        { "always_sync", VC4_DEBUG_ALWAYS_SYNC,
+          "Wait for finish after each flush" },
+#if USE_VC4_SIMULATOR
+        { "dump", VC4_DEBUG_DUMP,
+          "Write a GPU command stream trace file" },
+#endif
+        { NULL }
 };
 
 DEBUG_GET_ONCE_FLAGS_OPTION(vc4_debug, "VC4_DEBUG", debug_options, 0)
@@ -60,7 +73,16 @@ uint32_t vc4_debug;
 static const char *
 vc4_screen_get_name(struct pipe_screen *pscreen)
 {
-        return "VC4";
+        struct vc4_screen *screen = vc4_screen(pscreen);
+
+        if (!screen->name) {
+                screen->name = ralloc_asprintf(screen,
+                                               "VC4 V3D %d.%d",
+                                               screen->v3d_ver / 10,
+                                               screen->v3d_ver % 10);
+        }
+
+        return screen->name;
 }
 
 static const char *
@@ -72,7 +94,18 @@ vc4_screen_get_vendor(struct pipe_screen *pscreen)
 static void
 vc4_screen_destroy(struct pipe_screen *pscreen)
 {
-        free(pscreen);
+        struct vc4_screen *screen = vc4_screen(pscreen);
+
+        util_hash_table_destroy(screen->bo_handles);
+        vc4_bufmgr_destroy(pscreen);
+        slab_destroy_parent(&screen->transfer_pool);
+
+#if USE_VC4_SIMULATOR
+        vc4_simulator_destroy(screen);
+#endif
+
+        close(screen->fd);
+        ralloc_free(pscreen);
 }
 
 static int
@@ -80,13 +113,19 @@ vc4_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 {
         switch (param) {
                 /* Supported features (boolean caps). */
+        case PIPE_CAP_VERTEX_COLOR_CLAMPED:
         case PIPE_CAP_VERTEX_COLOR_UNCLAMPED:
+        case PIPE_CAP_FRAGMENT_COLOR_CLAMPED:
         case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
         case PIPE_CAP_NPOT_TEXTURES:
+        case PIPE_CAP_SHAREABLE_SHADERS:
         case PIPE_CAP_USER_CONSTANT_BUFFERS:
         case PIPE_CAP_TEXTURE_SHADOW_MAP:
         case PIPE_CAP_BLEND_EQUATION_SEPARATE:
         case PIPE_CAP_TWO_SIDED_STENCIL:
+        case PIPE_CAP_USER_INDEX_BUFFERS:
+        case PIPE_CAP_TEXTURE_MULTISAMPLE:
+        case PIPE_CAP_TEXTURE_SWIZZLE:
                 return 1;
 
                 /* lying for GL 2.0 */
@@ -107,13 +146,16 @@ vc4_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
         case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
                 return 1;
 
-                /* Unsupported features. */
         case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
+        case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
+                return 1;
+
+                /* Unsupported features. */
         case PIPE_CAP_ANISOTROPIC_FILTER:
         case PIPE_CAP_TEXTURE_BUFFER_OBJECTS:
+        case PIPE_CAP_BUFFER_SAMPLER_VIEW_RGBA_ONLY:
         case PIPE_CAP_CUBE_MAP_ARRAY:
         case PIPE_CAP_TEXTURE_MIRROR_CLAMP:
-        case PIPE_CAP_TEXTURE_SWIZZLE:
         case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
         case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
         case PIPE_CAP_SEAMLESS_CUBE_MAP:
@@ -130,7 +172,6 @@ vc4_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
         case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
         case PIPE_CAP_CONDITIONAL_RENDER:
         case PIPE_CAP_PRIMITIVE_RESTART:
-        case PIPE_CAP_TEXTURE_MULTISAMPLE:
         case PIPE_CAP_TEXTURE_BARRIER:
         case PIPE_CAP_SM3:
         case PIPE_CAP_INDEP_BLEND_ENABLE:
@@ -140,10 +181,7 @@ vc4_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
         case PIPE_CAP_TGSI_FS_COORD_ORIGIN_LOWER_LEFT:
         case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER:
         case PIPE_CAP_TGSI_CAN_COMPACT_CONSTANTS:
-        case PIPE_CAP_FRAGMENT_COLOR_CLAMPED:
-        case PIPE_CAP_VERTEX_COLOR_CLAMPED:
         case PIPE_CAP_USER_VERTEX_BUFFERS:
-        case PIPE_CAP_USER_INDEX_BUFFERS:
         case PIPE_CAP_QUERY_PIPELINE_STATISTICS:
         case PIPE_CAP_TEXTURE_BORDER_COLOR_QUIRK:
         case PIPE_CAP_TGSI_VS_LAYER_VIEWPORT:
@@ -158,8 +196,49 @@ vc4_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
         case PIPE_CAP_MAX_TEXEL_OFFSET:
         case PIPE_CAP_MAX_VERTEX_STREAMS:
         case PIPE_CAP_DRAW_INDIRECT:
+        case PIPE_CAP_MULTI_DRAW_INDIRECT:
+        case PIPE_CAP_MULTI_DRAW_INDIRECT_PARAMS:
         case PIPE_CAP_TGSI_FS_FINE_DERIVATIVE:
         case PIPE_CAP_CONDITIONAL_RENDER_INVERTED:
+        case PIPE_CAP_SAMPLER_VIEW_TARGET:
+        case PIPE_CAP_CLIP_HALFZ:
+        case PIPE_CAP_VERTEXID_NOBASE:
+        case PIPE_CAP_POLYGON_OFFSET_CLAMP:
+        case PIPE_CAP_MULTISAMPLE_Z_RESOLVE:
+        case PIPE_CAP_RESOURCE_FROM_USER_MEMORY:
+        case PIPE_CAP_DEVICE_RESET_STATUS_QUERY:
+        case PIPE_CAP_MAX_SHADER_PATCH_VARYINGS:
+        case PIPE_CAP_TEXTURE_FLOAT_LINEAR:
+        case PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR:
+        case PIPE_CAP_DEPTH_BOUNDS_TEST:
+        case PIPE_CAP_TGSI_TXQS:
+        case PIPE_CAP_FORCE_PERSAMPLE_INTERP:
+        case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
+        case PIPE_CAP_CLEAR_TEXTURE:
+        case PIPE_CAP_DRAW_PARAMETERS:
+        case PIPE_CAP_TGSI_PACK_HALF_FLOAT:
+        case PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL:
+        case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
+        case PIPE_CAP_SHADER_BUFFER_OFFSET_ALIGNMENT:
+        case PIPE_CAP_INVALIDATE_BUFFER:
+        case PIPE_CAP_GENERATE_MIPMAP:
+        case PIPE_CAP_STRING_MARKER:
+        case PIPE_CAP_SURFACE_REINTERPRET_BLOCKS:
+        case PIPE_CAP_QUERY_BUFFER_OBJECT:
+	case PIPE_CAP_QUERY_MEMORY_INFO:
+	case PIPE_CAP_PCI_GROUP:
+        case PIPE_CAP_PCI_BUS:
+        case PIPE_CAP_PCI_DEVICE:
+        case PIPE_CAP_PCI_FUNCTION:
+        case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
+        case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
+        case PIPE_CAP_CULL_DISTANCE:
+        case PIPE_CAP_PRIMITIVE_RESTART_FOR_PATCHES:
+        case PIPE_CAP_TGSI_VOTE:
+        case PIPE_CAP_MAX_WINDOW_RECTANGLES:
+        case PIPE_CAP_POLYGON_OFFSET_UNITS_UNSCALED:
+        case PIPE_CAP_VIEWPORT_SUBPIXEL_BITS:
+        case PIPE_CAP_TGSI_ARRAY_COMPONENTS:
                 return 0;
 
                 /* Stream output. */
@@ -197,6 +276,9 @@ vc4_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
         case PIPE_CAP_MIN_TEXEL_OFFSET:
                 return 0;
 
+        case PIPE_CAP_MAX_VERTEX_ATTRIB_STRIDE:
+                return 2048;
+
         case PIPE_CAP_ENDIANNESS:
                 return PIPE_ENDIAN_LITTLE;
 
@@ -232,9 +314,12 @@ vc4_screen_get_paramf(struct pipe_screen *pscreen, enum pipe_capf param)
         switch (param) {
         case PIPE_CAPF_MAX_LINE_WIDTH:
         case PIPE_CAPF_MAX_LINE_WIDTH_AA:
+                return 32;
+
         case PIPE_CAPF_MAX_POINT_WIDTH:
         case PIPE_CAPF_MAX_POINT_WIDTH_AA:
-                return 8192.0f;
+                return 512.0f;
+
         case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
                 return 0.0f;
         case PIPE_CAPF_MAX_TEXTURE_LOD_BIAS:
@@ -266,14 +351,21 @@ vc4_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
         case PIPE_SHADER_CAP_MAX_TEX_INSTRUCTIONS:
         case PIPE_SHADER_CAP_MAX_TEX_INDIRECTIONS:
                 return 16384;
+
         case PIPE_SHADER_CAP_MAX_CONTROL_FLOW_DEPTH:
-                return 0;
+                return vc4_screen(pscreen)->has_control_flow;
+
         case PIPE_SHADER_CAP_MAX_INPUTS:
-                return 16;
+                if (shader == PIPE_SHADER_FRAGMENT)
+                        return 8;
+                else
+                        return 16;
+        case PIPE_SHADER_CAP_MAX_OUTPUTS:
+                return shader == PIPE_SHADER_FRAGMENT ? 1 : 8;
         case PIPE_SHADER_CAP_MAX_TEMPS:
-                return 64; /* Max native temporaries. */
+                return 256; /* GL_MAX_PROGRAM_TEMPORARIES_ARB */
         case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
-                return 64 * sizeof(float[4]);
+                return 16 * 1024 * sizeof(float);
         case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
                 return 1;
         case PIPE_SHADER_CAP_MAX_PREDS:
@@ -283,65 +375,38 @@ vc4_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
         case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
         case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
         case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
-        case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
                 return 0;
+        case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
+                return 1;
         case PIPE_SHADER_CAP_SUBROUTINES:
                 return 0;
         case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
                 return 0;
         case PIPE_SHADER_CAP_INTEGERS:
+                return 1;
         case PIPE_SHADER_CAP_DOUBLES:
+        case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
+        case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
+        case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
+        case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
                 return 0;
         case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
         case PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS:
                 return VC4_MAX_TEXTURE_SAMPLERS;
         case PIPE_SHADER_CAP_PREFERRED_IR:
-                return PIPE_SHADER_IR_TGSI;
+                return PIPE_SHADER_IR_NIR;
+        case PIPE_SHADER_CAP_SUPPORTED_IRS:
+                return 0;
+	case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
+		return 32;
+        case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
+        case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
+                return 0;
         default:
                 fprintf(stderr, "unknown shader param %d\n", param);
                 return 0;
         }
         return 0;
-}
-
-uint8_t
-vc4_get_texture_format(enum pipe_format format)
-{
-        switch (format) {
-        case PIPE_FORMAT_B8G8R8A8_UNORM:
-                return 0;
-        case PIPE_FORMAT_B8G8R8X8_UNORM:
-                return 1;
-        case PIPE_FORMAT_R8G8B8A8_UNORM:
-                return 0;
-        case PIPE_FORMAT_R8G8B8X8_UNORM:
-                return 1;
-        case PIPE_FORMAT_A8R8G8B8_UNORM:
-                return 0;
-        case PIPE_FORMAT_X8R8G8B8_UNORM:
-                return 1;
-        case PIPE_FORMAT_A8B8G8R8_UNORM:
-                return 0;
-        case PIPE_FORMAT_X8B8G8R8_UNORM:
-                return 1;
-/*
-        case PIPE_FORMAT_R4G4B4A4_UNORM:
-                return 2;
-        case PIPE_FORMAT_R5G5B5A1_UNORM:
-                return 3;
-        case PIPE_FORMAT_R5G6B5_UNORM:
-                return 4;
-*/
-        case PIPE_FORMAT_L8_UNORM:
-                return 5;
-        case PIPE_FORMAT_A8_UNORM:
-                return 6;
-        case PIPE_FORMAT_L8A8_UNORM:
-                return 7;
-                /* XXX: ETC1 and more*/
-        default:
-                return ~0;
-        }
 }
 
 static boolean
@@ -353,41 +418,80 @@ vc4_screen_is_format_supported(struct pipe_screen *pscreen,
 {
         unsigned retval = 0;
 
+        if (sample_count > 1 && sample_count != VC4_MAX_SAMPLES)
+                return FALSE;
+
         if ((target >= PIPE_MAX_TEXTURE_TYPES) ||
-            (sample_count > 1) ||
             !util_format_is_supported(format, usage)) {
                 return FALSE;
         }
 
-        if (usage & PIPE_BIND_VERTEX_BUFFER &&
-            (format == PIPE_FORMAT_R32G32B32A32_FLOAT ||
-             format == PIPE_FORMAT_R32G32B32_FLOAT ||
-             format == PIPE_FORMAT_R32G32_FLOAT ||
-             format == PIPE_FORMAT_R32_FLOAT)) {
-                retval |= PIPE_BIND_VERTEX_BUFFER;
+        if (usage & PIPE_BIND_VERTEX_BUFFER) {
+                switch (format) {
+                case PIPE_FORMAT_R32G32B32A32_FLOAT:
+                case PIPE_FORMAT_R32G32B32_FLOAT:
+                case PIPE_FORMAT_R32G32_FLOAT:
+                case PIPE_FORMAT_R32_FLOAT:
+                case PIPE_FORMAT_R32G32B32A32_SNORM:
+                case PIPE_FORMAT_R32G32B32_SNORM:
+                case PIPE_FORMAT_R32G32_SNORM:
+                case PIPE_FORMAT_R32_SNORM:
+                case PIPE_FORMAT_R32G32B32A32_SSCALED:
+                case PIPE_FORMAT_R32G32B32_SSCALED:
+                case PIPE_FORMAT_R32G32_SSCALED:
+                case PIPE_FORMAT_R32_SSCALED:
+                case PIPE_FORMAT_R16G16B16A16_UNORM:
+                case PIPE_FORMAT_R16G16B16_UNORM:
+                case PIPE_FORMAT_R16G16_UNORM:
+                case PIPE_FORMAT_R16_UNORM:
+                case PIPE_FORMAT_R16G16B16A16_SNORM:
+                case PIPE_FORMAT_R16G16B16_SNORM:
+                case PIPE_FORMAT_R16G16_SNORM:
+                case PIPE_FORMAT_R16_SNORM:
+                case PIPE_FORMAT_R16G16B16A16_USCALED:
+                case PIPE_FORMAT_R16G16B16_USCALED:
+                case PIPE_FORMAT_R16G16_USCALED:
+                case PIPE_FORMAT_R16_USCALED:
+                case PIPE_FORMAT_R16G16B16A16_SSCALED:
+                case PIPE_FORMAT_R16G16B16_SSCALED:
+                case PIPE_FORMAT_R16G16_SSCALED:
+                case PIPE_FORMAT_R16_SSCALED:
+                case PIPE_FORMAT_R8G8B8A8_UNORM:
+                case PIPE_FORMAT_R8G8B8_UNORM:
+                case PIPE_FORMAT_R8G8_UNORM:
+                case PIPE_FORMAT_R8_UNORM:
+                case PIPE_FORMAT_R8G8B8A8_SNORM:
+                case PIPE_FORMAT_R8G8B8_SNORM:
+                case PIPE_FORMAT_R8G8_SNORM:
+                case PIPE_FORMAT_R8_SNORM:
+                case PIPE_FORMAT_R8G8B8A8_USCALED:
+                case PIPE_FORMAT_R8G8B8_USCALED:
+                case PIPE_FORMAT_R8G8_USCALED:
+                case PIPE_FORMAT_R8_USCALED:
+                case PIPE_FORMAT_R8G8B8A8_SSCALED:
+                case PIPE_FORMAT_R8G8B8_SSCALED:
+                case PIPE_FORMAT_R8G8_SSCALED:
+                case PIPE_FORMAT_R8_SSCALED:
+                        retval |= PIPE_BIND_VERTEX_BUFFER;
+                        break;
+                default:
+                        break;
+                }
         }
 
         if ((usage & PIPE_BIND_RENDER_TARGET) &&
-            (format == PIPE_FORMAT_B8G8R8A8_UNORM ||
-             format == PIPE_FORMAT_B8G8R8X8_UNORM || /* XXX: really? */
-             format == PIPE_FORMAT_R8G8B8A8_UNORM ||
-             format == PIPE_FORMAT_R8G8B8X8_UNORM || /* XXX: really? */
-             format == PIPE_FORMAT_A8B8G8R8_UNORM ||
-             format == PIPE_FORMAT_X8B8G8R8_UNORM || /* XXX: really? */
-             format == PIPE_FORMAT_A8R8G8B8_UNORM ||
-             format == PIPE_FORMAT_X8R8G8B8_UNORM || /* XXX: really? */
-             format == PIPE_FORMAT_R16G16B16A16_FLOAT)) {
+            vc4_rt_format_supported(format)) {
                 retval |= PIPE_BIND_RENDER_TARGET;
         }
 
         if ((usage & PIPE_BIND_SAMPLER_VIEW) &&
-            (vc4_get_texture_format(format) != ~0)) {
+            vc4_tex_format_supported(format)) {
                 retval |= PIPE_BIND_SAMPLER_VIEW;
         }
 
         if ((usage & PIPE_BIND_DEPTH_STENCIL) &&
-            (format == PIPE_FORMAT_Z24_UNORM_S8_UINT ||
-             format == PIPE_FORMAT_Z24X8_UNORM)) {
+            (format == PIPE_FORMAT_S8_UINT_Z24_UNORM ||
+             format == PIPE_FORMAT_X8Z24_UNORM)) {
                 retval |= PIPE_BIND_DEPTH_STENCIL;
         }
 
@@ -397,27 +501,104 @@ vc4_screen_is_format_supported(struct pipe_screen *pscreen,
                 retval |= PIPE_BIND_INDEX_BUFFER;
         }
 
-        if (usage & PIPE_BIND_TRANSFER_READ)
-                retval |= PIPE_BIND_TRANSFER_READ;
-        if (usage & PIPE_BIND_TRANSFER_WRITE)
-                retval |= PIPE_BIND_TRANSFER_WRITE;
-
 #if 0
-	if (retval != usage) {
-		fprintf(stderr,
+        if (retval != usage) {
+                fprintf(stderr,
                         "not supported: format=%s, target=%d, sample_count=%d, "
                         "usage=0x%x, retval=0x%x\n", util_format_name(format),
                         target, sample_count, usage, retval);
-	}
+        }
 #endif
 
         return retval == usage;
 }
 
+#define PTR_TO_UINT(x) ((unsigned)((intptr_t)(x)))
+
+static unsigned handle_hash(void *key)
+{
+    return PTR_TO_UINT(key);
+}
+
+static int handle_compare(void *key1, void *key2)
+{
+    return PTR_TO_UINT(key1) != PTR_TO_UINT(key2);
+}
+
+static bool
+vc4_supports_branches(struct vc4_screen *screen)
+{
+#if USE_VC4_SIMULATOR
+        return true;
+#endif
+
+        struct drm_vc4_get_param p = {
+                .param = DRM_VC4_PARAM_SUPPORTS_BRANCHES,
+        };
+        int ret = drmIoctl(screen->fd, DRM_IOCTL_VC4_GET_PARAM, &p);
+
+        if (ret != 0)
+                return false;
+
+        return p.value;
+}
+
+static bool
+vc4_get_chip_info(struct vc4_screen *screen)
+{
+#if USE_VC4_SIMULATOR
+        screen->v3d_ver = 21;
+        return true;
+#endif
+
+        struct drm_vc4_get_param ident0 = {
+                .param = DRM_VC4_PARAM_V3D_IDENT0,
+        };
+        struct drm_vc4_get_param ident1 = {
+                .param = DRM_VC4_PARAM_V3D_IDENT1,
+        };
+        int ret;
+
+        ret = drmIoctl(screen->fd, DRM_IOCTL_VC4_GET_PARAM, &ident0);
+        if (ret != 0) {
+                if (errno == EINVAL) {
+                        /* Backwards compatibility with 2835 kernels which
+                         * only do V3D 2.1.
+                         */
+                        screen->v3d_ver = 21;
+                        return true;
+                } else {
+                        fprintf(stderr, "Couldn't get V3D IDENT0: %s\n",
+                                strerror(errno));
+                        return false;
+                }
+        }
+        ret = drmIoctl(screen->fd, DRM_IOCTL_VC4_GET_PARAM, &ident1);
+        if (ret != 0) {
+                fprintf(stderr, "Couldn't get V3D IDENT1: %s\n",
+                        strerror(errno));
+                return false;
+        }
+
+        uint32_t major = (ident0.value >> 24) & 0xff;
+        uint32_t minor = (ident1.value >> 0) & 0xf;
+        screen->v3d_ver = major * 10 + minor;
+
+        if (screen->v3d_ver != 21) {
+                fprintf(stderr,
+                        "V3D %d.%d not supported by this version of Mesa.\n",
+                        screen->v3d_ver / 10,
+                        screen->v3d_ver % 10);
+                return false;
+        }
+
+        return true;
+}
+
 struct pipe_screen *
 vc4_screen_create(int fd)
 {
-        struct vc4_screen *screen = CALLOC_STRUCT(vc4_screen);
+        struct vc4_screen *screen = rzalloc(NULL, struct vc4_screen);
         struct pipe_screen *pscreen;
 
         pscreen = &screen->base;
@@ -430,8 +611,21 @@ vc4_screen_create(int fd)
         pscreen->is_format_supported = vc4_screen_is_format_supported;
 
         screen->fd = fd;
+        list_inithead(&screen->bo_cache.time_list);
+        pipe_mutex_init(screen->bo_handles_mutex);
+        screen->bo_handles = util_hash_table_create(handle_hash, handle_compare);
 
-	vc4_debug = debug_get_option_vc4_debug();
+        if (vc4_supports_branches(screen))
+                screen->has_control_flow = true;
+
+        if (!vc4_get_chip_info(screen))
+                goto fail;
+
+        slab_create_parent(&screen->transfer_pool, sizeof(struct vc4_transfer), 16);
+
+        vc4_fence_init(screen);
+
+        vc4_debug = debug_get_option_vc4_debug();
         if (vc4_debug & VC4_DEBUG_SHADERDB)
                 vc4_debug |= VC4_DEBUG_NORAST;
 
@@ -443,8 +637,15 @@ vc4_screen_create(int fd)
 
         pscreen->get_name = vc4_screen_get_name;
         pscreen->get_vendor = vc4_screen_get_vendor;
+        pscreen->get_device_vendor = vc4_screen_get_vendor;
+        pscreen->get_compiler_options = vc4_screen_get_compiler_options;
 
         return pscreen;
+
+fail:
+        close(fd);
+        ralloc_free(pscreen);
+        return NULL;
 }
 
 boolean
@@ -455,12 +656,21 @@ vc4_screen_bo_get_handle(struct pipe_screen *pscreen,
 {
         whandle->stride = stride;
 
+        /* If we're passing some reference to our BO out to some other part of
+         * the system, then we can't do any optimizations about only us being
+         * the ones seeing it (like BO caching or shadow update avoidance).
+         */
+        bo->private = false;
+
         switch (whandle->type) {
         case DRM_API_HANDLE_TYPE_SHARED:
                 return vc4_bo_flink(bo, &whandle->handle);
         case DRM_API_HANDLE_TYPE_KMS:
                 whandle->handle = bo->handle;
                 return TRUE;
+        case DRM_API_HANDLE_TYPE_FD:
+                whandle->handle = vc4_bo_get_dmabuf(bo);
+                return whandle->handle != -1;
         }
 
         return FALSE;
@@ -468,26 +678,26 @@ vc4_screen_bo_get_handle(struct pipe_screen *pscreen,
 
 struct vc4_bo *
 vc4_screen_bo_from_handle(struct pipe_screen *pscreen,
-                          struct winsys_handle *whandle,
-                          unsigned *out_stride)
+                          struct winsys_handle *whandle)
 {
         struct vc4_screen *screen = vc4_screen(pscreen);
-        struct vc4_bo *bo;
 
-        if (whandle->type != DRM_API_HANDLE_TYPE_SHARED) {
+        if (whandle->offset != 0) {
+                fprintf(stderr,
+                        "Attempt to import unsupported winsys offset %u\n",
+                        whandle->offset);
+                return NULL;
+        }
+
+        switch (whandle->type) {
+        case DRM_API_HANDLE_TYPE_SHARED:
+                return vc4_bo_open_name(screen, whandle->handle, whandle->stride);
+        case DRM_API_HANDLE_TYPE_FD:
+                return vc4_bo_open_dmabuf(screen, whandle->handle, whandle->stride);
+        default:
                 fprintf(stderr,
                         "Attempt to import unsupported handle type %d\n",
                         whandle->type);
                 return NULL;
         }
-
-        bo = vc4_bo_open_name(screen, whandle->handle, whandle->stride);
-        if (!bo) {
-                fprintf(stderr, "Open name %d failed\n", whandle->handle);
-                return NULL;
-        }
-
-        *out_stride = whandle->stride;
-
-        return bo;
 }

@@ -56,6 +56,21 @@ dri_create_context(gl_api api, const struct gl_config * visual,
    struct st_context_iface *st_share = NULL;
    struct st_context_attribs attribs;
    enum st_context_error ctx_err = 0;
+   unsigned allowed_flags = __DRI_CTX_FLAG_DEBUG |
+                            __DRI_CTX_FLAG_FORWARD_COMPATIBLE;
+
+   if (screen->has_reset_status_query)
+      allowed_flags |= __DRI_CTX_FLAG_ROBUST_BUFFER_ACCESS;
+
+   if (flags & ~allowed_flags) {
+      *error = __DRI_CTX_ERROR_UNKNOWN_FLAG;
+      goto fail;
+   }
+
+   if (!screen->has_reset_status_query && notify_reset) {
+      *error = __DRI_CTX_ERROR_UNKNOWN_ATTRIBUTE;
+      goto fail;
+   }
 
    memset(&attribs, 0, sizeof(attribs));
    switch (api) {
@@ -72,9 +87,6 @@ dri_create_context(gl_api api, const struct gl_config * visual,
       attribs.major = major_version;
       attribs.minor = minor_version;
 
-      if ((flags & __DRI_CTX_FLAG_DEBUG) != 0)
-	 attribs.flags |= ST_CONTEXT_FLAG_DEBUG;
-
       if ((flags & __DRI_CTX_FLAG_FORWARD_COMPATIBLE) != 0)
 	 attribs.flags |= ST_CONTEXT_FLAG_FORWARD_COMPATIBLE;
       break;
@@ -83,15 +95,14 @@ dri_create_context(gl_api api, const struct gl_config * visual,
       goto fail;
    }
 
-   if (flags & ~(__DRI_CTX_FLAG_DEBUG | __DRI_CTX_FLAG_FORWARD_COMPATIBLE)) {
-      *error = __DRI_CTX_ERROR_UNKNOWN_FLAG;
-      goto fail;
-   }
+   if ((flags & __DRI_CTX_FLAG_DEBUG) != 0)
+      attribs.flags |= ST_CONTEXT_FLAG_DEBUG;
 
-   if (notify_reset) {
-      *error = __DRI_CTX_ERROR_UNKNOWN_ATTRIBUTE;
-      goto fail;
-   }
+   if (flags & __DRI_CTX_FLAG_ROBUST_BUFFER_ACCESS)
+      attribs.flags |= ST_CONTEXT_FLAG_ROBUST_ACCESS;
+
+   if (notify_reset)
+      attribs.flags |= ST_CONTEXT_FLAG_RESET_NOTIFICATION_ENABLED;
 
    if (sharedContextPrivate) {
       st_share = ((struct dri_context *)sharedContextPrivate)->st;
@@ -165,6 +176,9 @@ dri_destroy_context(__DRIcontext * cPriv)
       hud_destroy(ctx->hud);
    }
 
+   if (ctx->pp)
+      pp_free(ctx->pp);
+
    /* No particular reason to wait for command completion before
     * destroying a context, but we flush the context here
     * to avoid having to add code elsewhere to cope with flushing a
@@ -172,10 +186,6 @@ dri_destroy_context(__DRIcontext * cPriv)
     */
    ctx->st->flush(ctx->st, 0, NULL);
    ctx->st->destroy(ctx->st);
-
-   if (ctx->pp)
-      pp_free(ctx->pp);
-
    free(ctx);
 }
 
@@ -234,11 +244,10 @@ dri_make_current(__DRIcontext * cPriv,
 
    ctx->stapi->make_current(ctx->stapi, ctx->st, &draw->base, &read->base);
 
-   // This is ok to call here. If they are already init, it's a no-op.
-   if (draw->textures[ST_ATTACHMENT_BACK_LEFT] && draw->textures[ST_ATTACHMENT_DEPTH_STENCIL]
-      && ctx->pp)
-         pp_init_fbos(ctx->pp, draw->textures[ST_ATTACHMENT_BACK_LEFT]->width0,
-            draw->textures[ST_ATTACHMENT_BACK_LEFT]->height0);
+   /* This is ok to call here. If they are already init, it's a no-op. */
+   if (ctx->pp && draw->textures[ST_ATTACHMENT_BACK_LEFT])
+      pp_init_fbos(ctx->pp, draw->textures[ST_ATTACHMENT_BACK_LEFT]->width0,
+                   draw->textures[ST_ATTACHMENT_BACK_LEFT]->height0);
 
    return GL_TRUE;
 }

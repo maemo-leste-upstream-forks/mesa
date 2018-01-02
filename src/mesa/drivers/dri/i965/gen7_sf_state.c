@@ -27,19 +27,20 @@
 #include "brw_util.h"
 #include "main/macros.h"
 #include "main/fbobject.h"
+#include "main/framebuffer.h"
 #include "intel_batchbuffer.h"
 
 static void
 upload_sbe_state(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
-   /* CACHE_NEW_WM_PROG */
-   uint32_t num_outputs = brw->wm.prog_data->num_varying_inputs;
+   /* BRW_NEW_FS_PROG_DATA */
+   const struct brw_wm_prog_data *wm_prog_data =
+      brw_wm_prog_data(brw->wm.base.prog_data);
+   uint32_t num_outputs = wm_prog_data->num_varying_inputs;
    uint32_t dw1;
    uint32_t point_sprite_enables;
-   uint32_t flat_enables;
    int i;
-   const int urb_entry_read_offset = BRW_SF_URB_ENTRY_READ_OFFSET;
    uint16_t attr_overrides[16];
    /* _NEW_BUFFERS */
    bool render_to_fbo = _mesa_is_user_fbo(ctx->DrawBuffer);
@@ -60,12 +61,15 @@ upload_sbe_state(struct brw_context *brw)
    }
    dw1 |= point_sprite_origin;
 
-   /* BRW_NEW_VUE_MAP_GEOM_OUT | _NEW_POINT | _NEW_LIGHT | _NEW_PROGRAM |
-    * CACHE_NEW_WM_PROG
+   /* _NEW_POINT | _NEW_LIGHT | _NEW_PROGRAM,
+    * BRW_NEW_FS_PROG_DATA | BRW_NEW_FRAGMENT_PROGRAM |
+    * BRW_NEW_GS_PROG_DATA | BRW_NEW_PRIMITIVE | BRW_NEW_TES_PROG_DATA |
+    * BRW_NEW_VUE_MAP_GEOM_OUT
     */
    uint32_t urb_entry_read_length;
+   uint32_t urb_entry_read_offset;
    calculate_attr_overrides(brw, attr_overrides, &point_sprite_enables,
-                            &flat_enables, &urb_entry_read_length);
+                            &urb_entry_read_length, &urb_entry_read_offset);
    dw1 |= urb_entry_read_length << GEN7_SBE_URB_ENTRY_READ_LENGTH_SHIFT |
           urb_entry_read_offset << GEN7_SBE_URB_ENTRY_READ_OFFSET_SHIFT;
 
@@ -79,7 +83,7 @@ upload_sbe_state(struct brw_context *brw)
    }
 
    OUT_BATCH(point_sprite_enables); /* dw10 */
-   OUT_BATCH(flat_enables);
+   OUT_BATCH(wm_prog_data->flat_inputs);
    OUT_BATCH(0); /* wrapshortest enables 0-7 */
    OUT_BATCH(0); /* wrapshortest enables 8-15 */
    ADVANCE_BATCH();
@@ -87,14 +91,19 @@ upload_sbe_state(struct brw_context *brw)
 
 const struct brw_tracked_state gen7_sbe_state = {
    .dirty = {
-      .mesa  = (_NEW_BUFFERS |
-		_NEW_LIGHT |
-		_NEW_POINT |
-		_NEW_PROGRAM),
-      .brw   = (BRW_NEW_CONTEXT |
-		BRW_NEW_FRAGMENT_PROGRAM |
-                BRW_NEW_VUE_MAP_GEOM_OUT),
-      .cache = CACHE_NEW_WM_PROG
+      .mesa  = _NEW_BUFFERS |
+               _NEW_LIGHT |
+               _NEW_POINT |
+               _NEW_POLYGON |
+               _NEW_PROGRAM,
+      .brw   = BRW_NEW_BLORP |
+               BRW_NEW_CONTEXT |
+               BRW_NEW_FRAGMENT_PROGRAM |
+               BRW_NEW_FS_PROG_DATA |
+               BRW_NEW_GS_PROG_DATA |
+               BRW_NEW_TES_PROG_DATA |
+               BRW_NEW_PRIMITIVE |
+               BRW_NEW_VUE_MAP_GEOM_OUT,
    },
    .emit = upload_sbe_state,
 };
@@ -107,7 +116,7 @@ upload_sf_state(struct brw_context *brw)
    float point_size;
    /* _NEW_BUFFERS */
    bool render_to_fbo = _mesa_is_user_fbo(ctx->DrawBuffer);
-   bool multisampled_fbo = ctx->DrawBuffer->Visual.samples > 1;
+   const bool multisampled_fbo = _mesa_geometric_samples(ctx->DrawBuffer) > 1;
 
    dw1 = GEN6_SF_STATISTICS_ENABLE;
 
@@ -118,7 +127,7 @@ upload_sf_state(struct brw_context *brw)
    dw1 |= (brw_depthbuffer_format(brw) << GEN7_SF_DEPTH_BUFFER_SURFACE_FORMAT_SHIFT);
 
    /* _NEW_POLYGON */
-   if ((ctx->Polygon.FrontFace == GL_CCW) ^ render_to_fbo)
+   if (ctx->Polygon._FrontBit == render_to_fbo)
       dw1 |= GEN6_SF_WINDING_CCW;
 
    if (ctx->Polygon.OffsetFill)
@@ -184,16 +193,16 @@ upload_sf_state(struct brw_context *brw)
       dw2 |= GEN6_SF_CULL_NONE;
    }
 
-   /* _NEW_SCISSOR */
-   if (ctx->Scissor.EnableFlags)
+   /* _NEW_SCISSOR | _NEW_POLYGON,
+    * BRW_NEW_GS_PROG_DATA | BRW_NEW_PRIMITIVE | BRW_NEW_TES_PROG_DATA
+    */
+   if (ctx->Scissor.EnableFlags ||
+       brw_is_drawing_points(brw) || brw_is_drawing_lines(brw))
       dw2 |= GEN6_SF_SCISSOR_ENABLE;
 
    /* _NEW_LINE */
    {
-      uint32_t line_width_u3_7 = U_FIXED(CLAMP(ctx->Line.Width, 0.0, 7.99), 7);
-      /* TODO: line width of 0 is not allowed when MSAA enabled */
-      if (line_width_u3_7 == 0)
-         line_width_u3_7 = 1;
+      uint32_t line_width_u3_7 = brw_get_line_width(brw);
       dw2 |= line_width_u3_7 << GEN6_SF_LINE_WIDTH_SHIFT;
    }
    if (ctx->Line.SmoothFlag) {
@@ -212,15 +221,15 @@ upload_sf_state(struct brw_context *brw)
 
    dw3 = GEN6_SF_LINE_AA_MODE_TRUE;
 
-   /* _NEW_PROGRAM | _NEW_POINT */
-   if (!(ctx->VertexProgram.PointSizeEnabled || ctx->Point._Attenuated))
+   /* _NEW_PROGRAM | _NEW_POINT, BRW_NEW_VUE_MAP_GEOM_OUT */
+   if (use_state_point_size(brw))
       dw3 |= GEN6_SF_USE_STATE_POINT_WIDTH;
 
-   /* Clamp to ARB_point_parameters user limits */
+   /* _NEW_POINT - Clamp to ARB_point_parameters user limits */
    point_size = CLAMP(ctx->Point.Size, ctx->Point.MinSize, ctx->Point.MaxSize);
 
    /* Clamp to the hardware limits and convert to fixed point */
-   dw3 |= U_FIXED(CLAMP(point_size, 0.125, 255.875), 3);
+   dw3 |= U_FIXED(CLAMP(point_size, 0.125f, 255.875f), 3);
 
    /* _NEW_LIGHT */
    if (ctx->Light.ProvokingVertex != GL_FIRST_VERTEX_CONVENTION) {
@@ -239,22 +248,26 @@ upload_sf_state(struct brw_context *brw)
    OUT_BATCH(dw3);
    OUT_BATCH_F(ctx->Polygon.OffsetUnits * 2); /* constant.  copied from gen4 */
    OUT_BATCH_F(ctx->Polygon.OffsetFactor); /* scale */
-   OUT_BATCH_F(0.0); /* XXX: global depth offset clamp */
+   OUT_BATCH_F(ctx->Polygon.OffsetClamp); /* global depth offset clamp */
    ADVANCE_BATCH();
 }
 
 const struct brw_tracked_state gen7_sf_state = {
    .dirty = {
-      .mesa  = (_NEW_LIGHT |
-		_NEW_PROGRAM |
-		_NEW_POLYGON |
-		_NEW_LINE |
-		_NEW_SCISSOR |
-		_NEW_BUFFERS |
-		_NEW_POINT |
-                _NEW_MULTISAMPLE),
-      .brw   = BRW_NEW_CONTEXT,
-      .cache = CACHE_NEW_VS_PROG
+      .mesa  = _NEW_BUFFERS |
+               _NEW_LIGHT |
+               _NEW_LINE |
+               _NEW_MULTISAMPLE |
+               _NEW_POINT |
+               _NEW_POLYGON |
+               _NEW_PROGRAM |
+               _NEW_SCISSOR,
+      .brw   = BRW_NEW_BLORP |
+               BRW_NEW_CONTEXT |
+               BRW_NEW_GS_PROG_DATA |
+               BRW_NEW_PRIMITIVE |
+               BRW_NEW_TES_PROG_DATA |
+               BRW_NEW_VUE_MAP_GEOM_OUT,
    },
    .emit = upload_sf_state,
 };

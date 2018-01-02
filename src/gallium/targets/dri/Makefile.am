@@ -1,16 +1,22 @@
 include $(top_srcdir)/src/gallium/Automake.inc
 
+if HAVE_ANDROID
+if HAVE_SHARED_GLAPI
+SHARED_GLAPI_LIB = $(top_builddir)/src/mapi/shared-glapi/libglapi.la
+endif
+endif
+
 AM_CFLAGS = \
 	-I$(top_srcdir)/src/mapi \
 	-I$(top_srcdir)/src/mesa \
+	-I$(top_srcdir)/src \
 	-I$(top_srcdir)/src/mesa/drivers/dri/common \
 	-I$(top_srcdir)/src/gallium/state_trackers/dri \
 	$(GALLIUM_TARGET_CFLAGS)
 
 AM_CPPFLAGS = \
 	$(DEFINES) \
-	-DDRI_TARGET \
-	-DGALLIUM_GALAHAD \
+        -DGALLIUM_DDEBUG \
 	-DGALLIUM_NOOP \
 	-DGALLIUM_RBUG \
 	-DGALLIUM_TRACE
@@ -43,150 +49,66 @@ gallium_dri_la_LIBADD = \
 	$(top_builddir)/src/mesa/drivers/dri/common/libdricommon.la \
 	$(top_builddir)/src/mesa/drivers/dri/common/libmegadriver_stub.la \
 	$(top_builddir)/src/gallium/state_trackers/dri/libdri.la \
+	$(top_builddir)/src/gallium/auxiliary/libgalliumvl.la \
 	$(top_builddir)/src/gallium/auxiliary/libgallium.la \
-	$(top_builddir)/src/gallium/drivers/galahad/libgalahad.la \
+        $(top_builddir)/src/gallium/drivers/ddebug/libddebug.la \
 	$(top_builddir)/src/gallium/drivers/noop/libnoop.la \
 	$(top_builddir)/src/gallium/drivers/rbug/librbug.la \
 	$(top_builddir)/src/gallium/drivers/trace/libtrace.la \
+	$(SHARED_GLAPI_LIB) \
 	$(SELINUX_LIBS) \
 	$(EXPAT_LIBS) \
 	$(LIBDRM_LIBS) \
 	$(GALLIUM_COMMON_LIB_DEPS)
 
+EXTRA_gallium_dri_la_DEPENDENCIES = \
+	dri.sym \
+	$(top_srcdir)/src/gallium/targets/dri-vdpau.dyn
+EXTRA_DIST = \
+	SConscript \
+	dri.sym \
+	$(top_srcdir)/src/gallium/targets/dri-vdpau.dyn
+
+TARGET_DRIVERS =
+TARGET_CPPFLAGS =
+TARGET_LIB_DEPS =
+
+include $(top_srcdir)/src/gallium/drivers/i915/Automake.inc
+
+include $(top_srcdir)/src/gallium/drivers/ilo/Automake.inc
+
+include $(top_srcdir)/src/gallium/drivers/nouveau/Automake.inc
+
+include $(top_srcdir)/src/gallium/drivers/r300/Automake.inc
+include $(top_srcdir)/src/gallium/drivers/r600/Automake.inc
+include $(top_srcdir)/src/gallium/drivers/radeonsi/Automake.inc
+
+include $(top_srcdir)/src/gallium/drivers/svga/Automake.inc
+
+include $(top_srcdir)/src/gallium/drivers/freedreno/Automake.inc
+
+include $(top_srcdir)/src/gallium/drivers/vc4/Automake.inc
+
+include $(top_srcdir)/src/gallium/drivers/virgl/Automake.inc
+
+include $(top_srcdir)/src/gallium/drivers/softpipe/Automake.inc
+include $(top_srcdir)/src/gallium/drivers/llvmpipe/Automake.inc
+include $(top_srcdir)/src/gallium/drivers/swr/Automake.inc
+
 if HAVE_GALLIUM_STATIC_TARGETS
 
-# XXX: Temporary allow duplicated symbols, as the loader pulls in xmlconfig.c
-# which already provides driParse* and driQuery* amongst others.
-# Remove this hack as we come up with a cleaner solution.
-gallium_dri_la_LDFLAGS += \
-	-Wl,--allow-multiple-definition
-
-MEGADRIVERS =
-STATIC_TARGET_CPPFLAGS =
-STATIC_TARGET_LIB_DEPS = \
-	$(top_builddir)/src/loader/libloader.la
-
-if HAVE_GALLIUM_I915
-MEGADRIVERS += i915
-STATIC_TARGET_CPPFLAGS += -DGALLIUM_I915
-STATIC_TARGET_LIB_DEPS += \
-	$(top_builddir)/src/gallium/winsys/i915/drm/libi915drm.la \
-	$(top_builddir)/src/gallium/drivers/i915/libi915.la \
-	$(INTEL_LIBS)
-endif
-
-if HAVE_GALLIUM_ILO
-MEGADRIVERS += ilo
-STATIC_TARGET_CPPFLAGS += -DGALLIUM_ILO
-STATIC_TARGET_LIB_DEPS += \
-	$(top_builddir)/src/gallium/winsys/intel/drm/libintelwinsys.la \
-	$(top_builddir)/src/gallium/drivers/ilo/libilo.la \
-	$(INTEL_LIBS)
-endif
-
-if HAVE_GALLIUM_NOUVEAU
-MEGADRIVERS += nouveau
-STATIC_TARGET_CPPFLAGS += -DGALLIUM_NOUVEAU
-STATIC_TARGET_LIB_DEPS += \
-	$(top_builddir)/src/gallium/winsys/nouveau/drm/libnouveaudrm.la \
-	$(top_builddir)/src/gallium/drivers/nouveau/libnouveau.la \
-	$(NOUVEAU_LIBS)
-endif
-
-if NEED_RADEON_DRM_WINSYS
-STATIC_TARGET_LIB_DEPS += \
-	$(top_builddir)/src/gallium/winsys/radeon/drm/libradeonwinsys.la
-endif
-
-if HAVE_GALLIUM_RADEON_COMMON
-STATIC_TARGET_LIB_DEPS += \
-	$(top_builddir)/src/gallium/drivers/radeon/libradeon.la
-endif
-
-if HAVE_GALLIUM_R300
-MEGADRIVERS += r300
-STATIC_TARGET_CPPFLAGS += -DGALLIUM_R300
-STATIC_TARGET_LIB_DEPS += \
-	$(top_builddir)/src/gallium/drivers/r300/libr300.la \
-	$(RADEON_LIBS)
-endif
-
-if HAVE_GALLIUM_R600
-MEGADRIVERS += r600
-STATIC_TARGET_CPPFLAGS += -DGALLIUM_R600
-STATIC_TARGET_LIB_DEPS += \
-	$(top_builddir)/src/gallium/drivers/r600/libr600.la \
-	$(RADEON_LIBS)
-endif
-
-if HAVE_GALLIUM_RADEONSI
-MEGADRIVERS += radeonsi
-STATIC_TARGET_CPPFLAGS += -DGALLIUM_RADEONSI
-STATIC_TARGET_LIB_DEPS += \
-	$(top_builddir)/src/gallium/drivers/radeonsi/libradeonsi.la \
-	$(RADEON_LIBS)
-endif
-
-if HAVE_GALLIUM_SVGA
-MEGADRIVERS += vmwgfx
-STATIC_TARGET_CPPFLAGS += -DGALLIUM_VMWGFX
-STATIC_TARGET_LIB_DEPS += \
-	$(top_builddir)/src/gallium/winsys/svga/drm/libsvgadrm.la \
-	$(top_builddir)/src/gallium/drivers/svga/libsvga.la
-endif
-
-if HAVE_GALLIUM_FREEDRENO
-MEGADRIVERS += msm kgsl
-STATIC_TARGET_CPPFLAGS += -DGALLIUM_FREEDRENO
-STATIC_TARGET_LIB_DEPS += \
-	$(top_builddir)/src/gallium/winsys/freedreno/drm/libfreedrenodrm.la \
-	$(top_builddir)/src/gallium/drivers/freedreno/libfreedreno.la \
-	$(FREEDRENO_LIBS)
-
-endif
-
-if HAVE_GALLIUM_VC4
-MEGADRIVERS += vc4
-STATIC_TARGET_CPPFLAGS += -DGALLIUM_VC4
-STATIC_TARGET_LIB_DEPS += \
-	$(top_builddir)/src/gallium/winsys/vc4/drm/libvc4drm.la \
-	$(top_builddir)/src/gallium/drivers/vc4/libvc4.la
-
-if USE_VC4_SIMULATOR
-STATIC_TARGET_CPPFLAGS += -DUSE_VC4_SIMULATOR
-endif
-endif
-
-if HAVE_GALLIUM_SOFTPIPE
-MEGADRIVERS += swrast
-STATIC_TARGET_CPPFLAGS += -DGALLIUM_SOFTPIPE
-STATIC_TARGET_LIB_DEPS += \
-	$(top_builddir)/src/gallium/winsys/sw/dri/libswdri.la \
-	$(top_builddir)/src/gallium/drivers/softpipe/libsoftpipe.la
-
-if HAVE_DRI2
-MEGADRIVERS += kms_swrast
-STATIC_TARGET_LIB_DEPS += \
-	$(top_builddir)/src/gallium/winsys/sw/kms-dri/libswkmsdri.la
-endif
-endif
-
-if NEED_GALLIUM_LLVMPIPE_DRIVER
-STATIC_TARGET_CPPFLAGS += -DGALLIUM_LLVMPIPE
-STATIC_TARGET_LIB_DEPS += \
-	$(top_builddir)/src/gallium/drivers/llvmpipe/libllvmpipe.la
-endif
-
 gallium_dri_la_SOURCES += target.c
-AM_CPPFLAGS += $(STATIC_TARGET_CPPFLAGS)
-gallium_dri_la_LIBADD += $(STATIC_TARGET_LIB_DEPS)
+gallium_dri_la_CPPFLAGS = $(AM_CPPFLAGS) $(TARGET_CPPFLAGS)
+gallium_dri_la_LIBADD += \
+	$(top_builddir)/src/gallium/auxiliary/pipe-loader/libpipe_loader_static.la \
+	$(GALLIUM_PIPE_LOADER_WINSYS_LIBS) \
+	$(TARGET_LIB_DEPS) \
+	$(TARGET_RADEON_WINSYS) $(TARGET_RADEON_COMMON)
 
 else # HAVE_GALLIUM_STATIC_TARGETS
 
 gallium_dri_la_LIBADD += \
-	$(top_builddir)/src/gallium/auxiliary/pipe-loader/libpipe_loader.la \
-	$(GALLIUM_PIPE_LOADER_WINSYS_LIBS) \
-	$(GALLIUM_PIPE_LOADER_LIBS)
+	$(top_builddir)/src/gallium/auxiliary/pipe-loader/libpipe_loader_dynamic.la
 
 endif # HAVE_GALLIUM_STATIC_TARGETS
 
@@ -200,22 +122,28 @@ if HAVE_COMPAT_SYMLINKS
 all-local: $(dri_LTLIBRARIES)
 	$(AM_V_GEN)link_dir=$(top_builddir)/$(LIB_DIR)/gallium;         \
 	$(MKDIR_P) $${link_dir};                                        \
-	for i in $(MEGADRIVERS); do                                     \
-		j=gallium_dri.so;                                       \
-		k=$${i}_dri.so;                                         \
-		ln -f .libs/$${j}                                       \
-			$${link_dir}/$${k};                             \
+	for i in $(TARGET_DRIVERS); do                                  \
+		ln -f .libs/gallium_dri.so                              \
+			$${link_dir}/$${i}_dri.so;                      \
 	done
+
+clean-local:
+	$(AM_V_GEN)link_dir=$(top_builddir)/$(LIB_DIR)/gallium;         \
+	$(AM_V_GEN)for i in $(TARGET_DRIVERS); do                       \
+		$(RM) $${link_dir}/$${i}_dri.so;                        \
+	done;
 endif
 
 # hardlink each megadriver instance, but don't actually have
 # gallium_dri.so in the set of final installed files.
 install-data-hook:
-	$(AM_V_GEN)dest_dir=$(DESTDIR)/$(dridir);                       \
-	for i in $(MEGADRIVERS); do                                     \
-		j=gallium_dri.so;                                       \
-		k=$${i}_dri.so;                                         \
-		ln -f $${dest_dir}/$${j}                                \
-			$${dest_dir}/$${k};                             \
+	for i in $(TARGET_DRIVERS); do                                  \
+		ln -f $(DESTDIR)$(dridir)/gallium_dri.so                \
+		      $(DESTDIR)$(dridir)/$${i}_dri.so;                 \
 	done;                                                           \
-	$(RM) -f $$dest_dir/gallium_dri.*
+	$(RM) $(DESTDIR)$(dridir)/gallium_dri.*
+
+uninstall-hook:
+	for i in $(TARGET_DRIVERS); do                                  \
+		$(RM) $(DESTDIR)$(dridir)/$${i}_dri.so;                 \
+	done;

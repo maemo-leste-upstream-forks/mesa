@@ -83,7 +83,7 @@ struct widepoint_stage {
 
 
 
-static INLINE struct widepoint_stage *
+static inline struct widepoint_stage *
 widepoint_stage( struct draw_stage *stage )
 {
    return (struct widepoint_stage *)stage;
@@ -315,7 +315,7 @@ static void widepoint_destroy( struct draw_stage *stage )
 struct draw_stage *draw_wide_point_stage( struct draw_context *draw )
 {
    struct widepoint_stage *wide = CALLOC_STRUCT(widepoint_stage);
-   if (wide == NULL)
+   if (!wide)
       goto fail;
 
    wide->stage.draw = draw;

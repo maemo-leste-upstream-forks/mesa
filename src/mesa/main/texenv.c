@@ -42,7 +42,7 @@
 
 
 #define TE_ERROR(errCode, msg, value)				\
-   _mesa_error(ctx, errCode, msg, _mesa_lookup_enum_by_nr(value));
+   _mesa_error(ctx, errCode, msg, _mesa_enum_to_string(value));
 
 
 /** Set texture env mode */
@@ -460,20 +460,22 @@ _mesa_TexEnvfv( GLenum target, GLenum pname, const GLfloat *param )
 	 return;
       }
       if (pname == GL_COORD_REPLACE_NV) {
-         if (iparam0 == GL_TRUE || iparam0 == GL_FALSE) {
-            /* It's kind of weird to set point state via glTexEnv,
-             * but that's what the spec calls for.
-             */
-            const GLboolean state = (GLboolean) iparam0;
-            if (ctx->Point.CoordReplace[ctx->Texture.CurrentUnit] == state)
+         /* It's kind of weird to set point state via glTexEnv,
+          * but that's what the spec calls for.
+          */
+         if (iparam0 == GL_TRUE) {
+            if (ctx->Point.CoordReplace & (1u << ctx->Texture.CurrentUnit))
                return;
-            FLUSH_VERTICES(ctx, _NEW_POINT);
-            ctx->Point.CoordReplace[ctx->Texture.CurrentUnit] = state;
-         }
-         else {
+            ctx->Point.CoordReplace |= (1u << ctx->Texture.CurrentUnit);
+         } else if (iparam0 == GL_FALSE) {
+            if (~(ctx->Point.CoordReplace) & (1u << ctx->Texture.CurrentUnit))
+               return;
+            ctx->Point.CoordReplace &= ~(1u << ctx->Texture.CurrentUnit);
+         } else {
             _mesa_error( ctx, GL_INVALID_VALUE, "glTexEnv(param=0x%x)", iparam0);
             return;
          }
+         FLUSH_VERTICES(ctx, _NEW_POINT);
       }
       else {
          _mesa_error( ctx, GL_INVALID_ENUM, "glTexEnv(pname=0x%x)", pname );
@@ -482,20 +484,20 @@ _mesa_TexEnvfv( GLenum target, GLenum pname, const GLfloat *param )
    }
    else {
       _mesa_error(ctx, GL_INVALID_ENUM, "glTexEnv(target=%s)",
-                  _mesa_lookup_enum_by_nr(target));
+                  _mesa_enum_to_string(target));
       return;
    }
 
    if (MESA_VERBOSE&(VERBOSE_API|VERBOSE_TEXTURE))
       _mesa_debug(ctx, "glTexEnv %s %s %.1f(%s) ...\n",
-                  _mesa_lookup_enum_by_nr(target),
-                  _mesa_lookup_enum_by_nr(pname),
+                  _mesa_enum_to_string(target),
+                  _mesa_enum_to_string(pname),
                   *param,
-                  _mesa_lookup_enum_by_nr((GLenum) iparam0));
+                  _mesa_enum_to_string((GLenum) iparam0));
 
    /* Tell device driver about the new texture environment */
    if (ctx->Driver.TexEnv) {
-      (*ctx->Driver.TexEnv)( ctx, target, pname, param );
+      ctx->Driver.TexEnv(ctx, target, pname, param);
    }
 }
 
@@ -646,7 +648,7 @@ _mesa_GetTexEnvfv( GLenum target, GLenum pname, GLfloat *params )
       if (pname == GL_TEXTURE_ENV_COLOR) {
          if(ctx->NewState & (_NEW_BUFFERS | _NEW_FRAG_CLAMP))
             _mesa_update_state(ctx);
-         if (_mesa_get_clamp_fragment_color(ctx))
+         if (_mesa_get_clamp_fragment_color(ctx, ctx->DrawBuffer))
             COPY_4FV( params, texUnit->EnvColor );
          else
             COPY_4FV( params, texUnit->EnvColorUnclamped );
@@ -675,7 +677,10 @@ _mesa_GetTexEnvfv( GLenum target, GLenum pname, GLfloat *params )
          return;
       }
       if (pname == GL_COORD_REPLACE_NV) {
-         *params = (GLfloat) ctx->Point.CoordReplace[ctx->Texture.CurrentUnit];
+         if (ctx->Point.CoordReplace & (1u << ctx->Texture.CurrentUnit))
+            *params = 1.0f;
+         else
+            *params = 0.0f;
       }
       else {
          _mesa_error( ctx, GL_INVALID_ENUM, "glGetTexEnvfv(pname)" );
@@ -736,7 +741,10 @@ _mesa_GetTexEnviv( GLenum target, GLenum pname, GLint *params )
          return;
       }
       if (pname == GL_COORD_REPLACE_NV) {
-         *params = (GLint) ctx->Point.CoordReplace[ctx->Texture.CurrentUnit];
+         if (ctx->Point.CoordReplace & (1u << ctx->Texture.CurrentUnit))
+            *params = GL_TRUE;
+         else
+            *params = GL_FALSE;
       }
       else {
          _mesa_error( ctx, GL_INVALID_ENUM, "glGetTexEnviv(pname)" );

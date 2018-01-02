@@ -1,6 +1,6 @@
 /**************************************************************************
  *
- * Copyright 2007-2010 VMware, Inc.
+ * Copyright 2007-2015 VMware, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -40,13 +40,14 @@
 #include <unistd.h>
 #include <sched.h>
 #endif
+#include <inttypes.h>
 
 #include "pipe/p_compiler.h"
 #include "pipe/p_defines.h"
 #include "util/u_debug.h"
 #include "os/os_thread.h"
 #include "util/u_memory.h"
-#include "util/u_double_list.h"
+#include "util/list.h"
 
 #include "pipebuffer/pb_buffer.h"
 #include "pipebuffer/pb_bufmgr.h"
@@ -127,7 +128,7 @@ struct fenced_buffer
 };
 
 
-static INLINE struct fenced_manager *
+static inline struct fenced_manager *
 fenced_manager(struct pb_manager *mgr)
 {
    assert(mgr);
@@ -135,7 +136,7 @@ fenced_manager(struct pb_manager *mgr)
 }
 
 
-static INLINE struct fenced_buffer *
+static inline struct fenced_buffer *
 fenced_buffer(struct pb_buffer *buf)
 {
    assert(buf);
@@ -172,7 +173,7 @@ fenced_manager_dump_locked(struct fenced_manager *fenced_mgr)
    while(curr != &fenced_mgr->unfenced) {
       fenced_buf = LIST_ENTRY(struct fenced_buffer, curr, head);
       assert(!fenced_buf->fence);
-      debug_printf("%10p %7u %8u %7s\n",
+      debug_printf("%10p %"PRIu64" %8u %7s\n",
                    (void *) fenced_buf,
                    fenced_buf->base.size,
                    p_atomic_read(&fenced_buf->base.reference.count),
@@ -188,7 +189,7 @@ fenced_manager_dump_locked(struct fenced_manager *fenced_mgr)
       fenced_buf = LIST_ENTRY(struct fenced_buffer, curr, head);
       assert(fenced_buf->buffer);
       signaled = ops->fence_signalled(ops, fenced_buf->fence, 0);
-      debug_printf("%10p %7u %8u %7s %10p %s\n",
+      debug_printf("%10p %"PRIu64" %8u %7s %10p %s\n",
                    (void *) fenced_buf,
                    fenced_buf->base.size,
                    p_atomic_read(&fenced_buf->base.reference.count),
@@ -204,7 +205,7 @@ fenced_manager_dump_locked(struct fenced_manager *fenced_mgr)
 }
 
 
-static INLINE void
+static inline void
 fenced_buffer_destroy_locked(struct fenced_manager *fenced_mgr,
                              struct fenced_buffer *fenced_buf)
 {
@@ -228,7 +229,7 @@ fenced_buffer_destroy_locked(struct fenced_manager *fenced_mgr,
  *
  * Reference count should be incremented before calling this function.
  */
-static INLINE void
+static inline void
 fenced_buffer_add_locked(struct fenced_manager *fenced_mgr,
                          struct fenced_buffer *fenced_buf)
 {
@@ -252,7 +253,7 @@ fenced_buffer_add_locked(struct fenced_manager *fenced_mgr,
  *
  * Returns TRUE if the buffer was detroyed.
  */
-static INLINE boolean
+static inline boolean
 fenced_buffer_remove_locked(struct fenced_manager *fenced_mgr,
                             struct fenced_buffer *fenced_buf)
 {
@@ -286,10 +287,10 @@ fenced_buffer_remove_locked(struct fenced_manager *fenced_mgr,
 /**
  * Wait for the fence to expire, and remove it from the fenced list.
  *
- * This function will release and re-aquire the mutex, so any copy of mutable
+ * This function will release and re-acquire the mutex, so any copy of mutable
  * state must be discarded after calling it.
  */
-static INLINE enum pipe_error
+static inline enum pipe_error
 fenced_buffer_finish_locked(struct fenced_manager *fenced_mgr,
                             struct fenced_buffer *fenced_buf)
 {
@@ -321,7 +322,7 @@ fenced_buffer_finish_locked(struct fenced_manager *fenced_mgr,
       /*
        * Only proceed if the fence object didn't change in the meanwhile.
        * Otherwise assume the work has been already carried out by another
-       * thread that re-aquired the lock before us.
+       * thread that re-acquired the lock before us.
        */
       proceed = fence == fenced_buf->fence ? TRUE : FALSE;
 
@@ -339,6 +340,7 @@ fenced_buffer_finish_locked(struct fenced_manager *fenced_mgr,
          /* TODO: remove consequents buffers with the same fence? */
 
          assert(!destroyed);
+         (void) destroyed;
 
          fenced_buf->flags &= ~PB_USAGE_GPU_READ_WRITE;
 
@@ -430,7 +432,7 @@ fenced_buffer_destroy_gpu_storage_locked(struct fenced_buffer *fenced_buf)
  * This function is a shorthand around pb_manager::create_buffer for
  * fenced_buffer_create_gpu_storage_locked()'s benefit.
  */
-static INLINE boolean
+static inline boolean
 fenced_buffer_try_create_gpu_storage_locked(struct fenced_manager *fenced_mgr,
                                             struct fenced_buffer *fenced_buf,
                                             const struct pb_desc *desc)
@@ -660,6 +662,7 @@ fenced_buffer_fence(struct pb_buffer *buf,
          boolean destroyed;
          destroyed = fenced_buffer_remove_locked(fenced_mgr, fenced_buf);
          assert(!destroyed);
+         (void) destroyed;
       }
       if (fence) {
          ops->fence_reference(ops, &fenced_buf->fence, fence);

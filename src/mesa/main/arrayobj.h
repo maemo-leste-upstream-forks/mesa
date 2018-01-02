@@ -49,6 +49,9 @@ extern struct gl_vertex_array_object *
 _mesa_lookup_vao(struct gl_context *ctx, GLuint id);
 
 extern struct gl_vertex_array_object *
+_mesa_lookup_vao_err(struct gl_context *ctx, GLuint id, const char *caller);
+
+extern struct gl_vertex_array_object *
 _mesa_new_vao(struct gl_context *ctx, GLuint name);
 
 extern void
@@ -75,38 +78,16 @@ _mesa_initialize_vao(struct gl_context *ctx,
 
 
 extern void
-_mesa_update_vao_max_element(struct gl_context *ctx,
-                             struct gl_vertex_array_object *vao);
-
-extern void
 _mesa_update_vao_client_arrays(struct gl_context *ctx,
                                struct gl_vertex_array_object *vao);
 
+/* Returns true if all varying arrays reside in vbos */
+extern bool
+_mesa_all_varyings_in_vbos(const struct gl_vertex_array_object *vao);
 
-/** Returns the bitmask of all enabled arrays in fixed function mode.
- *
- *  In fixed function mode only the traditional fixed function arrays
- *  are available.
- */
-static inline GLbitfield64
-_mesa_array_object_get_enabled_ff(const struct gl_vertex_array_object *vao)
-{
-   return vao->_Enabled & VERT_BIT_FF_ALL;
-}
-
-/** Returns the bitmask of all enabled arrays in arb/glsl shader mode.
- *
- *  In arb/glsl shader mode all the fixed function and the arb/glsl generic
- *  arrays are available. Only the first generic array takes
- *  precedence over the legacy position array.
- */
-static inline GLbitfield64
-_mesa_array_object_get_enabled_arb(const struct gl_vertex_array_object *vao)
-{
-   GLbitfield64 enabled = vao->_Enabled;
-   return enabled & ~(VERT_BIT_POS & (enabled >> VERT_ATTRIB_GENERIC0));
-}
-
+/* Returns true if all vbos are unmapped */
+extern bool
+_mesa_all_buffers_are_unmapped(const struct gl_vertex_array_object *vao);
 
 /*
  * API functions
@@ -123,6 +104,12 @@ void GLAPIENTRY _mesa_GenVertexArrays(GLsizei n, GLuint *arrays);
 
 void GLAPIENTRY _mesa_GenVertexArraysAPPLE(GLsizei n, GLuint *buffer);
 
+void GLAPIENTRY _mesa_CreateVertexArrays(GLsizei n, GLuint *arrays);
+
 GLboolean GLAPIENTRY _mesa_IsVertexArray( GLuint id );
+
+void GLAPIENTRY _mesa_VertexArrayElementBuffer(GLuint vaobj, GLuint buffer);
+
+void GLAPIENTRY _mesa_GetVertexArrayiv(GLuint vaobj, GLenum pname, GLint *param);
 
 #endif /* ARRAYOBJ_H */

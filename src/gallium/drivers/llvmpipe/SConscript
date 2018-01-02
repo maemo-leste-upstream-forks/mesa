@@ -9,6 +9,8 @@ if not env['llvm']:
 
 env = env.Clone()
 
+env.MSVC2013Compat()
+
 llvmpipe = env.ConvenienceLibrary(
 	target = 'llvmpipe',
 	source = env.ParseSourceList('Makefile.sources', 'C_SOURCES')
@@ -23,14 +25,12 @@ if not env['embedded']:
     env.Prepend(LIBS = [llvmpipe, gallium, mesautil])
 
     tests = [
+        'arit',
         'format',
         'blend',
         'conv',
         'printf',
     ]
-
-    if not env['msvc']:
-        tests.append('arit')
 
     for test in tests:
         testname = 'lp_test_' + test
@@ -38,10 +38,6 @@ if not env['embedded']:
             target = testname,
             source = [testname + '.c', 'lp_test_main.c'],
         )
-        env.InstallProgram(target)
-        
-        # http://www.scons.org/wiki/UnitTests
-        alias = env.Alias(testname, [target], target[0].abspath)
-        AlwaysBuild(alias)
+        env.UnitTest(testname, target)
 
 Export('llvmpipe')

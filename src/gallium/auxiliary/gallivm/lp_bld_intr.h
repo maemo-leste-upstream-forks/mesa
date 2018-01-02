@@ -47,6 +47,12 @@
 #define LP_MAX_FUNC_ARGS 32
 
 
+void
+lp_format_intrinsic(char *name,
+                    size_t size,
+                    const char *name_root,
+                    LLVMTypeRef type);
+
 LLVMValueRef
 lp_declare_intrinsic(LLVMModuleRef module,
                      const char *name,
@@ -59,7 +65,8 @@ lp_build_intrinsic(LLVMBuilderRef builder,
                    const char *name,
                    LLVMTypeRef ret_type,
                    LLVMValueRef *args,
-                   unsigned num_args);
+                   unsigned num_args,
+                   LLVMAttribute attr);
 
 
 LLVMValueRef

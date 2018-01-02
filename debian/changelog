@@ -1,3 +1,596 @@
+mesa (13.0.6-1~bpo8+1) jessie-backports; urgency=medium
+
+  * Rebuild for jessie-backports.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Mon, 03 Apr 2017 10:44:40 +0200
+
+mesa (13.0.6-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Tue, 21 Mar 2017 14:02:03 +0100
+
+mesa (13.0.5-1~bpo8+1) jessie-backports; urgency=medium
+
+  * Rebuild for jessie-backports.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Tue, 07 Mar 2017 09:32:43 +0100
+
+mesa (13.0.5-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Switch mesa3d.org URLs to https.
+  * Update extend-diff-ignore.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Tue, 21 Feb 2017 13:13:50 +0100
+
+mesa (13.0.4-1~bpo8+1) jessie-backports; urgency=medium
+
+  * Rebuild for jessie-backports.
+  * Rebuild against llvm-3.8.
+  * Disable llvm on armhf and ppc64el.
+  * Disable radv vulkan driver.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Tue, 14 Feb 2017 16:54:32 +0100
+
+mesa (13.0.4-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Drop vl-zscan-fix-Fix-trivial-sign-compare-warnings.diff and r600-
+    sb-Fix-loop-optimization-related-hangs-on-eg.diff, upstream.
+  * Drop workaround-binutils-mips-844357.diff, binutils regression has
+    been fixed (Closes: #852030).
+  * Revert to debhelper compat 9 (Workaround for #851130).
+  * Update extend-diff-ignore.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Wed, 01 Feb 2017 15:36:10 +0100
+
+mesa (13.0.3-1) unstable; urgency=medium
+
+  [ Timo Aaltonen ]
+  * New upstream release.
+
+  [ Andreas Boll ]
+  * Add vl-zscan-fix-Fix-trivial-sign-compare-warnings.diff: Fixes mpeg2
+    decoding on radeon GPUs without native mpeg2 support (Closes:
+    #846297).  Thanks to Jörg-Volker Peetz for reporting and tracking
+    down this regression!
+  * Add r600-sb-Fix-loop-optimization-related-hangs-on-eg.diff: Fixes
+    GPU hangs on r600g (Evergreen and Northern Islands GPUs) in many
+    games.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Tue, 10 Jan 2017 17:38:23 +0200
+
+mesa (13.0.2-3) unstable; urgency=medium
+
+  * Fix typo to correctly disable asm on x32. Should fix FTBFS on x32.
+  * Add debian/source/format file.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Thu, 15 Dec 2016 16:42:25 +0100
+
+mesa (13.0.2-2) unstable; urgency=medium
+
+  * Bump llvm/libclang build-deps to >= 1:3.9.1.
+    - Enables support for OpenCL on AMD Polaris GPUs (Closes: #848173).
+  * Cherry-pick 6dc96de (cso: don't release sampler states that are
+    bound) from upstream master branch. Fixes random GPU hangs on
+    radeonsi (AMD Southern Islands and newer) in many games.
+  * Bump debhelper compat to 10.
+  * Stop passing --disable-silent-rules to configure, debhelper does
+    that for a while.
+  * Drop no longer needed dpkg-dev versioned build-dependency.
+  * Drop redundant cross-build detection, debhelper does this for us
+    already.
+  * Disable assembly usage on x32. Related to Bug #758094.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Thu, 15 Dec 2016 15:16:56 +0100
+
+mesa (13.0.2-1) unstable; urgency=medium
+
+  * New upstream release.
+  * workaround-binutils-mips-844357.diff: Add workaround for broken
+    binutils on mips*. Fixes invalid symbol table of libGL.so.1. See
+    also Bug #844357.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Tue, 29 Nov 2016 16:29:00 +0100
+
+mesa (13.0.1-2) unstable; urgency=medium
+
+  * Cherry-pick commit 1809f17 (mesa: Drop PATH_MAX usage.) from
+    upstream 13.0 branch. Should fix FTBFS on hurd (Closes: #843588).
+  * Enable extra HUD support for showing I/O stats of block/NIC devices.
+  * Enable HUD lmsensors support.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Mon, 28 Nov 2016 13:32:31 +0100
+
+mesa (13.0.1-1) experimental; urgency=medium
+
+  * New upstream release.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Mon, 14 Nov 2016 16:23:42 +0100
+
+mesa (13.0.0-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Make mesa-vulkan-drivers.install more generic. Should fix FTBFS on
+    some arches.
+  * rules: Remove superfluous linux check.
+  * rules: Remove vulkan_intel.h only where it get installed in tmp.
+    Should fix FTBFS on some more arches.
+  * source/local-options: Update extend-diff-ignore.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Wed, 02 Nov 2016 11:49:13 +0100
+
+mesa (13.0.0~rc2-1) experimental; urgency=medium
+
+  * New upstream release candidate.
+  * control, rules: Use llvm/clang 3.9 (Closes: #836913).
+  * control: Bump libclc dependencies.
+  * Bump libdrm-dev build-dep to 2.4.69 per configure.ac.
+  * Remove libudev-dev and libudev1 dependencies per configure.ac.
+  * Enable OpenCL on kfreebsd-* since we don't need udev anymore.
+  * Enable radv vulkan driver.
+  * control: Remove superfluous linux- prefix.
+  * not-installed: wglext.h got dropped from the tarball.
+  * mesa-common-dev: Remove mesa_glinterop.h, upstream doesn't install
+    it anymore.
+  * Update libgles2-mesa.symbols.
+  * Update libgl1-mesa-glx.symbols.
+  * source/local-options: Update extend-diff-ignore.
+  * Update mesa-vulkan-drivers.lintian-overrides.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Tue, 25 Oct 2016 10:59:08 +0200
+
+mesa (12.0.4-2~bpo8+1) jessie-backports; urgency=medium
+
+  * Rebuild for jessie-backports.
+  * control, rules: Disable llvm/opencl on arm64 (llvm-toolchain-3.8
+    FTBFS on arm64 in jessie-backports).
+  * control, rules: Disable llvm on ppc64el (llvm-toolchain-3.8 FTBFS on
+    ppc64el in jessie-backports).
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Thu, 17 Nov 2016 15:17:36 +0100
+
+mesa (12.0.4-2) unstable; urgency=medium
+
+  * Limit new glx symbols to !hurd-any. Should fix FTBFS on hurd.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Fri, 11 Nov 2016 18:31:40 +0100
+
+mesa (12.0.4-1) unstable; urgency=medium
+
+  * New upstream release.
+  * not-installed: wglext.h got dropped from the tarball.
+  * mesa-common-dev: Remove mesa_glinterop.h, upstream doesn't install
+    it anymore.
+  * Update symbols of libegl1-mesa and libgl1-mesa-glx.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Fri, 11 Nov 2016 16:35:09 +0100
+
+mesa (12.0.3-3) unstable; urgency=medium
+
+  * Limit libgbm1 dependency to !hurd-any (Closes: #841774).  Thanks,
+    Samuel Thibault!
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Mon, 24 Oct 2016 10:18:09 +0200
+
+mesa (12.0.3-2) unstable; urgency=medium
+
+  * control: Add libtxc-dxtn-s2tc as an alternative in libgl1-mesa-dri's
+    Recommends (Closes: #839658).
+  * control: Add strictly versioned dependency on libgbm1 to libegl1-
+    mesa.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Fri, 21 Oct 2016 09:49:37 +0200
+
+mesa (12.0.3-1~bpo8+1) jessie-backports; urgency=medium
+
+  * Rebuild for jessie-backports, no remaining changes.
+  * Only difference to stretch: No -dbgsym support.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Wed, 21 Sep 2016 13:41:08 +0200
+
+mesa (12.0.3-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Enable vc4 on arm64.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Thu, 15 Sep 2016 13:38:40 +0200
+
+mesa (12.0.2-1) unstable; urgency=medium
+
+  * New upstream release.
+  * rules: Pass -c4 to dpkg-gensymbols through dh_makeshlibs, got
+    dropped with the migration to dh.
+  * rules: Replace deprecated debhelper option -s with -a.
+  * copyright: Sync with docs/license.html.
+  * Replace almost all dynamic debhelper config files with static files.
+  * rules: Drop unneeded override_dh_builddeb, xz is the default
+    compression type for dpkg-deb nowadays.
+  * Replace mesa-vulkan-drivers.post{inst,rm} with mesa-vulkan-
+    drivers.triggers.
+  * control: Only build-dep on libgcrypt20-dev on architectures where we
+    build mesa-vulkan-drivers.
+  * source/local-options: Add more files to extend-diff-ignore option.
+    Fixes 87 patch-system-but-direct-changes-in-diff lintian warnings.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Tue, 06 Sep 2016 10:37:23 +0200
+
+mesa (12.0.1-3) experimental; urgency=medium
+
+  * rules, control: Build mesa-vulkan-drivers only on linux-
+    {amd64,i386,x32}.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Mon, 18 Jul 2016 16:31:00 +0300
+
+mesa (12.0.1-2) experimental; urgency=medium
+
+  * rules: Drop MESA_GIT_SHA1 hack because upstream uses build timestamp
+    instead.
+  * rules, not-installed: Handle removing unwanted vulkan headers in
+    rules instead.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Mon, 18 Jul 2016 11:45:01 +0300
+
+mesa (12.0.1-1) experimental; urgency=medium
+
+  * New upstream release candidate.
+  * symbols: Updated.
+  * mesa-common-dev: Add mesa_glinterop.h.
+  * Enable building intel vulkan driver on linux & kfreebsd, add
+    libgcrypt20-dev and libvulkan-dev to build-depends.
+  * rules: Tidy up override_dh_clean.
+  * rules: Use package version for MESA_GIT_SHA1.
+  * rules: Fix install of va drivers.
+  * gallivm-disable-avx512-features.diff: Removed, included upstream.
+  * control, rules: Enable llvm/opencl on arm64. (LP: #1585942)
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Sat, 16 Jul 2016 13:03:04 +0300
+
+mesa (11.2.2-1) unstable; urgency=medium
+
+  * New upstream release.
+  * control: Bump Standards-Version to 3.9.8 (no changes).
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Wed, 11 May 2016 12:22:28 +0200
+
+mesa (11.2.1-2) unstable; urgency=medium
+
+  * gallivm-disable-avx512-features.diff: LLVM 3.8 enables AVX512 on all
+    Skylake CPU's when it's a server-CPU feature. Disable it from the
+    llvmpipe driver so that it doesn't crash on non-server Skylake.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Mon, 09 May 2016 15:17:24 +0300
+
+mesa (11.2.1-1) experimental; urgency=medium
+
+  * New upstream release.
+  * control, rules: Use llvm/clang 3.8.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Mon, 18 Apr 2016 11:25:00 +0300
+
+mesa (11.2.0-1) experimental; urgency=medium
+
+  [ Andreas Boll ]
+  * control: Fix vdpau-va-driver Breaks/Replaces for mesa-va-drivers
+    (Closes: #819655).
+  * control: Bump Standards-Version to 3.9.7 (no changes).
+  * watch: Update url to use https instead of ftp.
+
+  [ Timo Aaltonen ]
+  * New upstream release.
+  * rules: Disable tests for now, most of them weren't run before anyway
+    and they cause unnecessary ftbfs on some archs.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Thu, 31 Mar 2016 16:52:51 +0200
+
+mesa (11.2.0~rc4-1) experimental; urgency=medium
+
+  * New upstream release candidate.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Wed, 30 Mar 2016 09:35:05 +0300
+
+mesa (11.2.0~rc3-2) experimental; urgency=medium
+
+  * mesa-va-drivers: Build gallium VA driver, and add symlinks for
+    nouveau, r600 and radeonsi.
+  * control: Add vdpau-va-driver Breaks/Replaces for mesa-va-drivers.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Thu, 24 Mar 2016 14:01:20 +0200
+
+mesa (11.2.0~rc3-1) experimental; urgency=medium
+
+  * New upstream release candidate.
+  * Drop upstreamed patches.
+  * libgl1-mesa-glx.symbols: Remove dropped symbols.
+  * rules,control: Drop -dbg packages, we have -dbgsym now.
+  * rules, *.install.in, not-installed: Drop dri/-build prefix, we build
+    everything in one pass nowadays.
+  * control: Bump libdrm-dev build-dep to 2.4.67 for freedreno.
+  * rules: Migrate to dh.
+  * control: Add dh-autoreconf to build-depends.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Wed, 09 Mar 2016 01:01:55 +0200
+
+mesa (11.1.3-1~bpo8+1) jessie-backports; urgency=medium
+
+  * Rebuild for jessie-backports.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Thu, 28 Apr 2016 11:02:45 +0200
+
+mesa (11.1.3-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Mon, 18 Apr 2016 19:04:40 +0200
+
+mesa (11.1.2-1~bpo8+1) jessie-backports; urgency=medium
+
+  * Rebuild for jessie-backports.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Mon, 22 Feb 2016 17:30:33 +0100
+
+mesa (11.1.2-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Thu, 11 Feb 2016 13:14:08 +0200
+
+mesa (11.1.1-2~bpo8+1) jessie-backports; urgency=medium
+
+  * Rebuild for jessie-backports.
+  * Rebuild against llvm-3.5.
+  * Use libclc version from jessie.
+  * Disable llvmpipe on armhf and ppc64el.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Tue, 17 Nov 2015 11:54:23 +0100
+
+mesa (11.1.1-2) unstable; urgency=medium
+
+  * Limit the symbols glXGetDriverConfig and glXGetScreenDriver to
+    arch=!hurd-any (Fixes FTBFS on hurd).
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Fri, 15 Jan 2016 18:44:52 +0100
+
+mesa (11.1.1-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Enable support for virgl (Closes: #807774).
+  * Enable support for vc4 (Closes: #809406).
+  * Enable support for freedreno on arm64.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Thu, 14 Jan 2016 11:27:28 +0100
+
+mesa (11.1.0-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Add a patch to remove the unused symbol
+    _glapi_create_table_from_handle from libGL.so.1.
+  * Replace shlibs file with a symbols file for libgl1-mesa-glx.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Tue, 15 Dec 2015 20:24:10 +0100
+
+mesa (11.1.0~rc3-1) experimental; urgency=medium
+
+  * New upstream release candidate.
+  * Bump libdrm-dev build-dep to 2.4.65.
+  * Update symbols for libgles2-mesa and libxatracker2.
+  * Remove Breaks/Conflicts/Provides/Replaces from pre-wheezy.
+  * Remove duplicated field "Priority" from package libgl1-mesa-dri.
+  * Declare Multi-Arch: same for mesa-opencl-icd{,-dbg} (Closes:
+    #804919).
+  * Add a Lintian override for symbols-declares-dependency-on-other-
+    package libgbm1-private.
+  * Remove obsolete libgl1-mesa-dri.lintian-overrides.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Thu, 10 Dec 2015 12:22:54 +0100
+
+mesa (11.0.8-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Tue, 22 Dec 2015 16:12:35 +0200
+
+mesa (11.0.7-1) unstable; urgency=medium
+
+  [ Julien Cristau ]
+  * Update debian/copyright from docs/license.html (closes: #806805).  Thanks,
+    Steinar H. Gunderson!
+
+  [ Andreas Boll ]
+  * New upstream release.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Wed, 09 Dec 2015 21:18:17 +0100
+
+mesa (11.0.6-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Bump libvdpau-dev build-dep.
+  * Add docs-Replace-sourceforge-logo-with-a-text-link.patch (Fixes
+    Lintian error privacy-breach-logo).
+  * Add some Lintian overrides for package-name-doesnt-match-sonames.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Fri, 27 Nov 2015 08:59:30 +0100
+
+mesa (11.0.5-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Add myself to Uploaders.
+
+ -- Andreas Boll <andreas.boll.dev@gmail.com>  Thu, 12 Nov 2015 11:55:02 +0100
+
+mesa (11.0.4-1) unstable; urgency=medium
+
+  [ Andreas Boll ]
+  * New upstream release.
+  * Cherry-pick commit 70e91d6 (i965: Remove early release of DRI2
+    miptree) from upstream (Closes: #769518).
+  * control: Add libclc-amdgcn to mesa-opencl-icd depends.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Mon, 26 Oct 2015 10:30:04 +0200
+
+mesa (11.0.2-1) experimental; urgency=medium
+
+  [ Andreas Boll ]
+  * control: Bump libclc dependencies.
+
+  [ Timo Aaltonen ]
+  * New upstream release.
+  * rules, control: Enable llvmpipe on ppc64el. (LP: #1489483)
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Tue, 29 Sep 2015 16:35:59 +0300
+
+mesa (11.0.0-1) experimental; urgency=medium
+
+  * New upstream release.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Mon, 14 Sep 2015 14:23:13 +0300
+
+mesa (11.0.0~rc3-1) experimental; urgency=medium
+
+  [ Andreas Boll ]
+  * Use https for Vcs-* fields.
+
+  [ Timo Aaltonen ]
+  * New upstream release candidate.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Mon, 07 Sep 2015 15:04:32 +0300
+
+mesa (11.0.0~rc2-1) experimental; urgency=medium
+
+  * New upstream release candidate.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Wed, 02 Sep 2015 11:38:28 +0300
+
+mesa (11.0.0~rc1-1) experimental; urgency=medium
+
+  [ Andreas Boll ]
+  * New upstream release candidate.
+  * control: Drop unneeded libomxil-bellagio-dev build-dep.
+  * rules: Explicitly disable vaapi (Closes: #789100).
+  * control: Update upstream url.
+  * control: Update Vcs-* fields.
+  * Drop libgl1-mesa-swx11* packages.
+  * control: Update package description.
+
+  [ Timo Aaltonen ]
+  * control: Delete commented out libgl1-mesa-glx-i686 from the file.
+  * control: Bump llvm/libclang build-deps to match versions where
+    amdgpu is enabled.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Mon, 24 Aug 2015 11:15:16 +0300
+
+mesa (11.0.0~git20150817-1) experimental; urgency=medium
+
+  * New upstream snapshot
+  * control: Bump libdrm build-dep to 2.4.63.
+  * control: Add libomxil-bellagio-dev to build-deps.
+  * rules: Disable gles1 & 2 for swx11 builds.
+  * libegl1-mesa.symbols, libgles2-mesa.symbols: Updated
+  * control, rules: Migrate to llvm 3.7.
+  * rules: Enable llvmpipe on armhf again.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Tue, 18 Aug 2015 07:53:45 +0300
+
+mesa (10.6.8-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Tue, 22 Sep 2015 17:21:49 +0300
+
+mesa (10.6.7-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Mon, 14 Sep 2015 11:15:23 +0300
+
+mesa (10.6.5-1) unstable; urgency=medium
+
+  [ Andreas Boll ]
+  * New upstream release.
+
+  [ Julien Cristau ]
+  * Break libopengl-perl (<< 0.6704+dfsg-2), thanks to Niko Tyni
+    (closes: #796918)
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Wed, 02 Sep 2015 12:26:37 +0300
+
+mesa (10.6.4-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Wed, 19 Aug 2015 09:11:47 +0300
+
+mesa (10.6.3-1) unstable; urgency=medium
+
+  * New upstream release.
+  * libegl1-mesa.symbols: Updated.
+  * not-installed: Dropped wmesa.h which is gone.
+  * libgles{1,2}-mesa.symbols: Updated.
+  * libegl1-mesa.symbols: Drop a spurious comment.
+  * source/local-options: Updated extend-diff-ignore.
+  * mesa-common-dev.docs: Updated.
+  * Delete i965-do_blit...patch, upstream.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Tue, 28 Jul 2015 11:12:44 +0300
+
+mesa (10.5.9-2) unstable; urgency=medium
+
+  * i965-do_blit_drawpixels-decode-array-formats.patch: Fix a regression
+    since 10.5.5, allow using blit fastpath again.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Fri, 10 Jul 2015 13:01:40 +0300
+
+mesa (10.5.9-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Mon, 06 Jul 2015 08:56:26 +0300
+
+mesa (10.5.8-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Thu, 25 Jun 2015 18:50:11 +0300
+
+mesa (10.5.7-1) unstable; urgency=medium
+
+  * New upstream release.
+  * control: Bump policy to 3.9.6, no changes.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Tue, 16 Jun 2015 11:57:08 +0300
+
+mesa (10.5.5-1) unstable; urgency=medium
+
+  [ Maarten Lankhorst ]
+  * New upstream release.
+  * Update watch file.
+
+  [ Timo Aaltonen ]
+  * libegl1-mesa.symbols: Updated.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Tue, 12 May 2015 13:26:49 +0300
+
+mesa (10.4.2-2) unstable; urgency=medium
+
+  * rules: Drop dh_makeshlibs exception on gbm_gallium_drm.so as it's
+    gone now.
+  * control: Add depends on libwayland-egl1-mesa to libegl1-mesa-dev,
+    since it ships libwayland-egl.so on Linux.
+  * control: Mark libegl1-mesa-drivers M-A: same again. (Closes:
+    #775370)
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Thu, 15 Jan 2015 15:28:40 +0200
+
+mesa (10.4.2-1) experimental; urgency=medium
+
+  * New upstream release.
+  * control, rules, libopenvg*, libgbm1, libegl1-mesa-drivers:
+    Drop EGL/GBM state trackers and OpenVG.
+  * control: Make libegl1-mesa-drivers transitional.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Tue, 13 Jan 2015 13:43:51 +0200
+
 mesa (10.3.2-1) unstable; urgency=medium
 
   [ Sven Joachim ]

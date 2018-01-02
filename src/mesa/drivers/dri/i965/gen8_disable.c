@@ -37,78 +37,6 @@ disable_stages(struct brw_context *brw)
    OUT_BATCH(0);
    ADVANCE_BATCH();
 
-   /* Disable the HS Unit */
-   BEGIN_BATCH(11);
-   OUT_BATCH(_3DSTATE_CONSTANT_HS << 16 | (11 - 2));
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   ADVANCE_BATCH();
-
-   BEGIN_BATCH(9);
-   OUT_BATCH(_3DSTATE_HS << 16 | (9 - 2));
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   ADVANCE_BATCH();
-
-   BEGIN_BATCH(2);
-   OUT_BATCH(_3DSTATE_BINDING_TABLE_POINTERS_HS << 16 | (2 - 2));
-   OUT_BATCH(0);
-   ADVANCE_BATCH();
-
-   /* Disable the TE */
-   BEGIN_BATCH(4);
-   OUT_BATCH(_3DSTATE_TE << 16 | (4 - 2));
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   ADVANCE_BATCH();
-
-   /* Disable the DS Unit */
-   BEGIN_BATCH(11);
-   OUT_BATCH(_3DSTATE_CONSTANT_DS << 16 | (11 - 2));
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   ADVANCE_BATCH();
-
-   BEGIN_BATCH(9);
-   OUT_BATCH(_3DSTATE_DS << 16 | (9 - 2));
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   ADVANCE_BATCH();
-
-   BEGIN_BATCH(2);
-   OUT_BATCH(_3DSTATE_BINDING_TABLE_POINTERS_DS << 16 | (2 - 2));
-   OUT_BATCH(0);
-   ADVANCE_BATCH();
-
    BEGIN_BATCH(2);
    OUT_BATCH(_3DSTATE_WM_CHROMAKEY << 16 | (2 - 2));
    OUT_BATCH(0);
@@ -118,8 +46,8 @@ disable_stages(struct brw_context *brw)
 const struct brw_tracked_state gen8_disable_stages = {
    .dirty = {
       .mesa  = 0,
-      .brw   = BRW_NEW_CONTEXT,
-      .cache = 0,
+      .brw   = BRW_NEW_BLORP |
+               BRW_NEW_CONTEXT,
    },
    .emit = disable_stages,
 };

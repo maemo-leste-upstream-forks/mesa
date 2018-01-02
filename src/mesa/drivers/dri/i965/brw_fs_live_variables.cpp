@@ -41,74 +41,40 @@ using namespace brw;
  * but we currently do not.  It is easier for the consumers of this
  * information to work with whole VGRFs.
  *
- * However, we internally track use/def information at the per-component
- * (reg_offset) level for greater accuracy.  Large VGRFs may be accessed
- * piecemeal over many (possibly non-adjacent) instructions.  In this case,
- * examining a single instruction is insufficient to decide whether a whole
- * VGRF is ultimately used or defined.  Tracking individual components
- * allows us to easily assemble this information.
+ * However, we internally track use/def information at the per-GRF level for
+ * greater accuracy.  Large VGRFs may be accessed piecemeal over many
+ * (possibly non-adjacent) instructions.  In this case, examining a single
+ * instruction is insufficient to decide whether a whole VGRF is ultimately
+ * used or defined.  Tracking individual components allows us to easily
+ * assemble this information.
  *
  * See Muchnick's Advanced Compiler Design and Implementation, section
  * 14.1 (p444).
  */
 
 void
-fs_live_variables::setup_one_read(bblock_t *block, fs_inst *inst,
-                                  int ip, fs_reg reg)
+fs_live_variables::setup_one_read(struct block_data *bd, fs_inst *inst,
+                                  int ip, const fs_reg &reg)
 {
-   int var = var_from_vgrf[reg.reg] + reg.reg_offset;
+   int var = var_from_reg(reg);
    assert(var < num_vars);
 
-   /* In most cases, a register can be written over safely by the
-    * same instruction that is its last use.  For a single
-    * instruction, the sources are dereferenced before writing of the
-    * destination starts (naturally).  This gets more complicated for
-    * simd16, because the instruction:
-    *
-    * add(16)      g4<1>F      g4<8,8,1>F   g6<8,8,1>F
-    *
-    * is actually decoded in hardware as:
-    *
-    * add(8)       g4<1>F      g4<8,8,1>F   g6<8,8,1>F
-    * add(8)       g5<1>F      g5<8,8,1>F   g7<8,8,1>F
-    *
-    * Which is safe.  However, if we have uniform accesses
-    * happening, we get into trouble:
-    *
-    * add(8)       g4<1>F      g4<0,1,0>F   g6<8,8,1>F
-    * add(8)       g5<1>F      g4<0,1,0>F   g7<8,8,1>F
-    *
-    * Now our destination for the first instruction overwrote the
-    * second instruction's src0, and we get garbage for those 8
-    * pixels.  There's a similar issue for the pre-gen6
-    * pixel_x/pixel_y, which are registers of 16-bit values and thus
-    * would get stomped by the first decode as well.
-    */
-   int end_ip = ip;
-   if (v->dispatch_width == 16 && (reg.stride == 0 ||
-                                   reg.type == BRW_REGISTER_TYPE_UW ||
-                                   reg.type == BRW_REGISTER_TYPE_W ||
-                                   reg.type == BRW_REGISTER_TYPE_UB ||
-                                   reg.type == BRW_REGISTER_TYPE_B)) {
-      end_ip++;
-   }
-
    start[var] = MIN2(start[var], ip);
-   end[var] = MAX2(end[var], end_ip);
+   end[var] = MAX2(end[var], ip);
 
    /* The use[] bitset marks when the block makes use of a variable (VGRF
     * channel) without having completely defined that variable within the
     * block.
     */
-   if (!BITSET_TEST(bd[block->num].def, var))
-      BITSET_SET(bd[block->num].use, var);
+   if (!BITSET_TEST(bd->def, var))
+      BITSET_SET(bd->use, var);
 }
 
 void
-fs_live_variables::setup_one_write(bblock_t *block, fs_inst *inst,
-                                   int ip, fs_reg reg)
+fs_live_variables::setup_one_write(struct block_data *bd, fs_inst *inst,
+                                   int ip, const fs_reg &reg)
 {
-   int var = var_from_vgrf[reg.reg] + reg.reg_offset;
+   int var = var_from_reg(reg);
    assert(var < num_vars);
 
    start[var] = MIN2(start[var], ip);
@@ -117,9 +83,9 @@ fs_live_variables::setup_one_write(bblock_t *block, fs_inst *inst,
    /* The def[] bitset marks when an initialization in a block completely
     * screens off previous updates of that variable (VGRF channel).
     */
-   if (inst->dst.file == GRF && !inst->is_partial_write()) {
-      if (!BITSET_TEST(bd[block->num].use, var))
-         BITSET_SET(bd[block->num].def, var);
+   if (inst->dst.file == VGRF && !inst->is_partial_write()) {
+      if (!BITSET_TEST(bd->use, var))
+         BITSET_SET(bd->def, var);
    }
 }
 
@@ -142,28 +108,35 @@ fs_live_variables::setup_def_use()
       if (block->num > 0)
 	 assert(cfg->blocks[block->num - 1]->end_ip == ip - 1);
 
+      struct block_data *bd = &block_data[block->num];
+
       foreach_inst_in_block(fs_inst, inst, block) {
 	 /* Set use[] for this instruction */
 	 for (unsigned int i = 0; i < inst->sources; i++) {
             fs_reg reg = inst->src[i];
 
-            if (reg.file != GRF)
+            if (reg.file != VGRF)
                continue;
 
-            for (int j = 0; j < inst->regs_read(v, i); j++) {
-               setup_one_read(block, inst, ip, reg);
-               reg.reg_offset++;
+            for (unsigned j = 0; j < regs_read(inst, i); j++) {
+               setup_one_read(bd, inst, ip, reg);
+               reg.offset += REG_SIZE;
             }
 	 }
 
+         bd->flag_use[0] |= inst->flags_read(v->devinfo) & ~bd->flag_def[0];
+
          /* Set def[] for this instruction */
-         if (inst->dst.file == GRF) {
+         if (inst->dst.file == VGRF) {
             fs_reg reg = inst->dst;
-            for (int j = 0; j < inst->regs_written; j++) {
-               setup_one_write(block, inst, ip, reg);
-               reg.reg_offset++;
+            for (unsigned j = 0; j < regs_written(inst); j++) {
+               setup_one_write(bd, inst, ip, reg);
+               reg.offset += REG_SIZE;
             }
 	 }
+
+         if (!inst->predicate && inst->exec_size >= 8)
+            bd->flag_def[0] |= inst->flags_written() & ~bd->flag_use[0];
 
 	 ip++;
       }
@@ -184,31 +157,46 @@ fs_live_variables::compute_live_variables()
    while (cont) {
       cont = false;
 
-      foreach_block (block, cfg) {
-	 /* Update livein */
-	 for (int i = 0; i < bitset_words; i++) {
-            BITSET_WORD new_livein = (bd[block->num].use[i] |
-                                      (bd[block->num].liveout[i] &
-                                       ~bd[block->num].def[i]));
-	    if (new_livein & ~bd[block->num].livein[i]) {
-               bd[block->num].livein[i] |= new_livein;
-               cont = true;
-	    }
-	 }
+      foreach_block_reverse (block, cfg) {
+         struct block_data *bd = &block_data[block->num];
 
 	 /* Update liveout */
 	 foreach_list_typed(bblock_link, child_link, link, &block->children) {
-	    bblock_t *child = child_link->block;
+            struct block_data *child_bd = &block_data[child_link->block->num];
 
 	    for (int i = 0; i < bitset_words; i++) {
-               BITSET_WORD new_liveout = (bd[child->num].livein[i] &
-                                          ~bd[block->num].liveout[i]);
+               BITSET_WORD new_liveout = (child_bd->livein[i] &
+                                          ~bd->liveout[i]);
                if (new_liveout) {
-                  bd[block->num].liveout[i] |= new_liveout;
+                  bd->liveout[i] |= new_liveout;
                   cont = true;
                }
 	    }
+            BITSET_WORD new_liveout = (child_bd->flag_livein[0] &
+                                       ~bd->flag_liveout[0]);
+            if (new_liveout) {
+               bd->flag_liveout[0] |= new_liveout;
+               cont = true;
+            }
 	 }
+
+         /* Update livein */
+         for (int i = 0; i < bitset_words; i++) {
+            BITSET_WORD new_livein = (bd->use[i] |
+                                      (bd->liveout[i] &
+                                       ~bd->def[i]));
+            if (new_livein & ~bd->livein[i]) {
+               bd->livein[i] |= new_livein;
+               cont = true;
+            }
+         }
+         BITSET_WORD new_livein = (bd->flag_use[0] |
+                                   (bd->flag_liveout[0] &
+                                    ~bd->flag_def[0]));
+         if (new_livein & ~bd->flag_livein[0]) {
+            bd->flag_livein[0] |= new_livein;
+            cont = true;
+         }
       }
    }
 }
@@ -221,25 +209,20 @@ void
 fs_live_variables::compute_start_end()
 {
    foreach_block (block, cfg) {
+      struct block_data *bd = &block_data[block->num];
+
       for (int i = 0; i < num_vars; i++) {
-	 if (BITSET_TEST(bd[block->num].livein, i)) {
-	    start[i] = MIN2(start[i], block->start_ip);
-	    end[i] = MAX2(end[i], block->start_ip);
-	 }
+         if (BITSET_TEST(bd->livein, i)) {
+            start[i] = MIN2(start[i], block->start_ip);
+            end[i] = MAX2(end[i], block->start_ip);
+         }
 
-	 if (BITSET_TEST(bd[block->num].liveout, i)) {
-	    start[i] = MIN2(start[i], block->end_ip);
-	    end[i] = MAX2(end[i], block->end_ip);
-	 }
-
+         if (BITSET_TEST(bd->liveout, i)) {
+            start[i] = MIN2(start[i], block->end_ip);
+            end[i] = MAX2(end[i], block->end_ip);
+         }
       }
    }
-}
-
-int
-fs_live_variables::var_from_reg(fs_reg *reg)
-{
-   return var_from_vgrf[reg->reg] + reg->reg_offset;
 }
 
 fs_live_variables::fs_live_variables(fs_visitor *v, const cfg_t *cfg)
@@ -247,17 +230,17 @@ fs_live_variables::fs_live_variables(fs_visitor *v, const cfg_t *cfg)
 {
    mem_ctx = ralloc_context(NULL);
 
-   num_vgrfs = v->virtual_grf_count;
+   num_vgrfs = v->alloc.count;
    num_vars = 0;
    var_from_vgrf = rzalloc_array(mem_ctx, int, num_vgrfs);
    for (int i = 0; i < num_vgrfs; i++) {
       var_from_vgrf[i] = num_vars;
-      num_vars += v->virtual_grf_sizes[i];
+      num_vars += v->alloc.sizes[i];
    }
 
    vgrf_from_var = rzalloc_array(mem_ctx, int, num_vars);
    for (int i = 0; i < num_vgrfs; i++) {
-      for (int j = 0; j < v->virtual_grf_sizes[i]; j++) {
+      for (unsigned j = 0; j < v->alloc.sizes[i]; j++) {
          vgrf_from_var[var_from_vgrf[i] + j] = i;
       }
    }
@@ -269,14 +252,19 @@ fs_live_variables::fs_live_variables(fs_visitor *v, const cfg_t *cfg)
       end[i] = -1;
    }
 
-   bd = rzalloc_array(mem_ctx, struct block_data, cfg->num_blocks);
+   block_data= rzalloc_array(mem_ctx, struct block_data, cfg->num_blocks);
 
    bitset_words = BITSET_WORDS(num_vars);
    for (int i = 0; i < cfg->num_blocks; i++) {
-      bd[i].def = rzalloc_array(mem_ctx, BITSET_WORD, bitset_words);
-      bd[i].use = rzalloc_array(mem_ctx, BITSET_WORD, bitset_words);
-      bd[i].livein = rzalloc_array(mem_ctx, BITSET_WORD, bitset_words);
-      bd[i].liveout = rzalloc_array(mem_ctx, BITSET_WORD, bitset_words);
+      block_data[i].def = rzalloc_array(mem_ctx, BITSET_WORD, bitset_words);
+      block_data[i].use = rzalloc_array(mem_ctx, BITSET_WORD, bitset_words);
+      block_data[i].livein = rzalloc_array(mem_ctx, BITSET_WORD, bitset_words);
+      block_data[i].liveout = rzalloc_array(mem_ctx, BITSET_WORD, bitset_words);
+
+      block_data[i].flag_def[0] = 0;
+      block_data[i].flag_use[0] = 0;
+      block_data[i].flag_livein[0] = 0;
+      block_data[i].flag_liveout[0] = 0;
    }
 
    setup_def_use();
@@ -294,8 +282,6 @@ fs_visitor::invalidate_live_intervals()
 {
    ralloc_free(live_intervals);
    live_intervals = NULL;
-
-   invalidate_cfg();
 }
 
 /**
@@ -310,7 +296,7 @@ fs_visitor::calculate_live_intervals()
    if (this->live_intervals)
       return;
 
-   int num_vgrfs = this->virtual_grf_count;
+   int num_vgrfs = this->alloc.count;
    ralloc_free(this->virtual_grf_start);
    ralloc_free(this->virtual_grf_end);
    virtual_grf_start = ralloc_array(mem_ctx, int, num_vgrfs);
@@ -321,7 +307,6 @@ fs_visitor::calculate_live_intervals()
       virtual_grf_end[i] = -1;
    }
 
-   calculate_cfg();
    this->live_intervals = new(mem_ctx) fs_live_variables(this, cfg);
 
    /* Merge the per-component live ranges to whole VGRF live ranges. */

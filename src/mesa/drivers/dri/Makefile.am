@@ -6,6 +6,13 @@ MEGADRIVERS_DEPS =
 
 SUBDIRS+=common
 
+# On Android, we need to explicitly link to libglapi.so.
+if HAVE_ANDROID
+if HAVE_SHARED_GLAPI
+SHARED_GLAPI_LIB = $(top_builddir)/src/mapi/shared-glapi/libglapi.la
+endif
+endif
+
 if HAVE_I915_DRI
 SUBDIRS += i915
 MEGADRIVERS_DEPS += i915/libi915_dri.la
@@ -46,7 +53,8 @@ pkgconfigdir = $(libdir)/pkgconfig
 pkgconfig_DATA = dri.pc
 
 driincludedir = $(includedir)/GL/internal
-driinclude_HEADERS = $(top_srcdir)/include/GL/internal/dri_interface.h
+driinclude_HEADERS = \
+	$(top_srcdir)/include/GL/internal/dri_interface.h
 
 nodist_EXTRA_mesa_dri_drivers_la_SOURCES = dummy.cpp
 mesa_dri_drivers_la_SOURCES =
@@ -59,6 +67,8 @@ mesa_dri_drivers_la_LIBADD = \
         ../../libmesa.la \
         common/libmegadriver_stub.la \
         common/libdricommon.la \
+        common/libxmlconfig.la \
+        $(SHARED_GLAPI_LIB) \
         $(MEGADRIVERS_DEPS) \
         $(DRI_LIB_DEPS) \
         $()
@@ -76,6 +86,12 @@ all-local: mesa_dri_drivers.la
 		ln -f $(top_builddir)/$(LIB_DIR)/mesa_dri_drivers.so \
 		      $(top_builddir)/$(LIB_DIR)/$$i; \
 	done;
+
+clean-local:
+	$(AM_V_GEN)$(RM) $(top_builddir)/$(LIB_DIR)/mesa_dri_drivers.so;
+	$(AM_V_GEN)for i in $(MEGADRIVERS); do \
+		$(RM) $(top_builddir)/$(LIB_DIR)/$$i; \
+	done;
 endif
 
 # hardlink each megadriver instance, but don't actually have
@@ -85,6 +101,11 @@ install-data-hook:
 		ln -f $(DESTDIR)$(dridir)/mesa_dri_drivers.so \
 		      $(DESTDIR)$(dridir)/$$i; \
 	done;
-	$(RM) -f $(DESTDIR)$(dridir)/mesa_dri_drivers.*
+	$(RM) $(DESTDIR)$(dridir)/mesa_dri_drivers.*
+
+uninstall-hook:
+	for i in $(MEGADRIVERS); do \
+		$(RM) $(DESTDIR)$(dridir)/$$i; \
+	done;
 
 endif

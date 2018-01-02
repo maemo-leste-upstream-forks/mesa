@@ -29,6 +29,7 @@
  * Display lists management functions.
  */
 
+#include "c99_math.h"
 #include "glheader.h"
 #include "imports.h"
 #include "api_arrayelt.h"
@@ -71,6 +72,9 @@
 #include "vbo/vbo.h"
 
 
+#define USE_BITMAP_ATLAS 1
+
+
 
 /**
  * Other parts of Mesa (such as the VBO module) can plug into the display
@@ -81,7 +85,7 @@ struct gl_list_instruction
    GLuint Size;
    void (*Execute)( struct gl_context *ctx, void *data );
    void (*Destroy)( struct gl_context *ctx, void *data );
-   void (*Print)( struct gl_context *ctx, void *data );
+   void (*Print)( struct gl_context *ctx, void *data, FILE *f );
 };
 
 
@@ -104,13 +108,12 @@ struct gl_list_extensions
  * \param ctx GL context.
  *
  * Checks if dd_function_table::SaveNeedFlush is marked to flush
- * stored (save) vertices, and calls
- * dd_function_table::SaveFlushVertices if so.
+ * stored (save) vertices, and calls vbo_save_SaveFlushVertices if so.
  */
 #define SAVE_FLUSH_VERTICES(ctx)		\
 do {						\
    if (ctx->Driver.SaveNeedFlush)		\
-      ctx->Driver.SaveFlushVertices(ctx);	\
+      vbo_save_SaveFlushVertices(ctx);               \
 } while (0)
 
 
@@ -194,7 +197,7 @@ typedef enum
    OPCODE_BLEND_FUNC_SEPARATE_I,
 
    OPCODE_CALL_LIST,
-   OPCODE_CALL_LIST_OFFSET,
+   OPCODE_CALL_LISTS,
    OPCODE_CLEAR,
    OPCODE_CLEAR_ACCUM,
    OPCODE_CLEAR_COLOR,
@@ -301,8 +304,8 @@ typedef enum
    OPCODE_SAMPLE_COVERAGE,
    /* GL_ARB_window_pos */
    OPCODE_WINDOW_POS_ARB,
-   /* GL_NV_fragment_program */
-   OPCODE_BIND_PROGRAM_NV,
+   /* GL_ARB_vertex_program */
+   OPCODE_BIND_PROGRAM_ARB,
    OPCODE_PROGRAM_LOCAL_PARAMETER_ARB,
    /* GL_EXT_stencil_two_side */
    OPCODE_ACTIVE_STENCIL_FACE_EXT,
@@ -398,6 +401,9 @@ typedef enum
    OPCODE_PROGRAM_UNIFORM_MATRIX34F,
    OPCODE_PROGRAM_UNIFORM_MATRIX43F,
 
+   /* GL_ARB_clip_control */
+   OPCODE_CLIP_CONTROL,
+
    /* GL_ARB_color_buffer_float */
    OPCODE_CLAMP_COLOR,
 
@@ -454,11 +460,6 @@ typedef enum
    OPCODE_SAMPLER_PARAMETERIIV,
    OPCODE_SAMPLER_PARAMETERUIV,
 
-   /* GL_ARB_geometry_shader4 */
-   OPCODE_PROGRAM_PARAMETERI,
-   OPCODE_FRAMEBUFFER_TEXTURE,
-   OPCODE_FRAMEBUFFER_TEXTURE_FACE,
-
    /* GL_ARB_sync */
    OPCODE_WAIT_SYNC,
 
@@ -481,9 +482,16 @@ typedef enum
    /* ARB_uniform_buffer_object */
    OPCODE_UNIFORM_BLOCK_BINDING,
 
+   /* EXT_polygon_offset_clamp */
+   OPCODE_POLYGON_OFFSET_CLAMP,
+
+   /* EXT_window_rectangles */
+   OPCODE_WINDOW_RECTANGLES,
+
    /* The following three are meta instructions */
    OPCODE_ERROR,                /* raise compiled-in error */
    OPCODE_CONTINUE,
+   OPCODE_NOP,                  /* No-op (used for 8-byte alignment */
    OPCODE_END_OF_LIST,
    OPCODE_EXT_0
 } OpCode;
@@ -542,13 +550,13 @@ union pointer
  * Save a 4 or 8-byte pointer at dest (and dest+1).
  */
 static inline void
-save_pointer(union gl_dlist_node *dest, void *src)
+save_pointer(Node *dest, void *src)
 {
    union pointer p;
    unsigned i;
 
    STATIC_ASSERT(POINTER_DWORDS == 1 || POINTER_DWORDS == 2);
-   STATIC_ASSERT(sizeof(union gl_dlist_node) == 4);
+   STATIC_ASSERT(sizeof(Node) == 4);
 
    p.ptr = src;
 
@@ -561,7 +569,7 @@ save_pointer(union gl_dlist_node *dest, void *src)
  * Retrieve a 4 or 8-byte pointer from node (node+1).
  */
 static inline void *
-get_pointer(const union gl_dlist_node *node)
+get_pointer(const Node *node)
 {
    union pointer p;
    unsigned i;
@@ -575,7 +583,7 @@ get_pointer(const union gl_dlist_node *node)
 
 /**
  * Used to store a 64-bit uint in a pair of "Nodes" for the sake of 32-bit
- * environment.  In 64-bit env, sizeof(Node)==8 anyway.
+ * environment.
  */
 union uint64_pair
 {
@@ -604,8 +612,263 @@ void mesa_print_display_list(GLuint list);
 
 
 /**
+ * Does the given display list only contain a single glBitmap call?
+ */
+static bool
+is_bitmap_list(const struct gl_display_list *dlist)
+{
+   const Node *n = dlist->Head;
+   if (n[0].opcode == OPCODE_BITMAP) {
+      n += InstSize[OPCODE_BITMAP];
+      if (n[0].opcode == OPCODE_END_OF_LIST)
+         return true;
+   }
+   return false;
+}
+
+
+/**
+ * Is the given display list an empty list?
+ */
+static bool
+is_empty_list(const struct gl_display_list *dlist)
+{
+   const Node *n = dlist->Head;
+   return n[0].opcode == OPCODE_END_OF_LIST;
+}
+
+
+/**
+ * Delete/free a gl_bitmap_atlas.  Called during context tear-down.
+ */
+void
+_mesa_delete_bitmap_atlas(struct gl_context *ctx, struct gl_bitmap_atlas *atlas)
+{
+   if (atlas->texObj) {
+      ctx->Driver.DeleteTexture(ctx, atlas->texObj);
+   }
+   free(atlas->glyphs);
+}
+
+
+/**
+ * Lookup a gl_bitmap_atlas by listBase ID.
+ */
+static struct gl_bitmap_atlas *
+lookup_bitmap_atlas(struct gl_context *ctx, GLuint listBase)
+{
+   struct gl_bitmap_atlas *atlas;
+
+   assert(listBase > 0);
+   atlas = _mesa_HashLookup(ctx->Shared->BitmapAtlas, listBase);
+   return atlas;
+}
+
+
+/**
+ * Create new bitmap atlas and insert into hash table.
+ */
+static struct gl_bitmap_atlas *
+alloc_bitmap_atlas(struct gl_context *ctx, GLuint listBase)
+{
+   struct gl_bitmap_atlas *atlas;
+
+   assert(listBase > 0);
+   assert(_mesa_HashLookup(ctx->Shared->BitmapAtlas, listBase) == NULL);
+
+   atlas = calloc(1, sizeof(*atlas));
+   if (atlas) {
+      _mesa_HashInsert(ctx->Shared->BitmapAtlas, listBase, atlas);
+   }
+
+   return atlas;
+}
+
+
+/**
+ * Try to build a bitmap atlas.  This involves examining a sequence of
+ * display lists which contain glBitmap commands and putting the bitmap
+ * images into a texture map (the atlas).
+ * If we succeed, gl_bitmap_atlas::complete will be set to true.
+ * If we fail, gl_bitmap_atlas::incomplete will be set to true.
+ */
+static void
+build_bitmap_atlas(struct gl_context *ctx, struct gl_bitmap_atlas *atlas,
+                   GLuint listBase)
+{
+   unsigned i, row_height = 0, xpos = 0, ypos = 0;
+   GLubyte *map;
+   GLint map_stride;
+
+   assert(atlas);
+   assert(!atlas->complete);
+   assert(atlas->numBitmaps > 0);
+
+   /* We use a rectangle texture (non-normalized coords) for the atlas */
+   assert(ctx->Extensions.NV_texture_rectangle);
+   assert(ctx->Const.MaxTextureRectSize >= 1024);
+
+   atlas->texWidth = 1024;
+   atlas->texHeight = 0;  /* determined below */
+
+   atlas->glyphs = malloc(atlas->numBitmaps * sizeof(atlas->glyphs[0]));
+   if (!atlas->glyphs) {
+      /* give up */
+      atlas->incomplete = true;
+      return;
+   }
+
+   /* Loop over the display lists.  They should all contain a single glBitmap
+    * call.  If not, bail out.  Also, compute the position and sizes of each
+    * bitmap in the atlas to determine the texture atlas size.
+    */
+   for (i = 0; i < atlas->numBitmaps; i++) {
+      const struct gl_display_list *list = _mesa_lookup_list(ctx, listBase + i);
+      const Node *n;
+      struct gl_bitmap_glyph *g = &atlas->glyphs[i];
+      unsigned bitmap_width, bitmap_height;
+      float bitmap_xmove, bitmap_ymove, bitmap_xorig, bitmap_yorig;
+
+      if (!list || is_empty_list(list)) {
+         /* stop here */
+         atlas->numBitmaps = i;
+         break;
+      }
+
+      if (!is_bitmap_list(list)) {
+         /* This list does not contain exactly one glBitmap command. Give up. */
+         atlas->incomplete = true;
+         return;
+      }
+
+      /* get bitmap info from the display list command */
+      n = list->Head;
+      assert(n[0].opcode == OPCODE_BITMAP);
+      bitmap_width = n[1].i;
+      bitmap_height = n[2].i;
+      bitmap_xorig = n[3].f;
+      bitmap_yorig = n[4].f;
+      bitmap_xmove = n[5].f;
+      bitmap_ymove = n[6].f;
+
+      if (xpos + bitmap_width > atlas->texWidth) {
+         /* advance to the next row of the texture */
+         xpos = 0;
+         ypos += row_height;
+         row_height = 0;
+      }
+
+      /* save the bitmap's position in the atlas */
+      g->x = xpos;
+      g->y = ypos;
+      g->w = bitmap_width;
+      g->h = bitmap_height;
+      g->xorig = bitmap_xorig;
+      g->yorig = bitmap_yorig;
+      g->xmove = bitmap_xmove;
+      g->ymove = bitmap_ymove;
+
+      xpos += bitmap_width;
+
+      /* keep track of tallest bitmap in the row */
+      row_height = MAX2(row_height, bitmap_height);
+   }
+
+   /* Now we know the texture height */
+   atlas->texHeight = ypos + row_height;
+
+   if (atlas->texHeight == 0) {
+      /* no glyphs found, give up */
+      goto fail;
+   }
+   else if (atlas->texHeight > ctx->Const.MaxTextureRectSize) {
+      /* too large, give up */
+      goto fail;
+   }
+
+   /* Create atlas texture (texture ID is irrelevant) */
+   atlas->texObj = ctx->Driver.NewTextureObject(ctx, 999, GL_TEXTURE_RECTANGLE);
+   if (!atlas->texObj) {
+      goto out_of_memory;
+   }
+
+   atlas->texObj->Sampler.MinFilter = GL_NEAREST;
+   atlas->texObj->Sampler.MagFilter = GL_NEAREST;
+   atlas->texObj->MaxLevel = 0;
+   atlas->texObj->Immutable = GL_TRUE;
+
+   atlas->texImage = _mesa_get_tex_image(ctx, atlas->texObj,
+                                         GL_TEXTURE_RECTANGLE, 0);
+   if (!atlas->texImage) {
+      goto out_of_memory;
+   }
+
+   _mesa_init_teximage_fields(ctx, atlas->texImage,
+                              atlas->texWidth, atlas->texHeight, 1, 0,
+                              GL_ALPHA, MESA_FORMAT_A_UNORM8);
+
+   /* alloc image storage */
+   if (!ctx->Driver.AllocTextureImageBuffer(ctx, atlas->texImage)) {
+      goto out_of_memory;
+   }
+
+   /* map teximage, load with bitmap glyphs */
+   ctx->Driver.MapTextureImage(ctx, atlas->texImage, 0,
+                               0, 0, atlas->texWidth, atlas->texHeight,
+                               GL_MAP_WRITE_BIT, &map, &map_stride);
+   if (!map) {
+      goto out_of_memory;
+   }
+
+   /* Background/clear pixels are 0xff, foreground/set pixels are 0x0 */
+   memset(map, 0xff, map_stride * atlas->texHeight);
+
+   for (i = 0; i < atlas->numBitmaps; i++) {
+      const struct gl_display_list *list = _mesa_lookup_list(ctx, listBase + i);
+      const Node *n = list->Head;
+
+      assert(n[0].opcode == OPCODE_BITMAP ||
+             n[0].opcode == OPCODE_END_OF_LIST);
+
+      if (n[0].opcode == OPCODE_BITMAP) {
+         unsigned bitmap_width = n[1].i;
+         unsigned bitmap_height = n[2].i;
+         unsigned xpos = atlas->glyphs[i].x;
+         unsigned ypos = atlas->glyphs[i].y;
+         const void *bitmap_image = get_pointer(&n[7]);
+
+         assert(atlas->glyphs[i].w == bitmap_width);
+         assert(atlas->glyphs[i].h == bitmap_height);
+
+         /* put the bitmap image into the texture image */
+         _mesa_expand_bitmap(bitmap_width, bitmap_height,
+                             &ctx->DefaultPacking, bitmap_image,
+                             map + map_stride * ypos + xpos, /* dest addr */
+                             map_stride, 0x0);
+      }
+   }
+
+   ctx->Driver.UnmapTextureImage(ctx, atlas->texImage, 0);
+
+   atlas->complete = true;
+
+   return;
+
+out_of_memory:
+   _mesa_error(ctx, GL_OUT_OF_MEMORY, "Display list bitmap atlas");
+fail:
+   if (atlas->texObj) {
+      ctx->Driver.DeleteTexture(ctx, atlas->texObj);
+   }
+   free(atlas->glyphs);
+   atlas->glyphs = NULL;
+   atlas->incomplete = true;
+}
+
+
+/**
  * Allocate a gl_display_list object with an initial block of storage.
- * \param count  how many display list nodes/tokes to allocate
+ * \param count  how many display list nodes/tokens to allocate
  */
 static struct gl_display_list *
 make_list(GLuint name, GLuint count)
@@ -663,11 +926,11 @@ ext_opcode_execute(struct gl_context *ctx, Node *node)
 
 /** Print an extended opcode instruction */
 static GLint
-ext_opcode_print(struct gl_context *ctx, Node *node)
+ext_opcode_print(struct gl_context *ctx, Node *node, FILE *f)
 {
    const GLint i = node[0].opcode - OPCODE_EXT_0;
    GLint step;
-   ctx->ListExt->Opcode[i].Print(ctx, &node[1]);
+   ctx->ListExt->Opcode[i].Print(ctx, &node[1], f);
    step = ctx->ListExt->Opcode[i].Size;
    return step;
 }
@@ -702,6 +965,10 @@ _mesa_delete_list(struct gl_context *ctx, struct gl_display_list *dlist)
             break;
          case OPCODE_MAP2:
             free(get_pointer(&n[10]));
+            n += InstSize[n[0].opcode];
+            break;
+         case OPCODE_CALL_LISTS:
+            free(get_pointer(&n[3]));
             n += InstSize[n[0].opcode];
             break;
          case OPCODE_DRAW_PIXELS:
@@ -826,7 +1093,10 @@ _mesa_delete_list(struct gl_context *ctx, struct gl_display_list *dlist)
             free(get_pointer(&n[3]));
             n += InstSize[n[0].opcode];
             break;
-
+         case OPCODE_WINDOW_RECTANGLES:
+            free(get_pointer(&n[3]));
+            n += InstSize[n[0].opcode];
+            break;
          case OPCODE_CONTINUE:
             n = (Node *) get_pointer(&n[1]);
             free(block);
@@ -850,6 +1120,30 @@ _mesa_delete_list(struct gl_context *ctx, struct gl_display_list *dlist)
 
 
 /**
+ * Called by _mesa_HashWalk() to check if a display list which is being
+ * deleted belongs to a bitmap texture atlas.
+ */
+static void
+check_atlas_for_deleted_list(GLuint atlas_id, void *data, void *userData)
+{
+   struct gl_bitmap_atlas *atlas = (struct gl_bitmap_atlas *) data;
+   GLuint list_id = *((GLuint *) userData);  /* the list being deleted */
+
+   /* See if the list_id falls in the range contained in this texture atlas */
+   if (atlas->complete &&
+       list_id >= atlas_id &&
+       list_id < atlas_id + atlas->numBitmaps) {
+      /* Mark the atlas as incomplete so it doesn't get used.  But don't
+       * delete it yet since we don't want to try to recreate it in the next
+       * glCallLists.
+       */
+      atlas->complete = false;
+      atlas->incomplete = true;
+   }
+}
+
+
+/**
  * Destroy a display list and remove from hash table.
  * \param list - display list number
  */
@@ -864,6 +1158,16 @@ destroy_list(struct gl_context *ctx, GLuint list)
    dlist = _mesa_lookup_list(ctx, list);
    if (!dlist)
       return;
+
+   if (is_bitmap_list(dlist)) {
+      /* If we're destroying a simple glBitmap display list, there's a
+       * chance that we're destroying a bitmap image that's in a texture
+       * atlas.  Examine all atlases to see if that's the case.  There's
+       * usually few (if any) atlases so this isn't expensive.
+       */
+      _mesa_HashWalk(ctx->Shared->BitmapAtlas,
+                     check_atlas_for_deleted_list, &list);
+   }
 
    _mesa_delete_list(ctx, dlist);
    _mesa_HashRemove(ctx->Shared->DisplayList, list);
@@ -905,7 +1209,7 @@ translate_id(GLsizei n, GLenum type, const GLvoid * list)
       return (GLint) uiptr[n];
    case GL_FLOAT:
       fptr = (GLfloat *) list;
-      return (GLint) FLOORF(fptr[n]);
+      return (GLint) floorf(fptr[n]);
    case GL_2_BYTES:
       ubptr = ((GLubyte *) list) + 2 * n;
       return (GLint) ubptr[0] * 256
@@ -954,11 +1258,8 @@ unpack_image(struct gl_context *ctx, GLuint dimensions,
       /* no PBO */
       GLvoid *image;
 
-      if (type == GL_BITMAP)
-         image = _mesa_unpack_bitmap(width, height, pixels, unpack);
-      else
-         image = _mesa_unpack_image(dimensions, width, height, depth,
-                                    format, type, pixels, unpack);
+      image = _mesa_unpack_image(dimensions, width, height, depth,
+                                 format, type, pixels, unpack);
       if (pixels && !image) {
          _mesa_error(ctx, GL_OUT_OF_MEMORY, "display list construction");
       }
@@ -980,11 +1281,8 @@ unpack_image(struct gl_context *ctx, GLuint dimensions,
       }
 
       src = ADD_POINTERS(map, pixels);
-      if (type == GL_BITMAP)
-         image = _mesa_unpack_bitmap(width, height, src, unpack);
-      else
-         image = _mesa_unpack_image(dimensions, width, height, depth,
-                                    format, type, src, unpack);
+      image = _mesa_unpack_image(dimensions, width, height, depth,
+                                 format, type, src, unpack);
 
       ctx->Driver.UnmapBuffer(ctx, unpack->BufferObj, MAP_INTERNAL);
 
@@ -1015,27 +1313,43 @@ memdup(const void *src, GLsizei bytes)
  * Allocate space for a display list instruction (opcode + payload space).
  * \param opcode  the instruction opcode (OPCODE_* value)
  * \param bytes   instruction payload size (not counting opcode)
- * \return pointer to allocated memory (the opcode space)
+ * \param align8  does the payload need to be 8-byte aligned?
+ *                This is only relevant in 64-bit environments.
+ * \return pointer to allocated memory (the payload will be at pointer+1)
  */
 static Node *
-dlist_alloc(struct gl_context *ctx, OpCode opcode, GLuint bytes)
+dlist_alloc(struct gl_context *ctx, OpCode opcode, GLuint bytes, bool align8)
 {
    const GLuint numNodes = 1 + (bytes + sizeof(Node) - 1) / sizeof(Node);
    const GLuint contNodes = 1 + POINTER_DWORDS;  /* size of continue info */
+   GLuint nopNode;
    Node *n;
 
-   if (opcode < (GLuint) OPCODE_EXT_0) {
+   if (opcode < OPCODE_EXT_0) {
       if (InstSize[opcode] == 0) {
          /* save instruction size now */
          InstSize[opcode] = numNodes;
       }
       else {
          /* make sure instruction size agrees */
-         ASSERT(numNodes == InstSize[opcode]);
+         assert(numNodes == InstSize[opcode]);
       }
    }
 
-   if (ctx->ListState.CurrentPos + numNodes + contNodes > BLOCK_SIZE) {
+   if (sizeof(void *) > sizeof(Node) && align8
+       && ctx->ListState.CurrentPos % 2 == 0) {
+      /* The opcode would get placed at node[0] and the payload would start
+       * at node[1].  But the payload needs to be at an even offset (8-byte
+       * multiple).
+       */
+      nopNode = 1;
+   }
+   else {
+      nopNode = 0;
+   }
+
+   if (ctx->ListState.CurrentPos + nopNode + numNodes + contNodes
+       > BLOCK_SIZE) {
       /* This block is full.  Allocate a new block and chain to it */
       Node *newblock;
       n = ctx->ListState.CurrentBlock + ctx->ListState.CurrentPos;
@@ -1045,13 +1359,34 @@ dlist_alloc(struct gl_context *ctx, OpCode opcode, GLuint bytes)
          _mesa_error(ctx, GL_OUT_OF_MEMORY, "Building display list");
          return NULL;
       }
+
+      /* a fresh block should be 8-byte aligned on 64-bit systems */
+      assert(((GLintptr) newblock) % sizeof(void *) == 0);
+
       save_pointer(&n[1], newblock);
       ctx->ListState.CurrentBlock = newblock;
       ctx->ListState.CurrentPos = 0;
+
+      /* Display list nodes are always 4 bytes.  If we need 8-byte alignment
+       * we have to insert a NOP so that the payload of the real opcode lands
+       * on an even location:
+       *   node[0] = OPCODE_NOP
+       *   node[1] = OPCODE_x;
+       *   node[2] = start of payload
+       */
+      nopNode = sizeof(void *) > sizeof(Node) && align8;
    }
 
    n = ctx->ListState.CurrentBlock + ctx->ListState.CurrentPos;
-   ctx->ListState.CurrentPos += numNodes;
+   if (nopNode) {
+      assert(ctx->ListState.CurrentPos % 2 == 0); /* even value */
+      n[0].opcode = OPCODE_NOP;
+      n++;
+      /* The "real" opcode will now be at an odd location and the payload
+       * will be at an even location.
+       */
+   }
+   ctx->ListState.CurrentPos += nopNode + numNodes;
 
    n[0].opcode = opcode;
 
@@ -1072,7 +1407,22 @@ dlist_alloc(struct gl_context *ctx, OpCode opcode, GLuint bytes)
 void *
 _mesa_dlist_alloc(struct gl_context *ctx, GLuint opcode, GLuint bytes)
 {
-   Node *n = dlist_alloc(ctx, (OpCode) opcode, bytes);
+   Node *n = dlist_alloc(ctx, (OpCode) opcode, bytes, false);
+   if (n)
+      return n + 1;  /* return pointer to payload area, after opcode */
+   else
+      return NULL;
+}
+
+
+/**
+ * Same as _mesa_dlist_alloc(), but return a pointer which is 8-byte
+ * aligned in 64-bit environments, 4-byte aligned otherwise.
+ */
+void *
+_mesa_dlist_alloc_aligned(struct gl_context *ctx, GLuint opcode, GLuint bytes)
+{
+   Node *n = dlist_alloc(ctx, (OpCode) opcode, bytes, true);
    if (n)
       return n + 1;  /* return pointer to payload area, after opcode */
    else
@@ -1095,7 +1445,7 @@ _mesa_dlist_alloc_opcode(struct gl_context *ctx,
                          GLuint size,
                          void (*execute) (struct gl_context *, void *),
                          void (*destroy) (struct gl_context *, void *),
-                         void (*print) (struct gl_context *, void *))
+                         void (*print) (struct gl_context *, void *, FILE *))
 {
    if (ctx->ListExt->NumOpcodes < MAX_DLIST_EXT_OPCODES) {
       const GLuint i = ctx->ListExt->NumOpcodes++;
@@ -1122,7 +1472,7 @@ _mesa_dlist_alloc_opcode(struct gl_context *ctx,
 static inline Node *
 alloc_instruction(struct gl_context *ctx, OpCode opcode, GLuint nparams)
 {
-   return dlist_alloc(ctx, opcode, nparams * sizeof(Node));
+   return dlist_alloc(ctx, opcode, nparams * sizeof(Node), false);
 }
 
 
@@ -1347,7 +1697,7 @@ save_BlendFunci(GLuint buf, GLenum sfactor, GLenum dfactor)
    GET_CURRENT_CONTEXT(ctx);
    Node *n;
    ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
-   n = alloc_instruction(ctx, OPCODE_BLEND_FUNC_SEPARATE_I, 3);
+   n = alloc_instruction(ctx, OPCODE_BLEND_FUNC_I, 3);
    if (n) {
       n[1].ui = buf;
       n[2].e = sfactor;
@@ -1521,36 +1871,48 @@ static void GLAPIENTRY
 save_CallLists(GLsizei num, GLenum type, const GLvoid * lists)
 {
    GET_CURRENT_CONTEXT(ctx);
-   GLint i;
-   GLboolean typeErrorFlag;
+   unsigned type_size;
+   Node *n;
+   void *lists_copy;
 
    SAVE_FLUSH_VERTICES(ctx);
 
    switch (type) {
    case GL_BYTE:
    case GL_UNSIGNED_BYTE:
+      type_size = 1;
+      break;
    case GL_SHORT:
    case GL_UNSIGNED_SHORT:
+   case GL_2_BYTES:
+      type_size = 2;
+      break;
+   case GL_3_BYTES:
+      type_size = 3;
+      break;
    case GL_INT:
    case GL_UNSIGNED_INT:
    case GL_FLOAT:
-   case GL_2_BYTES:
-   case GL_3_BYTES:
    case GL_4_BYTES:
-      typeErrorFlag = GL_FALSE;
+      type_size = 4;
       break;
    default:
-      typeErrorFlag = GL_TRUE;
+      type_size = 0;
    }
 
-   for (i = 0; i < num; i++) {
-      GLint list = translate_id(i, type, lists);
-      Node *n = alloc_instruction(ctx, OPCODE_CALL_LIST_OFFSET, 2);
-      if (n) {
-         n[1].i = list;
-         n[2].b = typeErrorFlag;
-      }
+   if (num > 0 && type_size > 0) {
+      /* create a copy of the array of list IDs to save in the display list */
+      lists_copy = memdup(lists, num * type_size);
+   } else {
+      lists_copy = NULL;
    }
+
+   n = alloc_instruction(ctx, OPCODE_CALL_LISTS, 2 + POINTER_DWORDS);
+   if (n) {
+      n[1].i = num;
+      n[2].e = type;
+      save_pointer(&n[3], lists_copy);
+   };
 
    /* After this, we don't know what state we're in.  Invalidate all
     * cached information previously gathered:
@@ -3141,6 +3503,22 @@ save_PolygonOffsetEXT(GLfloat factor, GLfloat bias)
    save_PolygonOffset(factor, ctx->DrawBuffer->_DepthMaxF * bias);
 }
 
+static void GLAPIENTRY
+save_PolygonOffsetClampEXT(GLfloat factor, GLfloat units, GLfloat clamp)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_POLYGON_OFFSET_CLAMP, 3);
+   if (n) {
+      n[1].f = factor;
+      n[2].f = units;
+      n[3].f = clamp;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_PolygonOffsetClampEXT(ctx->Exec, (factor, units, clamp));
+   }
+}
 
 static void GLAPIENTRY
 save_PopAttrib(void)
@@ -4585,15 +4963,15 @@ save_SampleCoverageARB(GLclampf value, GLboolean invert)
 
 
 /*
- * GL_NV_fragment_program
+ * GL_ARB_vertex_program
  */
 static void GLAPIENTRY
-save_BindProgramNV(GLenum target, GLuint id)
+save_BindProgramARB(GLenum target, GLuint id)
 {
    GET_CURRENT_CONTEXT(ctx);
    Node *n;
    ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
-   n = alloc_instruction(ctx, OPCODE_BIND_PROGRAM_NV, 2);
+   n = alloc_instruction(ctx, OPCODE_BIND_PROGRAM_ARB, 2);
    if (n) {
       n[1].e = target;
       n[2].ui = id;
@@ -5020,7 +5398,7 @@ save_Attr1fNV(GLenum attr, GLfloat x)
       n[2].f = x;
    }
 
-   ASSERT(attr < MAX_VERTEX_GENERIC_ATTRIBS);
+   assert(attr < MAX_VERTEX_GENERIC_ATTRIBS);
    ctx->ListState.ActiveAttribSize[attr] = 1;
    ASSIGN_4V(ctx->ListState.CurrentAttrib[attr], x, 0, 0, 1);
 
@@ -5042,7 +5420,7 @@ save_Attr2fNV(GLenum attr, GLfloat x, GLfloat y)
       n[3].f = y;
    }
 
-   ASSERT(attr < MAX_VERTEX_GENERIC_ATTRIBS);
+   assert(attr < MAX_VERTEX_GENERIC_ATTRIBS);
    ctx->ListState.ActiveAttribSize[attr] = 2;
    ASSIGN_4V(ctx->ListState.CurrentAttrib[attr], x, y, 0, 1);
 
@@ -5065,7 +5443,7 @@ save_Attr3fNV(GLenum attr, GLfloat x, GLfloat y, GLfloat z)
       n[4].f = z;
    }
 
-   ASSERT(attr < MAX_VERTEX_GENERIC_ATTRIBS);
+   assert(attr < MAX_VERTEX_GENERIC_ATTRIBS);
    ctx->ListState.ActiveAttribSize[attr] = 3;
    ASSIGN_4V(ctx->ListState.CurrentAttrib[attr], x, y, z, 1);
 
@@ -5089,7 +5467,7 @@ save_Attr4fNV(GLenum attr, GLfloat x, GLfloat y, GLfloat z, GLfloat w)
       n[5].f = w;
    }
 
-   ASSERT(attr < MAX_VERTEX_GENERIC_ATTRIBS);
+   assert(attr < MAX_VERTEX_GENERIC_ATTRIBS);
    ctx->ListState.ActiveAttribSize[attr] = 4;
    ASSIGN_4V(ctx->ListState.CurrentAttrib[attr], x, y, z, w);
 
@@ -5111,7 +5489,7 @@ save_Attr1fARB(GLenum attr, GLfloat x)
       n[2].f = x;
    }
 
-   ASSERT(attr < MAX_VERTEX_GENERIC_ATTRIBS);
+   assert(attr < MAX_VERTEX_GENERIC_ATTRIBS);
    ctx->ListState.ActiveAttribSize[attr] = 1;
    ASSIGN_4V(ctx->ListState.CurrentAttrib[attr], x, 0, 0, 1);
 
@@ -5133,7 +5511,7 @@ save_Attr2fARB(GLenum attr, GLfloat x, GLfloat y)
       n[3].f = y;
    }
 
-   ASSERT(attr < MAX_VERTEX_GENERIC_ATTRIBS);
+   assert(attr < MAX_VERTEX_GENERIC_ATTRIBS);
    ctx->ListState.ActiveAttribSize[attr] = 2;
    ASSIGN_4V(ctx->ListState.CurrentAttrib[attr], x, y, 0, 1);
 
@@ -5156,7 +5534,7 @@ save_Attr3fARB(GLenum attr, GLfloat x, GLfloat y, GLfloat z)
       n[4].f = z;
    }
 
-   ASSERT(attr < MAX_VERTEX_GENERIC_ATTRIBS);
+   assert(attr < MAX_VERTEX_GENERIC_ATTRIBS);
    ctx->ListState.ActiveAttribSize[attr] = 3;
    ASSIGN_4V(ctx->ListState.CurrentAttrib[attr], x, y, z, 1);
 
@@ -5180,7 +5558,7 @@ save_Attr4fARB(GLenum attr, GLfloat x, GLfloat y, GLfloat z, GLfloat w)
       n[5].f = w;
    }
 
-   ASSERT(attr < MAX_VERTEX_GENERIC_ATTRIBS);
+   assert(attr < MAX_VERTEX_GENERIC_ATTRIBS);
    ctx->ListState.ActiveAttribSize[attr] = 4;
    ASSIGN_4V(ctx->ListState.CurrentAttrib[attr], x, y, z, w);
 
@@ -5396,7 +5774,7 @@ save_Begin(GLenum mode)
       /* Give the driver an opportunity to hook in an optimized
        * display list compiler.
        */
-      if (ctx->Driver.NotifySaveBegin(ctx, mode))
+      if (vbo_save_NotifyBegin(ctx, mode))
          return;
 
       SAVE_FLUSH_VERTICES(ctx);
@@ -5648,7 +6026,7 @@ save_MultiTexCoord4fv(GLenum target, const GLfloat * v)
 
 
 /**
- * Record a GL_INVALID_VALUE error when a invalid vertex attribute
+ * Record a GL_INVALID_VALUE error when an invalid vertex attribute
  * index is found.
  */
 static void
@@ -5918,9 +6296,8 @@ save_DrawTransformFeedbackStreamInstanced(GLenum mode, GLuint name,
    }
 }
 
-/* aka UseProgram() */
 static void GLAPIENTRY
-save_UseProgramObjectARB(GLhandleARB program)
+save_UseProgram(GLuint program)
 {
    GET_CURRENT_CONTEXT(ctx);
    Node *n;
@@ -7208,6 +7585,22 @@ save_ProgramUniformMatrix4fv(GLuint program, GLint location, GLsizei count,
 }
 
 static void GLAPIENTRY
+save_ClipControl(GLenum origin, GLenum depth)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_CLIP_CONTROL, 2);
+   if (n) {
+      n[1].e = origin;
+      n[2].e = depth;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_ClipControl(ctx->Exec, (origin, depth));
+   }
+}
+
+static void GLAPIENTRY
 save_ClampColorARB(GLenum target, GLenum clamp)
 {
    GET_CURRENT_CONTEXT(ctx);
@@ -7469,66 +7862,6 @@ save_SamplerParameterIuiv(GLuint sampler, GLenum pname, const GLuint *params)
    }
 }
 
-/* GL_ARB_geometry_shader4 */
-static void GLAPIENTRY
-save_ProgramParameteri(GLuint program, GLenum pname, GLint value)
-{
-   Node *n;
-   GET_CURRENT_CONTEXT(ctx);
-   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
-   n = alloc_instruction(ctx, OPCODE_PROGRAM_PARAMETERI, 3);
-   if (n) {
-      n[1].ui = program;
-      n[2].e = pname;
-      n[3].i = value;
-   }
-   if (ctx->ExecuteFlag) {
-      CALL_ProgramParameteri(ctx->Exec, (program, pname, value));
-   }
-}
-
-static void GLAPIENTRY
-save_FramebufferTexture(GLenum target, GLenum attachment,
-                        GLuint texture, GLint level)
-{
-   Node *n;
-   GET_CURRENT_CONTEXT(ctx);
-   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
-   n = alloc_instruction(ctx, OPCODE_FRAMEBUFFER_TEXTURE, 4);
-   if (n) {
-      n[1].e = target;
-      n[2].e = attachment;
-      n[3].ui = texture;
-      n[4].i = level;
-   }
-   if (ctx->ExecuteFlag) {
-      CALL_FramebufferTexture(ctx->Exec, (target, attachment, texture, level));
-   }
-}
-
-static void GLAPIENTRY
-save_FramebufferTextureFace(GLenum target, GLenum attachment,
-                            GLuint texture, GLint level, GLenum face)
-{
-   Node *n;
-   GET_CURRENT_CONTEXT(ctx);
-   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
-   n = alloc_instruction(ctx, OPCODE_FRAMEBUFFER_TEXTURE_FACE, 5);
-   if (n) {
-      n[1].e = target;
-      n[2].e = attachment;
-      n[3].ui = texture;
-      n[4].i = level;
-      n[5].e = face;
-   }
-   if (ctx->ExecuteFlag) {
-      CALL_FramebufferTextureFaceARB(ctx->Exec, (target, attachment, texture,
-                                                 level, face));
-   }
-}
-
-
-
 static void GLAPIENTRY
 save_WaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout)
 {
@@ -7595,6 +7928,27 @@ save_UniformBlockBinding(GLuint prog, GLuint index, GLuint binding)
    }
 }
 
+/** GL_EXT_window_rectangles */
+static void GLAPIENTRY
+save_WindowRectanglesEXT(GLenum mode, GLsizei count, const GLint *box)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_WINDOW_RECTANGLES, 2 + POINTER_DWORDS);
+   if (n) {
+      GLint *box_copy = NULL;
+
+      if (count > 0)
+         box_copy = memdup(box, sizeof(GLint) * 4 * count);
+      n[1].e = mode;
+      n[2].si = count;
+      save_pointer(&n[3], box_copy);
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_WindowRectanglesEXT(ctx->Exec, (mode, count, box));
+   }
+}
 
 /**
  * Save an error-generating command into display list.
@@ -7679,8 +8033,7 @@ execute_list(struct gl_context *ctx, GLuint list)
 
    ctx->ListState.CallDepth++;
 
-   if (ctx->Driver.BeginCallList)
-      ctx->Driver.BeginCallList(ctx, dlist);
+   vbo_save_BeginCallList(ctx, dlist);
 
    n = dlist->Head;
 
@@ -7754,15 +8107,9 @@ execute_list(struct gl_context *ctx, GLuint list)
                execute_list(ctx, n[1].ui);
             }
             break;
-         case OPCODE_CALL_LIST_OFFSET:
-            /* Generated by glCallLists() so we must add ListBase */
-            if (n[2].b) {
-               /* user specified a bad data type at compile time */
-               _mesa_error(ctx, GL_INVALID_ENUM, "glCallLists(type)");
-            }
-            else if (ctx->ListState.CallDepth < MAX_LIST_NESTING) {
-               GLuint list = (GLuint) (ctx->List.ListBase + n[1].i);
-               execute_list(ctx, list);
+         case OPCODE_CALL_LISTS:
+            if (ctx->ListState.CallDepth < MAX_LIST_NESTING) {
+               CALL_CallLists(ctx->Exec, (n[1].i, n[2].e, get_pointer(&n[3])));
             }
             break;
          case OPCODE_CLEAR:
@@ -7966,17 +8313,8 @@ execute_list(struct gl_context *ctx, GLuint list)
             CALL_LoadIdentity(ctx->Exec, ());
             break;
          case OPCODE_LOAD_MATRIX:
-            if (sizeof(Node) == sizeof(GLfloat)) {
-               CALL_LoadMatrixf(ctx->Exec, (&n[1].f));
-            }
-            else {
-               GLfloat m[16];
-               GLuint i;
-               for (i = 0; i < 16; i++) {
-                  m[i] = n[1 + i].f;
-               }
-               CALL_LoadMatrixf(ctx->Exec, (m));
-            }
+            STATIC_ASSERT(sizeof(Node) == sizeof(GLfloat));
+            CALL_LoadMatrixf(ctx->Exec, (&n[1].f));
             break;
          case OPCODE_LOAD_NAME:
             CALL_LoadName(ctx->Exec, (n[1].ui));
@@ -8022,17 +8360,7 @@ execute_list(struct gl_context *ctx, GLuint list)
             CALL_MatrixMode(ctx->Exec, (n[1].e));
             break;
          case OPCODE_MULT_MATRIX:
-            if (sizeof(Node) == sizeof(GLfloat)) {
-               CALL_MultMatrixf(ctx->Exec, (&n[1].f));
-            }
-            else {
-               GLfloat m[16];
-               GLuint i;
-               for (i = 0; i < 16; i++) {
-                  m[i] = n[1 + i].f;
-               }
-               CALL_MultMatrixf(ctx->Exec, (m));
-            }
+            CALL_MultMatrixf(ctx->Exec, (&n[1].f));
             break;
          case OPCODE_ORTHO:
             CALL_Ortho(ctx->Exec,
@@ -8076,6 +8404,9 @@ execute_list(struct gl_context *ctx, GLuint list)
             break;
          case OPCODE_POLYGON_OFFSET:
             CALL_PolygonOffset(ctx->Exec, (n[1].f, n[2].f));
+            break;
+         case OPCODE_POLYGON_OFFSET_CLAMP:
+            CALL_PolygonOffsetClampEXT(ctx->Exec, (n[1].f, n[2].f, n[3].f));
             break;
          case OPCODE_POP_ATTRIB:
             CALL_PopAttrib(ctx->Exec, ());
@@ -8303,7 +8634,7 @@ execute_list(struct gl_context *ctx, GLuint list)
          case OPCODE_WINDOW_POS_ARB:   /* GL_ARB_window_pos */
             CALL_WindowPos3f(ctx->Exec, (n[1].f, n[2].f, n[3].f));
             break;
-         case OPCODE_BIND_PROGRAM_NV:  /* GL_ARB_vertex_program */
+         case OPCODE_BIND_PROGRAM_ARB:  /* GL_ARB_vertex_program */
             CALL_BindProgramARB(ctx->Exec, (n[1].e, n[2].ui));
             break;
          case OPCODE_PROGRAM_LOCAL_PARAMETER_ARB:
@@ -8617,6 +8948,10 @@ execute_list(struct gl_context *ctx, GLuint list)
                                           get_pointer(&n[5])));
             break;
 
+         case OPCODE_CLIP_CONTROL:
+            CALL_ClipControl(ctx->Exec, (n[1].e, n[2].e));
+            break;
+
          case OPCODE_CLAMP_COLOR:
             CALL_ClampColor(ctx->Exec, (n[1].e, n[2].e));
             break;
@@ -8625,84 +8960,34 @@ execute_list(struct gl_context *ctx, GLuint list)
             CALL_BindFragmentShaderATI(ctx->Exec, (n[1].i));
             break;
          case OPCODE_SET_FRAGMENT_SHADER_CONSTANTS_ATI:
-            {
-               GLfloat values[4];
-               GLuint i, dst = n[1].ui;
-
-               for (i = 0; i < 4; i++)
-                  values[i] = n[1 + i].f;
-               CALL_SetFragmentShaderConstantATI(ctx->Exec, (dst, values));
-            }
+            CALL_SetFragmentShaderConstantATI(ctx->Exec, (n[1].ui, &n[2].f));
             break;
          case OPCODE_ATTR_1F_NV:
             CALL_VertexAttrib1fNV(ctx->Exec, (n[1].e, n[2].f));
             break;
          case OPCODE_ATTR_2F_NV:
-            /* Really shouldn't have to do this - the Node structure
-             * is convenient, but it would be better to store the data
-             * packed appropriately so that it can be sent directly
-             * on.  With x86_64 becoming common, this will start to
-             * matter more.
-             */
-            if (sizeof(Node) == sizeof(GLfloat))
-               CALL_VertexAttrib2fvNV(ctx->Exec, (n[1].e, &n[2].f));
-            else
-               CALL_VertexAttrib2fNV(ctx->Exec, (n[1].e, n[2].f, n[3].f));
+            CALL_VertexAttrib2fvNV(ctx->Exec, (n[1].e, &n[2].f));
             break;
          case OPCODE_ATTR_3F_NV:
-            if (sizeof(Node) == sizeof(GLfloat))
-               CALL_VertexAttrib3fvNV(ctx->Exec, (n[1].e, &n[2].f));
-            else
-               CALL_VertexAttrib3fNV(ctx->Exec, (n[1].e, n[2].f, n[3].f,
-                                                 n[4].f));
+            CALL_VertexAttrib3fvNV(ctx->Exec, (n[1].e, &n[2].f));
             break;
          case OPCODE_ATTR_4F_NV:
-            if (sizeof(Node) == sizeof(GLfloat))
-               CALL_VertexAttrib4fvNV(ctx->Exec, (n[1].e, &n[2].f));
-            else
-               CALL_VertexAttrib4fNV(ctx->Exec, (n[1].e, n[2].f, n[3].f,
-                                                 n[4].f, n[5].f));
+            CALL_VertexAttrib4fvNV(ctx->Exec, (n[1].e, &n[2].f));
             break;
          case OPCODE_ATTR_1F_ARB:
             CALL_VertexAttrib1fARB(ctx->Exec, (n[1].e, n[2].f));
             break;
          case OPCODE_ATTR_2F_ARB:
-            /* Really shouldn't have to do this - the Node structure
-             * is convenient, but it would be better to store the data
-             * packed appropriately so that it can be sent directly
-             * on.  With x86_64 becoming common, this will start to
-             * matter more.
-             */
-            if (sizeof(Node) == sizeof(GLfloat))
-               CALL_VertexAttrib2fvARB(ctx->Exec, (n[1].e, &n[2].f));
-            else
-               CALL_VertexAttrib2fARB(ctx->Exec, (n[1].e, n[2].f, n[3].f));
+            CALL_VertexAttrib2fvARB(ctx->Exec, (n[1].e, &n[2].f));
             break;
          case OPCODE_ATTR_3F_ARB:
-            if (sizeof(Node) == sizeof(GLfloat))
-               CALL_VertexAttrib3fvARB(ctx->Exec, (n[1].e, &n[2].f));
-            else
-               CALL_VertexAttrib3fARB(ctx->Exec, (n[1].e, n[2].f, n[3].f,
-                                                  n[4].f));
+            CALL_VertexAttrib3fvARB(ctx->Exec, (n[1].e, &n[2].f));
             break;
          case OPCODE_ATTR_4F_ARB:
-            if (sizeof(Node) == sizeof(GLfloat))
-               CALL_VertexAttrib4fvARB(ctx->Exec, (n[1].e, &n[2].f));
-            else
-               CALL_VertexAttrib4fARB(ctx->Exec, (n[1].e, n[2].f, n[3].f,
-                                                  n[4].f, n[5].f));
+            CALL_VertexAttrib4fvARB(ctx->Exec, (n[1].e, &n[2].f));
             break;
          case OPCODE_MATERIAL:
-            if (sizeof(Node) == sizeof(GLfloat))
-               CALL_Materialfv(ctx->Exec, (n[1].e, n[2].e, &n[3].f));
-            else {
-               GLfloat f[4];
-               f[0] = n[3].f;
-               f[1] = n[4].f;
-               f[2] = n[5].f;
-               f[3] = n[6].f;
-               CALL_Materialfv(ctx->Exec, (n[1].e, n[2].e, f));
-            }
+            CALL_Materialfv(ctx->Exec, (n[1].e, n[2].e, &n[3].f));
             break;
          case OPCODE_BEGIN:
             CALL_Begin(ctx->Exec, (n[1].e));
@@ -8841,19 +9126,6 @@ execute_list(struct gl_context *ctx, GLuint list)
             }
             break;
 
-         /* GL_ARB_geometry_shader4 */
-         case OPCODE_PROGRAM_PARAMETERI:
-            CALL_ProgramParameteri(ctx->Exec, (n[1].ui, n[2].e, n[3].i));
-            break;
-         case OPCODE_FRAMEBUFFER_TEXTURE:
-            CALL_FramebufferTexture(ctx->Exec, (n[1].e, n[2].e,
-                                                   n[3].ui, n[4].i));
-            break;
-         case OPCODE_FRAMEBUFFER_TEXTURE_FACE:
-            CALL_FramebufferTextureFaceARB(ctx->Exec, (n[1].e, n[2].e,
-                                                       n[3].ui, n[4].i, n[5].e));
-            break;
-
          /* GL_ARB_sync */
          case OPCODE_WAIT_SYNC:
             {
@@ -8877,8 +9149,17 @@ execute_list(struct gl_context *ctx, GLuint list)
             CALL_UniformBlockBinding(ctx->Exec, (n[1].ui, n[2].ui, n[3].ui));
             break;
 
+         /* GL_EXT_window_rectangles */
+         case OPCODE_WINDOW_RECTANGLES:
+            CALL_WindowRectanglesEXT(
+                  ctx->Exec, (n[1].e, n[2].si, get_pointer(&n[3])));
+            break;
+
          case OPCODE_CONTINUE:
             n = (Node *) get_pointer(&n[1]);
+            break;
+         case OPCODE_NOP:
+            /* no-op */
             break;
          case OPCODE_END_OF_LIST:
             done = GL_TRUE;
@@ -8900,8 +9181,7 @@ execute_list(struct gl_context *ctx, GLuint list)
       }
    }
 
-   if (ctx->Driver.EndCallList)
-      ctx->Driver.EndCallList(ctx);
+   vbo_save_EndCallList(ctx);
 
    ctx->ListState.CallDepth--;
 }
@@ -8940,6 +9220,18 @@ _mesa_DeleteLists(GLuint list, GLsizei range)
       _mesa_error(ctx, GL_INVALID_VALUE, "glDeleteLists");
       return;
    }
+
+   if (range > 1) {
+      /* We may be deleting a set of bitmap lists.  See if there's a
+       * bitmap atlas to free.
+       */
+      struct gl_bitmap_atlas *atlas = lookup_bitmap_atlas(ctx, list);
+      if (atlas) {
+         _mesa_delete_bitmap_atlas(ctx, atlas);
+         _mesa_HashRemove(ctx->Shared->BitmapAtlas, list);
+      }
+   }
+
    for (i = list; i < list + range; i++) {
       destroy_list(ctx, i);
    }
@@ -8969,19 +9261,37 @@ _mesa_GenLists(GLsizei range)
    /*
     * Make this an atomic operation
     */
-   mtx_lock(&ctx->Shared->Mutex);
+   _mesa_HashLockMutex(ctx->Shared->DisplayList);
 
    base = _mesa_HashFindFreeKeyBlock(ctx->Shared->DisplayList, range);
    if (base) {
       /* reserve the list IDs by with empty/dummy lists */
       GLint i;
       for (i = 0; i < range; i++) {
-         _mesa_HashInsert(ctx->Shared->DisplayList, base + i,
-                          make_list(base + i, 1));
+         _mesa_HashInsertLocked(ctx->Shared->DisplayList, base + i,
+                                make_list(base + i, 1));
       }
    }
 
-   mtx_unlock(&ctx->Shared->Mutex);
+   if (USE_BITMAP_ATLAS &&
+       range > 16 &&
+       ctx->Driver.DrawAtlasBitmaps) {
+      /* "range > 16" is a rough heuristic to guess when glGenLists might be
+       * used to allocate display lists for glXUseXFont or wglUseFontBitmaps.
+       * Create the empty atlas now.
+       */
+      struct gl_bitmap_atlas *atlas = lookup_bitmap_atlas(ctx, base);
+      if (!atlas) {
+         atlas = alloc_bitmap_atlas(ctx, base);
+      }
+      if (atlas) {
+         /* Atlas _should_ be new/empty now, but clobbering is OK */
+         assert(atlas->numBitmaps == 0);
+         atlas->numBitmaps = range;
+      }
+   }
+
+   _mesa_HashUnlockMutex(ctx->Shared->DisplayList);
 
    return base;
 }
@@ -9000,7 +9310,7 @@ _mesa_NewList(GLuint name, GLenum mode)
 
    if (MESA_VERBOSE & VERBOSE_API)
       _mesa_debug(ctx, "glNewList %u %s\n", name,
-                  _mesa_lookup_enum_by_nr(mode));
+                  _mesa_enum_to_string(mode));
 
    if (name == 0) {
       _mesa_error(ctx, GL_INVALID_VALUE, "glNewList");
@@ -9029,7 +9339,7 @@ _mesa_NewList(GLuint name, GLenum mode)
    ctx->ListState.CurrentBlock = ctx->ListState.CurrentList->Head;
    ctx->ListState.CurrentPos = 0;
 
-   ctx->Driver.NewList(ctx, name, mode);
+   vbo_save_NewList(ctx, name, mode);
 
    ctx->CurrentDispatch = ctx->Save;
    _glapi_set_dispatch(ctx->CurrentDispatch);
@@ -9063,7 +9373,7 @@ _mesa_EndList(void)
    /* Call before emitting END_OF_LIST, in case the driver wants to
     * emit opcodes itself.
     */
-   ctx->Driver.EndList(ctx);
+   vbo_save_EndList(ctx);
 
    (void) alloc_instruction(ctx, OPCODE_END_OF_LIST, 0);
 
@@ -9130,6 +9440,65 @@ _mesa_CallList(GLuint list)
 
 
 /**
+ * Try to execute a glCallLists() command where the display lists contain
+ * glBitmap commands with a texture atlas.
+ * \return true for success, false otherwise
+ */
+static bool
+render_bitmap_atlas(struct gl_context *ctx, GLsizei n, GLenum type,
+                    const void *lists)
+{
+   struct gl_bitmap_atlas *atlas;
+   int i;
+
+   if (!USE_BITMAP_ATLAS ||
+       !ctx->Current.RasterPosValid ||
+       ctx->List.ListBase == 0 ||
+       type != GL_UNSIGNED_BYTE ||
+       !ctx->Driver.DrawAtlasBitmaps) {
+      /* unsupported */
+      return false;
+   }
+
+   atlas = lookup_bitmap_atlas(ctx, ctx->List.ListBase);
+
+   if (!atlas) {
+      /* Even if glGenLists wasn't called, we can still try to create
+       * the atlas now.
+       */
+      atlas = alloc_bitmap_atlas(ctx, ctx->List.ListBase);
+   }
+
+   if (atlas && !atlas->complete && !atlas->incomplete) {
+      /* Try to build the bitmap atlas now.
+       * If the atlas was created in glGenLists, we'll have recorded the
+       * number of lists (bitmaps).  Otherwise, take a guess at 256.
+       */
+      if (atlas->numBitmaps == 0)
+         atlas->numBitmaps = 256;
+      build_bitmap_atlas(ctx, atlas, ctx->List.ListBase);
+   }
+
+   if (!atlas || !atlas->complete) {
+      return false;
+   }
+
+   /* check that all display list IDs are in the atlas */
+   for (i = 0; i < n; i++) {
+      const GLubyte *ids = (const GLubyte *) lists;
+
+      if (ids[i] >= atlas->numBitmaps) {
+         return false;
+      }
+   }
+
+   ctx->Driver.DrawAtlasBitmaps(ctx, atlas, n, (const GLubyte *) lists);
+
+   return true;
+}
+
+
+/**
  * Execute glCallLists:  call multiple display lists.
  */
 void GLAPIENTRY
@@ -9157,6 +9526,18 @@ _mesa_CallLists(GLsizei n, GLenum type, const GLvoid * lists)
       break;
    default:
       _mesa_error(ctx, GL_INVALID_ENUM, "glCallLists(type)");
+      return;
+   }
+
+   if (n < 0) {
+      _mesa_error(ctx, GL_INVALID_VALUE, "glCallLists(n < 0)");
+      return;
+   } else if (n == 0 || lists == NULL) {
+      /* nothing to do */
+      return;
+   }
+
+   if (render_bitmap_atlas(ctx, n, type, lists)) {
       return;
    }
 
@@ -9439,13 +9820,6 @@ _mesa_initialize_save_table(const struct gl_context *ctx)
    SET_WindowPos4sMESA(table, save_WindowPos4sMESA);
    SET_WindowPos4svMESA(table, save_WindowPos4svMESA);
 
-   /* 233. GL_NV_vertex_program */
-   /* The following commands DO NOT go into display lists:
-    * AreProgramsResidentNV, IsProgramNV, GenProgramsNV, DeleteProgramsNV,
-    * VertexAttribPointerNV, GetProgram*, GetVertexAttrib*
-    */
-   SET_BindProgramARB(table, save_BindProgramNV);
-
    /* 245. GL_ATI_fragment_shader */
    SET_BindFragmentShaderATI(table, save_BindFragmentShaderATI);
    SET_SetFragmentShaderConstantATI(table, save_SetFragmentShaderConstantATI);
@@ -9490,7 +9864,7 @@ _mesa_initialize_save_table(const struct gl_context *ctx)
    /* ARB 27. GL_ARB_fragment_program */
    /* glVertexAttrib* functions alias the NV ones, handled elsewhere */
    SET_ProgramStringARB(table, save_ProgramStringARB);
-   SET_BindProgramARB(table, save_BindProgramNV);
+   SET_BindProgramARB(table, save_BindProgramARB);
    SET_ProgramEnvParameter4dARB(table, save_ProgramEnvParameter4dARB);
    SET_ProgramEnvParameter4dvARB(table, save_ProgramEnvParameter4dvARB);
    SET_ProgramEnvParameter4fARB(table, save_ProgramEnvParameter4fARB);
@@ -9508,7 +9882,7 @@ _mesa_initialize_save_table(const struct gl_context *ctx)
 
    SET_BlitFramebuffer(table, save_BlitFramebufferEXT);
 
-   SET_UseProgram(table, save_UseProgramObjectARB);
+   SET_UseProgram(table, save_UseProgram);
    SET_Uniform1f(table, save_Uniform1fARB);
    SET_Uniform2f(table, save_Uniform2fARB);
    SET_Uniform3f(table, save_Uniform3fARB);
@@ -9550,6 +9924,9 @@ _mesa_initialize_save_table(const struct gl_context *ctx)
    SET_ClearColorIuiEXT(table, save_ClearColorIui);
    SET_TexParameterIiv(table, save_TexParameterIiv);
    SET_TexParameterIuiv(table, save_TexParameterIuiv);
+
+   /* GL_ARB_clip_control */
+   SET_ClipControl(table, save_ClipControl);
 
    /* GL_ARB_color_buffer_float */
    SET_ClampColor(table, save_ClampColorARB);
@@ -9614,11 +9991,6 @@ _mesa_initialize_save_table(const struct gl_context *ctx)
    SET_BlendEquationiARB(table, save_BlendEquationi);
    SET_BlendEquationSeparateiARB(table, save_BlendEquationSeparatei);
 
-   /* GL_ARB_geometry_shader4 */
-   SET_ProgramParameteri(table, save_ProgramParameteri);
-   SET_FramebufferTexture(table, save_FramebufferTexture);
-   SET_FramebufferTextureFaceARB(table, save_FramebufferTextureFace);
-
    /* GL_NV_conditional_render */
    SET_BeginConditionalRender(table, save_BeginConditionalRender);
    SET_EndConditionalRender(table, save_EndConditionalRender);
@@ -9676,6 +10048,12 @@ _mesa_initialize_save_table(const struct gl_context *ctx)
    SET_ProgramUniformMatrix4x2fv(table, save_ProgramUniformMatrix4x2fv);
    SET_ProgramUniformMatrix3x4fv(table, save_ProgramUniformMatrix3x4fv);
    SET_ProgramUniformMatrix4x3fv(table, save_ProgramUniformMatrix4x3fv);
+
+   /* GL_EXT_polygon_offset_clamp */
+   SET_PolygonOffsetClampEXT(table, save_PolygonOffsetClampEXT);
+
+   /* GL_EXT_window_rectangles */
+   SET_WindowRectanglesEXT(table, save_WindowRectanglesEXT);
 }
 
 
@@ -9683,241 +10061,301 @@ _mesa_initialize_save_table(const struct gl_context *ctx)
 static const char *
 enum_string(GLenum k)
 {
-   return _mesa_lookup_enum_by_nr(k);
+   return _mesa_enum_to_string(k);
 }
 
 
 /**
  * Print the commands in a display list.  For debugging only.
  * TODO: many commands aren't handled yet.
+ * \param fname  filename to write display list to.  If null, use stdout.
  */
 static void GLAPIENTRY
-print_list(struct gl_context *ctx, GLuint list)
+print_list(struct gl_context *ctx, GLuint list, const char *fname)
 {
    struct gl_display_list *dlist;
    Node *n;
    GLboolean done;
+   FILE *f = stdout;
+
+   if (fname) {
+      f = fopen(fname, "w");
+      if (!f)
+         return;
+   }
 
    if (!islist(ctx, list)) {
-      printf("%u is not a display list ID\n", list);
-      return;
+      fprintf(f, "%u is not a display list ID\n", list);
+      goto out;
    }
 
    dlist = _mesa_lookup_list(ctx, list);
-   if (!dlist)
-      return;
+   if (!dlist) {
+      goto out;
+   }
 
    n = dlist->Head;
 
-   printf("START-LIST %u, address %p\n", list, (void *) n);
+   fprintf(f, "START-LIST %u, address %p\n", list, (void *) n);
 
    done = n ? GL_FALSE : GL_TRUE;
    while (!done) {
       const OpCode opcode = n[0].opcode;
 
       if (is_ext_opcode(opcode)) {
-         n += ext_opcode_print(ctx, n);
+         n += ext_opcode_print(ctx, n, f);
       }
       else {
          switch (opcode) {
          case OPCODE_ACCUM:
-            printf("Accum %s %g\n", enum_string(n[1].e), n[2].f);
+            fprintf(f, "Accum %s %g\n", enum_string(n[1].e), n[2].f);
+            break;
+         case OPCODE_ACTIVE_TEXTURE:
+            fprintf(f, "ActiveTexture(%s)\n", enum_string(n[1].e));
             break;
          case OPCODE_BITMAP:
-            printf("Bitmap %d %d %g %g %g %g %p\n", n[1].i, n[2].i,
+            fprintf(f, "Bitmap %d %d %g %g %g %g %p\n", n[1].i, n[2].i,
                    n[3].f, n[4].f, n[5].f, n[6].f,
                    get_pointer(&n[7]));
             break;
-         case OPCODE_CALL_LIST:
-            printf("CallList %d\n", (int) n[1].ui);
+         case OPCODE_BLEND_COLOR:
+            fprintf(f, "BlendColor %f, %f, %f, %f\n",
+                    n[1].f, n[2].f, n[3].f, n[4].f);
             break;
-         case OPCODE_CALL_LIST_OFFSET:
-            printf("CallList %d + offset %u = %u\n", (int) n[1].ui,
-                         ctx->List.ListBase, ctx->List.ListBase + n[1].ui);
+         case OPCODE_BLEND_EQUATION:
+            fprintf(f, "BlendEquation %s\n",
+                    enum_string(n[1].e));
+            break;
+         case OPCODE_BLEND_EQUATION_SEPARATE:
+            fprintf(f, "BlendEquationSeparate %s, %s\n",
+                    enum_string(n[1].e),
+                    enum_string(n[2].e));
+            break;
+         case OPCODE_BLEND_FUNC_SEPARATE:
+            fprintf(f, "BlendFuncSeparate %s, %s, %s, %s\n",
+                    enum_string(n[1].e),
+                    enum_string(n[2].e),
+                    enum_string(n[3].e),
+                    enum_string(n[4].e));
+            break;
+         case OPCODE_BLEND_EQUATION_I:
+            fprintf(f, "BlendEquationi %u, %s\n",
+                    n[1].ui, enum_string(n[2].e));
+            break;
+         case OPCODE_BLEND_EQUATION_SEPARATE_I:
+            fprintf(f, "BlendEquationSeparatei %u, %s, %s\n",
+                    n[1].ui, enum_string(n[2].e), enum_string(n[3].e));
+            break;
+         case OPCODE_BLEND_FUNC_I:
+            fprintf(f, "BlendFunci %u, %s, %s\n",
+                    n[1].ui, enum_string(n[2].e), enum_string(n[3].e));
+            break;
+         case OPCODE_BLEND_FUNC_SEPARATE_I:
+            fprintf(f, "BlendFuncSeparatei %u, %s, %s, %s, %s\n",
+                    n[1].ui,
+                    enum_string(n[2].e),
+                    enum_string(n[3].e),
+                    enum_string(n[4].e),
+                    enum_string(n[5].e));
+            break;
+         case OPCODE_CALL_LIST:
+            fprintf(f, "CallList %d\n", (int) n[1].ui);
+            break;
+         case OPCODE_CALL_LISTS:
+            fprintf(f, "CallLists %d, %s\n", n[1].i, enum_string(n[1].e));
             break;
          case OPCODE_DISABLE:
-            printf("Disable %s\n", enum_string(n[1].e));
+            fprintf(f, "Disable %s\n", enum_string(n[1].e));
             break;
          case OPCODE_ENABLE:
-            printf("Enable %s\n", enum_string(n[1].e));
+            fprintf(f, "Enable %s\n", enum_string(n[1].e));
             break;
          case OPCODE_FRUSTUM:
-            printf("Frustum %g %g %g %g %g %g\n",
+            fprintf(f, "Frustum %g %g %g %g %g %g\n",
                          n[1].f, n[2].f, n[3].f, n[4].f, n[5].f, n[6].f);
             break;
          case OPCODE_LINE_STIPPLE:
-            printf("LineStipple %d %x\n", n[1].i, (int) n[2].us);
+            fprintf(f, "LineStipple %d %x\n", n[1].i, (int) n[2].us);
+            break;
+         case OPCODE_LINE_WIDTH:
+            fprintf(f, "LineWidth %f\n", n[1].f);
             break;
          case OPCODE_LOAD_IDENTITY:
-            printf("LoadIdentity\n");
+            fprintf(f, "LoadIdentity\n");
             break;
          case OPCODE_LOAD_MATRIX:
-            printf("LoadMatrix\n");
-            printf("  %8f %8f %8f %8f\n",
+            fprintf(f, "LoadMatrix\n");
+            fprintf(f, "  %8f %8f %8f %8f\n",
                          n[1].f, n[5].f, n[9].f, n[13].f);
-            printf("  %8f %8f %8f %8f\n",
+            fprintf(f, "  %8f %8f %8f %8f\n",
                          n[2].f, n[6].f, n[10].f, n[14].f);
-            printf("  %8f %8f %8f %8f\n",
+            fprintf(f, "  %8f %8f %8f %8f\n",
                          n[3].f, n[7].f, n[11].f, n[15].f);
-            printf("  %8f %8f %8f %8f\n",
+            fprintf(f, "  %8f %8f %8f %8f\n",
                          n[4].f, n[8].f, n[12].f, n[16].f);
             break;
          case OPCODE_MULT_MATRIX:
-            printf("MultMatrix (or Rotate)\n");
-            printf("  %8f %8f %8f %8f\n",
+            fprintf(f, "MultMatrix (or Rotate)\n");
+            fprintf(f, "  %8f %8f %8f %8f\n",
                          n[1].f, n[5].f, n[9].f, n[13].f);
-            printf("  %8f %8f %8f %8f\n",
+            fprintf(f, "  %8f %8f %8f %8f\n",
                          n[2].f, n[6].f, n[10].f, n[14].f);
-            printf("  %8f %8f %8f %8f\n",
+            fprintf(f, "  %8f %8f %8f %8f\n",
                          n[3].f, n[7].f, n[11].f, n[15].f);
-            printf("  %8f %8f %8f %8f\n",
+            fprintf(f, "  %8f %8f %8f %8f\n",
                          n[4].f, n[8].f, n[12].f, n[16].f);
             break;
          case OPCODE_ORTHO:
-            printf("Ortho %g %g %g %g %g %g\n",
+            fprintf(f, "Ortho %g %g %g %g %g %g\n",
                          n[1].f, n[2].f, n[3].f, n[4].f, n[5].f, n[6].f);
             break;
+         case OPCODE_POINT_SIZE:
+            fprintf(f, "PointSize %f\n", n[1].f);
+            break;
          case OPCODE_POP_ATTRIB:
-            printf("PopAttrib\n");
+            fprintf(f, "PopAttrib\n");
             break;
          case OPCODE_POP_MATRIX:
-            printf("PopMatrix\n");
+            fprintf(f, "PopMatrix\n");
             break;
          case OPCODE_POP_NAME:
-            printf("PopName\n");
+            fprintf(f, "PopName\n");
             break;
          case OPCODE_PUSH_ATTRIB:
-            printf("PushAttrib %x\n", n[1].bf);
+            fprintf(f, "PushAttrib %x\n", n[1].bf);
             break;
          case OPCODE_PUSH_MATRIX:
-            printf("PushMatrix\n");
+            fprintf(f, "PushMatrix\n");
             break;
          case OPCODE_PUSH_NAME:
-            printf("PushName %d\n", (int) n[1].ui);
+            fprintf(f, "PushName %d\n", (int) n[1].ui);
             break;
          case OPCODE_RASTER_POS:
-            printf("RasterPos %g %g %g %g\n",
+            fprintf(f, "RasterPos %g %g %g %g\n",
                          n[1].f, n[2].f, n[3].f, n[4].f);
             break;
          case OPCODE_ROTATE:
-            printf("Rotate %g %g %g %g\n",
+            fprintf(f, "Rotate %g %g %g %g\n",
                          n[1].f, n[2].f, n[3].f, n[4].f);
             break;
          case OPCODE_SCALE:
-            printf("Scale %g %g %g\n", n[1].f, n[2].f, n[3].f);
+            fprintf(f, "Scale %g %g %g\n", n[1].f, n[2].f, n[3].f);
             break;
          case OPCODE_TRANSLATE:
-            printf("Translate %g %g %g\n", n[1].f, n[2].f, n[3].f);
+            fprintf(f, "Translate %g %g %g\n", n[1].f, n[2].f, n[3].f);
             break;
          case OPCODE_BIND_TEXTURE:
-            printf("BindTexture %s %d\n",
-                         _mesa_lookup_enum_by_nr(n[1].ui), n[2].ui);
+            fprintf(f, "BindTexture %s %d\n",
+                         _mesa_enum_to_string(n[1].ui), n[2].ui);
             break;
          case OPCODE_SHADE_MODEL:
-            printf("ShadeModel %s\n", _mesa_lookup_enum_by_nr(n[1].ui));
+            fprintf(f, "ShadeModel %s\n", _mesa_enum_to_string(n[1].ui));
             break;
          case OPCODE_MAP1:
-            printf("Map1 %s %.3f %.3f %d %d\n",
-                         _mesa_lookup_enum_by_nr(n[1].ui),
+            fprintf(f, "Map1 %s %.3f %.3f %d %d\n",
+                         _mesa_enum_to_string(n[1].ui),
                          n[2].f, n[3].f, n[4].i, n[5].i);
             break;
          case OPCODE_MAP2:
-            printf("Map2 %s %.3f %.3f %.3f %.3f %d %d %d %d\n",
-                         _mesa_lookup_enum_by_nr(n[1].ui),
+            fprintf(f, "Map2 %s %.3f %.3f %.3f %.3f %d %d %d %d\n",
+                         _mesa_enum_to_string(n[1].ui),
                          n[2].f, n[3].f, n[4].f, n[5].f,
                          n[6].i, n[7].i, n[8].i, n[9].i);
             break;
          case OPCODE_MAPGRID1:
-            printf("MapGrid1 %d %.3f %.3f\n", n[1].i, n[2].f, n[3].f);
+            fprintf(f, "MapGrid1 %d %.3f %.3f\n", n[1].i, n[2].f, n[3].f);
             break;
          case OPCODE_MAPGRID2:
-            printf("MapGrid2 %d %.3f %.3f, %d %.3f %.3f\n",
+            fprintf(f, "MapGrid2 %d %.3f %.3f, %d %.3f %.3f\n",
                          n[1].i, n[2].f, n[3].f, n[4].i, n[5].f, n[6].f);
             break;
          case OPCODE_EVALMESH1:
-            printf("EvalMesh1 %d %d\n", n[1].i, n[2].i);
+            fprintf(f, "EvalMesh1 %d %d\n", n[1].i, n[2].i);
             break;
          case OPCODE_EVALMESH2:
-            printf("EvalMesh2 %d %d %d %d\n",
+            fprintf(f, "EvalMesh2 %d %d %d %d\n",
                          n[1].i, n[2].i, n[3].i, n[4].i);
             break;
 
          case OPCODE_ATTR_1F_NV:
-            printf("ATTR_1F_NV attr %d: %f\n", n[1].i, n[2].f);
+            fprintf(f, "ATTR_1F_NV attr %d: %f\n", n[1].i, n[2].f);
             break;
          case OPCODE_ATTR_2F_NV:
-            printf("ATTR_2F_NV attr %d: %f %f\n",
+            fprintf(f, "ATTR_2F_NV attr %d: %f %f\n",
                          n[1].i, n[2].f, n[3].f);
             break;
          case OPCODE_ATTR_3F_NV:
-            printf("ATTR_3F_NV attr %d: %f %f %f\n",
+            fprintf(f, "ATTR_3F_NV attr %d: %f %f %f\n",
                          n[1].i, n[2].f, n[3].f, n[4].f);
             break;
          case OPCODE_ATTR_4F_NV:
-            printf("ATTR_4F_NV attr %d: %f %f %f %f\n",
+            fprintf(f, "ATTR_4F_NV attr %d: %f %f %f %f\n",
                          n[1].i, n[2].f, n[3].f, n[4].f, n[5].f);
             break;
          case OPCODE_ATTR_1F_ARB:
-            printf("ATTR_1F_ARB attr %d: %f\n", n[1].i, n[2].f);
+            fprintf(f, "ATTR_1F_ARB attr %d: %f\n", n[1].i, n[2].f);
             break;
          case OPCODE_ATTR_2F_ARB:
-            printf("ATTR_2F_ARB attr %d: %f %f\n",
+            fprintf(f, "ATTR_2F_ARB attr %d: %f %f\n",
                          n[1].i, n[2].f, n[3].f);
             break;
          case OPCODE_ATTR_3F_ARB:
-            printf("ATTR_3F_ARB attr %d: %f %f %f\n",
+            fprintf(f, "ATTR_3F_ARB attr %d: %f %f %f\n",
                          n[1].i, n[2].f, n[3].f, n[4].f);
             break;
          case OPCODE_ATTR_4F_ARB:
-            printf("ATTR_4F_ARB attr %d: %f %f %f %f\n",
+            fprintf(f, "ATTR_4F_ARB attr %d: %f %f %f %f\n",
                          n[1].i, n[2].f, n[3].f, n[4].f, n[5].f);
             break;
 
          case OPCODE_MATERIAL:
-            printf("MATERIAL %x %x: %f %f %f %f\n",
+            fprintf(f, "MATERIAL %x %x: %f %f %f %f\n",
                          n[1].i, n[2].i, n[3].f, n[4].f, n[5].f, n[6].f);
             break;
          case OPCODE_BEGIN:
-            printf("BEGIN %x\n", n[1].i);
+            fprintf(f, "BEGIN %x\n", n[1].i);
             break;
          case OPCODE_END:
-            printf("END\n");
+            fprintf(f, "END\n");
             break;
          case OPCODE_RECTF:
-            printf("RECTF %f %f %f %f\n", n[1].f, n[2].f, n[3].f,
+            fprintf(f, "RECTF %f %f %f %f\n", n[1].f, n[2].f, n[3].f,
                          n[4].f);
             break;
          case OPCODE_EVAL_C1:
-            printf("EVAL_C1 %f\n", n[1].f);
+            fprintf(f, "EVAL_C1 %f\n", n[1].f);
             break;
          case OPCODE_EVAL_C2:
-            printf("EVAL_C2 %f %f\n", n[1].f, n[2].f);
+            fprintf(f, "EVAL_C2 %f %f\n", n[1].f, n[2].f);
             break;
          case OPCODE_EVAL_P1:
-            printf("EVAL_P1 %d\n", n[1].i);
+            fprintf(f, "EVAL_P1 %d\n", n[1].i);
             break;
          case OPCODE_EVAL_P2:
-            printf("EVAL_P2 %d %d\n", n[1].i, n[2].i);
+            fprintf(f, "EVAL_P2 %d %d\n", n[1].i, n[2].i);
             break;
 
          case OPCODE_PROVOKING_VERTEX:
-            printf("ProvokingVertex %s\n",
-                         _mesa_lookup_enum_by_nr(n[1].ui));
+            fprintf(f, "ProvokingVertex %s\n",
+                         _mesa_enum_to_string(n[1].ui));
             break;
 
             /*
              * meta opcodes/commands
              */
          case OPCODE_ERROR:
-            printf("Error: %s %s\n", enum_string(n[1].e),
+            fprintf(f, "Error: %s %s\n", enum_string(n[1].e),
                    (const char *) get_pointer(&n[2]));
             break;
          case OPCODE_CONTINUE:
-            printf("DISPLAY-LIST-CONTINUE\n");
+            fprintf(f, "DISPLAY-LIST-CONTINUE\n");
             n = (Node *) get_pointer(&n[1]);
             break;
+         case OPCODE_NOP:
+            fprintf(f, "NOP\n");
+            break;
          case OPCODE_END_OF_LIST:
-            printf("END-LIST %u\n", list);
+            fprintf(f, "END-LIST %u\n", list);
             done = GL_TRUE;
             break;
          default:
@@ -9925,10 +10363,10 @@ print_list(struct gl_context *ctx, GLuint list)
                printf
                   ("ERROR IN DISPLAY LIST: opcode = %d, address = %p\n",
                    opcode, (void *) n);
-               return;
+               goto out;
             }
             else {
-               printf("command %d, %u operands\n", opcode,
+               fprintf(f, "command %d, %u operands\n", opcode,
                             InstSize[opcode]);
             }
          }
@@ -9938,6 +10376,11 @@ print_list(struct gl_context *ctx, GLuint list)
          }
       }
    }
+
+ out:
+   fflush(f);
+   if (fname)
+      fclose(f);
 }
 
 
@@ -9951,7 +10394,7 @@ void
 mesa_print_display_list(GLuint list)
 {
    GET_CURRENT_CONTEXT(ctx);
-   print_list(ctx, list);
+   print_list(ctx, list, NULL);
 }
 
 
@@ -10062,6 +10505,8 @@ _mesa_init_display_list(struct gl_context *ctx)
    ctx->List.ListBase = 0;
 
    save_vtxfmt_init(&ctx->ListState.ListVtxfmt);
+
+   InstSize[OPCODE_NOP] = 1;
 }
 
 

@@ -33,6 +33,10 @@
 #include "pipe/p_state.h"
 #include "pipe/p_shader_tokens.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * Shader summary info
  */
@@ -60,51 +64,119 @@ struct tgsi_shader_info
    uint file_count[TGSI_FILE_COUNT];  /**< number of declared registers */
    int file_max[TGSI_FILE_COUNT];  /**< highest index of declared registers */
    int const_file_max[PIPE_MAX_CONSTANT_BUFFERS];
+   unsigned samplers_declared; /**< bitmask of declared samplers */
+   ubyte sampler_targets[PIPE_MAX_SHADER_SAMPLER_VIEWS];  /**< TGSI_TEXTURE_x values */
+   ubyte sampler_type[PIPE_MAX_SHADER_SAMPLER_VIEWS]; /**< TGSI_RETURN_TYPE_x */
+
+   ubyte input_array_first[PIPE_MAX_SHADER_INPUTS];
+   ubyte input_array_last[PIPE_MAX_SHADER_INPUTS];
+   ubyte output_array_first[PIPE_MAX_SHADER_OUTPUTS];
+   ubyte output_array_last[PIPE_MAX_SHADER_OUTPUTS];
+   unsigned array_max[TGSI_FILE_COUNT];  /**< highest index array per register file */
 
    uint immediate_count; /**< number of immediates declared */
    uint num_instructions;
+   uint num_memory_instructions; /**< sampler, buffer, and image instructions */
 
    uint opcode_count[TGSI_OPCODE_LAST];  /**< opcode histogram */
 
+   ubyte colors_read; /**< which color components are read by the FS */
+   ubyte colors_written;
    boolean reads_position; /**< does fragment shader read position? */
    boolean reads_z; /**< does fragment shader read depth? */
+   boolean reads_samplemask; /**< does fragment shader read sample mask? */
    boolean writes_z;  /**< does fragment shader write Z value? */
    boolean writes_stencil; /**< does fragment shader write stencil value? */
+   boolean writes_samplemask; /**< does fragment shader write sample mask? */
    boolean writes_edgeflag; /**< vertex shader outputs edgeflag */
    boolean uses_kill;  /**< KILL or KILL_IF instruction used? */
+   boolean uses_persp_center;
+   boolean uses_persp_centroid;
+   boolean uses_persp_sample;
+   boolean uses_linear_center;
+   boolean uses_linear_centroid;
+   boolean uses_linear_sample;
+   boolean uses_persp_opcode_interp_centroid;
+   boolean uses_persp_opcode_interp_offset;
+   boolean uses_persp_opcode_interp_sample;
+   boolean uses_linear_opcode_interp_centroid;
+   boolean uses_linear_opcode_interp_offset;
+   boolean uses_linear_opcode_interp_sample;
    boolean uses_instanceid;
    boolean uses_vertexid;
+   boolean uses_vertexid_nobase;
+   boolean uses_basevertex;
    boolean uses_primid;
    boolean uses_frontface;
-   boolean origin_lower_left;
-   boolean pixel_center_integer;
-   boolean color0_writes_all_cbufs;
+   boolean uses_invocationid;
+   boolean writes_psize;
+   boolean writes_clipvertex;
    boolean writes_viewport_index;
    boolean writes_layer;
+   boolean writes_memory; /**< contains stores or atomics to buffers or images */
    boolean is_msaa_sampler[PIPE_MAX_SAMPLERS];
-
+   boolean uses_doubles; /**< uses any of the double instructions */
+   boolean uses_derivatives;
+   unsigned clipdist_writemask;
+   unsigned culldist_writemask;
    unsigned num_written_culldistance;
    unsigned num_written_clipdistance;
+   /**
+    * Bitmask indicating which images are written to (STORE / ATOM*).
+    * Indirect image accesses are not reflected in this mask.
+    */
+   unsigned images_writemask;
+   /**
+    * Bitmask indicating which declared image is a buffer.
+    */
+   unsigned images_buffers;
    /**
     * Bitmask indicating which register files are accessed with
     * indirect addressing.  The bits are (1 << TGSI_FILE_x), etc.
     */
    unsigned indirect_files;
+   /**
+    * Bitmask indicating which register files are read / written with
+    * indirect addressing.  The bits are (1 << TGSI_FILE_x).
+    */
+   unsigned indirect_files_read;
+   unsigned indirect_files_written;
 
-   struct {
-      unsigned name;
-      unsigned data[8];
-   } properties[TGSI_PROPERTY_COUNT];
-   uint num_properties;
+   unsigned properties[TGSI_PROPERTY_COUNT]; /* index with TGSI_PROPERTY_ */
+
+   /**
+    * Max nesting limit of loops/if's
+    */
+   unsigned max_depth;
+};
+
+struct tgsi_array_info
+{
+   /** Whether an array with this ID was declared. */
+   bool declared;
+
+   /** The OR of all writemasks used to write to this array. */
+   ubyte writemask;
+
+   /** The range with which the array was declared. */
+   struct tgsi_declaration_range range;
 };
 
 extern void
 tgsi_scan_shader(const struct tgsi_token *tokens,
                  struct tgsi_shader_info *info);
 
+void
+tgsi_scan_arrays(const struct tgsi_token *tokens,
+                 unsigned file,
+                 unsigned max_array_id,
+                 struct tgsi_array_info *arrays);
 
 extern boolean
 tgsi_is_passthrough_shader(const struct tgsi_token *tokens);
 
+#ifdef __cplusplus
+} // extern "C"
+#endif
 
 #endif /* TGSI_SCAN_H */

@@ -25,12 +25,13 @@
  *    Chia-I Wu <olv@lunarg.com>
  */
 
+#include "pipe/p_state.h"
 #include "os/os_misc.h"
 #include "util/u_format_s3tc.h"
 #include "vl/vl_decoder.h"
 #include "vl/vl_video_buffer.h"
 #include "genhw/genhw.h" /* for GEN6_REG_TIMESTAMP */
-#include "intel_winsys.h"
+#include "core/intel_winsys.h"
 
 #include "ilo_context.h"
 #include "ilo_format.h"
@@ -39,20 +40,9 @@
 #include "ilo_public.h"
 #include "ilo_screen.h"
 
-int ilo_debug;
-
-static const struct debug_named_value ilo_debug_flags[] = {
-   { "3d",        ILO_DEBUG_3D,       "Dump 3D commands and states" },
-   { "vs",        ILO_DEBUG_VS,       "Dump vertex shaders" },
-   { "gs",        ILO_DEBUG_GS,       "Dump geometry shaders" },
-   { "fs",        ILO_DEBUG_FS,       "Dump fragment shaders" },
-   { "cs",        ILO_DEBUG_CS,       "Dump compute shaders" },
-   { "draw",      ILO_DEBUG_DRAW,     "Show draw information" },
-   { "flush",     ILO_DEBUG_FLUSH,    "Show batch buffer flushes" },
-   { "nohw",      ILO_DEBUG_NOHW,     "Do not send commands to HW" },
-   { "nocache",   ILO_DEBUG_NOCACHE,  "Always invalidate HW caches" },
-   { "nohiz",     ILO_DEBUG_NOHIZ,    "Disable HiZ" },
-   DEBUG_NAMED_VALUE_END
+struct pipe_fence_handle {
+   struct pipe_reference reference;
+   struct intel_bo *seqno_bo;
 };
 
 static float
@@ -115,6 +105,7 @@ ilo_get_shader_param(struct pipe_screen *screen, unsigned shader,
    case PIPE_SHADER_CAP_MAX_CONTROL_FLOW_DEPTH:
       return UINT_MAX;
    case PIPE_SHADER_CAP_MAX_INPUTS:
+   case PIPE_SHADER_CAP_MAX_OUTPUTS:
       /* this is limited by how many attributes SF can remap */
       return 16;
    case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
@@ -145,8 +136,12 @@ ilo_get_shader_param(struct pipe_screen *screen, unsigned shader,
       return ILO_MAX_SAMPLER_VIEWS;
    case PIPE_SHADER_CAP_PREFERRED_IR:
       return PIPE_SHADER_IR_TGSI;
+   case PIPE_SHADER_CAP_SUPPORTED_IRS:
+      return 0;
    case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
       return 1;
+   case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
+      return 32;
 
    default:
       return 0;
@@ -184,9 +179,11 @@ ilo_get_video_param(struct pipe_screen *screen,
 
 static int
 ilo_get_compute_param(struct pipe_screen *screen,
+                      enum pipe_shader_ir ir_type,
                       enum pipe_compute_cap param,
                       void *ret)
 {
+   struct ilo_screen *is = ilo_screen(screen);
    union {
       const char *ir_target;
       uint64_t grid_dimension;
@@ -198,11 +195,15 @@ ilo_get_compute_param(struct pipe_screen *screen,
       uint64_t max_private_size;
       uint64_t max_input_size;
       uint64_t max_mem_alloc_size;
+      uint32_t max_clock_frequency;
+      uint32_t max_compute_units;
+      uint32_t images_supported;
+      uint32_t subgroup_size;
+      uint32_t address_bits;
    } val;
    const void *ptr;
    int size;
 
-   /* XXX some randomly chosen values */
    switch (param) {
    case PIPE_COMPUTE_CAP_IR_TARGET:
       val.ir_target = "ilog";
@@ -211,64 +212,99 @@ ilo_get_compute_param(struct pipe_screen *screen,
       size = strlen(val.ir_target) + 1;
       break;
    case PIPE_COMPUTE_CAP_GRID_DIMENSION:
-      val.grid_dimension = Elements(val.max_grid_size);
+      val.grid_dimension = ARRAY_SIZE(val.max_grid_size);
 
       ptr = &val.grid_dimension;
       size = sizeof(val.grid_dimension);
       break;
    case PIPE_COMPUTE_CAP_MAX_GRID_SIZE:
-      val.max_grid_size[0] = 65535;
-      val.max_grid_size[1] = 65535;
-      val.max_grid_size[2] = 1;
+      val.max_grid_size[0] = 0xffffffffu;
+      val.max_grid_size[1] = 0xffffffffu;
+      val.max_grid_size[2] = 0xffffffffu;
 
       ptr = &val.max_grid_size;
       size = sizeof(val.max_grid_size);
       break;
    case PIPE_COMPUTE_CAP_MAX_BLOCK_SIZE:
-      val.max_block_size[0] = 512;
-      val.max_block_size[1] = 512;
-      val.max_block_size[2] = 512;
+      val.max_block_size[0] = 1024;
+      val.max_block_size[1] = 1024;
+      val.max_block_size[2] = 1024;
 
       ptr = &val.max_block_size;
       size = sizeof(val.max_block_size);
       break;
 
    case PIPE_COMPUTE_CAP_MAX_THREADS_PER_BLOCK:
-      val.max_threads_per_block = 512;
+      val.max_threads_per_block = 1024;
 
       ptr = &val.max_threads_per_block;
       size = sizeof(val.max_threads_per_block);
       break;
    case PIPE_COMPUTE_CAP_MAX_GLOBAL_SIZE:
-      val.max_global_size = 4;
+      /* \see ilo_max_resource_size */
+      val.max_global_size = 1u << 31;
 
       ptr = &val.max_global_size;
       size = sizeof(val.max_global_size);
       break;
    case PIPE_COMPUTE_CAP_MAX_LOCAL_SIZE:
+      /* Shared Local Memory Size of INTERFACE_DESCRIPTOR_DATA */
       val.max_local_size = 64 * 1024;
 
       ptr = &val.max_local_size;
       size = sizeof(val.max_local_size);
       break;
    case PIPE_COMPUTE_CAP_MAX_PRIVATE_SIZE:
-      val.max_private_size = 32768;
+      /* scratch size */
+      val.max_private_size = 12 * 1024;
 
       ptr = &val.max_private_size;
       size = sizeof(val.max_private_size);
       break;
    case PIPE_COMPUTE_CAP_MAX_INPUT_SIZE:
-      val.max_input_size = 256;
+      val.max_input_size = 1024;
 
       ptr = &val.max_input_size;
       size = sizeof(val.max_input_size);
       break;
+   case PIPE_COMPUTE_CAP_ADDRESS_BITS:
+      val.address_bits = 32;
+      ptr = &val.address_bits;
+      size = sizeof(val.address_bits);
+      break;
    case PIPE_COMPUTE_CAP_MAX_MEM_ALLOC_SIZE:
-      val.max_mem_alloc_size = 128 * 1024 * 1024;
+      val.max_mem_alloc_size = 1u << 31;
 
       ptr = &val.max_mem_alloc_size;
       size = sizeof(val.max_mem_alloc_size);
       break;
+   case PIPE_COMPUTE_CAP_MAX_CLOCK_FREQUENCY:
+      val.max_clock_frequency = 1000;
+
+      ptr = &val.max_clock_frequency;
+      size = sizeof(val.max_clock_frequency);
+      break;
+   case PIPE_COMPUTE_CAP_MAX_COMPUTE_UNITS:
+      val.max_compute_units = is->dev.eu_count;
+
+      ptr = &val.max_compute_units;
+      size = sizeof(val.max_compute_units);
+      break;
+   case PIPE_COMPUTE_CAP_IMAGES_SUPPORTED:
+      val.images_supported = 1;
+
+      ptr = &val.images_supported;
+      size = sizeof(val.images_supported);
+      break;
+   case PIPE_COMPUTE_CAP_SUBGROUP_SIZE:
+      /* best case is actually SIMD32 */
+      val.subgroup_size = 16;
+
+      ptr = &val.subgroup_size;
+      size = sizeof(val.subgroup_size);
+      break;
+   case PIPE_COMPUTE_CAP_MAX_VARIABLE_THREADS_PER_BLOCK:
+      /* fallthrough */
    default:
       ptr = NULL;
       size = 0;
@@ -310,18 +346,18 @@ ilo_get_param(struct pipe_screen *screen, enum pipe_cap param)
        *  GEN6           8192x8192x512            2048x2048x2048
        *  GEN7         16384x16384x2048           2048x2048x2048
        */
-      return (is->dev.gen >= ILO_GEN(7)) ? 15 : 14;
+      return (ilo_dev_gen(&is->dev) >= ILO_GEN(7)) ? 15 : 14;
    case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
       return 12;
    case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
-      return (is->dev.gen >= ILO_GEN(7)) ? 15 : 14;
+      return (ilo_dev_gen(&is->dev) >= ILO_GEN(7)) ? 15 : 14;
    case PIPE_CAP_TEXTURE_MIRROR_CLAMP:
       return false;
    case PIPE_CAP_BLEND_EQUATION_SEPARATE:
    case PIPE_CAP_SM3:
       return true;
    case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
-      if (is->dev.gen >= ILO_GEN(7) && !is->dev.has_gen7_sol_reset)
+      if (ilo_dev_gen(&is->dev) >= ILO_GEN(7) && !is->dev.has_gen7_sol_reset)
          return 0;
       return ILO_MAX_SO_BUFFERS;
    case PIPE_CAP_PRIMITIVE_RESTART:
@@ -330,7 +366,7 @@ ilo_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_INDEP_BLEND_FUNC:
       return true;
    case PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS:
-      return (is->dev.gen >= ILO_GEN(7)) ? 2048 : 512;
+      return (ilo_dev_gen(&is->dev) >= ILO_GEN(7.5)) ? 2048 : 512;
    case PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT:
    case PIPE_CAP_TGSI_FS_COORD_ORIGIN_LOWER_LEFT:
    case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
@@ -363,7 +399,7 @@ ilo_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_MAX_STREAM_OUTPUT_INTERLEAVED_COMPONENTS:
       return ILO_MAX_SO_BINDINGS;
    case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
-      if (is->dev.gen >= ILO_GEN(7))
+      if (ilo_dev_gen(&is->dev) >= ILO_GEN(7))
          return is->dev.has_gen7_sol_reset;
       else
          return false; /* TODO */
@@ -382,6 +418,8 @@ ilo_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY:
    case PIPE_CAP_VERTEX_ELEMENT_SRC_OFFSET_4BYTE_ALIGNED_ONLY:
       return false;
+   case PIPE_CAP_MAX_VERTEX_ATTRIB_STRIDE:
+      return 2048;
    case PIPE_CAP_COMPUTE:
       return false; /* TODO */
    case PIPE_CAP_USER_INDEX_BUFFERS:
@@ -401,6 +439,8 @@ ilo_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_CUBE_MAP_ARRAY:
    case PIPE_CAP_TEXTURE_BUFFER_OBJECTS:
       return true;
+   case PIPE_CAP_BUFFER_SAMPLER_VIEW_RGBA_ONLY:
+      return 0;
    case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
       return 1;
    case PIPE_CAP_TGSI_TEXCOORD:
@@ -418,6 +458,7 @@ ilo_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_ENDIANNESS:
       return PIPE_ENDIAN_LITTLE;
    case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
+   case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
       return true;
    case PIPE_CAP_TGSI_VS_LAYER_VIEWPORT:
    case PIPE_CAP_MAX_GEOMETRY_OUTPUT_VERTICES:
@@ -426,6 +467,8 @@ ilo_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TEXTURE_GATHER_SM5:
       return 0;
    case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
+   case PIPE_CAP_TEXTURE_FLOAT_LINEAR:
+   case PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR:
       return true;
    case PIPE_CAP_FAKE_SW_MSAA:
    case PIPE_CAP_TEXTURE_QUERY_LOD:
@@ -434,8 +477,45 @@ ilo_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TGSI_VS_WINDOW_SPACE_POSITION:
    case PIPE_CAP_MAX_VERTEX_STREAMS:
    case PIPE_CAP_DRAW_INDIRECT:
+   case PIPE_CAP_MULTI_DRAW_INDIRECT:
+   case PIPE_CAP_MULTI_DRAW_INDIRECT_PARAMS:
    case PIPE_CAP_TGSI_FS_FINE_DERIVATIVE:
    case PIPE_CAP_CONDITIONAL_RENDER_INVERTED:
+   case PIPE_CAP_SAMPLER_VIEW_TARGET:
+   case PIPE_CAP_MULTISAMPLE_Z_RESOLVE:
+   case PIPE_CAP_RESOURCE_FROM_USER_MEMORY:
+   case PIPE_CAP_DEVICE_RESET_STATUS_QUERY:
+   case PIPE_CAP_MAX_SHADER_PATCH_VARYINGS:
+   case PIPE_CAP_DEPTH_BOUNDS_TEST:
+   case PIPE_CAP_TGSI_TXQS:
+   case PIPE_CAP_FORCE_PERSAMPLE_INTERP:
+   case PIPE_CAP_SHAREABLE_SHADERS:
+   case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
+   case PIPE_CAP_CLEAR_TEXTURE:
+   case PIPE_CAP_DRAW_PARAMETERS:
+   case PIPE_CAP_TGSI_PACK_HALF_FLOAT:
+   case PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL:
+   case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
+   case PIPE_CAP_SHADER_BUFFER_OFFSET_ALIGNMENT:
+   case PIPE_CAP_INVALIDATE_BUFFER:
+   case PIPE_CAP_GENERATE_MIPMAP:
+   case PIPE_CAP_STRING_MARKER:
+   case PIPE_CAP_SURFACE_REINTERPRET_BLOCKS:
+   case PIPE_CAP_QUERY_BUFFER_OBJECT:
+   case PIPE_CAP_QUERY_MEMORY_INFO:
+   case PIPE_CAP_PCI_GROUP:
+   case PIPE_CAP_PCI_BUS:
+   case PIPE_CAP_PCI_DEVICE:
+   case PIPE_CAP_PCI_FUNCTION:
+   case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
+   case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
+   case PIPE_CAP_CULL_DISTANCE:
+   case PIPE_CAP_PRIMITIVE_RESTART_FOR_PATCHES:
+   case PIPE_CAP_TGSI_VOTE:
+   case PIPE_CAP_MAX_WINDOW_RECTANGLES:
+   case PIPE_CAP_POLYGON_OFFSET_UNITS_UNSCALED:
+   case PIPE_CAP_VIEWPORT_SUBPIXEL_BITS:
+   case PIPE_CAP_TGSI_ARRAY_COMPONENTS:
       return 0;
 
    case PIPE_CAP_VENDOR_ID:
@@ -459,6 +539,12 @@ ilo_get_param(struct pipe_screen *screen, enum pipe_cap param)
    }
    case PIPE_CAP_UMA:
       return true;
+   case PIPE_CAP_CLIP_HALFZ:
+      return true;
+   case PIPE_CAP_VERTEXID_NOBASE:
+      return false;
+   case PIPE_CAP_POLYGON_OFFSET_CLAMP:
+      return true;
 
    default:
       return 0;
@@ -472,31 +558,44 @@ ilo_get_vendor(struct pipe_screen *screen)
 }
 
 static const char *
+ilo_get_device_vendor(struct pipe_screen *screen)
+{
+   return "Intel";
+}
+
+static const char *
 ilo_get_name(struct pipe_screen *screen)
 {
    struct ilo_screen *is = ilo_screen(screen);
    const char *chipset = NULL;
 
-   if (gen_is_vlv(is->dev.devid)) {
+   if (gen_is_chv(is->dev.devid)) {
+      chipset = "Intel(R) Cherryview";
+   } else if (gen_is_bdw(is->dev.devid)) {
+      /* this is likely wrong */
+      if (gen_is_desktop(is->dev.devid))
+         chipset = "Intel(R) Broadwell Desktop";
+      else if (gen_is_mobile(is->dev.devid))
+         chipset = "Intel(R) Broadwell Mobile";
+      else if (gen_is_server(is->dev.devid))
+         chipset = "Intel(R) Broadwell Server";
+   } else if (gen_is_vlv(is->dev.devid)) {
       chipset = "Intel(R) Bay Trail";
-   }
-   else if (gen_is_hsw(is->dev.devid)) {
+   } else if (gen_is_hsw(is->dev.devid)) {
       if (gen_is_desktop(is->dev.devid))
          chipset = "Intel(R) Haswell Desktop";
       else if (gen_is_mobile(is->dev.devid))
          chipset = "Intel(R) Haswell Mobile";
       else if (gen_is_server(is->dev.devid))
          chipset = "Intel(R) Haswell Server";
-   }
-   else if (gen_is_ivb(is->dev.devid)) {
+   } else if (gen_is_ivb(is->dev.devid)) {
       if (gen_is_desktop(is->dev.devid))
          chipset = "Intel(R) Ivybridge Desktop";
       else if (gen_is_mobile(is->dev.devid))
          chipset = "Intel(R) Ivybridge Mobile";
       else if (gen_is_server(is->dev.devid))
          chipset = "Intel(R) Ivybridge Server";
-   }
-   else if (gen_is_snb(is->dev.devid)) {
+   } else if (gen_is_snb(is->dev.devid)) {
       if (gen_is_desktop(is->dev.devid))
          chipset = "Intel(R) Sandybridge Desktop";
       else if (gen_is_mobile(is->dev.devid))
@@ -520,7 +619,7 @@ ilo_get_timestamp(struct pipe_screen *screen)
       uint32_t dw[2];
    } timestamp;
 
-   intel_winsys_read_reg(is->winsys, GEN6_REG_TIMESTAMP, &timestamp.val);
+   intel_winsys_read_reg(is->dev.winsys, GEN6_REG_TIMESTAMP, &timestamp.val);
 
    /*
     * From the Ivy Bridge PRM, volume 1 part 3, page 107:
@@ -539,86 +638,109 @@ ilo_get_timestamp(struct pipe_screen *screen)
    return (uint64_t) timestamp.dw[1] * 80;
 }
 
-static void
-ilo_fence_reference(struct pipe_screen *screen,
-                    struct pipe_fence_handle **p,
-                    struct pipe_fence_handle *f)
+static boolean
+ilo_is_format_supported(struct pipe_screen *screen,
+                        enum pipe_format format,
+                        enum pipe_texture_target target,
+                        unsigned sample_count,
+                        unsigned bindings)
 {
-   struct ilo_fence *fence = ilo_fence(f);
-   struct ilo_fence *old;
+   struct ilo_screen *is = ilo_screen(screen);
+   const struct ilo_dev *dev = &is->dev;
 
-   if (likely(p)) {
-      old = ilo_fence(*p);
-      *p = f;
-   }
-   else {
+   if (!util_format_is_supported(format, bindings))
+      return false;
+
+   /* no MSAA support yet */
+   if (sample_count > 1)
+      return false;
+
+   if ((bindings & PIPE_BIND_DEPTH_STENCIL) &&
+       !ilo_format_support_zs(dev, format))
+      return false;
+
+   if ((bindings & PIPE_BIND_RENDER_TARGET) &&
+       !ilo_format_support_rt(dev, format))
+      return false;
+
+   if ((bindings & PIPE_BIND_SAMPLER_VIEW) &&
+       !ilo_format_support_sampler(dev, format))
+      return false;
+
+   if ((bindings & PIPE_BIND_VERTEX_BUFFER) &&
+       !ilo_format_support_vb(dev, format))
+      return false;
+
+   return true;
+}
+
+static boolean
+ilo_is_video_format_supported(struct pipe_screen *screen,
+                              enum pipe_format format,
+                              enum pipe_video_profile profile,
+                              enum pipe_video_entrypoint entrypoint)
+{
+   return vl_video_buffer_is_format_supported(screen, format, profile, entrypoint);
+}
+
+static void
+ilo_screen_fence_reference(struct pipe_screen *screen,
+                           struct pipe_fence_handle **ptr,
+                           struct pipe_fence_handle *fence)
+{
+   struct pipe_fence_handle *old;
+
+   if (likely(ptr)) {
+      old = *ptr;
+      *ptr = fence;
+   } else {
       old = NULL;
    }
 
-   STATIC_ASSERT(&((struct ilo_fence *) NULL)->reference == NULL);
+   STATIC_ASSERT(&((struct pipe_fence_handle *) NULL)->reference == NULL);
    if (pipe_reference(&old->reference, &fence->reference)) {
-      if (old->bo)
-         intel_bo_unreference(old->bo);
+      intel_bo_unref(old->seqno_bo);
       FREE(old);
    }
 }
 
 static boolean
-ilo_fence_signalled(struct pipe_screen *screen,
-                    struct pipe_fence_handle *f)
+ilo_screen_fence_finish(struct pipe_screen *screen,
+                        struct pipe_context *ctx,
+                        struct pipe_fence_handle *fence,
+                        uint64_t timeout)
 {
-   struct ilo_fence *fence = ilo_fence(f);
+   const int64_t wait_timeout = (timeout > INT64_MAX) ? -1 : timeout;
+   bool signaled;
 
-   /* mark signalled if the bo is idle */
-   if (fence->bo && !intel_bo_is_busy(fence->bo)) {
-      intel_bo_unreference(fence->bo);
-      fence->bo = NULL;
+   signaled = (!fence->seqno_bo ||
+         intel_bo_wait(fence->seqno_bo, wait_timeout) == 0);
+
+   /* XXX not thread safe */
+   if (signaled && fence->seqno_bo) {
+      intel_bo_unref(fence->seqno_bo);
+      fence->seqno_bo = NULL;
    }
 
-   return (fence->bo == NULL);
-}
-
-static boolean
-ilo_fence_finish(struct pipe_screen *screen,
-                 struct pipe_fence_handle *f,
-                 uint64_t timeout)
-{
-   struct ilo_fence *fence = ilo_fence(f);
-   const int64_t wait_timeout = (timeout > INT64_MAX) ? -1 : timeout;
-
-   /* already signalled */
-   if (!fence->bo)
-      return true;
-
-   /* wait and see if it returns error */
-   if (intel_bo_wait(fence->bo, wait_timeout))
-      return false;
-
-   /* mark signalled */
-   intel_bo_unreference(fence->bo);
-   fence->bo = NULL;
-
-   return true;
+   return signaled;
 }
 
 /**
  * Create a fence for \p bo.  When \p bo is not NULL, it must be submitted
  * before waited on or checked.
  */
-struct ilo_fence *
-ilo_fence_create(struct pipe_screen *screen, struct intel_bo *bo)
+struct pipe_fence_handle *
+ilo_screen_fence_create(struct pipe_screen *screen, struct intel_bo *bo)
 {
-   struct ilo_fence *fence;
+   struct pipe_fence_handle *fence;
 
-   fence = CALLOC_STRUCT(ilo_fence);
+   fence = CALLOC_STRUCT(pipe_fence_handle);
    if (!fence)
       return NULL;
 
    pipe_reference_init(&fence->reference, 1);
 
-   if (bo)
-      intel_bo_reference(bo);
-   fence->bo = bo;
+   fence->seqno_bo = intel_bo_ref(bo);
 
    return fence;
 }
@@ -628,105 +750,23 @@ ilo_screen_destroy(struct pipe_screen *screen)
 {
    struct ilo_screen *is = ilo_screen(screen);
 
-   /* as it seems, winsys is owned by the screen */
-   intel_winsys_destroy(is->winsys);
+   intel_winsys_destroy(is->dev.winsys);
 
    FREE(is);
-}
-
-static bool
-init_dev(struct ilo_dev_info *dev, const struct intel_winsys_info *info)
-{
-   dev->devid = info->devid;
-   dev->aperture_total = info->aperture_total;
-   dev->aperture_mappable = info->aperture_mappable;
-   dev->max_batch_size = info->max_batch_size;
-   dev->has_llc = info->has_llc;
-   dev->has_address_swizzling = info->has_address_swizzling;
-   dev->has_logical_context = info->has_logical_context;
-   dev->has_ppgtt = info->has_ppgtt;
-   dev->has_timestamp = info->has_timestamp;
-   dev->has_gen7_sol_reset = info->has_gen7_sol_reset;
-
-   if (!dev->has_logical_context) {
-      ilo_err("missing hardware logical context support\n");
-      return false;
-   }
-
-   /*
-    * PIPE_CONTROL and MI_* use PPGTT writes on GEN7+ and privileged GGTT
-    * writes on GEN6.
-    *
-    * From the Sandy Bridge PRM, volume 1 part 3, page 101:
-    *
-    *     "[DevSNB] When Per-Process GTT Enable is set, it is assumed that all
-    *      code is in a secure environment, independent of address space.
-    *      Under this condition, this bit only specifies the address space
-    *      (GGTT or PPGTT). All commands are executed "as-is""
-    *
-    * We need PPGTT to be enabled on GEN6 too.
-    */
-   if (!dev->has_ppgtt) {
-      /* experiments show that it does not really matter... */
-      ilo_warn("PPGTT disabled\n");
-   }
-
-   /*
-    * From the Sandy Bridge PRM, volume 4 part 2, page 18:
-    *
-    *     "[DevSNB]: The GT1 product's URB provides 32KB of storage, arranged
-    *      as 1024 256-bit rows. The GT2 product's URB provides 64KB of
-    *      storage, arranged as 2048 256-bit rows. A row corresponds in size
-    *      to an EU GRF register. Read/write access to the URB is generally
-    *      supported on a row-granular basis."
-    *
-    * From the Ivy Bridge PRM, volume 4 part 2, page 17:
-    *
-    *     "URB Size    URB Rows    URB Rows when SLM Enabled
-    *      128k        4096        2048
-    *      256k        8096        4096"
-    */
-
-   if (gen_is_hsw(info->devid)) {
-      dev->gen = ILO_GEN(7.5);
-      dev->gt = gen_get_hsw_gt(info->devid);
-      dev->urb_size = ((dev->gt == 3) ? 512 :
-                       (dev->gt == 2) ? 256 : 128) * 1024;
-   }
-   else if (gen_is_ivb(info->devid) || gen_is_vlv(info->devid)) {
-      dev->gen = ILO_GEN(7);
-      dev->gt = (gen_is_ivb(info->devid)) ? gen_get_ivb_gt(info->devid) : 1;
-      dev->urb_size = ((dev->gt == 2) ? 256 : 128) * 1024;
-   }
-   else if (gen_is_snb(info->devid)) {
-      dev->gen = ILO_GEN(6);
-      dev->gt = gen_get_snb_gt(info->devid);
-      dev->urb_size = ((dev->gt == 2) ? 64 : 32) * 1024;
-   }
-   else {
-      ilo_err("unknown GPU generation\n");
-      return false;
-   }
-
-   return true;
 }
 
 struct pipe_screen *
 ilo_screen_create(struct intel_winsys *ws)
 {
    struct ilo_screen *is;
-   const struct intel_winsys_info *info;
 
-   ilo_debug = debug_get_flags_option("ILO_DEBUG", ilo_debug_flags, 0);
+   ilo_debug_init("ILO_DEBUG");
 
    is = CALLOC_STRUCT(ilo_screen);
    if (!is)
       return NULL;
 
-   is->winsys = ws;
-
-   info = intel_winsys_get_info(is->winsys);
-   if (!init_dev(&is->dev, info)) {
+   if (!ilo_dev_init(&is->dev, ws)) {
       FREE(is);
       return NULL;
    }
@@ -736,6 +776,7 @@ ilo_screen_create(struct intel_winsys *ws)
    is->base.destroy = ilo_screen_destroy;
    is->base.get_name = ilo_get_name;
    is->base.get_vendor = ilo_get_vendor;
+   is->base.get_device_vendor = ilo_get_device_vendor;
    is->base.get_param = ilo_get_param;
    is->base.get_paramf = ilo_get_paramf;
    is->base.get_shader_param = ilo_get_shader_param;
@@ -744,15 +785,16 @@ ilo_screen_create(struct intel_winsys *ws)
 
    is->base.get_timestamp = ilo_get_timestamp;
 
+   is->base.is_format_supported = ilo_is_format_supported;
+   is->base.is_video_format_supported = ilo_is_video_format_supported;
+
    is->base.flush_frontbuffer = NULL;
 
-   is->base.fence_reference = ilo_fence_reference;
-   is->base.fence_signalled = ilo_fence_signalled;
-   is->base.fence_finish = ilo_fence_finish;
+   is->base.fence_reference = ilo_screen_fence_reference;
+   is->base.fence_finish = ilo_screen_fence_finish;
 
    is->base.get_driver_query_info = NULL;
 
-   ilo_init_format_functions(is);
    ilo_init_context_functions(is);
    ilo_init_resource_functions(is);
 

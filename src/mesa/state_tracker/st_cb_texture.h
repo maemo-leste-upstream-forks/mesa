@@ -53,5 +53,4 @@ st_finalize_texture(struct gl_context *ctx,
 extern void
 st_init_texture_functions(struct dd_function_table *functions);
 
-
 #endif /* ST_CB_TEXTURE_H */

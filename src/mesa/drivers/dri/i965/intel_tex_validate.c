@@ -24,6 +24,7 @@
 #include "main/mtypes.h"
 #include "main/macros.h"
 #include "main/samplerobj.h"
+#include "main/teximage.h"
 #include "main/texobj.h"
 
 #include "brw_context.h"
@@ -47,8 +48,10 @@ intel_update_max_level(struct intel_texture_object *intelObj,
 {
    struct gl_texture_object *tObj = &intelObj->base;
 
-   if (sampler->MinFilter == GL_NEAREST ||
-       sampler->MinFilter == GL_LINEAR) {
+   if (!tObj->_MipmapComplete ||
+       (tObj->_RenderToTexture &&
+        (sampler->MinFilter == GL_NEAREST ||
+         sampler->MinFilter == GL_LINEAR))) {
       intelObj->_MaxLevel = tObj->BaseLevel;
    } else {
       intelObj->_MaxLevel = tObj->_MaxLevel;
@@ -61,7 +64,7 @@ intel_update_max_level(struct intel_texture_object *intelObj,
  * BaseLevel/MaxLevel/filtering, and copy in any texture images that are
  * stored in other miptrees.
  */
-GLuint
+void
 intel_finalize_mipmap_tree(struct brw_context *brw, GLuint unit)
 {
    struct gl_context *ctx = &brw->ctx;
@@ -75,7 +78,7 @@ intel_finalize_mipmap_tree(struct brw_context *brw, GLuint unit)
 
    /* TBOs require no validation -- they always just point to their BO. */
    if (tObj->Target == GL_TEXTURE_BUFFER)
-      return true;
+      return;
 
    /* We know that this is true by now, and if it wasn't, we might have
     * mismatched level sizes and the copies would fail.
@@ -95,13 +98,20 @@ intel_finalize_mipmap_tree(struct brw_context *brw, GLuint unit)
    if (!intelObj->needs_validate &&
        validate_first_level >= intelObj->validated_first_level &&
        validate_last_level <= intelObj->validated_last_level) {
-      return true;
+      return;
    }
 
-   /* Immutable textures should not get this far -- they should have been
-    * created in a validated state, and nothing can invalidate them.
+   /* On recent generations, immutable textures should not get this far
+    * -- they should have been created in a validated state, and nothing
+    * can invalidate them.
+    *
+    * Unfortunately, this is not true on pre-Sandybridge hardware -- when
+    * rendering into an immutable-format depth texture we may have to rebase
+    * the rendered levels to meet alignment requirements.
+    *
+    * FINISHME: Avoid doing this.
     */
-   assert(!tObj->Immutable);
+   assert(!tObj->Immutable || brw->gen < 6);
 
    firstImage = intel_texture_image(tObj->Image[0][tObj->BaseLevel]);
 
@@ -119,14 +129,15 @@ intel_finalize_mipmap_tree(struct brw_context *brw, GLuint unit)
    /* May need to create a new tree:
     */
    if (!intelObj->mt) {
-      intel_miptree_get_dimensions_for_image(&firstImage->base.Base,
-					     &width, &height, &depth);
+      intel_get_image_dims(&firstImage->base.Base, &width, &height, &depth);
 
       perf_debug("Creating new %s %dx%dx%d %d-level miptree to handle "
                  "finalized texture miptree.\n",
                  _mesa_get_format_name(firstImage->base.Base.TexFormat),
                  width, height, depth, validate_last_level + 1);
 
+      const uint32_t layout_flags = MIPTREE_LAYOUT_ACCELERATED_UPLOAD |
+                                    MIPTREE_LAYOUT_TILING_ANY;
       intelObj->mt = intel_miptree_create(brw,
                                           intelObj->base.Target,
 					  firstImage->base.Base.TexFormat,
@@ -135,12 +146,10 @@ intel_finalize_mipmap_tree(struct brw_context *brw, GLuint unit)
                                           width,
                                           height,
                                           depth,
-					  true,
                                           0 /* num_samples */,
-                                          INTEL_MIPTREE_TILING_ANY,
-                                          false);
+                                          layout_flags);
       if (!intelObj->mt)
-         return false;
+         return;
    }
 
    /* Pull in any images not in the object's tree:
@@ -171,6 +180,23 @@ intel_finalize_mipmap_tree(struct brw_context *brw, GLuint unit)
    intelObj->validated_last_level = validate_last_level;
    intelObj->_Format = intelObj->mt->format;
    intelObj->needs_validate = false;
+}
 
-   return true;
+/**
+ * Finalizes all textures, completing any rendering that needs to be done
+ * to prepare them.
+ */
+void
+brw_validate_textures(struct brw_context *brw)
+{
+   struct gl_context *ctx = &brw->ctx;
+   const int max_enabled_unit = ctx->Texture._MaxEnabledTexImageUnit;
+
+   for (int unit = 0; unit <= max_enabled_unit; unit++) {
+      struct gl_texture_unit *tex_unit = &ctx->Texture.Unit[unit];
+
+      if (tex_unit->_Current) {
+         intel_finalize_mipmap_tree(brw, unit);
+      }
+   }
 }

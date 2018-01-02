@@ -40,15 +40,13 @@
 
 
 #include <stdbool.h>
-#ifndef __NOT_HAVE_DRM_H
-#include <xf86drm.h>
-#endif
 #include "dri_util.h"
 #include "utils.h"
 #include "xmlpool.h"
-#include "../glsl/glsl_parser_extras.h"
 #include "main/mtypes.h"
+#include "main/framebuffer.h"
 #include "main/version.h"
+#include "main/debug_output.h"
 #include "main/errors.h"
 #include "main/macros.h"
 
@@ -138,18 +136,6 @@ driCreateNewScreen2(int scrn, int fd,
 
     setupLoaderExtensions(psp, extensions);
 
-#ifndef __NOT_HAVE_DRM_H
-    if (fd != -1) {
-       drmVersionPtr version = drmGetVersion(fd);
-       if (version) {
-          psp->drm_version.major = version->version_major;
-          psp->drm_version.minor = version->version_minor;
-          psp->drm_version.patch = version->version_patchlevel;
-          drmFreeVersion(version);
-       }
-    }
-#endif
-
     psp->loaderPrivate = data;
 
     psp->extensions = emptyExtensionList;
@@ -162,16 +148,26 @@ driCreateNewScreen2(int scrn, int fd,
 	return NULL;
     }
 
-    int gl_version_override = _mesa_get_gl_version_override();
-    if (gl_version_override >= 31) {
-       psp->max_gl_core_version = MAX2(psp->max_gl_core_version,
-                                       gl_version_override);
-    } else {
-       psp->max_gl_compat_version = MAX2(psp->max_gl_compat_version,
-                                         gl_version_override);
+    struct gl_constants consts = { 0 };
+    gl_api api;
+    unsigned version;
+
+    api = API_OPENGLES2;
+    if (_mesa_override_gl_version_contextless(&consts, &api, &version))
+       psp->max_gl_es2_version = version;
+
+    api = API_OPENGL_COMPAT;
+    if (_mesa_override_gl_version_contextless(&consts, &api, &version)) {
+       if (api == API_OPENGL_CORE) {
+          psp->max_gl_core_version = version;
+       } else {
+          psp->max_gl_compat_version = version;
+       }
     }
 
-    psp->api_mask = (1 << __DRI_API_OPENGL);
+    psp->api_mask = 0;
+    if (psp->max_gl_compat_version > 0)
+       psp->api_mask |= (1 << __DRI_API_OPENGL);
     if (psp->max_gl_core_version > 0)
        psp->api_mask |= (1 << __DRI_API_OPENGL_CORE);
     if (psp->max_gl_es1_version > 0)
@@ -229,8 +225,6 @@ static void driDestroyScreen(__DRIscreen *psp)
 	 * routine is called after XCloseDisplay, so there is no protocol
 	 * stream open to the X-server anymore.
 	 */
-
-       _mesa_destroy_shader_compiler();
 
 	psp->driver->DestroyScreen(psp);
 
@@ -376,19 +370,38 @@ driCreateContextAttribs(__DRIscreen *screen, int api,
        return NULL;
     }
 
-    /* The EGL_KHR_create_context spec says:
+    /* The latest version of EGL_KHR_create_context spec says:
      *
-     *     "Flags are only defined for OpenGL context creation, and specifying
-     *     a flags value other than zero for other types of contexts,
-     *     including OpenGL ES contexts, will generate an error."
+     *     "If the EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR flag bit is set in
+     *     EGL_CONTEXT_FLAGS_KHR, then a <debug context> will be created.
+     *     [...] This bit is supported for OpenGL and OpenGL ES contexts.
      *
-     * The GLX_EXT_create_context_es2_profile specification doesn't say
-     * anything specific about this case.  However, none of the known flags
-     * have any meaning in an ES context, so this seems safe.
+     * No other EGL_CONTEXT_OPENGL_*_BIT is legal for an ES context.
+     *
+     * However, Mesa's EGL layer translates the context attribute
+     * EGL_CONTEXT_OPENGL_ROBUST_ACCESS into the context flag
+     * __DRI_CTX_FLAG_ROBUST_BUFFER_ACCESS.  That attribute is legal for ES
+     * (with EGL 1.5 or EGL_EXT_create_context_robustness) and GL (only with
+     * EGL 1.5).
+     *
+     * From the EGL_EXT_create_context_robustness spec:
+     *
+     *     This extension is written against the OpenGL ES 2.0 Specification
+     *     but can apply to OpenGL ES 1.1 and up.
+     *
+     * From the EGL 1.5 (2014.08.27) spec, p55:
+     *
+     *     If the EGL_CONTEXT_OPENGL_ROBUST_ACCESS attribute is set to
+     *     EGL_TRUE, a context supporting robust buffer access will be created.
+     *     OpenGL contexts must support the GL_ARB_robustness extension, or
+     *     equivalent core API functional- ity. OpenGL ES contexts must support
+     *     the GL_EXT_robustness extension, or equivalent core API
+     *     functionality.
      */
     if (mesa_api != API_OPENGL_COMPAT
         && mesa_api != API_OPENGL_CORE
-        && flags != 0) {
+        && (flags & ~(__DRI_CTX_FLAG_DEBUG |
+	              __DRI_CTX_FLAG_ROBUST_BUFFER_ACCESS))) {
 	*error = __DRI_CTX_ERROR_BAD_FLAG;
 	return NULL;
     }
@@ -569,14 +582,18 @@ static int driUnbindContext(__DRIcontext *pcp)
     if (pcp == NULL)
 	return GL_FALSE;
 
+    /*
+    ** Call driUnbindContext before checking for valid drawables
+    ** to handle surfaceless contexts properly.
+    */
+    pcp->driScreenPriv->driver->UnbindContext(pcp);
+
     pdp = pcp->driDrawablePriv;
     prp = pcp->driReadablePriv;
 
     /* already unbound */
     if (!pdp && !prp)
 	return GL_TRUE;
-
-    pcp->driScreenPriv->driver->UnbindContext(pcp);
 
     assert(pdp);
     if (pdp->refcount == 0) {
@@ -628,6 +645,8 @@ driCreateNewDrawable(__DRIscreen *screen,
 {
     __DRIdrawable *pdraw;
 
+    assert(data != NULL);
+
     pdraw = malloc(sizeof *pdraw);
     if (!pdraw)
 	return NULL;
@@ -657,6 +676,16 @@ driCreateNewDrawable(__DRIscreen *screen,
 static void
 driDestroyDrawable(__DRIdrawable *pdp)
 {
+    /*
+     * The loader's data structures are going away, even if pdp itself stays
+     * around for the time being because it is currently bound. This happens
+     * when a currently bound GLX pixmap is destroyed.
+     *
+     * Clear out the pointer back into the loader's data structures to avoid
+     * accessing an outdated pointer.
+     */
+    pdp->loaderPrivate = NULL;
+
     dri_put_drawable(pdp);
 }
 
@@ -799,7 +828,7 @@ driUpdateFramebufferSize(struct gl_context *ctx, const __DRIdrawable *dPriv)
 {
    struct gl_framebuffer *fb = (struct gl_framebuffer *) dPriv->driverPrivate;
    if (fb && (dPriv->w != fb->Width || dPriv->h != fb->Height)) {
-      ctx->Driver.ResizeBuffers(ctx, fb, dPriv->w, dPriv->h);
+      _mesa_resize_framebuffer(ctx, fb, dPriv->w, dPriv->h);
       /* if the driver needs the hw lock for ResizeBuffers, the drawable
          might have changed again by now */
       assert(fb->Width == dPriv->w);
@@ -813,6 +842,8 @@ driGLFormatToImageFormat(mesa_format format)
    switch (format) {
    case MESA_FORMAT_B5G6R5_UNORM:
       return __DRI_IMAGE_FORMAT_RGB565;
+   case MESA_FORMAT_B5G5R5A1_UNORM:
+      return __DRI_IMAGE_FORMAT_ARGB1555;
    case MESA_FORMAT_B8G8R8X8_UNORM:
       return __DRI_IMAGE_FORMAT_XRGB8888;
    case MESA_FORMAT_B10G10R10A2_UNORM:
@@ -844,6 +875,8 @@ driImageFormatToGLFormat(uint32_t image_format)
    switch (image_format) {
    case __DRI_IMAGE_FORMAT_RGB565:
       return MESA_FORMAT_B5G6R5_UNORM;
+   case __DRI_IMAGE_FORMAT_ARGB1555:
+      return MESA_FORMAT_B5G5R5A1_UNORM;
    case __DRI_IMAGE_FORMAT_XRGB8888:
       return MESA_FORMAT_B8G8R8X8_UNORM;
    case __DRI_IMAGE_FORMAT_ARGB2101010:

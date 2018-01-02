@@ -33,11 +33,14 @@
  */
 
 
-#include "pipe/p_config.h"
+#include "pipe/p_defines.h"
+#include "util/u_atomic.h"
 
 #if defined(PIPE_OS_UNIX)
 #  include <time.h> /* timeval */
 #  include <sys/time.h> /* timeval */
+#  include <sched.h> /* sched_yield */
+#  include <errno.h>
 #elif defined(PIPE_SUBSYSTEM_WINDOWS_USER)
 #  include <windows.h>
 #else
@@ -79,16 +82,102 @@ os_time_get_nano(void)
 }
 
 
-#if defined(PIPE_SUBSYSTEM_WINDOWS_USER)
 
 void
 os_time_sleep(int64_t usecs)
 {
+#if defined(PIPE_OS_LINUX)
+   struct timespec time;
+   time.tv_sec = usecs / 1000000;
+   time.tv_nsec = (usecs % 1000000) * 1000;
+   while (clock_nanosleep(CLOCK_MONOTONIC, 0, &time, &time) == EINTR);
+
+#elif defined(PIPE_OS_UNIX)
+   usleep(usecs);
+
+#elif defined(PIPE_SUBSYSTEM_WINDOWS_USER)
    DWORD dwMilliseconds = (DWORD) ((usecs + 999) / 1000);
    /* Avoid Sleep(O) as that would cause to sleep for an undetermined duration */
    if (dwMilliseconds) {
       Sleep(dwMilliseconds);
    }
+#else
+#  error Unsupported OS
+#endif
 }
 
+
+
+int64_t
+os_time_get_absolute_timeout(uint64_t timeout)
+{
+   int64_t time, abs_timeout;
+
+   /* Also check for the type upper bound. */
+   if (timeout == PIPE_TIMEOUT_INFINITE || timeout > INT64_MAX)
+      return PIPE_TIMEOUT_INFINITE;
+
+   time = os_time_get_nano();
+   abs_timeout = time + (int64_t)timeout;
+
+   /* Check for overflow. */
+   if (abs_timeout < time)
+      return PIPE_TIMEOUT_INFINITE;
+
+   return abs_timeout;
+}
+
+
+bool
+os_wait_until_zero(volatile int *var, uint64_t timeout)
+{
+   if (!p_atomic_read(var))
+      return true;
+
+   if (!timeout)
+      return false;
+
+   if (timeout == PIPE_TIMEOUT_INFINITE) {
+      while (p_atomic_read(var)) {
+#if defined(PIPE_OS_UNIX)
+         sched_yield();
 #endif
+      }
+      return true;
+   }
+   else {
+      int64_t start_time = os_time_get_nano();
+      int64_t end_time = start_time + timeout;
+
+      while (p_atomic_read(var)) {
+         if (os_time_timeout(start_time, end_time, os_time_get_nano()))
+            return false;
+
+#if defined(PIPE_OS_UNIX)
+         sched_yield();
+#endif
+      }
+      return true;
+   }
+}
+
+
+bool
+os_wait_until_zero_abs_timeout(volatile int *var, int64_t timeout)
+{
+   if (!p_atomic_read(var))
+      return true;
+
+   if (timeout == PIPE_TIMEOUT_INFINITE)
+      return os_wait_until_zero(var, PIPE_TIMEOUT_INFINITE);
+
+   while (p_atomic_read(var)) {
+      if (os_time_get_nano() >= timeout)
+         return false;
+
+#if defined(PIPE_OS_UNIX)
+      sched_yield();
+#endif
+   }
+   return true;
+}

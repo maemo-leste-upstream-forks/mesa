@@ -44,7 +44,7 @@
 #include "util/u_memory.h"
 #include "util/u_debug_flush.h"
 #include "util/u_hash_table.h"
-#include "util/u_double_list.h"
+#include "util/list.h"
 #include "util/u_inlines.h"
 #include "util/u_string.h"
 #include "os/os_thread.h"
@@ -132,8 +132,7 @@ debug_flush_buf_reference(struct debug_flush_buf **dst,
    struct debug_flush_buf *fbuf = *dst;
 
    if (pipe_reference(&(*dst)->reference, &src->reference)) {
-      if (fbuf->map_frame)
-         FREE(fbuf->map_frame);
+      FREE(fbuf->map_frame);
 
       FREE(fbuf);
    }
@@ -146,8 +145,7 @@ debug_flush_item_destroy(struct debug_flush_item *item)
 {
    debug_flush_buf_reference(&item->fbuf, NULL);
 
-   if (item->ref_frame)
-      FREE(item->ref_frame);
+   FREE(item->ref_frame);
 
    FREE(item);
 }
@@ -263,10 +261,8 @@ debug_flush_unmap(struct debug_flush_buf *fbuf)
 
    fbuf->mapped_sync = FALSE;
    fbuf->mapped = FALSE;
-   if (fbuf->map_frame) {
-      FREE(fbuf->map_frame);
-      fbuf->map_frame = NULL;
-   }
+   FREE(fbuf->map_frame);
+   fbuf->map_frame = NULL;
    pipe_mutex_unlock(fbuf->mutex);
 }
 

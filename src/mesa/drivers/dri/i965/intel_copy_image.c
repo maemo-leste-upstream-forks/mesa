@@ -25,10 +25,13 @@
  *    Jason Ekstrand <jason.ekstrand@intel.com>
  */
 
+#include "brw_blorp.h"
+#include "intel_fbo.h"
 #include "intel_tex.h"
 #include "intel_blit.h"
 #include "intel_mipmap_tree.h"
 #include "main/formats.h"
+#include "main/teximage.h"
 #include "drivers/common/meta.h"
 
 static bool
@@ -41,10 +44,12 @@ copy_image_with_blitter(struct brw_context *brw,
 {
    GLuint bw, bh;
    uint32_t src_image_x, src_image_y, dst_image_x, dst_image_y;
-   int cpp;
 
    /* The blitter doesn't understand multisampling at all. */
    if (src_mt->num_samples > 0 || dst_mt->num_samples > 0)
+      return false;
+
+   if (src_mt->format == MESA_FORMAT_S_UINT8)
       return false;
 
    /* According to the Ivy Bridge PRM, Vol1 Part4, section 1.2.1.2 (Graphics
@@ -86,16 +91,6 @@ copy_image_with_blitter(struct brw_context *brw,
       src_y /= (int)bh;
       src_width /= (int)bw;
       src_height /= (int)bh;
-
-      /* Inside of the miptree, the x offsets are stored in pixels while
-       * the y offsets are stored in blocks.  We need to scale just the x
-       * offset.
-       */
-      src_image_x /= bw;
-
-      cpp = _mesa_get_format_bytes(src_mt->format);
-   } else {
-      cpp = src_mt->cpp;
    }
    src_x += src_image_x;
    src_y += src_image_y;
@@ -111,24 +106,20 @@ copy_image_with_blitter(struct brw_context *brw,
 
       dst_x /= (int)bw;
       dst_y /= (int)bh;
-
-      /* Inside of the miptree, the x offsets are stored in pixels while
-       * the y offsets are stored in blocks.  We need to scale just the x
-       * offset.
-       */
-      dst_image_x /= bw;
    }
    dst_x += dst_image_x;
    dst_y += dst_image_y;
 
    return intelEmitCopyBlit(brw,
-                            cpp,
+                            src_mt->cpp,
                             src_mt->pitch,
                             src_mt->bo, src_mt->offset,
                             src_mt->tiling,
+                            src_mt->tr_mode,
                             dst_mt->pitch,
                             dst_mt->bo, dst_mt->offset,
                             dst_mt->tiling,
+                            dst_mt->tr_mode,
                             src_x, src_y,
                             dst_x, dst_y,
                             src_width, src_height,
@@ -144,8 +135,8 @@ copy_image_with_memcpy(struct brw_context *brw,
                        int src_width, int src_height)
 {
    bool same_slice;
-   uint8_t *mapped, *src_mapped, *dst_mapped;
-   int src_stride, dst_stride, i, cpp;
+   void *mapped, *src_mapped, *dst_mapped;
+   ptrdiff_t src_stride, dst_stride, cpp;
    int map_x1, map_y1, map_x2, map_y2;
    GLuint src_bw, src_bh;
 
@@ -153,9 +144,9 @@ copy_image_with_memcpy(struct brw_context *brw,
    _mesa_get_format_block_size(src_mt->format, &src_bw, &src_bh);
 
    assert(src_width % src_bw == 0);
-   assert(src_height % src_bw == 0);
+   assert(src_height % src_bh == 0);
    assert(src_x % src_bw == 0);
-   assert(src_y % src_bw == 0);
+   assert(src_y % src_bh == 0);
 
    /* If we are on the same miptree, same level, and same slice, then
     * intel_miptree_map won't let us map it twice.  We have to do things a
@@ -166,7 +157,7 @@ copy_image_with_memcpy(struct brw_context *brw,
 
    if (same_slice) {
       assert(dst_x % src_bw == 0);
-      assert(dst_y % src_bw == 0);
+      assert(dst_y % src_bh == 0);
 
       map_x1 = MIN2(src_x, dst_x);
       map_y1 = MIN2(src_y, dst_y);
@@ -176,7 +167,7 @@ copy_image_with_memcpy(struct brw_context *brw,
       intel_miptree_map(brw, src_mt, src_level, src_z,
                         map_x1, map_y1, map_x2 - map_x1, map_y2 - map_y1,
                         GL_MAP_READ_BIT | GL_MAP_WRITE_BIT,
-                        (void **)&mapped, &src_stride);
+                        &mapped, &src_stride);
 
       dst_stride = src_stride;
 
@@ -188,16 +179,16 @@ copy_image_with_memcpy(struct brw_context *brw,
    } else {
       intel_miptree_map(brw, src_mt, src_level, src_z,
                         src_x, src_y, src_width, src_height,
-                        GL_MAP_READ_BIT, (void **)&src_mapped, &src_stride);
+                        GL_MAP_READ_BIT, &src_mapped, &src_stride);
       intel_miptree_map(brw, dst_mt, dst_level, dst_z,
                         dst_x, dst_y, src_width, src_height,
-                        GL_MAP_WRITE_BIT, (void **)&dst_mapped, &dst_stride);
+                        GL_MAP_WRITE_BIT, &dst_mapped, &dst_stride);
    }
 
    src_width /= (int)src_bw;
    src_height /= (int)src_bh;
 
-   for (i = 0; i < src_height; ++i) {
+   for (int i = 0; i < src_height; ++i) {
       memcpy(dst_mapped, src_mapped, src_width * cpp);
       src_mapped += src_stride;
       dst_mapped += dst_stride;
@@ -212,53 +203,52 @@ copy_image_with_memcpy(struct brw_context *brw,
 }
 
 static void
-intel_copy_image_sub_data(struct gl_context *ctx,
-                          struct gl_texture_image *src_image,
-                          int src_x, int src_y, int src_z,
-                          struct gl_texture_image *dst_image,
-                          int dst_x, int dst_y, int dst_z,
-                          int src_width, int src_height)
+copy_miptrees(struct brw_context *brw,
+              struct intel_mipmap_tree *src_mt,
+              int src_x, int src_y, int src_z, unsigned src_level,
+              struct intel_mipmap_tree *dst_mt,
+              int dst_x, int dst_y, int dst_z, unsigned dst_level,
+              int src_width, int src_height)
 {
-   struct brw_context *brw = brw_context(ctx);
-   struct intel_texture_image *intel_src_image = intel_texture_image(src_image);
-   struct intel_texture_image *intel_dst_image = intel_texture_image(dst_image);
+   unsigned bw, bh;
 
-   if (_mesa_meta_CopyImageSubData_uncompressed(ctx,
-                                                src_image, src_x, src_y, src_z,
-                                                dst_image, dst_x, dst_y, dst_z,
-                                                src_width, src_height)) {
+   if (brw->gen >= 6) {
+      brw_blorp_copy_miptrees(brw,
+                              src_mt, src_level, src_z,
+                              dst_mt, dst_level, dst_z,
+                              src_x, src_y, dst_x, dst_y,
+                              src_width, src_height);
       return;
    }
-
-   if (intel_src_image->mt->num_samples > 0 ||
-       intel_dst_image->mt->num_samples > 0) {
-      _mesa_problem(ctx, "Failed to copy multisampled texture with meta path\n");
-      return;
-   }
-
-   /* Cube maps actually have different images per face */
-   if (src_image->TexObject->Target == GL_TEXTURE_CUBE_MAP)
-      src_z = src_image->Face;
-   if (dst_image->TexObject->Target == GL_TEXTURE_CUBE_MAP)
-      dst_z = dst_image->Face;
 
    /* We are now going to try and copy the texture using the blitter.  If
     * that fails, we will fall back mapping the texture and using memcpy.
     * In either case, we need to do a full resolve.
     */
-   intel_miptree_all_slices_resolve_hiz(brw, intel_src_image->mt);
-   intel_miptree_all_slices_resolve_depth(brw, intel_src_image->mt);
-   intel_miptree_resolve_color(brw, intel_src_image->mt);
+   intel_miptree_all_slices_resolve_hiz(brw, src_mt);
+   intel_miptree_all_slices_resolve_depth(brw, src_mt);
+   intel_miptree_resolve_color(brw, src_mt, 0);
 
-   intel_miptree_all_slices_resolve_hiz(brw, intel_dst_image->mt);
-   intel_miptree_all_slices_resolve_depth(brw, intel_dst_image->mt);
-   intel_miptree_resolve_color(brw, intel_dst_image->mt);
+   intel_miptree_all_slices_resolve_hiz(brw, dst_mt);
+   intel_miptree_all_slices_resolve_depth(brw, dst_mt);
+   intel_miptree_resolve_color(brw, dst_mt, 0);
 
-   unsigned src_level = src_image->Level + src_image->TexObject->MinLevel;
-   unsigned dst_level = dst_image->Level + dst_image->TexObject->MinLevel;
-   if (copy_image_with_blitter(brw, intel_src_image->mt, src_level,
+   _mesa_get_format_block_size(src_mt->format, &bw, &bh);
+
+   /* It's legal to have a WxH that's smaller than a compressed block. This
+    * happens for example when you are using a higher level LOD. For this case,
+    * we still want to copy the entire block, or else the decompression will be
+    * incorrect.
+    */
+   if (src_width < bw)
+      src_width = ALIGN_NPOT(src_width, bw);
+
+   if (src_height < bh)
+      src_height = ALIGN_NPOT(src_height, bh);
+
+   if (copy_image_with_blitter(brw, src_mt, src_level,
                                src_x, src_y, src_z,
-                               intel_dst_image->mt, dst_level,
+                               dst_mt, dst_level,
                                dst_x, dst_y, dst_z,
                                src_width, src_height))
       return;
@@ -266,11 +256,88 @@ intel_copy_image_sub_data(struct gl_context *ctx,
    /* This is a worst-case scenario software fallback that maps the two
     * textures and does a memcpy between them.
     */
-   copy_image_with_memcpy(brw, intel_src_image->mt, src_level,
+   copy_image_with_memcpy(brw, src_mt, src_level,
                           src_x, src_y, src_z,
-                          intel_dst_image->mt, dst_level,
+                          dst_mt, dst_level,
                           dst_x, dst_y, dst_z,
                           src_width, src_height);
+}
+
+static void
+intel_copy_image_sub_data(struct gl_context *ctx,
+                          struct gl_texture_image *src_image,
+                          struct gl_renderbuffer *src_renderbuffer,
+                          int src_x, int src_y, int src_z,
+                          struct gl_texture_image *dst_image,
+                          struct gl_renderbuffer *dst_renderbuffer,
+                          int dst_x, int dst_y, int dst_z,
+                          int src_width, int src_height)
+{
+   struct brw_context *brw = brw_context(ctx);
+   struct intel_mipmap_tree *src_mt, *dst_mt;
+   unsigned src_level, dst_level;
+
+   if (brw->gen < 6 &&
+       _mesa_meta_CopyImageSubData_uncompressed(ctx,
+                                                src_image, src_renderbuffer,
+                                                src_x, src_y, src_z,
+                                                dst_image, dst_renderbuffer,
+                                                dst_x, dst_y, dst_z,
+                                                src_width, src_height)) {
+      return;
+   }
+
+   if (src_image) {
+      src_mt = intel_texture_image(src_image)->mt;
+      src_level = src_image->Level + src_image->TexObject->MinLevel;
+
+      /* Cube maps actually have different images per face */
+      if (src_image->TexObject->Target == GL_TEXTURE_CUBE_MAP)
+         src_z = src_image->Face;
+
+      src_z += src_image->TexObject->MinLayer;
+   } else {
+      assert(src_renderbuffer);
+      src_mt = intel_renderbuffer(src_renderbuffer)->mt;
+      src_image = src_renderbuffer->TexImage;
+      src_level = 0;
+   }
+
+   if (dst_image) {
+      dst_mt = intel_texture_image(dst_image)->mt;
+
+      dst_level = dst_image->Level + dst_image->TexObject->MinLevel;
+
+      /* Cube maps actually have different images per face */
+      if (dst_image->TexObject->Target == GL_TEXTURE_CUBE_MAP)
+         dst_z = dst_image->Face;
+
+      dst_z += dst_image->TexObject->MinLayer;
+   } else {
+      assert(dst_renderbuffer);
+      dst_mt = intel_renderbuffer(dst_renderbuffer)->mt;
+      dst_image = dst_renderbuffer->TexImage;
+      dst_level = 0;
+   }
+
+   copy_miptrees(brw, src_mt, src_x, src_y, src_z, src_level,
+                 dst_mt, dst_x, dst_y, dst_z, dst_level,
+                 src_width, src_height);
+
+   /* CopyImage only works for equal formats, texture view equivalence
+    * classes, and a couple special cases for compressed textures.
+    *
+    * Notably, GL_DEPTH_STENCIL does not appear in any equivalence
+    * classes, so we know the formats must be the same, and thus both
+    * will either have stencil, or not.  They can't be mismatched.
+    */
+   assert((src_mt->stencil_mt != NULL) == (dst_mt->stencil_mt != NULL));
+
+   if (dst_mt->stencil_mt) {
+      copy_miptrees(brw, src_mt->stencil_mt, src_x, src_y, src_z, src_level,
+                    dst_mt->stencil_mt, dst_x, dst_y, dst_z, dst_level,
+                    src_width, src_height);
+   }
 }
 
 void

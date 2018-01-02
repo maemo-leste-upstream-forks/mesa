@@ -41,7 +41,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "main/fbobject.h"
 #include "main/renderbuffer.h"
 #include "main/state.h"
-#include "main/simple_list.h"
+#include "util/simple_list.h"
 #include "swrast/swrast.h"
 #include "swrast_setup/swrast_setup.h"
 #include "tnl/tnl.h"
@@ -162,10 +162,7 @@ GLboolean radeonInitContext(radeonContextPtr radeon,
 	_mesa_meta_init(ctx);
 
 	/* DRI fields */
-	radeon->dri.context = driContextPriv;
-	radeon->dri.screen = sPriv;
-	radeon->dri.fd = sPriv->fd;
-	radeon->dri.drmMinor = sPriv->drm_version.minor;
+	radeon->driContext = driContextPriv;
 
 	/* Setup IRQs */
 	fthrottle_mode = driQueryOptioni(&radeon->optionCache, "fthrottle_mode");
@@ -193,6 +190,29 @@ GLboolean radeonInitContext(radeonContextPtr radeon,
 	radeon->texture_compressed_row_align = 32;
 
 	radeon_init_dma(radeon);
+
+        /* _mesa_initialize_context calls _mesa_init_queryobj which
+         * initializes all of the counter sizes to 64.  The counters on r100
+         * and r200 are only 32-bits for occlusion queries.  Those are the
+         * only counters, so set the other sizes to zero.
+         */
+        radeon->glCtx.Const.QueryCounterBits.SamplesPassed = 32;
+
+        radeon->glCtx.Const.QueryCounterBits.TimeElapsed = 0;
+        radeon->glCtx.Const.QueryCounterBits.Timestamp = 0;
+        radeon->glCtx.Const.QueryCounterBits.PrimitivesGenerated = 0;
+        radeon->glCtx.Const.QueryCounterBits.PrimitivesWritten = 0;
+        radeon->glCtx.Const.QueryCounterBits.VerticesSubmitted = 0;
+        radeon->glCtx.Const.QueryCounterBits.PrimitivesSubmitted = 0;
+        radeon->glCtx.Const.QueryCounterBits.VsInvocations = 0;
+        radeon->glCtx.Const.QueryCounterBits.TessPatches = 0;
+        radeon->glCtx.Const.QueryCounterBits.TessInvocations = 0;
+        radeon->glCtx.Const.QueryCounterBits.GsInvocations = 0;
+        radeon->glCtx.Const.QueryCounterBits.GsPrimitives = 0;
+        radeon->glCtx.Const.QueryCounterBits.FsInvocations = 0;
+        radeon->glCtx.Const.QueryCounterBits.ComputeInvocations = 0;
+        radeon->glCtx.Const.QueryCounterBits.ClInPrimitives = 0;
+        radeon->glCtx.Const.QueryCounterBits.ClOutPrimitives = 0;
 
 	return GL_TRUE;
 }
@@ -236,7 +256,7 @@ void radeonDestroyContext(__DRIcontext *driContextPriv )
 
 	radeon_firevertices(radeon);
 	if (!is_empty_list(&radeon->dma.reserved)) {
-		rcommonFlushCmdBuf( radeon, __FUNCTION__ );
+		rcommonFlushCmdBuf( radeon, __func__ );
 	}
 
 	radeonFreeDmaRegions(radeon);
@@ -276,7 +296,7 @@ GLboolean radeonUnbindContext(__DRIcontext * driContextPriv)
 	radeonContextPtr radeon = (radeonContextPtr) driContextPriv->driverPrivate;
 
 	if (RADEON_DEBUG & RADEON_DRI)
-		fprintf(stderr, "%s ctx %p\n", __FUNCTION__,
+		fprintf(stderr, "%s ctx %p\n", __func__,
 			&radeon->glCtx);
 
 	/* Unset current context and dispath table */
@@ -302,7 +322,7 @@ radeon_bits_per_pixel(const struct radeon_renderbuffer *rb)
  */
 void radeon_prepare_render(radeonContextPtr radeon)
 {
-    __DRIcontext *driContext = radeon->dri.context;
+    __DRIcontext *driContext = radeon->driContext;
     __DRIdrawable *drawable;
     __DRIscreen *screen;
 
@@ -578,7 +598,7 @@ GLboolean radeonMakeCurrent(__DRIcontext * driContextPriv,
 
 	if (!driContextPriv) {
 		if (RADEON_DEBUG & RADEON_DRI)
-			fprintf(stderr, "%s ctx is null\n", __FUNCTION__);
+			fprintf(stderr, "%s ctx is null\n", __func__);
 		_mesa_make_current(NULL, NULL, NULL);
 		return GL_TRUE;
 	}
@@ -602,7 +622,7 @@ GLboolean radeonMakeCurrent(__DRIcontext * driContextPriv,
 		&(radeon_get_renderbuffer(drfb, BUFFER_DEPTH)->base.Base));
 
 	if (RADEON_DEBUG & RADEON_DRI)
-	     fprintf(stderr, "%s ctx %p dfb %p rfb %p\n", __FUNCTION__, &radeon->glCtx, drfb, readfb);
+	     fprintf(stderr, "%s ctx %p dfb %p rfb %p\n", __func__, &radeon->glCtx, drfb, readfb);
 
 	if(driDrawPriv)
 		driUpdateFramebufferSize(&radeon->glCtx, driDrawPriv);
@@ -625,7 +645,7 @@ GLboolean radeonMakeCurrent(__DRIcontext * driContextPriv,
 
 
 	if (RADEON_DEBUG & RADEON_DRI)
-		fprintf(stderr, "End %s\n", __FUNCTION__);
+		fprintf(stderr, "End %s\n", __func__);
 
 	return GL_TRUE;
 }

@@ -46,8 +46,8 @@ _swrast_mask_rgba_span(struct gl_context *ctx, struct gl_renderbuffer *rb,
    const GLuint n = span->end;
    void *rbPixels;
 
-   ASSERT(n < SWRAST_MAX_WIDTH);
-   ASSERT(span->arrayMask & SPAN_RGBA);
+   assert(n < SWRAST_MAX_WIDTH);
+   assert(span->arrayMask & SPAN_RGBA);
 
    rbPixels = _swrast_get_dest_rgba(ctx, rb, span);
 
@@ -56,8 +56,8 @@ _swrast_mask_rgba_span(struct gl_context *ctx, struct gl_renderbuffer *rb,
     * Note that we're not using span->array->mask[] here.  We could...
     */
    if (span->array->ChanType == GL_UNSIGNED_BYTE) {
-      /* treat 4xGLubyte as 1xGLuint */
-      const GLuint srcMask = *((GLuint *) ctx->Color.ColorMask[buf]);
+      GLuint srcMask;
+      memcpy(&srcMask, ctx->Color.ColorMask[buf], sizeof(srcMask));
       const GLuint dstMask = ~srcMask;
       const GLuint *dst = (const GLuint *) rbPixels;
       GLuint *src = (GLuint *) span->array->rgba8;

@@ -1,5 +1,5 @@
 /**********************************************************
- * Copyright 2009 VMware, Inc.  All rights reserved.
+ * Copyright 2009-2015 VMware, Inc.  All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person
  * obtaining a copy of this software and associated documentation
@@ -68,7 +68,7 @@ struct vmw_svga_winsys_surface
 };
 
 
-static INLINE struct svga_winsys_surface *
+static inline struct svga_winsys_surface *
 svga_winsys_surface(struct vmw_svga_winsys_surface *surf)
 {
    assert(!surf || surf->sid != SVGA3D_INVALID_ID);
@@ -76,7 +76,7 @@ svga_winsys_surface(struct vmw_svga_winsys_surface *surf)
 }
 
 
-static INLINE struct vmw_svga_winsys_surface *
+static inline struct vmw_svga_winsys_surface *
 vmw_svga_winsys_surface(struct svga_winsys_surface *surf)
 {
    return (struct vmw_svga_winsys_surface *)surf;

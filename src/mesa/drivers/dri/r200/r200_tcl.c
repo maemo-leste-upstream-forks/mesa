@@ -36,7 +36,6 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "main/imports.h"
 #include "main/mtypes.h"
 #include "main/enums.h"
-#include "main/colormac.h"
 #include "main/light.h"
 #include "main/state.h"
 
@@ -61,7 +60,6 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #define HAVE_LINE_STRIPS 1
 #define HAVE_TRIANGLES   1
 #define HAVE_TRI_STRIPS  1
-#define HAVE_TRI_STRIP_1 0
 #define HAVE_TRI_FANS    1
 #define HAVE_QUADS       1
 #define HAVE_QUAD_STRIPS 1
@@ -340,7 +338,7 @@ static GLuint r200EnsureEmitSize( struct gl_context * ctx , GLubyte* vimap_rev )
       "%s space %u, aos %d\n",
       __func__, space_required, AOS_BUFSZ(nr_aos) );
   /* flush the buffer in case we need more than is left. */
-  if (rcommonEnsureCmdBufSpace(&rmesa->radeon, space_required + state_size, __FUNCTION__))
+  if (rcommonEnsureCmdBufSpace(&rmesa->radeon, space_required + state_size, __func__))
     return space_required + radeonCountStateEmitSize( &rmesa->radeon );
   else
     return space_required + state_size;
@@ -374,7 +372,7 @@ static GLboolean r200_run_tcl_render( struct gl_context *ctx,
    if (rmesa->radeon.TclFallback)
       return GL_TRUE;	/* fallback to software t&l */
 
-   radeon_print(RADEON_RENDER, RADEON_NORMAL, "%s\n", __FUNCTION__);
+   radeon_print(RADEON_RENDER, RADEON_NORMAL, "%s\n", __func__);
 
    if (VB->Count == 0)
       return GL_FALSE;

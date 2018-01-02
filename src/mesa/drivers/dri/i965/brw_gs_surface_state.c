@@ -23,6 +23,7 @@
 
 #include "main/mtypes.h"
 #include "program/prog_parameter.h"
+#include "main/shaderapi.h"
 
 #include "brw_context.h"
 #include "brw_state.h"
@@ -46,19 +47,22 @@ brw_upload_gs_pull_constants(struct brw_context *brw)
    if (!gp)
       return;
 
-   /* CACHE_NEW_GS_PROG */
-   const struct brw_stage_prog_data *prog_data = &brw->gs.prog_data->base.base;
+   /* BRW_NEW_GS_PROG_DATA */
+   const struct brw_stage_prog_data *prog_data = brw->gs.base.prog_data;
 
+   _mesa_shader_write_subroutine_indices(&brw->ctx, MESA_SHADER_GEOMETRY);
    /* _NEW_PROGRAM_CONSTANTS */
    brw_upload_pull_constants(brw, BRW_NEW_GS_CONSTBUF, &gp->program.Base,
-                             stage_state, prog_data, false);
+                             stage_state, prog_data);
 }
 
 const struct brw_tracked_state brw_gs_pull_constants = {
    .dirty = {
-      .mesa = (_NEW_PROGRAM_CONSTANTS),
-      .brw = (BRW_NEW_BATCH | BRW_NEW_GEOMETRY_PROGRAM),
-      .cache = CACHE_NEW_GS_PROG,
+      .mesa = _NEW_PROGRAM_CONSTANTS,
+      .brw = BRW_NEW_BATCH |
+             BRW_NEW_BLORP |
+             BRW_NEW_GEOMETRY_PROGRAM |
+             BRW_NEW_GS_PROG_DATA,
    },
    .emit = brw_upload_gs_pull_constants,
 };
@@ -75,16 +79,20 @@ brw_upload_gs_ubo_surfaces(struct brw_context *brw)
    if (!prog)
       return;
 
-   /* CACHE_NEW_GS_PROG */
+   /* BRW_NEW_GS_PROG_DATA */
+   struct brw_stage_prog_data *prog_data = brw->gs.base.prog_data;
+
    brw_upload_ubo_surfaces(brw, prog->_LinkedShaders[MESA_SHADER_GEOMETRY],
-			   &brw->gs.base, &brw->gs.prog_data->base.base);
+			   &brw->gs.base, prog_data);
 }
 
 const struct brw_tracked_state brw_gs_ubo_surfaces = {
    .dirty = {
       .mesa = _NEW_PROGRAM,
-      .brw = BRW_NEW_BATCH | BRW_NEW_UNIFORM_BUFFER,
-      .cache = CACHE_NEW_GS_PROG,
+      .brw = BRW_NEW_BATCH |
+             BRW_NEW_BLORP |
+             BRW_NEW_GS_PROG_DATA |
+             BRW_NEW_UNIFORM_BUFFER,
    },
    .emit = brw_upload_gs_ubo_surfaces,
 };
@@ -98,17 +106,46 @@ brw_upload_gs_abo_surfaces(struct brw_context *brw)
       ctx->_Shader->CurrentProgram[MESA_SHADER_GEOMETRY];
 
    if (prog) {
-      /* CACHE_NEW_GS_PROG */
-      brw_upload_abo_surfaces(brw, prog, &brw->gs.base,
-                              &brw->gs.prog_data->base.base);
+      /* BRW_NEW_GS_PROG_DATA */
+      brw_upload_abo_surfaces(brw, prog->_LinkedShaders[MESA_SHADER_GEOMETRY],
+                              &brw->gs.base, brw->gs.base.prog_data);
    }
 }
 
 const struct brw_tracked_state brw_gs_abo_surfaces = {
    .dirty = {
       .mesa = _NEW_PROGRAM,
-      .brw = BRW_NEW_BATCH | BRW_NEW_ATOMIC_BUFFER,
-      .cache = CACHE_NEW_GS_PROG,
+      .brw = BRW_NEW_ATOMIC_BUFFER |
+             BRW_NEW_BATCH |
+             BRW_NEW_BLORP |
+             BRW_NEW_GS_PROG_DATA,
    },
    .emit = brw_upload_gs_abo_surfaces,
+};
+
+static void
+brw_upload_gs_image_surfaces(struct brw_context *brw)
+{
+   struct gl_context *ctx = &brw->ctx;
+   /* BRW_NEW_GEOMETRY_PROGRAM */
+   struct gl_shader_program *prog =
+      ctx->_Shader->CurrentProgram[MESA_SHADER_GEOMETRY];
+
+   if (prog) {
+      /* BRW_NEW_GS_PROG_DATA, BRW_NEW_IMAGE_UNITS, _NEW_TEXTURE */
+      brw_upload_image_surfaces(brw, prog->_LinkedShaders[MESA_SHADER_GEOMETRY],
+                                &brw->gs.base, brw->gs.base.prog_data);
+   }
+}
+
+const struct brw_tracked_state brw_gs_image_surfaces = {
+   .dirty = {
+      .mesa = _NEW_TEXTURE,
+      .brw = BRW_NEW_BATCH |
+             BRW_NEW_BLORP |
+             BRW_NEW_GEOMETRY_PROGRAM |
+             BRW_NEW_GS_PROG_DATA |
+             BRW_NEW_IMAGE_UNITS,
+   },
+   .emit = brw_upload_gs_image_surfaces,
 };

@@ -25,7 +25,7 @@
  *
  */
 
-#include "main/bitset.h"
+#include "util/bitset.h"
 #include "brw_vec4.h"
 
 namespace brw {
@@ -49,28 +49,52 @@ struct block_data {
 
    /** Which defs reach the exit point of the block. */
    BITSET_WORD *liveout;
+
+   BITSET_WORD flag_def[1];
+   BITSET_WORD flag_use[1];
+   BITSET_WORD flag_livein[1];
+   BITSET_WORD flag_liveout[1];
 };
 
 class vec4_live_variables {
 public:
    DECLARE_RALLOC_CXX_OPERATORS(vec4_live_variables)
 
-   vec4_live_variables(vec4_visitor *v, cfg_t *cfg);
+   vec4_live_variables(const simple_allocator &alloc, cfg_t *cfg);
    ~vec4_live_variables();
 
    int num_vars;
    int bitset_words;
 
    /** Per-basic-block information on live variables */
-   struct block_data *bd;
+   struct block_data *block_data;
 
 protected:
    void setup_def_use();
    void compute_live_variables();
 
-   vec4_visitor *v;
+   const simple_allocator &alloc;
    cfg_t *cfg;
    void *mem_ctx;
 };
+
+inline unsigned
+var_from_reg(const simple_allocator &alloc, const src_reg &reg,
+             unsigned c = 0)
+{
+   assert(reg.file == VGRF && reg.nr < alloc.count &&
+          reg.offset / REG_SIZE < alloc.sizes[reg.nr] && c < 4);
+   return (4 * (alloc.offsets[reg.nr] + reg.offset / REG_SIZE) +
+           BRW_GET_SWZ(reg.swizzle, c));
+}
+
+inline unsigned
+var_from_reg(const simple_allocator &alloc, const dst_reg &reg,
+             unsigned c = 0)
+{
+   assert(reg.file == VGRF && reg.nr < alloc.count &&
+          reg.offset / REG_SIZE < alloc.sizes[reg.nr] && c < 4);
+   return 4 * (alloc.offsets[reg.nr] + reg.offset / REG_SIZE) + c;
+}
 
 } /* namespace brw */

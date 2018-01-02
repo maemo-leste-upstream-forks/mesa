@@ -41,8 +41,8 @@
 
 /*
  * Notes on primitive restart:
- * The code below is used when the driver does not support primitive
- * restart itself. (ctx->Const.PrimitiveRestartInSoftware == GL_TRUE)
+ * The code below is used when the driver does not fully support primitive
+ * restart (for example, if it only does restart index of ~0).
  *
  * We map the index buffer, find the restart indexes, unmap
  * the index buffer then draw the sub-primitives delineated by the restarts.
@@ -167,6 +167,8 @@ vbo_sw_primitive_restart(struct gl_context *ctx,
                          struct gl_buffer_object *indirect)
 {
    GLuint prim_num;
+   struct _mesa_prim new_prim;
+   struct _mesa_index_buffer new_ib;
    struct sub_primitive *sub_prims;
    struct sub_primitive *sub_prim;
    GLuint num_sub_prims;
@@ -182,8 +184,6 @@ vbo_sw_primitive_restart(struct gl_context *ctx,
 
    /* If there is an indirect buffer, map it and extract the draw params */
    if (indirect && prims[0].is_indirect) {
-      struct _mesa_prim new_prim = *prims;
-      struct _mesa_index_buffer new_ib = *ib;
       const uint32_t *indirect_params;
       if (!ctx->Driver.MapBufferRange(ctx, 0, indirect->Size, GL_MAP_READ_BIT,
                                       indirect, MAP_INTERNAL)) {
@@ -195,6 +195,7 @@ vbo_sw_primitive_restart(struct gl_context *ctx,
       }
 
       assert(nr_prims == 1);
+      new_prim = prims[0];
       indirect_params = (const uint32_t *)
                         ADD_POINTERS(indirect->Mappings[MAP_INTERNAL].Pointer,
                                      new_prim.indirect_offset);
@@ -206,6 +207,7 @@ vbo_sw_primitive_restart(struct gl_context *ctx,
       new_prim.basevertex = indirect_params[3];
       new_prim.base_instance = indirect_params[4];
 
+      new_ib = *ib;
       new_ib.count = new_prim.count;
 
       prims = &new_prim;
@@ -249,11 +251,11 @@ vbo_sw_primitive_restart(struct gl_context *ctx,
                 (temp_prim.count == sub_prim->count)) {
                draw_prims_func(ctx, &temp_prim, 1, ib,
                                GL_TRUE, sub_prim->min_index, sub_prim->max_index,
-                               NULL, NULL);
+                               NULL, 0, NULL);
             } else {
                draw_prims_func(ctx, &temp_prim, 1, ib,
                                GL_FALSE, -1, -1,
-                               NULL, NULL);
+                               NULL, 0, NULL);
             }
          }
          if (sub_end_index >= end_index) {

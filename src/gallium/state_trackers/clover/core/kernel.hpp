@@ -46,7 +46,8 @@ namespace clover {
          exec_context &
          operator=(const exec_context &) = delete;
 
-         void *bind(intrusive_ptr<command_queue> _q);
+         void *bind(intrusive_ptr<command_queue> _q,
+                    const std::vector<size_t> &grid_offset);
          void unbind();
 
          kernel &kern;
@@ -68,7 +69,8 @@ namespace clover {
    public:
       class argument {
       public:
-         argument();
+         static std::unique_ptr<argument>
+         create(const module::argument &marg);
 
          argument(const argument &arg) = delete;
          argument &
@@ -92,6 +94,8 @@ namespace clover {
          virtual void unbind(exec_context &ctx) = 0;
 
       protected:
+         argument();
+
          bool _set;
       };
 
@@ -171,7 +175,7 @@ namespace clover {
          virtual void unbind(exec_context &ctx);
 
       private:
-         size_t _storage;
+         size_t _storage = 0;
       };
 
       class constant_argument : public argument {
@@ -186,7 +190,16 @@ namespace clover {
          pipe_surface *st;
       };
 
-      class image_rd_argument : public argument {
+      class image_argument : public argument {
+      public:
+         const image *get() const {
+            return img;
+         }
+      protected:
+         image *img;
+      };
+
+      class image_rd_argument : public image_argument {
       public:
          virtual void set(size_t size, const void *value);
          virtual void bind(exec_context &ctx,
@@ -194,11 +207,10 @@ namespace clover {
          virtual void unbind(exec_context &ctx);
 
       private:
-         image *img;
          pipe_sampler_view *st;
       };
 
-      class image_wr_argument : public argument {
+      class image_wr_argument : public image_argument {
       public:
          virtual void set(size_t size, const void *value);
          virtual void bind(exec_context &ctx,
@@ -206,7 +218,6 @@ namespace clover {
          virtual void unbind(exec_context &ctx);
 
       private:
-         image *img;
          pipe_surface *st;
       };
 

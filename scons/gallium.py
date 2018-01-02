@@ -35,7 +35,7 @@ import os
 import os.path
 import re
 import subprocess
-import platform as _platform
+import platform as host_platform
 import sys
 import tempfile
 
@@ -82,9 +82,27 @@ def install_shared_library(env, sources, version = ()):
     return targets
 
 
-def createInstallMethods(env):
-    env.AddMethod(install_program, 'InstallProgram')
-    env.AddMethod(install_shared_library, 'InstallSharedLibrary')
+def msvc2013_compat(env):
+    if env['gcc']:
+        env.Append(CCFLAGS = [
+            '-Werror=vla',
+            '-Werror=pointer-arith',
+        ])
+
+
+def unit_test(env, test_name, program_target, args=None):
+    env.InstallProgram(program_target)
+
+    cmd = [program_target[0].abspath]
+    if args is not None:
+        cmd += args
+    cmd = ' '.join(cmd)
+
+    # http://www.scons.org/wiki/UnitTests
+    action = SCons.Action.Action(cmd, "  Running $SOURCE ...")
+    alias = env.Alias(test_name, program_target, action)
+    env.AlwaysBuild(alias)
+    env.Depends('check', alias)
 
 
 def num_jobs():
@@ -128,6 +146,17 @@ def check_cc(env, cc, expr, cpp_opt = '-E'):
     return result
 
 
+def check_prog(env, prog):
+    """Check whether this program exists."""
+
+    sys.stdout.write('Checking for %s ... ' % prog)
+
+    result = env.Detect(prog)
+
+    sys.stdout.write(' %s\n' % ['no', 'yes'][int(bool(result))])
+    return result
+
+
 def generate(env):
     """Common environment generation code"""
 
@@ -142,16 +171,6 @@ def generate(env):
     # Allow override compiler and specify additional flags from environment
     if os.environ.has_key('CC'):
         env['CC'] = os.environ['CC']
-        # Update CCVERSION to match
-        pipe = SCons.Action._subproc(env, [env['CC'], '--version'],
-                                     stdin = 'devnull',
-                                     stderr = 'devnull',
-                                     stdout = subprocess.PIPE)
-        if pipe.wait() == 0:
-            line = pipe.stdout.readline()
-            match = re.search(r'[0-9]+(\.[0-9]+)+', line)
-            if match:
-                env['CCVERSION'] = match.group(0)
     if os.environ.has_key('CFLAGS'):
         env['CCFLAGS'] += SCons.Util.CLVar(os.environ['CFLAGS'])
     if os.environ.has_key('CXX'):
@@ -164,14 +183,15 @@ def generate(env):
     # Detect gcc/clang not by executable name, but through pre-defined macros
     # as autoconf does, to avoid drawing wrong conclusions when using tools
     # that overrice CC/CXX like scan-build.
-    env['gcc'] = 0
+    env['gcc_compat'] = 0
     env['clang'] = 0
     env['msvc'] = 0
-    if _platform.system() == 'Windows':
+    if host_platform.system() == 'Windows':
         env['msvc'] = check_cc(env, 'MSVC', 'defined(_MSC_VER)', '/E')
     if not env['msvc']:
-        env['gcc'] = check_cc(env, 'GCC', 'defined(__GNUC__) && !defined(__clang__)')
-        env['clang'] = check_cc(env, 'Clang', '__clang__')
+        env['gcc_compat'] = check_cc(env, 'GCC', 'defined(__GNUC__)')
+    env['clang'] = check_cc(env, 'Clang', '__clang__')
+    env['gcc'] = env['gcc_compat'] and not env['clang']
     env['suncc'] = env['platform'] == 'sunos' and os.path.basename(env['CC']) == 'cc'
     env['icc'] = 'icc' == os.path.basename(env['CC'])
 
@@ -184,17 +204,17 @@ def generate(env):
     platform = env['platform']
     x86 = env['machine'] == 'x86'
     ppc = env['machine'] == 'ppc'
-    gcc_compat = env['gcc'] or env['clang']
+    gcc_compat = env['gcc_compat']
     msvc = env['msvc']
     suncc = env['suncc']
     icc = env['icc']
 
     # Determine whether we are cross compiling; in particular, whether we need
     # to compile code generators with a different compiler as the target code.
-    host_platform = _platform.system().lower()
-    if host_platform.startswith('cygwin'):
-        host_platform = 'cygwin'
-    host_machine = os.environ.get('PROCESSOR_ARCHITEW6432', os.environ.get('PROCESSOR_ARCHITECTURE', _platform.machine()))
+    hosthost_platform = host_platform.system().lower()
+    if hosthost_platform.startswith('cygwin'):
+        hosthost_platform = 'cygwin'
+    host_machine = os.environ.get('PROCESSOR_ARCHITEW6432', os.environ.get('PROCESSOR_ARCHITECTURE', host_platform.machine()))
     host_machine = {
         'x86': 'x86',
         'i386': 'x86',
@@ -205,7 +225,7 @@ def generate(env):
         'AMD64': 'x86_64',
         'x86_64': 'x86_64',
     }.get(host_machine, 'generic')
-    env['crosscompile'] = platform != host_platform
+    env['crosscompile'] = platform != hosthost_platform
     if machine == 'x86_64' and host_machine != 'x86_64':
         env['crosscompile'] = True
     env['hostonly'] = False
@@ -236,7 +256,7 @@ def generate(env):
         if env['build'] == 'profile':
             env['debug'] = False
             env['profile'] = True
-        if env['build'] == 'release':
+        if env['build'] in ('release', 'opt'):
             env['debug'] = False
             env['profile'] = False
 
@@ -270,12 +290,19 @@ def generate(env):
 
     # C preprocessor options
     cppdefines = []
+    cppdefines += [
+        '__STDC_LIMIT_MACROS',
+        '__STDC_CONSTANT_MACROS',
+        'HAVE_NO_AUTOCONF',
+    ]
     if env['build'] in ('debug', 'checked'):
         cppdefines += ['DEBUG']
     else:
         cppdefines += ['NDEBUG']
     if env['build'] == 'profile':
         cppdefines += ['PROFILE']
+    if env['build'] in ('opt', 'profile'):
+        cppdefines += ['VMX86_STATS']
     if env['platform'] in ('posix', 'linux', 'freebsd', 'darwin'):
         cppdefines += [
             '_POSIX_SOURCE',
@@ -283,8 +310,7 @@ def generate(env):
             '_SVID_SOURCE',
             '_BSD_SOURCE',
             '_GNU_SOURCE',
-            'HAVE_PTHREAD',
-            'HAVE_POSIX_MEMALIGN',
+            '_DEFAULT_SOURCE',
         ]
         if env['platform'] == 'darwin':
             cppdefines += [
@@ -301,11 +327,10 @@ def generate(env):
             cppdefines += ['HAVE_ALIAS']
         else:
             cppdefines += ['GLX_ALIAS_UNSUPPORTED']
-    if env['platform'] == 'haiku':
-        cppdefines += [
-            'HAVE_PTHREAD',
-            'HAVE_POSIX_MEMALIGN'
-        ]
+
+        if env['platform'] in ('linux', 'darwin'):
+            cppdefines += ['HAVE_XLOCALE_H']
+
     if platform == 'windows':
         cppdefines += [
             'WIN32',
@@ -327,6 +352,7 @@ def generate(env):
                 '_SCL_SECURE_NO_WARNINGS',
                 '_SCL_SECURE_NO_DEPRECATE',
                 '_ALLOW_KEYWORD_MACROS',
+                '_HAS_EXCEPTIONS=0', # Tell C++ STL to not use exceptions
             ]
         if env['build'] in ('debug', 'checked'):
             cppdefines += ['_DEBUG']
@@ -345,12 +371,7 @@ def generate(env):
     cxxflags = [] # C++
     ccflags = [] # C & C++
     if gcc_compat:
-        ccversion = env['CCVERSION']
         if env['build'] == 'debug':
-            ccflags += ['-O0']
-        elif env['gcc'] and ccversion.startswith('4.2.'):
-            # gcc 4.2.x optimizer is broken
-            print "warning: gcc 4.2.x optimizer is broken -- disabling optimizations"
             ccflags += ['-O0']
         else:
             ccflags += ['-O3']
@@ -361,7 +382,7 @@ def generate(env):
         # Work around aliasing bugs - developers should comment this out
         ccflags += ['-fno-strict-aliasing']
         ccflags += ['-g']
-        if env['build'] in ('checked', 'profile'):
+        if env['build'] in ('checked', 'profile') or env['asan']:
             # See http://code.google.com/p/jrfonseca/wiki/Gprof2Dot#Which_options_should_I_pass_to_gcc_when_compiling_for_profiling?
             ccflags += [
                 '-fno-omit-frame-pointer',
@@ -373,23 +394,19 @@ def generate(env):
                 '-m32',
                 #'-march=pentium4',
             ]
-            if distutils.version.LooseVersion(ccversion) >= distutils.version.LooseVersion('4.2') \
-               and (platform != 'windows' or env['build'] == 'debug' or True) \
-               and platform != 'haiku':
+            if platform != 'haiku':
                 # NOTE: We need to ensure stack is realigned given that we
                 # produce shared objects, and have no control over the stack
                 # alignment policy of the application. Therefore we need
                 # -mstackrealign ore -mincoming-stack-boundary=2.
-                #
-                # XXX: -O and -mstackrealign causes stack corruption on MinGW
                 #
                 # XXX: We could have SSE without -mstackrealign if we always used
                 # __attribute__((force_align_arg_pointer)), but that's not
                 # always the case.
                 ccflags += [
                     '-mstackrealign', # ensure stack is aligned
-                    '-mmmx', '-msse', '-msse2', # enable SIMD intrinsics
-                    #'-mfpmath=sse',
+                    '-msse', '-msse2', # enable SIMD intrinsics
+                    '-mfpmath=sse', # generate SSE floating-point arithmetic
                 ]
             if platform in ['windows', 'darwin']:
                 # Workaround http://gcc.gnu.org/bugzilla/show_bug.cgi?id=37216
@@ -418,13 +435,6 @@ def generate(env):
             '-Wmissing-prototypes',
             '-std=gnu99',
         ]
-        if distutils.version.LooseVersion(ccversion) >= distutils.version.LooseVersion('4.2'):
-            ccflags += [
-                '-Wpointer-arith',
-            ]
-            cflags += [
-                '-Wdeclaration-after-statement',
-            ]
     if icc:
         cflags += [
             '-std=gnu99',
@@ -433,42 +443,43 @@ def generate(env):
         # See also:
         # - http://msdn.microsoft.com/en-us/library/19z1t1wy.aspx
         # - cl /?
-        if 'MSVC_VERSION' not in env or distutils.version.LooseVersion(env['MSVC_VERSION']) < distutils.version.LooseVersion('12.0'):
-            # Use bundled stdbool.h and stdint.h headers for older MSVC
-            # versions.  stdint.h was introduced in MSVC 2010, but stdbool.h
-            # was only introduced in MSVC 2013.
-            top_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-            env.Append(CPPPATH = [os.path.join(top_dir, 'include/c99')])
         if env['build'] == 'debug':
             ccflags += [
               '/Od', # disable optimizations
               '/Oi', # enable intrinsic functions
             ]
         else:
-            if 'MSVC_VERSION' in env and distutils.version.LooseVersion(env['MSVC_VERSION']) < distutils.version.LooseVersion('11.0'):
-                print 'scons: warning: Visual Studio versions prior to 2012 are known to produce incorrect code when optimizations are enabled ( https://bugs.freedesktop.org/show_bug.cgi?id=58718 )'
             ccflags += [
                 '/O2', # optimize for speed
             ]
-        if env['build'] == 'release':
-            ccflags += [
-                '/GL', # enable whole program optimization
-            ]
+        if env['build'] in ('release', 'opt'):
+            if not env['clang']:
+                ccflags += [
+                    '/GL', # enable whole program optimization
+                ]
         else:
             ccflags += [
                 '/Oy-', # disable frame pointer omission
-                '/GL-', # disable whole program optimization
             ]
         ccflags += [
             '/W3', # warning level
+            '/wd4018', # signed/unsigned mismatch
+            '/wd4056', # overflow in floating-point constant arithmetic
             '/wd4244', # conversion from 'type1' to 'type2', possible loss of data
+            '/wd4267', # 'var' : conversion from 'size_t' to 'type', possible loss of data
             '/wd4305', # truncation from 'type1' to 'type2'
+            '/wd4351', # new behavior: elements of array 'array' will be default initialized
+            '/wd4756', # overflow in constant arithmetic
             '/wd4800', # forcing value to bool 'true' or 'false' (performance warning)
             '/wd4996', # disable deprecated POSIX name warnings
         ]
+        if env['clang']:
+            ccflags += [
+                '-Wno-microsoft-enum-value', # enumerator value is not representable in underlying type 'int'
+            ]
         if env['machine'] == 'x86':
             ccflags += [
-                #'/arch:SSE2', # use the SSE2 instructions
+                '/arch:SSE2', # use the SSE2 instructions (default since MSVC 2012)
             ]
         if platform == 'windows':
             ccflags += [
@@ -499,10 +510,21 @@ def generate(env):
             env.Append(CCFLAGS = [
                 '/analyze',
                 #'/analyze:log', '${TARGET.base}.xml',
+                '/wd28251', # Inconsistent annotation for function
             ])
         if env['clang']:
             # scan-build will produce more comprehensive output
             env.Append(CCFLAGS = ['--analyze'])
+
+    # https://github.com/google/sanitizers/wiki/AddressSanitizer
+    if env['asan']:
+        if gcc_compat:
+            env.Append(CCFLAGS = [
+                '-fsanitize=address',
+            ])
+            env.Append(LINKFLAGS = [
+                '-fsanitize=address',
+            ])
 
     # Assembler options
     if gcc_compat:
@@ -529,6 +551,10 @@ def generate(env):
         else:
             env['_LIBFLAGS'] = '-Wl,--start-group ' + env['_LIBFLAGS'] + ' -Wl,--end-group'
         if env['platform'] == 'windows':
+            linkflags += [
+                '-Wl,--nxcompat', # DEP
+                '-Wl,--dynamicbase', # ASLR
+            ]
             # Avoid depending on gcc runtime DLLs
             linkflags += ['-static-libgcc']
             if 'w64' in env['CC'].split('-'):
@@ -537,7 +563,7 @@ def generate(env):
             shlinkflags += ['-Wl,--enable-stdcall-fixup']
             #shlinkflags += ['-Wl,--kill-at']
     if msvc:
-        if env['build'] == 'release':
+        if env['build'] in ('release', 'opt') and not env['clang']:
             # enable Link-time Code Generation
             linkflags += ['/LTCG']
             env.Append(ARFLAGS = ['/LTCG'])
@@ -547,6 +573,8 @@ def generate(env):
         linkflags += [
             '/fixed:no',
             '/incremental:no',
+            '/dynamicbase', # ASLR
+            '/nxcompat', # DEP
         ]
     env.Append(LINKFLAGS = linkflags)
     env.Append(SHLINKFLAGS = shlinkflags)
@@ -579,19 +607,54 @@ def generate(env):
 
     # Load tools
     env.Tool('lex')
+    if env['msvc']:
+        env.Append(LEXFLAGS = [
+            # Force flex to use const keyword in prototypes, as relies on
+            # __cplusplus or __STDC__ macro to determine whether it's safe to
+            # use const keyword, but MSVC never defines __STDC__ unless we
+            # disable all MSVC extensions.
+            '-DYY_USE_CONST=',
+        ])
+        # Flex relies on __STDC_VERSION__>=199901L to decide when to include
+        # C99 inttypes.h.  We always have inttypes.h available with MSVC
+        # (either the one bundled with MSVC 2013, or the one we bundle
+        # ourselves), but we can't just define __STDC_VERSION__ without
+        # breaking stuff, as MSVC doesn't fully support C99.  There's also no
+        # way to premptively include stdint.
+        env.Append(CCFLAGS = ['-FIinttypes.h'])
+    if host_platform.system() == 'Windows':
+        # Prefer winflexbison binaries, as not only they are easier to install
+        # (no additional dependencies), but also better Windows support.
+        if check_prog(env, 'win_flex'):
+            env["LEX"] = 'win_flex'
+            env.Append(LEXFLAGS = [
+                # windows compatibility (uses <io.h> instead of <unistd.h> and
+                # _isatty, _fileno functions)
+                '--wincompat'
+            ])
+
     env.Tool('yacc')
+    if host_platform.system() == 'Windows':
+        if check_prog(env, 'win_bison'):
+            env["YACC"] = 'win_bison'
+
     if env['llvm']:
         env.Tool('llvm')
     
     # Custom builders and methods
     env.Tool('custom')
-    createInstallMethods(env)
+    env.AddMethod(install_program, 'InstallProgram')
+    env.AddMethod(install_shared_library, 'InstallSharedLibrary')
+    env.AddMethod(msvc2013_compat, 'MSVC2013Compat')
+    env.AddMethod(unit_test, 'UnitTest')
 
-    env.PkgCheckModules('X11', ['x11', 'xext', 'xdamage', 'xfixes'])
+    env.PkgCheckModules('X11', ['x11', 'xext', 'xdamage', 'xfixes', 'glproto >= 1.4.13'])
     env.PkgCheckModules('XCB', ['x11-xcb', 'xcb-glx >= 1.8.1', 'xcb-dri2 >= 1.8'])
     env.PkgCheckModules('XF86VIDMODE', ['xxf86vm'])
-    env.PkgCheckModules('DRM', ['libdrm >= 2.4.38'])
-    env.PkgCheckModules('UDEV', ['libudev >= 151'])
+    env.PkgCheckModules('DRM', ['libdrm >= 2.4.66'])
+
+    if env['x11']:
+        env.Append(CPPPATH = env['X11_CPPPATH'])
 
     env['dri'] = env['x11'] and env['drm']
 

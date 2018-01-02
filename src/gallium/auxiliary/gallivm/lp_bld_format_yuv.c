@@ -212,7 +212,7 @@ yuyv_to_yuv_soa(struct gallivm_state *gallivm,
 }
 
 
-static INLINE void
+static inline void
 yuv_to_rgb_soa(struct gallivm_state *gallivm,
                unsigned n,
                LLVMValueRef y, LLVMValueRef u, LLVMValueRef v,
@@ -497,7 +497,7 @@ lp_build_fetch_subsampled_rgba_aos(struct gallivm_state *gallivm,
    assert(format_desc->block.width == 2);
    assert(format_desc->block.height == 1);
 
-   packed = lp_build_gather(gallivm, n, 32, 32, base_ptr, offset, FALSE);
+   packed = lp_build_gather(gallivm, n, 32, 32, TRUE, base_ptr, offset, FALSE);
 
    (void)j;
 

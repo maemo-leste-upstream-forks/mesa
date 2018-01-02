@@ -132,15 +132,13 @@
  */
 #define MAX_TEXTURE_UNITS ((MAX_TEXTURE_COORD_UNITS > MAX_TEXTURE_IMAGE_UNITS) ? MAX_TEXTURE_COORD_UNITS : MAX_TEXTURE_IMAGE_UNITS)
 
-
-/** Maximum viewport size */
-#define MAX_VIEWPORT_WIDTH 16384
-#define MAX_VIEWPORT_HEIGHT 16384
-
-/** Maximun number of viewports supported with ARB_viewport_array */
+/** Maximum number of viewports supported with ARB_viewport_array */
 #define MAX_VIEWPORTS 16
 
-/** Maxmimum size for CVA.  May be overridden by the drivers.  */
+/** Maximum number of window rectangles supported with EXT_window_rectangles */
+#define MAX_WINDOW_RECTANGLES 8
+
+/** Maximum size for CVA.  May be overridden by the drivers.  */
 #define MAX_ARRAY_LOCK_SIZE 3000
 
 /** Subpixel precision for antialiasing, window coordinate snapping */
@@ -171,14 +169,16 @@
 #define MAX_PROGRAM_LOCAL_PARAMS       4096
 #define MAX_UNIFORMS                   4096
 #define MAX_UNIFORM_BUFFERS            15 /* + 1 default uniform buffer */
+#define MAX_SHADER_STORAGE_BUFFERS     16
 /* 6 is for vertex, hull, domain, geometry, fragment, and compute shader. */
 #define MAX_COMBINED_UNIFORM_BUFFERS   (MAX_UNIFORM_BUFFERS * 6)
+#define MAX_COMBINED_SHADER_STORAGE_BUFFERS   (MAX_SHADER_STORAGE_BUFFERS * 6)
 #define MAX_ATOMIC_COUNTERS            4096
 /* 6 is for vertex, hull, domain, geometry, fragment, and compute shader. */
 #define MAX_COMBINED_ATOMIC_BUFFERS    (MAX_UNIFORM_BUFFERS * 6)
 /* Size of an atomic counter in bytes according to ARB_shader_atomic_counters */
 #define ATOMIC_COUNTER_SIZE            4
-#define MAX_IMAGE_UNIFORMS             16
+#define MAX_IMAGE_UNIFORMS             32
 /* 6 is for vertex, hull, domain, geometry, fragment, and compute shader. */
 #define MAX_IMAGE_UNITS                (MAX_IMAGE_UNIFORMS * 6)
 /*@}*/
@@ -213,18 +213,9 @@
 /** For GL_ARB_fragment_program */
 /*@{*/
 #define MAX_FRAGMENT_PROGRAM_ADDRESS_REGS 0
+#define MAX_FRAGMENT_PROGRAM_PARAMS       64
+#define MAX_FRAGMENT_PROGRAM_INPUTS       12
 /*@}*/
-
-/** For GL_NV_fragment_program */
-/*@{*/
-#define MAX_NV_FRAGMENT_PROGRAM_INSTRUCTIONS 1024 /* 72 for GL_ARB_f_p */
-#define MAX_NV_FRAGMENT_PROGRAM_TEMPS         96
-#define MAX_NV_FRAGMENT_PROGRAM_PARAMS        64
-#define MAX_NV_FRAGMENT_PROGRAM_INPUTS        12
-#define MAX_NV_FRAGMENT_PROGRAM_OUTPUTS        3
-#define MAX_NV_FRAGMENT_PROGRAM_WRITE_ONLYS    2
-/*@}*/
-
 
 /** For GL_ARB_vertex_shader */
 /*@{*/
@@ -253,7 +244,7 @@
 #define MAX_FEEDBACK_BUFFERS 4
 #define MAX_FEEDBACK_ATTRIBS 32
 
-/** For GL_ARB_geometry_shader4 */
+/** For geometry shader */
 /*@{*/
 #define MAX_GEOMETRY_UNIFORM_COMPONENTS              512
 #define MAX_GEOMETRY_OUTPUT_VERTICES                 256
@@ -281,6 +272,12 @@
 #define MAX_VERTEX_STREAMS                  4
 /*@}*/
 
+/** For GL_ARB_shader_subroutine */
+/*@{*/
+#define MAX_SUBROUTINES                   256
+#define MAX_SUBROUTINE_UNIFORM_LOCATIONS  1024
+/*@}*/
+
 /** For GL_INTEL_performance_query */
 /*@{*/
 #define MAX_PERFQUERY_QUERY_NAME_LENGTH     256
@@ -289,15 +286,15 @@
 #define PERFQUERY_HAVE_GPA_EXTENDED_COUNTERS 0
 /*@}*/
 
-/** For GL_ARB_compute_shader */
+/** For GL_ARB_pipeline_statistics_query */
+#define MAX_PIPELINE_STATISTICS             11
+
+/** For GL_ARB_tessellation_shader */
 /*@{*/
-#define MAX_COMPUTE_UNIFORM_BLOCKS          12
-#define MAX_COMPUTE_TEXTURE_IMAGE_UNITS     16
-#define MAX_COMPUTE_ATOMIC_COUNTER_BUFFERS  8
-#define MAX_COMPUTE_ATOMIC_COUNTERS         8
-#define MAX_COMPUTE_SHARED_MEMORY_SIZE      32768
-#define MAX_COMPUTE_UNIFORM_COMPONENTS      512
-#define MAX_COMPUTE_IMAGE_UNIFORMS          8
+#define MAX_TESS_GEN_LEVEL 64
+#define MAX_PATCH_VERTICES 32
+#define MAX_TESS_PATCH_COMPONENTS 120
+#define MAX_TESS_CONTROL_TOTAL_OUTPUT_COMPONENTS 4096
 /*@}*/
 
 /*

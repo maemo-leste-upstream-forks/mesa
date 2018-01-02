@@ -46,7 +46,7 @@
  * (active) state every time a 4kb boundary is crossed.
  */
 
-static INLINE void set_dynamic(struct i915_context *i915,
+static inline void set_dynamic(struct i915_context *i915,
                                unsigned offset,
                                const unsigned state)
 {
@@ -60,7 +60,7 @@ static INLINE void set_dynamic(struct i915_context *i915,
 
 
 
-static INLINE void set_dynamic_array(struct i915_context *i915,
+static inline void set_dynamic_array(struct i915_context *i915,
                                      unsigned offset,
                                      const unsigned *src,
                                      unsigned dwords)
@@ -307,7 +307,7 @@ static void update_dynamic(struct i915_context *i915)
 {
    int i;
 
-   for (i = 0; i < Elements(atoms); i++)
+   for (i = 0; i < ARRAY_SIZE(atoms); i++)
       if (i915->dirty & atoms[i]->dirty)
          atoms[i]->update(i915);
 }
@@ -315,5 +315,5 @@ static void update_dynamic(struct i915_context *i915)
 struct i915_tracked_state i915_hw_dynamic = {
    "dynamic",
    update_dynamic,
-   ~0 /* all state atoms, becuase we do internal checking */
+   ~0 /* all state atoms, because we do internal checking */
 };

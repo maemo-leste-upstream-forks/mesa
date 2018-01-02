@@ -25,9 +25,11 @@
 # Authors:
 #    Ian Romanick <idr@us.ibm.com>
 
+import argparse
+import sys, string
+
 import gl_XML, glX_XML
 import license
-import sys, getopt, copy, string
 
 
 class glx_enum_function(object):
@@ -57,7 +59,7 @@ class glx_enum_function(object):
         # Fill self.count and self.enums using the dictionary of enums
         # that was passed in.  The generic Get functions (e.g.,
         # GetBooleanv and friends) are handled specially here.  In
-        # the data the generic Get functions are refered to as "Get".
+        # the data the generic Get functions are referred to as "Get".
 
         if func_name in ["GetIntegerv", "GetBooleanv", "GetFloatv", "GetDoublev"]:
             match_name = "Get"
@@ -289,7 +291,7 @@ class glx_server_enum_function(glx_enum_function):
         print ''
         print '    compsize = __gl%s_size(%s);' % (f.name, string.join(f.count_parameter_list, ","))
         p = f.variable_length_parameter()
-        print '    return __GLX_PAD(%s);' % (p.size_string())
+        print '    return safe_pad(%s);' % (p.size_string())
 
         print '}'
         print ''
@@ -426,7 +428,7 @@ class PrintGlxReqSize_h(PrintGlxReqSize_common):
     def printBody(self, api):
         for func in api.functionIterateGlx():
             if not func.ignore and func.has_variable_size_request():
-                print 'extern PURE _X_HIDDEN int __glX%sReqSize(const GLbyte *pc, Bool swap);' % (func.name)
+                print 'extern PURE _X_HIDDEN int __glX%sReqSize(const GLbyte *pc, Bool swap, int reqlen);' % (func.name)
 
 
 class PrintGlxReqSize_c(PrintGlxReqSize_common):
@@ -450,20 +452,18 @@ class PrintGlxReqSize_c(PrintGlxReqSize_common):
         print '#include "indirect_size.h"'
         print '#include "indirect_reqsize.h"'
         print ''
-        print '#define __GLX_PAD(x)  (((x) + 3) & ~3)'
-        print ''
         print '#if defined(__CYGWIN__) || defined(__MINGW32__)'
         print '#  undef HAVE_ALIAS'
         print '#endif'
         print '#ifdef HAVE_ALIAS'
         print '#  define ALIAS2(from,to) \\'
-        print '    GLint __glX ## from ## ReqSize( const GLbyte * pc, Bool swap ) \\'
+        print '    GLint __glX ## from ## ReqSize( const GLbyte * pc, Bool swap, int reqlen ) \\'
         print '        __attribute__ ((alias( # to )));'
         print '#  define ALIAS(from,to) ALIAS2( from, __glX ## to ## ReqSize )'
         print '#else'
         print '#  define ALIAS(from,to) \\'
-        print '    GLint __glX ## from ## ReqSize( const GLbyte * pc, Bool swap ) \\'
-        print '    { return __glX ## to ## ReqSize( pc, swap ); }'
+        print '    GLint __glX ## from ## ReqSize( const GLbyte * pc, Bool swap, int reqlen ) \\'
+        print '    { return __glX ## to ## ReqSize( pc, swap, reqlen ); }'
         print '#endif'
         print ''
         print ''
@@ -545,7 +545,7 @@ class PrintGlxReqSize_c(PrintGlxReqSize_common):
 
     def common_func_print_just_header(self, f):
         print 'int'
-        print '__glX%sReqSize( const GLbyte * pc, Bool swap )' % (f.name)
+        print '__glX%sReqSize( const GLbyte * pc, Bool swap, int reqlen )' % (f.name)
         print '{'
 
 
@@ -600,7 +600,6 @@ class PrintGlxReqSize_c(PrintGlxReqSize_common):
         offset = 0
         fixup = []
         params = []
-        plus = ''
         size = ''
         param_offsets = {}
 
@@ -618,9 +617,10 @@ class PrintGlxReqSize_c(PrintGlxReqSize_common):
                 if s == 0: s = 1
 
                 sig += "(%u,%u)" % (f.offset_of(p.counter), s)
-                size += '%s%s' % (plus, p.size_string())
-                plus = ' + '
-
+		if size == '':
+		    size = p.size_string()
+		else:
+		    size = "safe_add(%s, %s)" % (size, p.size_string())
 
         # If the calculated signature matches a function that has
         # already be emitted, don't emit this function.  Instead, add
@@ -643,61 +643,64 @@ class PrintGlxReqSize_c(PrintGlxReqSize_common):
             self.common_emit_fixups(fixup)
             print ''
 
-            print '    return __GLX_PAD(%s);' % (size)
+            print '    return safe_pad(%s);' % (size)
             print '}'
             print ''
 
         return alias
 
 
-def show_usage():
-    print "Usage: %s [-f input_file_name] -m output_mode [--only-get | --only-set] [--get-alias-set]" % sys.argv[0]
-    print "    -m output_mode   Output mode can be one of 'size_c' or 'size_h'."
-    print "    --only-get       Only emit 'get'-type functions."
-    print "    --only-set       Only emit 'set'-type functions."
-    print ""
-    print "By default, both 'get' and 'set'-type functions are emitted."
-    sys.exit(1)
+def _parser():
+    """Parse arguments and return a namespace."""
+    parser = argparse.ArgumentParser()
+    parser.set_defaults(which_functions=(PrintGlxSizeStubs_common.do_get |
+                                         PrintGlxSizeStubs_common.do_set))
+    parser.add_argument('-f',
+                        dest='filename',
+                        default='gl_API.xml',
+                        help='an XML file describing an OpenGL API.')
+    parser.add_argument('-m',
+                        dest='mode',
+                        choices=['size_c', 'size_h', 'reqsize_c', 'reqsize_h'],
+                        help='Which file to generate')
+    getset = parser.add_mutually_exclusive_group()
+    getset.add_argument('--only-get',
+                        dest='which_functions',
+                        action='store_const',
+                        const=PrintGlxSizeStubs_common.do_get,
+                        help='only emit "get-type" functions')
+    getset.add_argument('--only-set',
+                        dest='which_functions',
+                        action='store_const',
+                        const=PrintGlxSizeStubs_common.do_set,
+                        help='only emit "set-type" functions')
+    parser.add_argument('--header-tag',
+                        dest='header_tag',
+                        action='store',
+                        default=None,
+                        help='set header tag value')
+    return parser.parse_args()
+
+
+def main():
+    """Main function."""
+    args = _parser()
+
+    if args.mode == "size_c":
+        printer = PrintGlxSizeStubs_c(args.which_functions)
+    elif args.mode == "size_h":
+        printer = PrintGlxSizeStubs_h(args.which_functions)
+        if args.header_tag is not None:
+            printer.header_tag = args.header_tag
+    elif args.mode == "reqsize_c":
+        printer = PrintGlxReqSize_c()
+    elif args.mode == "reqsize_h":
+        printer = PrintGlxReqSize_h()
+
+    api = gl_XML.parse_GL_API(args.filename, glX_XML.glx_item_factory())
+
+    printer.Print(api)
 
 
 if __name__ == '__main__':
-    file_name = "gl_API.xml"
-
-    try:
-        (args, trail) = getopt.getopt(sys.argv[1:], "f:m:h:", ["only-get", "only-set", "header-tag"])
-    except Exception,e:
-        show_usage()
-
-    mode = None
-    header_tag = None
-    which_functions = PrintGlxSizeStubs_common.do_get | PrintGlxSizeStubs_common.do_set
-
-    for (arg,val) in args:
-        if arg == "-f":
-            file_name = val
-        elif arg == "-m":
-            mode = val
-        elif arg == "--only-get":
-            which_functions = PrintGlxSizeStubs_common.do_get
-        elif arg == "--only-set":
-            which_functions = PrintGlxSizeStubs_common.do_set
-        elif (arg == '-h') or (arg == "--header-tag"):
-            header_tag = val
-
-    if mode == "size_c":
-        printer = PrintGlxSizeStubs_c( which_functions )
-    elif mode == "size_h":
-        printer = PrintGlxSizeStubs_h( which_functions )
-        if header_tag:
-            printer.header_tag = header_tag
-    elif mode == "reqsize_c":
-        printer = PrintGlxReqSize_c()
-    elif mode == "reqsize_h":
-        printer = PrintGlxReqSize_h()
-    else:
-        show_usage()
-
-    api = gl_XML.parse_GL_API( file_name, glX_XML.glx_item_factory() )
-
-
-    printer.Print( api )
+    main()

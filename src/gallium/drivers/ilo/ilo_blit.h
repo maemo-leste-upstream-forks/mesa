@@ -30,10 +30,8 @@
 
 #include "ilo_common.h"
 #include "ilo_context.h"
-#include "ilo_gpe.h"
+#include "ilo_state.h"
 #include "ilo_resource.h"
-
-struct ilo_context;
 
 void
 ilo_blit_resolve_slices_for_hiz(struct ilo_context *ilo,
@@ -60,10 +58,12 @@ ilo_blit_resolve_slices(struct ilo_context *ilo,
     * As it is only used to resolve HiZ right now, return early when there is
     * no HiZ.
     */
-   if (!ilo_texture_can_enable_hiz(tex, level, first_slice, num_slices))
+   if (tex->image.aux.type != ILO_IMAGE_AUX_HIZ ||
+       !ilo_image_can_enable_aux(&tex->image, level))
       return;
 
-   if (ilo_texture_can_enable_hiz(tex, level, first_slice, num_slices)) {
+   if (tex->image.aux.type == ILO_IMAGE_AUX_HIZ &&
+       ilo_image_can_enable_aux(&tex->image, level)) {
       ilo_blit_resolve_slices_for_hiz(ilo, res, level,
             first_slice, num_slices, resolve_flags);
    }
@@ -157,14 +157,15 @@ ilo_blit_resolve_view(struct ilo_context *ilo,
 static inline void
 ilo_blit_resolve_framebuffer(struct ilo_context *ilo)
 {
-   const struct pipe_framebuffer_state *fb = &ilo->fb.state;
+   struct ilo_state_vector *vec = &ilo->state_vector;
+   const struct pipe_framebuffer_state *fb = &vec->fb.state;
    unsigned sh, i;
 
    /* Not all bound views are sampled by the shaders.  How do we tell? */
-   for (sh = 0; sh < Elements(ilo->view); sh++) {
-      for (i = 0; i < ilo->view[sh].count; i++) {
-         if (ilo->view[sh].states[i])
-            ilo_blit_resolve_view(ilo, ilo->view[sh].states[i]);
+   for (sh = 0; sh < ARRAY_SIZE(vec->view); sh++) {
+      for (i = 0; i < vec->view[sh].count; i++) {
+         if (vec->view[sh].states[i])
+            ilo_blit_resolve_view(ilo, vec->view[sh].states[i]);
       }
    }
 

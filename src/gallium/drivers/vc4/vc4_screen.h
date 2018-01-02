@@ -25,7 +25,10 @@
 #define VC4_SCREEN_H
 
 #include "pipe/p_screen.h"
+#include "os/os_thread.h"
 #include "state_tracker/drm_driver.h"
+#include "util/list.h"
+#include "util/slab.h"
 
 struct vc4_bo;
 
@@ -36,6 +39,10 @@ struct vc4_bo;
 #define VC4_DEBUG_SHADERDB  0x0010
 #define VC4_DEBUG_PERF      0x0020
 #define VC4_DEBUG_NORAST    0x0040
+#define VC4_DEBUG_ALWAYS_FLUSH 0x0080
+#define VC4_DEBUG_ALWAYS_SYNC  0x0100
+#define VC4_DEBUG_NIR       0x0200
+#define VC4_DEBUG_DUMP      0x0400
 
 #define VC4_MAX_MIP_LEVELS 12
 #define VC4_MAX_TEXTURE_SAMPLERS 16
@@ -44,8 +51,41 @@ struct vc4_screen {
         struct pipe_screen base;
         int fd;
 
+        int v3d_ver;
+
+        const char *name;
+
         void *simulator_mem_base;
         uint32_t simulator_mem_size;
+
+        /** The last seqno we've completed a wait for.
+         *
+         * This lets us slightly optimize our waits by skipping wait syscalls
+         * if we know the job's already done.
+         */
+        uint64_t finished_seqno;
+
+        struct slab_parent_pool transfer_pool;
+
+        struct vc4_bo_cache {
+                /** List of struct vc4_bo freed, by age. */
+                struct list_head time_list;
+                /** List of struct vc4_bo freed, per size, by age. */
+                struct list_head *size_list;
+                uint32_t size_list_size;
+
+                pipe_mutex lock;
+
+                uint32_t bo_size;
+                uint32_t bo_count;
+        } bo_cache;
+
+        struct util_hash_table *bo_handles;
+        pipe_mutex bo_handles_mutex;
+
+        uint32_t bo_size;
+        uint32_t bo_count;
+        bool has_control_flow;
 };
 
 static inline struct vc4_screen *
@@ -61,11 +101,18 @@ boolean vc4_screen_bo_get_handle(struct pipe_screen *pscreen,
                                  struct winsys_handle *whandle);
 struct vc4_bo *
 vc4_screen_bo_from_handle(struct pipe_screen *pscreen,
-                          struct winsys_handle *whandle,
-                          unsigned *out_stride);
+                          struct winsys_handle *whandle);
 
-uint8_t vc4_get_texture_format(enum pipe_format format);
+const void *
+vc4_screen_get_compiler_options(struct pipe_screen *pscreen,
+                                enum pipe_shader_ir ir, unsigned shader);
 
 extern uint32_t vc4_debug;
+
+void
+vc4_fence_init(struct vc4_screen *screen);
+
+struct vc4_fence *
+vc4_fence_create(struct vc4_screen *screen, uint64_t seqno);
 
 #endif /* VC4_SCREEN_H */

@@ -138,7 +138,7 @@ do_blit_copypixels(struct gl_context * ctx,
    }
 
    if (ctx->Pixel.ZoomX != 1.0F || ctx->Pixel.ZoomY != 1.0F) {
-      perf_debug("glCopyPixles(): Unsupported pixel zoom\n");
+      perf_debug("glCopyPixels(): Unsupported pixel zoom\n");
       return false;
    }
 
@@ -176,7 +176,7 @@ do_blit_copypixels(struct gl_context * ctx,
                            width, height,
                            (ctx->Color.ColorLogicOpEnabled ?
                             ctx->Color.LogicOp : GL_COPY))) {
-      DBG("%s: blit failure\n", __FUNCTION__);
+      DBG("%s: blit failure\n", __func__);
       return false;
    }
 
@@ -186,7 +186,7 @@ do_blit_copypixels(struct gl_context * ctx,
 out:
    intel_check_front_buffer_rendering(intel);
 
-   DBG("%s: success\n", __FUNCTION__);
+   DBG("%s: success\n", __func__);
    return true;
 }
 
@@ -197,7 +197,7 @@ intelCopyPixels(struct gl_context * ctx,
                 GLsizei width, GLsizei height,
                 GLint destx, GLint desty, GLenum type)
 {
-   DBG("%s\n", __FUNCTION__);
+   DBG("%s\n", __func__);
 
    if (!_mesa_check_conditional_render(ctx))
       return;

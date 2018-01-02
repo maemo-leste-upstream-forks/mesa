@@ -105,6 +105,7 @@ static const struct opProperties _initProps[] =
    { OP_MAX,    0x3, 0x3, 0x0, 0x0, 0x2, 0x2 },
    { OP_MIN,    0x3, 0x3, 0x0, 0x0, 0x2, 0x2 },
    { OP_MAD,    0x7, 0x0, 0x0, 0x8, 0x6, 0x2 | 0x8 }, // special c[] constraint
+   { OP_SHLADD, 0x5, 0x0, 0x0, 0x0, 0x4, 0x6 },
    { OP_MADSP,  0x0, 0x0, 0x0, 0x0, 0x6, 0x2 },
    { OP_ABS,    0x0, 0x0, 0x0, 0x0, 0x1, 0x0 },
    { OP_NEG,    0x0, 0x1, 0x0, 0x0, 0x1, 0x0 },
@@ -156,14 +157,15 @@ void TargetNVC0::initOpInfo()
 
    static const uint32_t commutative[(OP_LAST + 31) / 32] =
    {
-      // ADD, MAD, MUL, AND, OR, XOR, MAX, MIN
-      0x0670ca00, 0x0000003f, 0x00000000, 0x00000000
+      // ADD, MUL, MAD, FMA, AND, OR, XOR, MAX, MIN, SET_AND, SET_OR, SET_XOR,
+      // SET, SELP, SLCT
+      0x0ce0ca00, 0x0000007e, 0x00000000, 0x00000000
    };
 
    static const uint32_t shortForm[(OP_LAST + 31) / 32] =
    {
-      // ADD, MAD, MUL, AND, OR, XOR, PRESIN, PREEX2, SFN, CVT, PINTERP, MOV
-      0x0670ca00, 0x00000000, 0x00000000, 0x00000000
+      // ADD, MUL, MAD, FMA, AND, OR, XOR, MAX, MIN
+      0x0ce0ca00, 0x00000000, 0x00000000, 0x00000000
    };
 
    static const operation noDest[] =
@@ -238,9 +240,11 @@ void TargetNVC0::initOpInfo()
 unsigned int
 TargetNVC0::getFileSize(DataFile file) const
 {
+   const unsigned int gprs = (chipset >= NVISA_GK20A_CHIPSET) ? 255 : 63;
+   const unsigned int smregs = (chipset >= NVISA_GK104_CHIPSET) ? 65536 : 32768;
    switch (file) {
    case FILE_NULL:          return 0;
-   case FILE_GPR:           return (chipset >= NVISA_GK20A_CHIPSET) ? 255 : 63;
+   case FILE_GPR:           return MIN2(gprs, smregs / threads);
    case FILE_PREDICATE:     return 7;
    case FILE_FLAGS:         return 1;
    case FILE_ADDRESS:       return 0;
@@ -248,6 +252,7 @@ TargetNVC0::getFileSize(DataFile file) const
    case FILE_MEMORY_CONST:  return 65536;
    case FILE_SHADER_INPUT:  return 0x400;
    case FILE_SHADER_OUTPUT: return 0x400;
+   case FILE_MEMORY_BUFFER: return 0xffffffff;
    case FILE_MEMORY_GLOBAL: return 0xffffffff;
    case FILE_MEMORY_SHARED: return 16 << 10;
    case FILE_MEMORY_LOCAL:  return 48 << 10;
@@ -286,14 +291,19 @@ TargetNVC0::getSVAddress(DataFile shaderFile, const Symbol *sym) const
    case SV_CLIP_DISTANCE:  return 0x2c0 + idx * 4;
    case SV_POINT_COORD:    return 0x2e0 + idx * 4;
    case SV_FACE:           return 0x3fc;
-   case SV_TESS_FACTOR:    return 0x000 + idx * 4;
+   case SV_TESS_OUTER:     return 0x000 + idx * 4;
+   case SV_TESS_INNER:     return 0x010 + idx * 4;
    case SV_TESS_COORD:     return 0x2f0 + idx * 4;
    case SV_NTID:           return kepler ? (0x00 + idx * 4) : ~0;
    case SV_NCTAID:         return kepler ? (0x0c + idx * 4) : ~0;
    case SV_GRIDID:         return kepler ? 0x18 : ~0;
+   case SV_WORK_DIM:       return 0x1c;
    case SV_SAMPLE_INDEX:   return 0;
    case SV_SAMPLE_POS:     return 0;
    case SV_SAMPLE_MASK:    return 0;
+   case SV_BASEVERTEX:     return 0;
+   case SV_BASEINSTANCE:   return 0;
+   case SV_DRAWID:         return 0;
    default:
       return 0xffffffff;
    }
@@ -324,6 +334,8 @@ TargetNVC0::insnCanLoad(const Instruction *i, int s,
       if (i->src(k).getFile() == FILE_IMMEDIATE) {
          if (k == 2 && i->op == OP_SUCLAMP) // special case
             continue;
+         if (k == 1 && i->op == OP_SHLADD) // special case
+            continue;
          if (i->getSrc(k)->reg.data.u64 != 0)
             return false;
       } else
@@ -337,15 +349,30 @@ TargetNVC0::insnCanLoad(const Instruction *i, int s,
    if (sf == FILE_IMMEDIATE) {
       Storage &reg = ld->getSrc(0)->asImm()->reg;
 
-      if (opInfo[i->op].immdBits != 0xffffffff) {
-         if (i->sType == TYPE_F32) {
+      if (opInfo[i->op].immdBits != 0xffffffff || typeSizeof(i->sType) > 4) {
+         switch (i->sType) {
+         case TYPE_F64:
+            if (reg.data.u64 & 0x00000fffffffffffULL)
+               return false;
+            break;
+         case TYPE_F32:
             if (reg.data.u32 & 0xfff)
                return false;
-         } else
-         if (i->sType == TYPE_S32 || i->sType == TYPE_U32) {
+            break;
+         case TYPE_S32:
+         case TYPE_U32:
             // with u32, 0xfffff counts as 0xffffffff as well
             if (reg.data.s32 > 0x7ffff || reg.data.s32 < -0x80000)
                return false;
+            break;
+         case TYPE_U8:
+         case TYPE_S8:
+         case TYPE_U16:
+         case TYPE_S16:
+         case TYPE_F16:
+            break;
+         default:
+            return false;
          }
       } else
       if (i->op == OP_MAD || i->op == OP_FMA) {
@@ -365,6 +392,16 @@ TargetNVC0::insnCanLoad(const Instruction *i, int s,
 }
 
 bool
+TargetNVC0::insnCanLoadOffset(const Instruction *insn, int s, int offset) const
+{
+   const ValueRef& ref = insn->src(s);
+   if (ref.getFile() == FILE_MEMORY_CONST &&
+       (insn->op != OP_LOAD || insn->subOp != NV50_IR_SUBOP_LDC_IS))
+      return offset >= -0x8000 && offset < 0x8000;
+   return true;
+}
+
+bool
 TargetNVC0::isAccessSupported(DataFile file, DataType ty) const
 {
    if (ty == TYPE_NONE)
@@ -379,8 +416,6 @@ TargetNVC0::isAccessSupported(DataFile file, DataType ty) const
 bool
 TargetNVC0::isOpSupported(operation op, DataType ty) const
 {
-   if ((op == OP_MAD || op == OP_FMA) && (ty != TYPE_F32))
-      return false;
    if (op == OP_SAD && ty != TYPE_S32 && ty != TYPE_U32)
       return false;
    if (op == OP_POW || op == OP_SQRT || op == OP_DIV || op == OP_MOD)
@@ -419,11 +454,17 @@ TargetNVC0::isModSupported(const Instruction *insn, int s, Modifier mod) const
          if (s == 0)
             return insn->src(1).mod.neg() ? false : true;
          break;
+      case OP_SHLADD:
+         if (s == 1)
+            return false;
+         if (insn->src(s ? 0 : 2).mod.neg())
+            return false;
+         break;
       default:
          return false;
       }
    }
-   if (s >= 3)
+   if (s >= opInfo[insn->op].srcNr || s >= 3)
       return false;
    return (mod & Modifier(opInfo[insn->op].srcMods[s])) == mod;
 }
@@ -584,20 +625,36 @@ bool TargetNVC0::canDualIssue(const Instruction *a, const Instruction *b) const
       // not if the 2nd instruction isn't necessarily executed
       if (clA == OPCLASS_TEXTURE || clA == OPCLASS_FLOW)
          return false;
+
+      // Check that a and b don't write to the same sources, nor that b reads
+      // anything that a writes.
+      if (!a->canCommuteDefDef(b) || !a->canCommuteDefSrc(b))
+         return false;
+
       // anything with MOV
       if (a->op == OP_MOV || b->op == OP_MOV)
          return true;
       if (clA == clB) {
-         // only F32 arith or integer additions
-         if (clA != OPCLASS_ARITH)
+         switch (clA) {
+         // there might be more
+         case OPCLASS_COMPARE:
+            if ((a->op == OP_MIN || a->op == OP_MAX) &&
+                (b->op == OP_MIN || b->op == OP_MAX))
+               break;
             return false;
+         case OPCLASS_ARITH:
+            break;
+         default:
+            return false;
+         }
+         // only F32 arith or integer additions
          return (a->dType == TYPE_F32 || a->op == OP_ADD ||
                  b->dType == TYPE_F32 || b->op == OP_ADD);
       }
       // nothing with TEXBAR
       if (a->op == OP_TEXBAR || b->op == OP_TEXBAR)
          return false;
-      // no loads and stores accessing the the same space
+      // no loads and stores accessing the same space
       if ((clA == OPCLASS_LOAD && clB == OPCLASS_STORE) ||
           (clB == OPCLASS_LOAD && clA == OPCLASS_STORE))
          if (a->src(0).getFile() == b->src(0).getFile())

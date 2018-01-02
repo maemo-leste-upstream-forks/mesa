@@ -37,15 +37,14 @@ struct fd3_shader_stateobj {
 	struct ir3_shader *shader;
 };
 
-void fd3_program_emit(struct fd_ringbuffer *ring,
-		struct fd_program_stateobj *prog, struct ir3_shader_key key);
+struct fd3_emit;
+
+void fd3_program_emit(struct fd_ringbuffer *ring, struct fd3_emit *emit,
+					  int nr, struct pipe_surface **bufs);
 
 void fd3_prog_init(struct pipe_context *pctx);
 
-static inline struct ir3_shader_variant *
-fd3_shader_variant(struct fd3_shader_stateobj *so, struct ir3_shader_key key)
-{
-	return ir3_shader_variant(so->shader, key);
-}
+bool fd3_needs_manual_clipping(const struct fd3_shader_stateobj *,
+							   const struct pipe_rasterizer_state *);
 
 #endif /* FD3_PROGRAM_H_ */

@@ -39,7 +39,6 @@
 
 
 #include "pipe/p_state.h"
-#include "tgsi/tgsi_exec.h"
 
 struct pipe_context;
 struct draw_context;
@@ -48,6 +47,8 @@ struct draw_vertex_shader;
 struct draw_geometry_shader;
 struct draw_fragment_shader;
 struct tgsi_sampler;
+struct tgsi_image;
+struct tgsi_buffer;
 
 /*
  * structure to contain driver internal information 
@@ -63,6 +64,11 @@ struct draw_so_target {
 };
 
 struct draw_context *draw_create( struct pipe_context *pipe );
+
+#if HAVE_LLVM
+struct draw_context *draw_create_with_llvm_context(struct pipe_context *pipe,
+                                                   void *context);
+#endif
 
 struct draw_context *draw_create_no_llvm(struct pipe_context *pipe);
 
@@ -150,13 +156,23 @@ draw_texture_sampler(struct draw_context *draw,
                      struct tgsi_sampler *sampler);
 
 void
+draw_image(struct draw_context *draw,
+           uint shader_type,
+           struct tgsi_image *image);
+
+void
+draw_buffer(struct draw_context *draw,
+           uint shader_type,
+           struct tgsi_buffer *buffer);
+
+void
 draw_set_sampler_views(struct draw_context *draw,
-                       unsigned shader_stage,
+                       enum pipe_shader_type shader_stage,
                        struct pipe_sampler_view **views,
                        unsigned num);
 void
 draw_set_samplers(struct draw_context *draw,
-                  unsigned shader_stage,
+                  enum pipe_shader_type shader_stage,
                   struct pipe_sampler_state **samplers,
                   unsigned num);
 

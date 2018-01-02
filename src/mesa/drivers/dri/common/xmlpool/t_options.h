@@ -90,6 +90,11 @@ DRI_CONF_OPT_BEGIN_B(disable_blend_func_extended, def) \
         DRI_CONF_DESC(en,gettext("Disable dual source blending")) \
 DRI_CONF_OPT_END
 
+#define DRI_CONF_DUAL_COLOR_BLEND_BY_LOCATION(def) \
+DRI_CONF_OPT_BEGIN_B(dual_color_blend_by_location, def) \
+        DRI_CONF_DESC(en,gettext("Identify dual color blending sources by location rather than index")) \
+DRI_CONF_OPT_END
+
 #define DRI_CONF_DISABLE_GLSL_LINE_CONTINUATIONS(def) \
 DRI_CONF_OPT_BEGIN_B(disable_glsl_line_continuations, def) \
         DRI_CONF_DESC(en,gettext("Disable backslash-based line continuations in GLSL source")) \
@@ -151,6 +156,11 @@ DRI_CONF_OPT_END
 #define DRI_CONF_FORCE_S3TC_ENABLE(def) \
 DRI_CONF_OPT_BEGIN_B(force_s3tc_enable, def) \
         DRI_CONF_DESC(en,gettext("Enable S3TC texture compression even if software support is not available")) \
+DRI_CONF_OPT_END
+
+#define DRI_CONF_PRECISE_TRIG(def) \
+DRI_CONF_OPT_BEGIN_B(precise_trig, def) \
+        DRI_CONF_DESC(en,gettext("Prefer accuracy over performance in trig functions")) \
 DRI_CONF_OPT_END
 
 #define DRI_CONF_COLOR_REDUCTION_ROUND 0
@@ -327,7 +337,10 @@ DRI_CONF_OPT_BEGIN_B(always_have_depth_buffer, def) \
         DRI_CONF_DESC(en,gettext("Create all visuals with a depth buffer")) \
 DRI_CONF_OPT_END
 
-
+#define DRI_CONF_GLSL_ZERO_INIT(def) \
+DRI_CONF_OPT_BEGIN_B(glsl_zero_init, def) \
+        DRI_CONF_DESC(en,gettext("Force uninitialized variables to default to zero")) \
+DRI_CONF_OPT_END
 
 /**
  * \brief Initialization configuration options
@@ -339,4 +352,27 @@ DRI_CONF_SECTION_BEGIN \
 #define DRI_CONF_DEVICE_ID_PATH_TAG(def) \
 DRI_CONF_OPT_BEGIN(device_id, string, def) \
         DRI_CONF_DESC(en,gettext("Define the graphic device to use if possible")) \
+DRI_CONF_OPT_END
+
+/**
+ * \brief Gallium-Nine specific configuration options
+ */
+
+#define DRI_CONF_SECTION_NINE \
+DRI_CONF_SECTION_BEGIN \
+        DRI_CONF_DESC(en,gettext("Gallium Nine"))
+
+#define DRI_CONF_NINE_THROTTLE(def) \
+DRI_CONF_OPT_BEGIN(throttle_value, int, def) \
+        DRI_CONF_DESC(en,gettext("Define the throttling value. -1 for no throttling, -2 for default (usually 2), 0 for glfinish behaviour")) \
+DRI_CONF_OPT_END
+
+#define DRI_CONF_NINE_THREADSUBMIT(def) \
+DRI_CONF_OPT_BEGIN_B(thread_submit, def) \
+        DRI_CONF_DESC(en,gettext("Use an additional thread to submit buffers.")) \
+DRI_CONF_OPT_END
+
+#define DRI_CONF_NINE_OVERRIDEVENDOR(def) \
+DRI_CONF_OPT_BEGIN(override_vendorid, int, def) \
+        DRI_CONF_DESC(en,"Define the vendor_id to report. This allows faking another hardware vendor.") \
 DRI_CONF_OPT_END

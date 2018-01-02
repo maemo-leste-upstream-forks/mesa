@@ -27,21 +27,36 @@ AM_CPPFLAGS = \
 	-I$(top_srcdir)/include \
 	-I$(top_srcdir)/src/gallium/drivers \
 	-I$(top_srcdir)/src/gallium/winsys \
+	$(GALLIUM_PIPE_LOADER_DEFINES) \
 	$(LIBDRM_CFLAGS) \
 	$(VISIBILITY_CFLAGS) \
 	-DGALLIUM_RBUG \
-	-DGALLIUM_TRACE \
-	-DGALLIUM_GALAHAD
+	-DGALLIUM_TRACE
 
 pipedir = $(libdir)/gallium-pipe
 pipe_LTLIBRARIES =
 
-PIPE_LIBS = \
+PIPE_LIBS =
+
+if NEED_GALLIUM_VL
+PIPE_LIBS += \
+	$(top_builddir)/src/gallium/auxiliary/libgalliumvl.la
+else
+PIPE_LIBS += \
+	$(top_builddir)/src/gallium/auxiliary/libgalliumvl_stub.la
+endif
+
+if NEED_GALLIUM_VL_WINSYS
+PIPE_LIBS+= \
+	$(top_builddir)/src/gallium/auxiliary/libgalliumvlwinsys.la
+endif
+
+PIPE_LIBS += \
 	$(top_builddir)/src/gallium/auxiliary/libgallium.la \
-        $(top_builddir)/src/util/libmesautil.la \
+	$(top_builddir)/src/compiler/nir/libnir.la \
+	$(top_builddir)/src/util/libmesautil.la \
 	$(top_builddir)/src/gallium/drivers/rbug/librbug.la \
 	$(top_builddir)/src/gallium/drivers/trace/libtrace.la \
-	$(top_builddir)/src/gallium/drivers/galahad/libgalahad.la \
 	$(GALLIUM_COMMON_LIB_DEPS)
 
 AM_LDFLAGS = \
@@ -75,6 +90,20 @@ pipe_i915_la_LIBADD = \
 
 endif
 
+if HAVE_GALLIUM_ILO
+pipe_LTLIBRARIES += pipe_i965.la
+
+pipe_i965_la_SOURCES = pipe_i965.c
+nodist_EXTRA_pipe_i965_la_SOURCES = dummy.cpp
+pipe_i965_la_LIBADD = \
+	$(PIPE_LIBS) \
+	$(top_builddir)/src/gallium/winsys/intel/drm/libintelwinsys.la \
+	$(top_builddir)/src/gallium/drivers/ilo/libilo.la \
+	$(LIBDRM_LIBS) \
+	$(INTEL_LIBS)
+
+endif
+
 if HAVE_GALLIUM_NOUVEAU
 pipe_LTLIBRARIES += pipe_nouveau.la
 
@@ -97,7 +126,6 @@ nodist_EXTRA_pipe_r300_la_SOURCES = dummy.cpp
 pipe_r300_la_LIBADD = \
 	$(PIPE_LIBS) \
 	$(top_builddir)/src/gallium/winsys/radeon/drm/libradeonwinsys.la \
-	$(top_builddir)/src/gallium/drivers/r300/libr300-helper.la \
 	$(top_builddir)/src/gallium/drivers/r300/libr300.la \
 	$(LIBDRM_LIBS) \
 	$(RADEON_LIBS)
@@ -127,10 +155,12 @@ nodist_EXTRA_pipe_radeonsi_la_SOURCES = dummy.cpp
 pipe_radeonsi_la_LIBADD = \
 	$(PIPE_LIBS) \
 	$(top_builddir)/src/gallium/winsys/radeon/drm/libradeonwinsys.la \
+	$(top_builddir)/src/gallium/winsys/amdgpu/drm/libamdgpuwinsys.la \
 	$(top_builddir)/src/gallium/drivers/radeon/libradeon.la \
 	$(top_builddir)/src/gallium/drivers/radeonsi/libradeonsi.la \
 	$(LIBDRM_LIBS) \
-	$(RADEON_LIBS)
+	$(RADEON_LIBS) \
+	$(AMDGPU_LIBS)
 
 endif
 
@@ -162,16 +192,18 @@ pipe_vmwgfx_la_LIBADD = \
 
 endif
 
-if HAVE_GALLIUM_SOFTPIPE
-AM_CPPFLAGS += -DGALLIUM_SOFTPIPE
-
+if HAVE_GALLIUM_SWRAST
 pipe_LTLIBRARIES += pipe_swrast.la
 pipe_swrast_la_SOURCES = pipe_swrast.c
 nodist_EXTRA_pipe_swrast_la_SOURCES = dummy.cpp
+pipe_swrast_la_LIBADD = $(PIPE_LIBS)
 
-pipe_swrast_la_LIBADD = \
-	$(PIPE_LIBS) \
+if HAVE_GALLIUM_SOFTPIPE
+AM_CPPFLAGS += -DGALLIUM_SOFTPIPE
+
+pipe_swrast_la_LIBADD += \
 	$(top_builddir)/src/gallium/drivers/softpipe/libsoftpipe.la
+endif
 
 if HAVE_GALLIUM_LLVMPIPE
 AM_CPPFLAGS += -DGALLIUM_LLVMPIPE
@@ -179,4 +211,17 @@ AM_CPPFLAGS += -DGALLIUM_LLVMPIPE
 pipe_swrast_la_LIBADD += \
 	$(top_builddir)/src/gallium/drivers/llvmpipe/libllvmpipe.la
 endif
+
+if HAVE_GALLIUM_SWR
+AM_CPPFLAGS += -DGALLIUM_SWR
+
+pipe_swrast_la_LIBADD += \
+	$(top_builddir)/src/gallium/drivers/swr/libmesaswr.la
 endif
+
+pipe_swrast_la_LIBADD += \
+	$(GALLIUM_PIPE_LOADER_WINSYS_LIBS)
+
+endif
+
+EXTRA_DIST = pipe.sym

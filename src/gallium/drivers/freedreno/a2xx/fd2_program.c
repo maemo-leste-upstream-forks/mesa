@@ -174,7 +174,7 @@ patch_vtx_fetches(struct fd_context *ctx, struct fd2_shader_stateobj *so,
 		struct ir2_instruction *instr = so->vfetch_instrs[i];
 		struct pipe_vertex_element *elem = &vtx->pipe[i];
 		struct pipe_vertex_buffer *vb =
-				&ctx->vertexbuf.vb[elem->vertex_buffer_index];
+				&ctx->vtx.vertexbuf.vb[elem->vertex_buffer_index];
 		enum pipe_format format = elem->src_format;
 		const struct util_format_description *desc =
 				util_format_description(format);
@@ -247,18 +247,15 @@ fd2_program_validate(struct fd_context *ctx)
 	 * from the vertex shader.  And therefore if frag shader has changed we
 	 * need to recompile both vert and frag shader.
 	 */
-	if (prog->dirty & FD_SHADER_DIRTY_FP)
+	if (ctx->dirty & FD_SHADER_DIRTY_FP)
 		compile(prog, prog->fp);
 
-	if (prog->dirty & (FD_SHADER_DIRTY_FP | FD_SHADER_DIRTY_VP))
+	if (ctx->dirty & (FD_SHADER_DIRTY_FP | FD_SHADER_DIRTY_VP))
 		compile(prog, prog->vp);
-
-	if (prog->dirty)
-		ctx->dirty |= FD_DIRTY_PROG;
 
 	/* if necessary, fix up vertex fetch instructions: */
 	if (ctx->dirty & (FD_DIRTY_VTXSTATE | FD_DIRTY_PROG))
-		patch_vtx_fetches(ctx, prog->vp, ctx->vtx);
+		patch_vtx_fetches(ctx, prog->vp, ctx->vtx.vtx);
 
 	/* if necessary, fix up texture fetch instructions: */
 	if (ctx->dirty & (FD_DIRTY_TEXSTATE | FD_DIRTY_PROG)) {
@@ -292,8 +289,6 @@ fd2_program_emit(struct fd_ringbuffer *ring,
 			A2XX_SQ_PROGRAM_CNTL_VS_EXPORT_COUNT(vs_export) |
 			A2XX_SQ_PROGRAM_CNTL_PS_REGS(fs_gprs) |
 			A2XX_SQ_PROGRAM_CNTL_VS_REGS(vs_gprs));
-
-	prog->dirty = 0;
 }
 
 /* Creates shader:
@@ -474,6 +469,6 @@ fd2_prog_init(struct pipe_context *pctx)
 
 	ctx->solid_prog.fp = create_solid_fp();
 	ctx->solid_prog.vp = create_solid_vp();
-	ctx->blit_prog.fp = create_blit_fp();
-	ctx->blit_prog.vp = create_blit_vp();
+	ctx->blit_prog[0].fp = create_blit_fp();
+	ctx->blit_prog[0].vp = create_blit_vp();
 }

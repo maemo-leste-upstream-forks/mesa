@@ -26,44 +26,87 @@
 #include "brw_cfg.h"
 
 /** @file brw_fs_saturate_propagation.cpp
+ *
+ * Implements a pass that propagates the SAT modifier from a MOV.SAT into the
+ * instruction that produced the source of the MOV.SAT, thereby allowing the
+ * MOV's src and dst to be coalesced and the MOV removed.
+ *
+ * For instance,
+ *
+ *    ADD     tmp, src0, src1
+ *    MOV.SAT dst, tmp
+ *
+ * would be transformed into
+ *
+ *    ADD.SAT tmp, src0, src1
+ *    MOV     dst, tmp
  */
 
 static bool
 opt_saturate_propagation_local(fs_visitor *v, bblock_t *block)
 {
    bool progress = false;
-   int ip = block->start_ip - 1;
+   int ip = block->end_ip + 1;
 
-   foreach_inst_in_block(fs_inst, inst, block) {
-      ip++;
+   foreach_inst_in_block_reverse(fs_inst, inst, block) {
+      ip--;
 
       if (inst->opcode != BRW_OPCODE_MOV ||
-          inst->dst.file != GRF ||
-          inst->src[0].file != GRF ||
-          inst->src[0].abs ||
-          inst->src[0].negate ||
-          !inst->saturate)
+          !inst->saturate ||
+          inst->dst.file != VGRF ||
+          inst->dst.type != inst->src[0].type ||
+          inst->src[0].file != VGRF ||
+          inst->src[0].abs)
          continue;
 
-      int src_var = v->live_intervals->var_from_reg(&inst->src[0]);
+      int src_var = v->live_intervals->var_from_reg(inst->src[0]);
       int src_end_ip = v->live_intervals->end[src_var];
 
-      int scan_ip = ip;
       bool interfered = false;
-      for (fs_inst *scan_inst = (fs_inst *) inst->prev;
-           scan_inst != block->start->prev;
-           scan_inst = (fs_inst *) scan_inst->prev) {
-         scan_ip--;
+      foreach_inst_in_block_reverse_starting_from(fs_inst, scan_inst, inst) {
+         if (regions_overlap(scan_inst->dst, scan_inst->size_written,
+                             inst->src[0], inst->size_read(0))) {
+            if (scan_inst->is_partial_write() ||
+                (scan_inst->dst.type != inst->dst.type &&
+                 !scan_inst->can_change_types()))
+               break;
 
-         if (scan_inst->dst.file == GRF &&
-             scan_inst->dst.reg == inst->src[0].reg &&
-             scan_inst->dst.reg_offset == inst->src[0].reg_offset &&
-             !scan_inst->is_partial_write()) {
             if (scan_inst->saturate) {
                inst->saturate = false;
                progress = true;
-            } else if (src_end_ip <= ip || inst->dst.equals(inst->src[0])) {
+            } else if (src_end_ip == ip || inst->dst.equals(inst->src[0])) {
                if (scan_inst->can_do_saturate()) {
+                  if (scan_inst->dst.type != inst->dst.type) {
+                     scan_inst->dst.type = inst->dst.type;
+                     for (int i = 0; i < scan_inst->sources; i++) {
+                        scan_inst->src[i].type = inst->dst.type;
+                     }
+                  }
+
+                  if (inst->src[0].negate) {
+                     if (scan_inst->opcode == BRW_OPCODE_MUL) {
+                        scan_inst->src[0].negate = !scan_inst->src[0].negate;
+                        inst->src[0].negate = false;
+                     } else if (scan_inst->opcode == BRW_OPCODE_MAD) {
+                        scan_inst->src[0].negate = !scan_inst->src[0].negate;
+                        scan_inst->src[1].negate = !scan_inst->src[1].negate;
+                        inst->src[0].negate = false;
+                     } else if (scan_inst->opcode == BRW_OPCODE_ADD) {
+                        if (scan_inst->src[1].file == IMM) {
+                           if (!brw_negate_immediate(scan_inst->src[1].type,
+                                                     &scan_inst->src[1].as_brw_reg())) {
+                              break;
+                           }
+                        } else {
+                           scan_inst->src[1].negate = !scan_inst->src[1].negate;
+                        }
+                        scan_inst->src[0].negate = !scan_inst->src[0].negate;
+                        inst->src[0].negate = false;
+                     } else {
+                        break;
+                     }
+                  }
+
                   scan_inst->saturate = true;
                   inst->saturate = false;
                   progress = true;
@@ -72,11 +115,19 @@ opt_saturate_propagation_local(fs_visitor *v, bblock_t *block)
             break;
          }
          for (int i = 0; i < scan_inst->sources; i++) {
-            if (scan_inst->src[i].file == GRF &&
-                scan_inst->src[i].reg == inst->src[0].reg &&
-                scan_inst->src[i].reg_offset == inst->src[0].reg_offset) {
-               interfered = true;
-               break;
+            if (scan_inst->src[i].file == VGRF &&
+                scan_inst->src[i].nr == inst->src[0].nr &&
+                scan_inst->src[i].offset / REG_SIZE ==
+                 inst->src[0].offset / REG_SIZE) {
+               if (scan_inst->opcode != BRW_OPCODE_MOV ||
+                   !scan_inst->saturate ||
+                   scan_inst->src[0].abs ||
+                   scan_inst->src[0].negate ||
+                   scan_inst->src[0].abs != inst->src[0].abs ||
+                   scan_inst->src[0].negate != inst->src[0].negate) {
+                  interfered = true;
+                  break;
+               }
             }
          }
 
@@ -99,8 +150,7 @@ fs_visitor::opt_saturate_propagation()
       progress = opt_saturate_propagation_local(this, block) || progress;
    }
 
-   if (progress)
-      invalidate_live_intervals();
+   /* Live intervals are still valid. */
 
    return progress;
 }

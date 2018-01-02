@@ -30,6 +30,7 @@
  */
 
 #include <string.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -39,29 +40,6 @@
 #include "main/extensions.h"
 #include "utils.h"
 #include "dri_util.h"
-
-
-uint64_t
-driParseDebugString( const char * debug, 
-		     const struct dri_debug_control * control  )
-{
-   uint64_t flag = 0;
-
-   if ( debug != NULL ) {
-      while( control->string != NULL ) {
-	 if ( !strcmp( debug, "all" ) ||
-	      strstr( debug, control->string ) != NULL ) {
-	    flag |= control->flag;
-	 }
-
-	 control++;
-      }
-   }
-
-   return flag;
-}
-
-
 
 /**
  * Create the \c GL_RENDERER string for DRI drivers.
@@ -165,8 +143,10 @@ driGetRendererString( char * buffer, const char * hardware_name,
  * \param msaa_samples  Array of msaa sample count. 0 represents a visual
  *                      without a multisample buffer.
  * \param num_msaa_modes Number of entries in \c msaa_samples.
- * \param visType       GLX visual type.  Usually either \c GLX_TRUE_COLOR or
- *                      \c GLX_DIRECT_COLOR.
+ * \param enable_accum  Add an accum buffer to the configs
+ * \param color_depth_match Whether the color depth must match the zs depth
+ *                          This forces 32-bit color to have 24-bit depth, and
+ *                          16-bit color to have 16-bit depth.
  * 
  * \returns
  * Pointer to any array of pointers to the \c __DRIconfig structures created
@@ -180,7 +160,7 @@ driCreateConfigs(mesa_format format,
 		 unsigned num_depth_stencil_bits,
 		 const GLenum * db_modes, unsigned num_db_modes,
 		 const uint8_t * msaa_samples, unsigned num_msaa_modes,
-		 GLboolean enable_accum)
+		 GLboolean enable_accum, GLboolean color_depth_match)
 {
    static const uint32_t masks_table[][4] = {
       /* MESA_FORMAT_B5G6R5_UNORM */
@@ -193,6 +173,10 @@ driCreateConfigs(mesa_format format,
       { 0x3FF00000, 0x000FFC00, 0x000003FF, 0x00000000 },
       /* MESA_FORMAT_B10G10R10A2_UNORM */
       { 0x3FF00000, 0x000FFC00, 0x000003FF, 0xC0000000 },
+      /* MESA_FORMAT_R8G8B8A8_UNORM */
+      { 0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000 },
+      /* MESA_FORMAT_R8G8B8X8_UNORM */
+      { 0x000000FF, 0x0000FF00, 0x00FF0000, 0x00000000 },
    };
 
    const uint32_t * masks;
@@ -212,11 +196,18 @@ driCreateConfigs(mesa_format format,
       masks = masks_table[0];
       break;
    case MESA_FORMAT_B8G8R8X8_UNORM:
+   case MESA_FORMAT_B8G8R8X8_SRGB:
       masks = masks_table[1];
       break;
    case MESA_FORMAT_B8G8R8A8_UNORM:
    case MESA_FORMAT_B8G8R8A8_SRGB:
       masks = masks_table[2];
+      break;
+   case MESA_FORMAT_R8G8B8A8_UNORM:
+      masks = masks_table[5];
+      break;
+   case MESA_FORMAT_R8G8B8X8_UNORM:
+      masks = masks_table[6];
       break;
    case MESA_FORMAT_B10G10R10X2_UNORM:
       masks = masks_table[3];
@@ -226,7 +217,7 @@ driCreateConfigs(mesa_format format,
       break;
    default:
       fprintf(stderr, "[%s:%u] Unknown framebuffer type %s (%d).\n",
-              __FUNCTION__, __LINE__,
+              __func__, __LINE__,
               _mesa_get_format_name(format), format);
       return NULL;
    }
@@ -238,7 +229,7 @@ driCreateConfigs(mesa_format format,
    is_srgb = _mesa_get_format_color_encoding(format) == GL_SRGB;
 
    num_modes = num_depth_stencil_bits * num_db_modes * num_accum_bits * num_msaa_modes;
-   configs = calloc(1, (num_modes + 1) * sizeof *configs);
+   configs = calloc(num_modes + 1, sizeof *configs);
    if (configs == NULL)
        return NULL;
 
@@ -247,6 +238,19 @@ driCreateConfigs(mesa_format format,
 	for ( i = 0 ; i < num_db_modes ; i++ ) {
 	    for ( h = 0 ; h < num_msaa_modes; h++ ) {
 	    	for ( j = 0 ; j < num_accum_bits ; j++ ) {
+		    if (color_depth_match &&
+			(depth_bits[k] || stencil_bits[k])) {
+			/* Depth can really only be 0, 16, 24, or 32. A 32-bit
+			 * color format still matches 24-bit depth, as there
+			 * is an implicit 8-bit stencil. So really we just
+			 * need to make sure that color/depth are both 16 or
+			 * both non-16.
+			 */
+			if ((depth_bits[k] + stencil_bits[k] == 16) !=
+			    (red_bits + green_bits + blue_bits + alpha_bits == 16))
+			    continue;
+		    }
+
 		    *c = malloc (sizeof **c);
 		    modes = &(*c)->modes;
 		    c++;
@@ -450,7 +454,7 @@ int
 driGetConfigAttrib(const __DRIconfig *config,
 		   unsigned int attrib, unsigned int *value)
 {
-    int i;
+    unsigned i;
 
     for (i = 0; i < ARRAY_SIZE(attribMap); i++)
 	if (attribMap[i].attrib == attrib)
@@ -485,6 +489,7 @@ driIndexConfigAttrib(const __DRIconfig *config, int index,
  * Currently only the following queries are supported by this function:
  *
  *     - \c __DRI2_RENDERER_VERSION
+ *     - \c __DRI2_RENDERER_PREFERRED_PROFILE
  *     - \c __DRI2_RENDERER_OPENGL_CORE_PROFILE_VERSION
  *     - \c __DRI2_RENDERER_OPENGL_COMPATIBLITY_PROFILE_VERSION
  *     - \c __DRI2_RENDERER_ES_PROFILE_VERSION

@@ -23,18 +23,26 @@
 # GLX extension.  All rendering is converted to Xlib calls.  No hardware
 # acceleration.
 
+EXTRA_DIST = SConscript
+
+if HAVE_SHARED_GLAPI
+SHARED_GLAPI_CFLAGS = -DGLX_SHARED_GLAPI
+SHARED_GLAPI_LIB = $(top_builddir)/src/mapi/shared-glapi/libglapi.la
+endif
+
 AM_CPPFLAGS = \
 	-I$(top_srcdir)/include \
 	-I$(top_srcdir)/src/mapi \
 	-I$(top_srcdir)/src/mesa \
 	-I$(top_srcdir)/src \
+	-I$(top_srcdir)/src/gallium/include \
+	-I$(top_srcdir)/src/gallium/auxiliary \
 	-I$(top_srcdir)/src/mesa/main \
 	$(X11_INCLUDES) \
+	$(SHARED_GLAPI_CFLAGS) \
 	$(DEFINES)
 
-if HAVE_X11_DRIVER
 lib_LTLIBRARIES = lib@GL_LIB@.la
-endif
 
 lib@GL_LIB@_la_SOURCES = \
 	glxapi.h \
@@ -47,6 +55,8 @@ lib@GL_LIB@_la_SOURCES = \
 	xm_api.c \
 	xm_buffer.c \
 	xm_dd.c \
+	xmesa.h \
+	xmesa_x.h \
 	xm_line.c \
 	xm_tri.c
 
@@ -60,6 +70,7 @@ GL_PATCH = 0
 lib@GL_LIB@_la_LIBADD = \
 	$(top_builddir)/src/mesa/libmesa.la \
 	$(top_builddir)/src/mapi/glapi/libglapi.la \
+	$(SHARED_GLAPI_LIB) \
 	$(GL_LIB_DEPS)
 
 lib@GL_LIB@_la_LDFLAGS = \

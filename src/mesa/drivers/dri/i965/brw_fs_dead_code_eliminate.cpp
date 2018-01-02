@@ -43,71 +43,86 @@ fs_visitor::dead_code_eliminate()
 
    int num_vars = live_intervals->num_vars;
    BITSET_WORD *live = ralloc_array(NULL, BITSET_WORD, BITSET_WORDS(num_vars));
+   BITSET_WORD *flag_live = ralloc_array(NULL, BITSET_WORD, 1);
 
-   foreach_block (block, cfg) {
-      memcpy(live, live_intervals->bd[block->num].liveout,
+   foreach_block_reverse_safe(block, cfg) {
+      memcpy(live, live_intervals->block_data[block->num].liveout,
              sizeof(BITSET_WORD) * BITSET_WORDS(num_vars));
+      memcpy(flag_live, live_intervals->block_data[block->num].flag_liveout,
+             sizeof(BITSET_WORD));
 
-      foreach_inst_in_block_reverse(fs_inst, inst, block) {
-         if (inst->dst.file == GRF &&
-             !inst->has_side_effects() &&
-             !inst->writes_flag()) {
+      foreach_inst_in_block_reverse_safe(fs_inst, inst, block) {
+         if (inst->dst.file == VGRF && !inst->has_side_effects()) {
+            const unsigned var = live_intervals->var_from_reg(inst->dst);
             bool result_live = false;
 
-            if (inst->regs_written == 1) {
-               int var = live_intervals->var_from_reg(&inst->dst);
-               result_live = BITSET_TEST(live, var);
-            } else {
-               int var = live_intervals->var_from_vgrf[inst->dst.reg];
-               for (int i = 0; i < inst->regs_written; i++) {
-                  result_live = result_live || BITSET_TEST(live, var + i);
-               }
-            }
+            for (unsigned i = 0; i < regs_written(inst); i++)
+               result_live |= BITSET_TEST(live, var + i);
 
             if (!result_live) {
                progress = true;
 
-               if (inst->writes_accumulator) {
+               if (inst->writes_accumulator || inst->flags_written()) {
                   inst->dst = fs_reg(retype(brw_null_reg(), inst->dst.type));
                } else {
                   inst->opcode = BRW_OPCODE_NOP;
-                  continue;
                }
             }
          }
 
-         if (inst->dst.file == GRF) {
+         if (inst->dst.is_null() && inst->flags_written()) {
+            if (!(flag_live[0] & inst->flags_written())) {
+               inst->opcode = BRW_OPCODE_NOP;
+               progress = true;
+            }
+         }
+
+         if ((inst->opcode != BRW_OPCODE_IF &&
+              inst->opcode != BRW_OPCODE_WHILE) &&
+             inst->dst.is_null() &&
+             !inst->has_side_effects() &&
+             !inst->flags_written() &&
+             !inst->writes_accumulator) {
+            inst->opcode = BRW_OPCODE_NOP;
+            progress = true;
+         }
+
+         if (inst->dst.file == VGRF) {
             if (!inst->is_partial_write()) {
-               int var = live_intervals->var_from_vgrf[inst->dst.reg];
-               for (int i = 0; i < inst->regs_written; i++) {
-                  BITSET_CLEAR(live, var + inst->dst.reg_offset + i);
+               int var = live_intervals->var_from_reg(inst->dst);
+               for (unsigned i = 0; i < regs_written(inst); i++) {
+                  BITSET_CLEAR(live, var + i);
                }
             }
+         }
+
+         if (!inst->predicate && inst->exec_size >= 8)
+            flag_live[0] &= ~inst->flags_written();
+
+         if (inst->opcode == BRW_OPCODE_NOP) {
+            inst->remove(block);
+            continue;
          }
 
          for (int i = 0; i < inst->sources; i++) {
-            if (inst->src[i].file == GRF) {
-               int var = live_intervals->var_from_vgrf[inst->src[i].reg];
+            if (inst->src[i].file == VGRF) {
+               int var = live_intervals->var_from_reg(inst->src[i]);
 
-               for (int j = 0; j < inst->regs_read(this, i); j++) {
-                  BITSET_SET(live, var + inst->src[i].reg_offset + j);
+               for (unsigned j = 0; j < regs_read(inst, i); j++) {
+                  BITSET_SET(live, var + j);
                }
             }
          }
+
+         flag_live[0] |= inst->flags_read(devinfo);
       }
    }
 
    ralloc_free(live);
+   ralloc_free(flag_live);
 
-   if (progress) {
-      foreach_in_list_safe(fs_inst, inst, &instructions) {
-         if (inst->opcode == BRW_OPCODE_NOP) {
-            inst->remove();
-         }
-      }
-
+   if (progress)
       invalidate_live_intervals();
-   }
 
    return progress;
 }

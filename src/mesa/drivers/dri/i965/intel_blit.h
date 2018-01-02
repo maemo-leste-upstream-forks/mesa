@@ -1,5 +1,4 @@
-/**************************************************************************
- *
+/*
  * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
  *
@@ -7,7 +6,7 @@
  * copy of this software and associated documentation files (the
  * "Software"), to deal in the Software without restriction, including
  * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sub license, and/or sell copies of the Software, and to
+ * distribute, sublicense, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to
  * the following conditions:
  *
@@ -17,13 +16,12 @@
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
  * IN NO EVENT SHALL VMWARE AND/OR ITS SUPPLIERS BE LIABLE FOR
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
- **************************************************************************/
+ */
 
 #ifndef INTEL_BLIT_H
 #define INTEL_BLIT_H
@@ -32,19 +30,23 @@
 
 bool
 intelEmitCopyBlit(struct brw_context *brw,
-                              GLuint cpp,
-                              GLshort src_pitch,
-                              drm_intel_bo *src_buffer,
-                              GLuint src_offset,
-			      uint32_t src_tiling,
-                              GLshort dst_pitch,
-                              drm_intel_bo *dst_buffer,
-                              GLuint dst_offset,
-			      uint32_t dst_tiling,
-                              GLshort srcx, GLshort srcy,
-                              GLshort dstx, GLshort dsty,
-                              GLshort w, GLshort h,
-			      GLenum logicop );
+                  GLuint cpp,
+                  GLshort src_pitch,
+                  drm_intel_bo *src_buffer,
+                  GLuint src_offset,
+                  uint32_t src_tiling,
+                  uint32_t src_tr_mode,
+                  GLshort dst_pitch,
+                  drm_intel_bo *dst_buffer,
+                  GLuint dst_offset,
+                  uint32_t dst_tiling,
+                  uint32_t dst_tr_mode,
+                  GLshort srcx, GLshort srcy,
+                  GLshort dstx, GLshort dsty,
+                  GLshort w, GLshort h,
+                  GLenum logicop);
+
+bool intel_miptree_blit_compatible_formats(mesa_format src, mesa_format dst);
 
 bool intel_miptree_blit(struct brw_context *brw,
                         struct intel_mipmap_tree *src_mt,

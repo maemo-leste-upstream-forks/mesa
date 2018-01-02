@@ -27,6 +27,7 @@
 
 
 #include "main/context.h"
+#include "main/viewport.h"
 #include "st_context.h"
 #include "st_atom.h"
 #include "pipe/p_context.h"
@@ -43,7 +44,7 @@ update_viewport( struct st_context *st )
 {
    struct gl_context *ctx = st->ctx;
    GLfloat yScale, yBias;
-   int i;
+   unsigned i;
    /* _NEW_BUFFERS
     */
    if (st_fb_orientation(ctx->DrawBuffer) == Y_0_TOP) {
@@ -63,22 +64,16 @@ update_viewport( struct st_context *st )
     */
    for (i = 0; i < ctx->Const.MaxViewports; i++)
    {
-      GLfloat x = ctx->ViewportArray[i].X;
-      GLfloat y = ctx->ViewportArray[i].Y;
-      GLfloat z = ctx->ViewportArray[i].Near;
-      GLfloat half_width = ctx->ViewportArray[i].Width * 0.5f;
-      GLfloat half_height = ctx->ViewportArray[i].Height * 0.5f;
-      GLfloat half_depth = (GLfloat)(ctx->ViewportArray[i].Far - ctx->ViewportArray[i].Near) * 0.5f;
-      
-      st->state.viewport[i].scale[0] = half_width;
-      st->state.viewport[i].scale[1] = half_height * yScale;
-      st->state.viewport[i].scale[2] = half_depth;
-      st->state.viewport[i].scale[3] = 1.0;
+      float scale[3], translate[3];
+      _mesa_get_viewport_xform(ctx, i, scale, translate);
 
-      st->state.viewport[i].translate[0] = half_width + x;
-      st->state.viewport[i].translate[1] = (half_height + y) * yScale + yBias;
-      st->state.viewport[i].translate[2] = half_depth + z;
-      st->state.viewport[i].translate[3] = 0.0;
+      st->state.viewport[i].scale[0] = scale[0];
+      st->state.viewport[i].scale[1] = scale[1] * yScale;
+      st->state.viewport[i].scale[2] = scale[2];
+
+      st->state.viewport[i].translate[0] = translate[0];
+      st->state.viewport[i].translate[1] = translate[1] * yScale + yBias;
+      st->state.viewport[i].translate[2] = translate[2];
    }
 
    cso_set_viewport(st->cso_context, &st->state.viewport[0]);
@@ -88,10 +83,5 @@ update_viewport( struct st_context *st )
 
 
 const struct st_tracked_state st_update_viewport = {
-   "st_update_viewport",				/* name */
-   {							/* dirty */
-      _NEW_BUFFERS | _NEW_VIEWPORT,			/* mesa */
-      0,						/* st */
-   },
    update_viewport					/* update */
 };

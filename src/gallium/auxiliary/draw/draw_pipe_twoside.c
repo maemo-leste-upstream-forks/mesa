@@ -43,7 +43,7 @@ struct twoside_stage {
 };
 
 
-static INLINE struct twoside_stage *twoside_stage( struct draw_stage *stage )
+static inline struct twoside_stage *twoside_stage( struct draw_stage *stage )
 {
    return (struct twoside_stage *)stage;
 }
@@ -51,7 +51,7 @@ static INLINE struct twoside_stage *twoside_stage( struct draw_stage *stage )
 /**
  * Copy back color(s) to front color(s).
  */
-static INLINE struct vertex_header *
+static inline struct vertex_header *
 copy_bfc( struct twoside_stage *twoside, 
           const struct vertex_header *v,
           unsigned idx )
@@ -165,7 +165,7 @@ static void twoside_destroy( struct draw_stage *stage )
 struct draw_stage *draw_twoside_stage( struct draw_context *draw )
 {
    struct twoside_stage *twoside = CALLOC_STRUCT(twoside_stage);
-   if (twoside == NULL)
+   if (!twoside)
       goto fail;
 
    twoside->stage.draw = draw;

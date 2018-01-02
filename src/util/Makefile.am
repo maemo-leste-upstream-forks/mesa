@@ -25,17 +25,37 @@ include Makefile.sources
 
 noinst_LTLIBRARIES = libmesautil.la
 
+AM_CPPFLAGS = \
+	-I$(top_srcdir)/include
+
 libmesautil_la_CPPFLAGS = \
 	$(DEFINES) \
 	-I$(top_srcdir)/include \
-	$(VISIBILITY_CFLAGS)
+	-I$(top_srcdir)/src \
+	-I$(top_srcdir)/src/mapi \
+	-I$(top_srcdir)/src/mesa \
+	-I$(top_srcdir)/src/gallium/include \
+	-I$(top_srcdir)/src/gallium/auxiliary \
+	$(SHA1_CFLAGS) \
+	$(VISIBILITY_CFLAGS) \
+	$(MSVC2013_COMPAT_CFLAGS)
 
 libmesautil_la_SOURCES = \
 	$(MESA_UTIL_FILES) \
 	$(MESA_UTIL_GENERATED_FILES)
 
+libmesautil_la_LIBADD = $(SHA1_LIBS)
+
+roundeven_test_LDADD = -lm
+
+check_PROGRAMS = u_atomic_test roundeven_test
+TESTS = $(check_PROGRAMS)
+
 BUILT_SOURCES = $(MESA_UTIL_GENERATED_FILES)
 CLEANFILES = $(BUILT_SOURCES)
+EXTRA_DIST = format_srgb.py SConscript
 
-format_srgb.c: $(srcdir)/format_srgb.py
-	$(AM_V_GEN) $(PYTHON2) $< > $@
+PYTHON_GEN = $(AM_V_GEN)$(PYTHON2) $(PYTHON_FLAGS)
+
+format_srgb.c: format_srgb.py
+	$(PYTHON_GEN) $(srcdir)/format_srgb.py > $@

@@ -83,11 +83,11 @@ static const struct opProperties _initProps[] =
 {
    //           neg  abs  not  sat  c[]  s[], a[], imm
    { OP_ADD,    0x3, 0x0, 0x0, 0x8, 0x2, 0x1, 0x1, 0x2 },
-   { OP_SUB,    0x3, 0x0, 0x0, 0x0, 0x2, 0x1, 0x1, 0x2 },
+   { OP_SUB,    0x3, 0x0, 0x0, 0x8, 0x2, 0x1, 0x1, 0x2 },
    { OP_MUL,    0x3, 0x0, 0x0, 0x0, 0x2, 0x1, 0x1, 0x2 },
    { OP_MAX,    0x3, 0x3, 0x0, 0x0, 0x2, 0x1, 0x1, 0x0 },
    { OP_MIN,    0x3, 0x3, 0x0, 0x0, 0x2, 0x1, 0x1, 0x0 },
-   { OP_MAD,    0x7, 0x0, 0x0, 0x0, 0x6, 0x1, 0x1, 0x0 }, // special constraint
+   { OP_MAD,    0x7, 0x0, 0x0, 0x8, 0x6, 0x1, 0x1, 0x0 }, // special constraint
    { OP_ABS,    0x0, 0x0, 0x0, 0x0, 0x0, 0x1, 0x1, 0x0 },
    { OP_NEG,    0x0, 0x1, 0x0, 0x0, 0x0, 0x1, 0x1, 0x0 },
    { OP_CVT,    0x1, 0x1, 0x0, 0x8, 0x0, 0x1, 0x1, 0x0 },
@@ -99,6 +99,7 @@ static const struct opProperties _initProps[] =
    { OP_SET,    0x3, 0x3, 0x0, 0x0, 0x2, 0x1, 0x1, 0x0 },
    { OP_PREEX2, 0x1, 0x1, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0 },
    { OP_PRESIN, 0x1, 0x1, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0 },
+   { OP_EX2,    0x0, 0x0, 0x0, 0x8, 0x0, 0x0, 0x0, 0x0 },
    { OP_LG2,    0x1, 0x1, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0 },
    { OP_RCP,    0x1, 0x1, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0 },
    { OP_RSQ,    0x1, 0x1, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0 },
@@ -112,13 +113,14 @@ void TargetNV50::initOpInfo()
 
    static const uint32_t commutative[(OP_LAST + 31) / 32] =
    {
-      // ADD,MAD,MUL,AND,OR,XOR,MAX,MIN
-      0x0670ca00, 0x0000003f, 0x00000000, 0x00000000
+      // ADD, MUL, MAD, FMA, AND, OR, XOR, MAX, MIN, SET_AND, SET_OR, SET_XOR,
+      // SET, SELP, SLCT
+      0x0ce0ca00, 0x0000007e, 0x00000000, 0x00000000
    };
    static const uint32_t shortForm[(OP_LAST + 31) / 32] =
    {
-      // MOV,ADD,SUB,MUL,SAD,L/PINTERP,RCP,TEX,TXF
-      0x00010e40, 0x00000040, 0x00000498, 0x00000000
+      // MOV, ADD, SUB, MUL, MAD, SAD, RCP, L/PINTERP, TEX, TXF
+      0x00014e40, 0x00000080, 0x00001260, 0x00000000
    };
    static const operation noDestList[] =
    {
@@ -188,6 +190,9 @@ void TargetNV50::initOpInfo()
       if (prop->mSat & 8)
          opInfo[prop->op].dstMods = NV50_IR_MOD_SAT;
    }
+
+   if (chipset >= 0xa0)
+      opInfo[OP_MUL].dstMods = NV50_IR_MOD_SAT;
 }
 
 unsigned int
@@ -203,6 +208,7 @@ TargetNV50::getFileSize(DataFile file) const
    case FILE_MEMORY_CONST:  return 65536;
    case FILE_SHADER_INPUT:  return 0x200;
    case FILE_SHADER_OUTPUT: return 0x200;
+   case FILE_MEMORY_BUFFER: return 0xffffffff;
    case FILE_MEMORY_GLOBAL: return 0xffffffff;
    case FILE_MEMORY_SHARED: return 16 << 10;
    case FILE_MEMORY_LOCAL:  return 48 << 10;
@@ -264,6 +270,12 @@ TargetNV50::insnCanLoad(const Instruction *i, int s,
                         const Instruction *ld) const
 {
    DataFile sf = ld->src(0).getFile();
+
+   // immediate 0 can be represented by GPR $r63/$r127
+   if (sf == FILE_IMMEDIATE && ld->getSrc(0)->reg.data.u64 == 0)
+      return (!i->isPseudo() &&
+              !i->asTex() &&
+              i->op != OP_EXPORT && i->op != OP_STORE);
 
    if (sf == FILE_IMMEDIATE && (i->predSrc >= 0 || i->flagsDef >= 0))
       return false;
@@ -340,7 +352,7 @@ TargetNV50::insnCanLoad(const Instruction *i, int s,
    }
 
    if (sf == FILE_IMMEDIATE)
-      return true;
+      return ldSize <= 4;
 
 
    // Check if memory access is encodable:
@@ -376,12 +388,28 @@ TargetNV50::insnCanLoad(const Instruction *i, int s,
 }
 
 bool
+TargetNV50::insnCanLoadOffset(const Instruction *i, int s, int offset) const
+{
+   if (!i->src(s).isIndirect(0))
+      return true;
+   offset += i->src(s).get()->reg.data.offset;
+   if (i->op == OP_LOAD || i->op == OP_STORE) {
+      // There are some restrictions in theory, but in practice they're never
+      // going to be hit. When we enable shared/global memory, this will
+      // become more important.
+      return true;
+   }
+   return offset >= 0 && offset <= (int32_t)(127 * i->src(s).get()->reg.size);
+}
+
+bool
 TargetNV50::isAccessSupported(DataFile file, DataType ty) const
 {
    if (ty == TYPE_B96 || ty == TYPE_NONE)
       return false;
    if (typeSizeof(ty) > 4)
-      return (file == FILE_MEMORY_LOCAL) || (file == FILE_MEMORY_GLOBAL);
+      return (file == FILE_MEMORY_LOCAL) || (file == FILE_MEMORY_GLOBAL) ||
+             (file == FILE_MEMORY_BUFFER);
    return true;
 }
 
@@ -410,9 +438,12 @@ TargetNV50::isOpSupported(operation op, DataType ty) const
    case OP_EXTBF:
    case OP_EXIT: // want exit modifier instead (on NOP if required)
    case OP_MEMBAR:
+   case OP_SHLADD:
       return false;
    case OP_SAD:
       return ty == TYPE_S32;
+   case OP_SET:
+      return !isFloatType(ty);
    default:
       return true;
    }
@@ -449,7 +480,7 @@ TargetNV50::isModSupported(const Instruction *insn, int s, Modifier mod) const
          return false;
       }
    }
-   if (s >= 3)
+   if (s >= opInfo[insn->op].srcNr || s >= 3)
       return false;
    return (mod & Modifier(opInfo[insn->op].srcMods[s])) == mod;
 }
@@ -482,6 +513,7 @@ int TargetNV50::getLatency(const Instruction *i) const
       switch (i->src(0).getFile()) {
       case FILE_MEMORY_LOCAL:
       case FILE_MEMORY_GLOBAL:
+      case FILE_MEMORY_BUFFER:
          return 100; // really 400 to 800
       default:
          return 22;
@@ -562,6 +594,8 @@ TargetNV50::parseDriverInfo(const struct nv50_ir_prog_info *info)
       wposMask = 0x8;
       sysvalLocation[SV_POSITION] = 0;
    }
+
+   Target::parseDriverInfo(info);
 }
 
 } // namespace nv50_ir

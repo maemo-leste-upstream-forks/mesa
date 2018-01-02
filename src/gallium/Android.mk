@@ -27,13 +27,16 @@ GALLIUM_TOP := $(call my-dir)
 GALLIUM_COMMON_MK := $(GALLIUM_TOP)/Android.common.mk
 
 SUBDIRS := auxiliary
+SUBDIRS += auxiliary/pipe-loader
 
 #
 # Gallium drivers and their respective winsys
 #
 
 # swrast
-SUBDIRS += winsys/sw/android drivers/softpipe
+ifneq ($(filter swrast,$(MESA_GPU_DRIVERS)),)
+SUBDIRS += winsys/sw/dri drivers/softpipe
+endif
 
 # freedreno
 ifneq ($(filter freedreno, $(MESA_GPU_DRIVERS)),)
@@ -70,8 +73,19 @@ SUBDIRS += drivers/r600
 endif
 ifneq ($(filter radeonsi, $(MESA_GPU_DRIVERS)),)
 SUBDIRS += drivers/radeonsi
+SUBDIRS += winsys/amdgpu/drm
 endif
 endif
+endif
+
+# vc4
+ifneq ($(filter vc4, $(MESA_GPU_DRIVERS)),)
+SUBDIRS += winsys/vc4/drm drivers/vc4
+endif
+
+# virgl
+ifneq ($(filter virgl, $(MESA_GPU_DRIVERS)),)
+SUBDIRS += winsys/virgl/drm winsys/virgl/vtest drivers/virgl
 endif
 
 # vmwgfx
@@ -79,10 +93,7 @@ ifneq ($(filter vmwgfx, $(MESA_GPU_DRIVERS)),)
 SUBDIRS += winsys/svga/drm drivers/svga
 endif
 
-#
-# Gallium state trackers and their users (targets)
-#
-SUBDIRS += state_trackers/egl targets/egl-static
+# Gallium state trackers and target for dri
+SUBDIRS += state_trackers/dri targets/dri
 
-mkfiles := $(patsubst %,$(GALLIUM_TOP)/%/Android.mk,$(SUBDIRS))
-include $(mkfiles)
+include $(call all-named-subdir-makefiles,$(SUBDIRS))

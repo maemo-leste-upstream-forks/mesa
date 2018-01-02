@@ -43,8 +43,8 @@
 #define BRW_REG_H
 
 #include <stdbool.h>
-#include "main/imports.h"
 #include "main/compiler.h"
+#include "main/macros.h"
 #include "program/prog_instruction.h"
 #include "brw_defines.h"
 
@@ -52,7 +52,7 @@
 extern "C" {
 #endif
 
-struct brw_context;
+struct gen_device_info;
 
 /** Number of general purpose registers (VS, WM, etc) */
 #define BRW_MAX_GRF 128
@@ -69,7 +69,7 @@ struct brw_context;
 #define GEN7_MRF_HACK_START 112
 
 /** Number of message register file registers */
-#define BRW_MAX_MRF 16
+#define BRW_MAX_MRF(gen) (gen == 6 ? 24 : 16)
 
 #define BRW_SWIZZLE4(a,b,c,d) (((a)<<0) | ((b)<<2) | ((c)<<4) | ((d)<<6))
 #define BRW_GET_SWZ(swz, idx) (((swz) >> ((idx)*2)) & 0x3)
@@ -81,17 +81,120 @@ struct brw_context;
 #define BRW_SWIZZLE_ZZZZ      BRW_SWIZZLE4(2,2,2,2)
 #define BRW_SWIZZLE_WWWW      BRW_SWIZZLE4(3,3,3,3)
 #define BRW_SWIZZLE_XYXY      BRW_SWIZZLE4(0,1,0,1)
+#define BRW_SWIZZLE_XZXZ      BRW_SWIZZLE4(0,2,0,2)
 #define BRW_SWIZZLE_YZXW      BRW_SWIZZLE4(1,2,0,3)
+#define BRW_SWIZZLE_YWYW      BRW_SWIZZLE4(1,3,1,3)
 #define BRW_SWIZZLE_ZXYW      BRW_SWIZZLE4(2,0,1,3)
 #define BRW_SWIZZLE_ZWZW      BRW_SWIZZLE4(2,3,2,3)
+#define BRW_SWIZZLE_WZYX      BRW_SWIZZLE4(3,2,1,0)
+
+#define BRW_SWZ_COMP_INPUT(comp) (BRW_SWIZZLE_XYZW >> ((comp)*2))
+#define BRW_SWZ_COMP_OUTPUT(comp) (BRW_SWIZZLE_XYZW << ((comp)*2))
 
 static inline bool
-brw_is_single_value_swizzle(int swiz)
+brw_is_single_value_swizzle(unsigned swiz)
 {
    return (swiz == BRW_SWIZZLE_XXXX ||
            swiz == BRW_SWIZZLE_YYYY ||
            swiz == BRW_SWIZZLE_ZZZZ ||
            swiz == BRW_SWIZZLE_WWWW);
+}
+
+/**
+ * Compute the swizzle obtained from the application of \p swz0 on the result
+ * of \p swz1.  The argument ordering is expected to match function
+ * composition.
+ */
+static inline unsigned
+brw_compose_swizzle(unsigned swz0, unsigned swz1)
+{
+   return BRW_SWIZZLE4(
+      BRW_GET_SWZ(swz1, BRW_GET_SWZ(swz0, 0)),
+      BRW_GET_SWZ(swz1, BRW_GET_SWZ(swz0, 1)),
+      BRW_GET_SWZ(swz1, BRW_GET_SWZ(swz0, 2)),
+      BRW_GET_SWZ(swz1, BRW_GET_SWZ(swz0, 3)));
+}
+
+/**
+ * Return the result of applying swizzle \p swz to shuffle the bits of \p mask
+ * (AKA image).
+ */
+static inline unsigned
+brw_apply_swizzle_to_mask(unsigned swz, unsigned mask)
+{
+   unsigned result = 0;
+
+   for (unsigned i = 0; i < 4; i++) {
+      if (mask & (1 << BRW_GET_SWZ(swz, i)))
+         result |= 1 << i;
+   }
+
+   return result;
+}
+
+/**
+ * Return the result of applying the inverse of swizzle \p swz to shuffle the
+ * bits of \p mask (AKA preimage).  Useful to find out which components are
+ * read from a swizzled source given the instruction writemask.
+ */
+static inline unsigned
+brw_apply_inv_swizzle_to_mask(unsigned swz, unsigned mask)
+{
+   unsigned result = 0;
+
+   for (unsigned i = 0; i < 4; i++) {
+      if (mask & (1 << i))
+         result |= 1 << BRW_GET_SWZ(swz, i);
+   }
+
+   return result;
+}
+
+/**
+ * Construct an identity swizzle for the set of enabled channels given by \p
+ * mask.  The result will only reference channels enabled in the provided \p
+ * mask, assuming that \p mask is non-zero.  The constructed swizzle will
+ * satisfy the property that for any instruction OP and any mask:
+ *
+ *    brw_OP(p, brw_writemask(dst, mask),
+ *           brw_swizzle(src, brw_swizzle_for_mask(mask)));
+ *
+ * will be equivalent to the same instruction without swizzle:
+ *
+ *    brw_OP(p, brw_writemask(dst, mask), src);
+ */
+static inline unsigned
+brw_swizzle_for_mask(unsigned mask)
+{
+   unsigned last = (mask ? ffs(mask) - 1 : 0);
+   unsigned swz[4];
+
+   for (unsigned i = 0; i < 4; i++)
+      last = swz[i] = (mask & (1 << i) ? i : last);
+
+   return BRW_SWIZZLE4(swz[0], swz[1], swz[2], swz[3]);
+}
+
+/**
+ * Construct an identity swizzle for the first \p n components of a vector.
+ * When only a subset of channels of a vec4 are used we don't want to
+ * reference the other channels, as that will tell optimization passes that
+ * those other channels are used.
+ */
+static inline unsigned
+brw_swizzle_for_size(unsigned n)
+{
+   return brw_swizzle_for_mask((1 << n) - 1);
+}
+
+/**
+ * Converse of brw_swizzle_for_mask().  Returns the mask of components
+ * accessed by the specified swizzle \p swz.
+ */
+static inline unsigned
+brw_mask_for_swizzle(unsigned swz)
+{
+   return brw_apply_inv_swizzle_to_mask(swz, ~0);
 }
 
 enum PACKED brw_reg_type {
@@ -107,7 +210,7 @@ enum PACKED brw_reg_type {
    /** @} */
 
    /** Immediates only: @{ */
-   BRW_REGISTER_TYPE_UV,
+   BRW_REGISTER_TYPE_UV, /* Gen6+ */
    BRW_REGISTER_TYPE_V,
    BRW_REGISTER_TYPE_VF,
    /** @} */
@@ -120,9 +223,10 @@ enum PACKED brw_reg_type {
    BRW_REGISTER_TYPE_Q,
 };
 
-unsigned brw_reg_type_to_hw_type(const struct brw_context *brw,
-                                 enum brw_reg_type type, unsigned file);
+unsigned brw_reg_type_to_hw_type(const struct gen_device_info *devinfo,
+                                 enum brw_reg_type type, enum brw_reg_file file);
 const char *brw_reg_type_letters(unsigned brw_reg_type);
+uint32_t brw_swizzle_immediate(enum brw_reg_type type, uint32_t x, unsigned swz);
 
 #define REG_SIZE (8*4)
 
@@ -133,32 +237,45 @@ const char *brw_reg_type_letters(unsigned brw_reg_type);
  * or "structure of array" form:
  */
 struct brw_reg {
-   enum brw_reg_type type:4;
-   unsigned file:2;
-   unsigned nr:8;
-   unsigned subnr:5;              /* :1 in align16 */
-   unsigned negate:1;             /* source only */
-   unsigned abs:1;                /* source only */
-   unsigned vstride:4;            /* source only */
-   unsigned width:3;              /* src only, align1 only */
-   unsigned hstride:2;            /* align1 only */
-   unsigned address_mode:1;       /* relative addressing, hopefully! */
-   unsigned pad0:1;
+   union {
+      struct {
+         enum brw_reg_type type:4;
+         enum brw_reg_file file:3;      /* :2 hardware format */
+         unsigned negate:1;             /* source only */
+         unsigned abs:1;                /* source only */
+         unsigned address_mode:1;       /* relative addressing, hopefully! */
+         unsigned pad0:1;
+         unsigned subnr:5;              /* :1 in align16 */
+         unsigned nr:16;
+      };
+      uint32_t bits;
+   };
 
    union {
       struct {
          unsigned swizzle:8;      /* src only, align16 only */
          unsigned writemask:4;    /* dest only, align16 only */
          int  indirect_offset:10; /* relative addressing offset */
-         unsigned pad1:10;        /* two dwords total */
-      } bits;
+         unsigned vstride:4;      /* source only */
+         unsigned width:3;        /* src only, align1 only */
+         unsigned hstride:2;      /* align1 only */
+         unsigned pad1:1;
+      };
 
+      double df;
+      uint64_t u64;
       float f;
       int   d;
       unsigned ud;
-   } dw1;
+   };
 };
 
+static inline bool
+brw_regs_equal(const struct brw_reg *a, const struct brw_reg *b)
+{
+   const bool df = a->type == BRW_REGISTER_TYPE_DF && a->file == IMM;
+   return a->bits == b->bits && (df ? a->u64 == b->u64 : a->ud == b->ud);
+}
 
 struct brw_indirect {
    unsigned addr_subnr:4;
@@ -167,49 +284,50 @@ struct brw_indirect {
 };
 
 
-static inline int
+static inline unsigned
 type_sz(unsigned type)
 {
    switch(type) {
+   case BRW_REGISTER_TYPE_UQ:
+   case BRW_REGISTER_TYPE_Q:
+   case BRW_REGISTER_TYPE_DF:
+      return 8;
    case BRW_REGISTER_TYPE_UD:
    case BRW_REGISTER_TYPE_D:
    case BRW_REGISTER_TYPE_F:
+   case BRW_REGISTER_TYPE_VF:
       return 4;
    case BRW_REGISTER_TYPE_UW:
    case BRW_REGISTER_TYPE_W:
+   case BRW_REGISTER_TYPE_UV:
+   case BRW_REGISTER_TYPE_V:
+   case BRW_REGISTER_TYPE_HF:
       return 2;
    case BRW_REGISTER_TYPE_UB:
    case BRW_REGISTER_TYPE_B:
       return 1;
    default:
-      return 0;
+      unreachable("not reached");
    }
 }
 
-static inline bool
-type_is_signed(unsigned type)
+/**
+ * Return an integer type of the requested size and signedness.
+ */
+static inline enum brw_reg_type
+brw_int_type(unsigned sz, bool is_signed)
 {
-   switch(type) {
-   case BRW_REGISTER_TYPE_D:
-   case BRW_REGISTER_TYPE_W:
-   case BRW_REGISTER_TYPE_F:
-   case BRW_REGISTER_TYPE_B:
-   case BRW_REGISTER_TYPE_V:
-   case BRW_REGISTER_TYPE_VF:
-   case BRW_REGISTER_TYPE_DF:
-   case BRW_REGISTER_TYPE_HF:
-   case BRW_REGISTER_TYPE_Q:
-      return true;
-
-   case BRW_REGISTER_TYPE_UD:
-   case BRW_REGISTER_TYPE_UW:
-   case BRW_REGISTER_TYPE_UB:
-   case BRW_REGISTER_TYPE_UV:
-   case BRW_REGISTER_TYPE_UQ:
-      return false;
-
+   switch (sz) {
+   case 1:
+      return (is_signed ? BRW_REGISTER_TYPE_B : BRW_REGISTER_TYPE_UB);
+   case 2:
+      return (is_signed ? BRW_REGISTER_TYPE_W : BRW_REGISTER_TYPE_UW);
+   case 4:
+      return (is_signed ? BRW_REGISTER_TYPE_D : BRW_REGISTER_TYPE_UD);
+   case 8:
+      return (is_signed ? BRW_REGISTER_TYPE_Q : BRW_REGISTER_TYPE_UQ);
    default:
-      unreachable("not reached");
+      unreachable("Not reached.");
    }
 }
 
@@ -218,6 +336,8 @@ type_is_signed(unsigned type)
  * \param file      one of the BRW_x_REGISTER_FILE values
  * \param nr        register number/index
  * \param subnr     register sub number
+ * \param negate    register negate modifier
+ * \param abs       register abs modifier
  * \param type      one of BRW_REGISTER_TYPE_x
  * \param vstride   one of BRW_VERTICAL_STRIDE_x
  * \param width     one of BRW_WIDTH_x
@@ -226,9 +346,11 @@ type_is_signed(unsigned type)
  * \param writemask WRITEMASK_X/Y/Z/W bitfield
  */
 static inline struct brw_reg
-brw_reg(unsigned file,
+brw_reg(enum brw_reg_file file,
         unsigned nr,
         unsigned subnr,
+        unsigned negate,
+        unsigned abs,
         enum brw_reg_type type,
         unsigned vstride,
         unsigned width,
@@ -239,22 +361,21 @@ brw_reg(unsigned file,
    struct brw_reg reg;
    if (file == BRW_GENERAL_REGISTER_FILE)
       assert(nr < BRW_MAX_GRF);
-   else if (file == BRW_MESSAGE_REGISTER_FILE)
-      assert((nr & ~(1 << 7)) < BRW_MAX_MRF);
    else if (file == BRW_ARCHITECTURE_REGISTER_FILE)
       assert(nr <= BRW_ARF_TIMESTAMP);
+   /* Asserting on the MRF register number requires to know the hardware gen
+    * (gen6 has 24 MRF registers), which we don't know here, so we assert
+    * for that in the generators and in brw_eu_emit.c
+    */
 
    reg.type = type;
    reg.file = file;
-   reg.nr = nr;
-   reg.subnr = subnr * type_sz(type);
-   reg.negate = 0;
-   reg.abs = 0;
-   reg.vstride = vstride;
-   reg.width = width;
-   reg.hstride = hstride;
+   reg.negate = negate;
+   reg.abs = abs;
    reg.address_mode = BRW_ADDRESS_DIRECT;
    reg.pad0 = 0;
+   reg.subnr = subnr * type_sz(type);
+   reg.nr = nr;
 
    /* Could do better: If the reg is r5.3<0;1,0>, we probably want to
     * set swizzle and writemask to W, as the lower bits of subnr will
@@ -262,20 +383,25 @@ brw_reg(unsigned file,
     * keep track of as you'd want it adjusted by suboffset(), etc.
     * Perhaps fix up when converting to align16?
     */
-   reg.dw1.bits.swizzle = swizzle;
-   reg.dw1.bits.writemask = writemask;
-   reg.dw1.bits.indirect_offset = 0;
-   reg.dw1.bits.pad1 = 0;
+   reg.swizzle = swizzle;
+   reg.writemask = writemask;
+   reg.indirect_offset = 0;
+   reg.vstride = vstride;
+   reg.width = width;
+   reg.hstride = hstride;
+   reg.pad1 = 0;
    return reg;
 }
 
 /** Construct float[16] register */
 static inline struct brw_reg
-brw_vec16_reg(unsigned file, unsigned nr, unsigned subnr)
+brw_vec16_reg(enum brw_reg_file file, unsigned nr, unsigned subnr)
 {
    return brw_reg(file,
                   nr,
                   subnr,
+                  0,
+                  0,
                   BRW_REGISTER_TYPE_F,
                   BRW_VERTICAL_STRIDE_16,
                   BRW_WIDTH_16,
@@ -286,11 +412,13 @@ brw_vec16_reg(unsigned file, unsigned nr, unsigned subnr)
 
 /** Construct float[8] register */
 static inline struct brw_reg
-brw_vec8_reg(unsigned file, unsigned nr, unsigned subnr)
+brw_vec8_reg(enum brw_reg_file file, unsigned nr, unsigned subnr)
 {
    return brw_reg(file,
                   nr,
                   subnr,
+                  0,
+                  0,
                   BRW_REGISTER_TYPE_F,
                   BRW_VERTICAL_STRIDE_8,
                   BRW_WIDTH_8,
@@ -301,11 +429,13 @@ brw_vec8_reg(unsigned file, unsigned nr, unsigned subnr)
 
 /** Construct float[4] register */
 static inline struct brw_reg
-brw_vec4_reg(unsigned file, unsigned nr, unsigned subnr)
+brw_vec4_reg(enum brw_reg_file file, unsigned nr, unsigned subnr)
 {
    return brw_reg(file,
                   nr,
                   subnr,
+                  0,
+                  0,
                   BRW_REGISTER_TYPE_F,
                   BRW_VERTICAL_STRIDE_4,
                   BRW_WIDTH_4,
@@ -316,11 +446,13 @@ brw_vec4_reg(unsigned file, unsigned nr, unsigned subnr)
 
 /** Construct float[2] register */
 static inline struct brw_reg
-brw_vec2_reg(unsigned file, unsigned nr, unsigned subnr)
+brw_vec2_reg(enum brw_reg_file file, unsigned nr, unsigned subnr)
 {
    return brw_reg(file,
                   nr,
                   subnr,
+                  0,
+                  0,
                   BRW_REGISTER_TYPE_F,
                   BRW_VERTICAL_STRIDE_2,
                   BRW_WIDTH_2,
@@ -331,11 +463,13 @@ brw_vec2_reg(unsigned file, unsigned nr, unsigned subnr)
 
 /** Construct float[1] register */
 static inline struct brw_reg
-brw_vec1_reg(unsigned file, unsigned nr, unsigned subnr)
+brw_vec1_reg(enum brw_reg_file file, unsigned nr, unsigned subnr)
 {
    return brw_reg(file,
                   nr,
                   subnr,
+                  0,
+                  0,
                   BRW_REGISTER_TYPE_F,
                   BRW_VERTICAL_STRIDE_0,
                   BRW_WIDTH_1,
@@ -345,7 +479,8 @@ brw_vec1_reg(unsigned file, unsigned nr, unsigned subnr)
 }
 
 static inline struct brw_reg
-brw_vecn_reg(unsigned width, unsigned file, unsigned nr, unsigned subnr)
+brw_vecn_reg(unsigned width, enum brw_reg_file file,
+             unsigned nr, unsigned subnr)
 {
    switch (width) {
    case 1:
@@ -371,20 +506,18 @@ retype(struct brw_reg reg, enum brw_reg_type type)
 }
 
 static inline struct brw_reg
+firsthalf(struct brw_reg reg)
+{
+   return reg;
+}
+
+static inline struct brw_reg
 sechalf(struct brw_reg reg)
 {
    if (reg.vstride)
       reg.nr++;
    return reg;
 }
-
-static inline struct brw_reg
-suboffset(struct brw_reg reg, unsigned delta)
-{
-   reg.subnr += delta * type_sz(reg.type);
-   return reg;
-}
-
 
 static inline struct brw_reg
 offset(struct brw_reg reg, unsigned delta)
@@ -403,32 +536,45 @@ byte_offset(struct brw_reg reg, unsigned bytes)
    return reg;
 }
 
+static inline struct brw_reg
+suboffset(struct brw_reg reg, unsigned delta)
+{
+   return byte_offset(reg, delta * type_sz(reg.type));
+}
 
 /** Construct unsigned word[16] register */
 static inline struct brw_reg
-brw_uw16_reg(unsigned file, unsigned nr, unsigned subnr)
+brw_uw16_reg(enum brw_reg_file file, unsigned nr, unsigned subnr)
 {
    return suboffset(retype(brw_vec16_reg(file, nr, 0), BRW_REGISTER_TYPE_UW), subnr);
 }
 
 /** Construct unsigned word[8] register */
 static inline struct brw_reg
-brw_uw8_reg(unsigned file, unsigned nr, unsigned subnr)
+brw_uw8_reg(enum brw_reg_file file, unsigned nr, unsigned subnr)
 {
    return suboffset(retype(brw_vec8_reg(file, nr, 0), BRW_REGISTER_TYPE_UW), subnr);
 }
 
 /** Construct unsigned word[1] register */
 static inline struct brw_reg
-brw_uw1_reg(unsigned file, unsigned nr, unsigned subnr)
+brw_uw1_reg(enum brw_reg_file file, unsigned nr, unsigned subnr)
 {
    return suboffset(retype(brw_vec1_reg(file, nr, 0), BRW_REGISTER_TYPE_UW), subnr);
+}
+
+static inline struct brw_reg
+brw_ud1_reg(enum brw_reg_file file, unsigned nr, unsigned subnr)
+{
+   return retype(brw_vec1_reg(file, nr, subnr), BRW_REGISTER_TYPE_UD);
 }
 
 static inline struct brw_reg
 brw_imm_reg(enum brw_reg_type type)
 {
    return brw_reg(BRW_IMMEDIATE_VALUE,
+                  0,
+                  0,
                   0,
                   0,
                   type,
@@ -441,10 +587,18 @@ brw_imm_reg(enum brw_reg_type type)
 
 /** Construct float immediate register */
 static inline struct brw_reg
+brw_imm_df(double df)
+{
+   struct brw_reg imm = brw_imm_reg(BRW_REGISTER_TYPE_DF);
+   imm.df = df;
+   return imm;
+}
+
+static inline struct brw_reg
 brw_imm_f(float f)
 {
    struct brw_reg imm = brw_imm_reg(BRW_REGISTER_TYPE_F);
-   imm.dw1.f = f;
+   imm.f = f;
    return imm;
 }
 
@@ -453,7 +607,7 @@ static inline struct brw_reg
 brw_imm_d(int d)
 {
    struct brw_reg imm = brw_imm_reg(BRW_REGISTER_TYPE_D);
-   imm.dw1.d = d;
+   imm.d = d;
    return imm;
 }
 
@@ -462,7 +616,7 @@ static inline struct brw_reg
 brw_imm_ud(unsigned ud)
 {
    struct brw_reg imm = brw_imm_reg(BRW_REGISTER_TYPE_UD);
-   imm.dw1.ud = ud;
+   imm.ud = ud;
    return imm;
 }
 
@@ -471,7 +625,7 @@ static inline struct brw_reg
 brw_imm_uw(uint16_t uw)
 {
    struct brw_reg imm = brw_imm_reg(BRW_REGISTER_TYPE_UW);
-   imm.dw1.ud = uw | (uw << 16);
+   imm.ud = uw | (uw << 16);
    return imm;
 }
 
@@ -480,7 +634,7 @@ static inline struct brw_reg
 brw_imm_w(int16_t w)
 {
    struct brw_reg imm = brw_imm_reg(BRW_REGISTER_TYPE_W);
-   imm.dw1.d = w | (w << 16);
+   imm.d = w | (w << 16);
    return imm;
 }
 
@@ -493,10 +647,16 @@ static inline struct brw_reg
 brw_imm_v(unsigned v)
 {
    struct brw_reg imm = brw_imm_reg(BRW_REGISTER_TYPE_V);
-   imm.vstride = BRW_VERTICAL_STRIDE_0;
-   imm.width = BRW_WIDTH_8;
-   imm.hstride = BRW_HORIZONTAL_STRIDE_1;
-   imm.dw1.ud = v;
+   imm.ud = v;
+   return imm;
+}
+
+/** Construct vector of eight unsigned half-byte values */
+static inline struct brw_reg
+brw_imm_uv(unsigned uv)
+{
+   struct brw_reg imm = brw_imm_reg(BRW_REGISTER_TYPE_UV);
+   imm.ud = uv;
    return imm;
 }
 
@@ -505,45 +665,19 @@ static inline struct brw_reg
 brw_imm_vf(unsigned v)
 {
    struct brw_reg imm = brw_imm_reg(BRW_REGISTER_TYPE_VF);
-   imm.vstride = BRW_VERTICAL_STRIDE_0;
-   imm.width = BRW_WIDTH_4;
-   imm.hstride = BRW_HORIZONTAL_STRIDE_1;
-   imm.dw1.ud = v;
+   imm.ud = v;
    return imm;
 }
 
-/**
- * Convert an integer into a "restricted" 8-bit float, used in vector
- * immediates.  The 8-bit floating point format has a sign bit, an
- * excess-3 3-bit exponent, and a 4-bit mantissa.  All integer values
- * from -31 to 31 can be represented exactly.
- */
-static inline uint8_t
-int_to_float8(int x)
-{
-   if (x == 0) {
-      return 0;
-   } else if (x < 0) {
-      return 1 << 7 | int_to_float8(-x);
-   } else {
-      const unsigned exponent = _mesa_logbase2(x);
-      const unsigned mantissa = (x - (1 << exponent)) << (4 - exponent);
-      assert(exponent <= 4);
-      return (exponent + 3) << 4 | mantissa;
-   }
-}
-
-/**
- * Construct a floating-point packed vector immediate from its integer
- * values. \sa int_to_float8()
- */
 static inline struct brw_reg
-brw_imm_vf4(int v0, int v1, int v2, int v3)
+brw_imm_vf4(unsigned v0, unsigned v1, unsigned v2, unsigned v3)
 {
-   return brw_imm_vf((int_to_float8(v0) << 0) |
-                     (int_to_float8(v1) << 8) |
-                     (int_to_float8(v2) << 16) |
-                     (int_to_float8(v3) << 24));
+   struct brw_reg imm = brw_imm_reg(BRW_REGISTER_TYPE_VF);
+   imm.vstride = BRW_VERTICAL_STRIDE_0;
+   imm.width = BRW_WIDTH_4;
+   imm.hstride = BRW_HORIZONTAL_STRIDE_1;
+   imm.ud = ((v0 << 0) | (v1 << 8) | (v2 << 16) | (v3 << 24));
+   return imm;
 }
 
 
@@ -581,6 +715,13 @@ brw_vec8_grf(unsigned nr, unsigned subnr)
    return brw_vec8_reg(BRW_GENERAL_REGISTER_FILE, nr, subnr);
 }
 
+/** Construct float[16] general-purpose register */
+static inline struct brw_reg
+brw_vec16_grf(unsigned nr, unsigned subnr)
+{
+   return brw_vec16_reg(BRW_GENERAL_REGISTER_FILE, nr, subnr);
+}
+
 
 static inline struct brw_reg
 brw_uw8_grf(unsigned nr, unsigned subnr)
@@ -603,6 +744,12 @@ brw_null_reg(void)
 }
 
 static inline struct brw_reg
+brw_null_vec(unsigned width)
+{
+   return brw_vecn_reg(width, BRW_ARCHITECTURE_REGISTER_FILE, BRW_ARF_NULL, 0);
+}
+
+static inline struct brw_reg
 brw_address_reg(unsigned subnr)
 {
    return brw_uw1_reg(BRW_ARCHITECTURE_REGISTER_FILE, BRW_ARF_ADDRESS, subnr);
@@ -618,6 +765,8 @@ brw_ip_reg(void)
    return brw_reg(BRW_ARCHITECTURE_REGISTER_FILE,
                   BRW_ARF_IP,
                   0,
+                  0,
+                  0,
                   BRW_REGISTER_TYPE_UD,
                   BRW_VERTICAL_STRIDE_4, /* ? */
                   BRW_WIDTH_1,
@@ -627,9 +776,32 @@ brw_ip_reg(void)
 }
 
 static inline struct brw_reg
-brw_acc_reg(void)
+brw_notification_reg(void)
 {
-   return brw_vec8_reg(BRW_ARCHITECTURE_REGISTER_FILE, BRW_ARF_ACCUMULATOR, 0);
+   return brw_reg(BRW_ARCHITECTURE_REGISTER_FILE,
+                  BRW_ARF_NOTIFICATION_COUNT,
+                  0,
+                  0,
+                  0,
+                  BRW_REGISTER_TYPE_UD,
+                  BRW_VERTICAL_STRIDE_0,
+                  BRW_WIDTH_1,
+                  BRW_HORIZONTAL_STRIDE_0,
+                  BRW_SWIZZLE_XXXX,
+                  WRITEMASK_X);
+}
+
+static inline struct brw_reg
+brw_sr0_reg(unsigned subnr)
+{
+   return brw_ud1_reg(BRW_ARCHITECTURE_REGISTER_FILE, BRW_ARF_STATE, subnr);
+}
+
+static inline struct brw_reg
+brw_acc_reg(unsigned width)
+{
+   return brw_vecn_reg(width, BRW_ARCHITECTURE_REGISTER_FILE,
+                       BRW_ARF_ACCUMULATOR, 0);
 }
 
 static inline struct brw_reg
@@ -639,7 +811,11 @@ brw_flag_reg(int reg, int subreg)
                       BRW_ARF_FLAG + reg, subreg);
 }
 
-
+/**
+ * Return the mask register present in Gen4-5, or the related register present
+ * in Gen7.5 and later hardware referred to as "channel enable" register in
+ * the documentation.
+ */
 static inline struct brw_reg
 brw_mask_reg(unsigned subnr)
 {
@@ -647,9 +823,20 @@ brw_mask_reg(unsigned subnr)
 }
 
 static inline struct brw_reg
+brw_vmask_reg()
+{
+   return brw_sr0_reg(3);
+}
+
+static inline struct brw_reg
+brw_dmask_reg()
+{
+   return brw_sr0_reg(2);
+}
+
+static inline struct brw_reg
 brw_message_reg(unsigned nr)
 {
-   assert((nr & ~(1 << 7)) < BRW_MAX_MRF);
    return brw_vec8_reg(BRW_MESSAGE_REGISTER_FILE, nr, 0);
 }
 
@@ -686,6 +873,27 @@ stride(struct brw_reg reg, unsigned vstride, unsigned width, unsigned hstride)
    return reg;
 }
 
+/**
+ * Multiply the vertical and horizontal stride of a register by the given
+ * factor \a s.
+ */
+static inline struct brw_reg
+spread(struct brw_reg reg, unsigned s)
+{
+   if (s) {
+      assert(_mesa_is_pow_two(s));
+
+      if (reg.hstride)
+         reg.hstride += cvt(s) - 1;
+
+      if (reg.vstride)
+         reg.vstride += cvt(s) - 1;
+
+      return reg;
+   } else {
+      return stride(reg, 0, 1, 0);
+   }
+}
 
 static inline struct brw_reg
 vec16(struct brw_reg reg)
@@ -736,31 +944,22 @@ get_element_d(struct brw_reg reg, unsigned elt)
    return vec1(suboffset(retype(reg, BRW_REGISTER_TYPE_D), elt));
 }
 
-
 static inline struct brw_reg
-brw_swizzle(struct brw_reg reg, unsigned x, unsigned y, unsigned z, unsigned w)
+brw_swizzle(struct brw_reg reg, unsigned swz)
 {
-   assert(reg.file != BRW_IMMEDIATE_VALUE);
+   if (reg.file == BRW_IMMEDIATE_VALUE)
+      reg.ud = brw_swizzle_immediate(reg.type, reg.ud, swz);
+   else
+      reg.swizzle = brw_compose_swizzle(swz, reg.swizzle);
 
-   reg.dw1.bits.swizzle = BRW_SWIZZLE4(BRW_GET_SWZ(reg.dw1.bits.swizzle, x),
-                                       BRW_GET_SWZ(reg.dw1.bits.swizzle, y),
-                                       BRW_GET_SWZ(reg.dw1.bits.swizzle, z),
-                                       BRW_GET_SWZ(reg.dw1.bits.swizzle, w));
    return reg;
-}
-
-
-static inline struct brw_reg
-brw_swizzle1(struct brw_reg reg, unsigned x)
-{
-   return brw_swizzle(reg, x, x, x, x);
 }
 
 static inline struct brw_reg
 brw_writemask(struct brw_reg reg, unsigned mask)
 {
    assert(reg.file != BRW_IMMEDIATE_VALUE);
-   reg.dw1.bits.writemask &= mask;
+   reg.writemask &= mask;
    return reg;
 }
 
@@ -768,8 +967,21 @@ static inline struct brw_reg
 brw_set_writemask(struct brw_reg reg, unsigned mask)
 {
    assert(reg.file != BRW_IMMEDIATE_VALUE);
-   reg.dw1.bits.writemask = mask;
+   reg.writemask = mask;
    return reg;
+}
+
+static inline unsigned
+brw_writemask_for_size(unsigned n)
+{
+   return (1 << n) - 1;
+}
+
+static inline unsigned
+brw_writemask_for_component_packing(unsigned n, unsigned first_component)
+{
+   assert(first_component + n <= 4);
+   return (((1 << n) - 1) << first_component);
 }
 
 static inline struct brw_reg
@@ -795,7 +1007,7 @@ brw_vec4_indirect(unsigned subnr, int offset)
    struct brw_reg reg =  brw_vec4_grf(0, 0);
    reg.subnr = subnr;
    reg.address_mode = BRW_ADDRESS_REGISTER_INDIRECT_REGISTER;
-   reg.dw1.bits.indirect_offset = offset;
+   reg.indirect_offset = offset;
    return reg;
 }
 
@@ -805,7 +1017,18 @@ brw_vec1_indirect(unsigned subnr, int offset)
    struct brw_reg reg =  brw_vec1_grf(0, 0);
    reg.subnr = subnr;
    reg.address_mode = BRW_ADDRESS_REGISTER_INDIRECT_REGISTER;
-   reg.dw1.bits.indirect_offset = offset;
+   reg.indirect_offset = offset;
+   return reg;
+}
+
+static inline struct brw_reg
+brw_VxH_indirect(unsigned subnr, int offset)
+{
+   struct brw_reg reg = brw_vec1_grf(0, 0);
+   reg.vstride = BRW_VERTICAL_STRIDE_ONE_DIMENSIONAL;
+   reg.subnr = subnr;
+   reg.address_mode = BRW_ADDRESS_REGISTER_INDIRECT_REGISTER;
+   reg.indirect_offset = offset;
    return reg;
 }
 
@@ -867,6 +1090,23 @@ brw_indirect(unsigned addr_subnr, int offset)
    ptr.pad = 0;
    return ptr;
 }
+
+static inline bool
+region_matches(struct brw_reg reg, enum brw_vertical_stride v,
+               enum brw_width w, enum brw_horizontal_stride h)
+{
+   return reg.vstride == v &&
+          reg.width == w &&
+          reg.hstride == h;
+}
+
+#define has_scalar_region(reg) \
+   region_matches(reg, BRW_VERTICAL_STRIDE_0, BRW_WIDTH_1, \
+                  BRW_HORIZONTAL_STRIDE_0)
+
+/* brw_packed_float.c */
+int brw_float_to_vf(float f);
+float brw_vf_to_float(unsigned char vf);
 
 #ifdef __cplusplus
 }

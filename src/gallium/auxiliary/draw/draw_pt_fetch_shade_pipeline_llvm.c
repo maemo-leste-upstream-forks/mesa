@@ -60,7 +60,7 @@ struct llvm_middle_end {
 
 
 /** cast wrapper */
-static INLINE struct llvm_middle_end *
+static inline struct llvm_middle_end *
 llvm_middle_end(struct draw_pt_middle_end *middle)
 {
    return (struct llvm_middle_end *) middle;
@@ -162,15 +162,14 @@ llvm_middle_end_prepare( struct draw_pt_middle_end *middle,
                             draw->clip_user,
                             point_clip ? draw->guard_band_points_xy :
                                          draw->guard_band_xy,
-                            draw->identity_viewport,
+                            draw->bypass_viewport,
                             draw->rasterizer->clip_halfz,
                             (draw->vs.edgeflag_output ? TRUE : FALSE) );
 
    draw_pt_so_emit_prepare( fpme->so_emit, gs == NULL );
 
    if (!(opt & PT_PIPELINE)) {
-      draw_pt_emit_prepare( fpme->emit,
-			    out_prim,
+      draw_pt_emit_prepare( fpme->emit, out_prim,
                             max_vertices );
 
       *max_vertices = MAX2( *max_vertices, 4096 );
@@ -179,18 +178,6 @@ llvm_middle_end_prepare( struct draw_pt_middle_end *middle,
       /* limit max fetches by limiting max_vertices */
       *max_vertices = 4096;
    }
-
-   /* Get the number of float[4] attributes per vertex.
-    * Note: this must be done after draw_pt_emit_prepare() since that
-    * can effect the vertex size.
-    */
-   nr = MAX2(vs->info.num_inputs, draw_total_vs_outputs(draw));
-
-   /* Always leave room for the vertex header whether we need it or
-    * not.  It's hard to get rid of it in particular because of the
-    * viewport code in draw_pt_post_vs.c.
-    */
-   fpme->vertex_size = sizeof(struct vertex_header) + nr * 4 * sizeof(float);
 
    /* Get the number of float[4] attributes per vertex.
     * Note: this must be done after draw_pt_emit_prepare() since that
@@ -284,30 +271,38 @@ llvm_middle_end_prepare( struct draw_pt_middle_end *middle,
 static void
 llvm_middle_end_bind_parameters(struct draw_pt_middle_end *middle)
 {
+   static const float fake_const_buf[4];
    struct llvm_middle_end *fpme = llvm_middle_end(middle);
    struct draw_context *draw = fpme->draw;
+   struct draw_llvm *llvm = fpme->llvm;
    unsigned i;
 
-   for (i = 0; i < Elements(fpme->llvm->jit_context.vs_constants); ++i) {
+   for (i = 0; i < ARRAY_SIZE(llvm->jit_context.vs_constants); ++i) {
       int num_consts =
          draw->pt.user.vs_constants_size[i] / (sizeof(float) * 4);
-      fpme->llvm->jit_context.vs_constants[i] = draw->pt.user.vs_constants[i];
-      fpme->llvm->jit_context.num_vs_constants[i] = num_consts;
+      llvm->jit_context.vs_constants[i] = draw->pt.user.vs_constants[i];
+      llvm->jit_context.num_vs_constants[i] = num_consts;
+      if (num_consts == 0) {
+         llvm->jit_context.vs_constants[i] = fake_const_buf;
+      }
    }
-   for (i = 0; i < Elements(fpme->llvm->gs_jit_context.constants); ++i) {
+   for (i = 0; i < ARRAY_SIZE(llvm->gs_jit_context.constants); ++i) {
       int num_consts =
          draw->pt.user.gs_constants_size[i] / (sizeof(float) * 4);
-      fpme->llvm->gs_jit_context.constants[i] = draw->pt.user.gs_constants[i];
-      fpme->llvm->gs_jit_context.num_constants[i] = num_consts;
+      llvm->gs_jit_context.constants[i] = draw->pt.user.gs_constants[i];
+      llvm->gs_jit_context.num_constants[i] = num_consts;
+      if (num_consts == 0) {
+         llvm->gs_jit_context.constants[i] = fake_const_buf;
+      }
    }
 
-   fpme->llvm->jit_context.planes =
+   llvm->jit_context.planes =
       (float (*)[DRAW_TOTAL_CLIP_PLANES][4]) draw->pt.user.planes[0];
-   fpme->llvm->gs_jit_context.planes =
+   llvm->gs_jit_context.planes =
       (float (*)[DRAW_TOTAL_CLIP_PLANES][4]) draw->pt.user.planes[0];
 
-   fpme->llvm->jit_context.viewport = (float *) draw->viewports[0].scale;
-   fpme->llvm->gs_jit_context.viewport = (float *) draw->viewports[0].scale;
+   llvm->jit_context.viewports = draw->viewports;
+   llvm->gs_jit_context.viewports = draw->viewports;
 }
 
 
@@ -387,7 +382,8 @@ llvm_pipeline_generic(struct draw_pt_middle_end *middle,
                                        fpme->vertex_size,
                                        draw->pt.vertex_buffer,
                                        draw->instance_id,
-                                       draw->start_index);
+                                       draw->start_index,
+                                       draw->start_instance);
    else
       clipped = fpme->current_variant->jit_func_elts( &fpme->llvm->jit_context,
                                             llvm_vert_info.verts,
@@ -398,7 +394,8 @@ llvm_pipeline_generic(struct draw_pt_middle_end *middle,
                                             fpme->vertex_size,
                                             draw->pt.vertex_buffer,
                                             draw->instance_id,
-                                            draw->pt.user.eltBias);
+                                            draw->pt.user.eltBias,
+                                            draw->start_instance);
 
    /* Finished with fetch and vs:
     */
@@ -452,9 +449,11 @@ llvm_pipeline_generic(struct draw_pt_middle_end *middle,
     * will try to access non-existent position output.
     */
    if (draw_current_shader_position_output(draw) != -1) {
-      if ((opt & PT_SHADE) && gshader) {
+      if ((opt & PT_SHADE) && (gshader ||
+                               draw->vs.vertex_shader->info.writes_viewport_index)) {
          clipped = draw_pt_post_vs_run( fpme->post_vs, vert_info, prim_info );
       }
+      /* "clipped" also includes non-one edgeflag */
       if (clipped) {
          opt |= PT_PIPELINE;
       }
@@ -472,6 +471,16 @@ llvm_pipeline_generic(struct draw_pt_middle_end *middle,
    if (free_prim_info) {
       FREE(prim_info->primitive_lengths);
    }
+}
+
+
+static inline unsigned
+prim_type(unsigned prim, unsigned flags)
+{
+   if (flags & DRAW_LINE_LOOP_AS_STRIP)
+      return PIPE_PRIM_LINE_STRIP;
+   else
+      return prim;
 }
 
 
@@ -496,7 +505,7 @@ llvm_middle_end_run(struct draw_pt_middle_end *middle,
    prim_info.start = 0;
    prim_info.count = draw_count;
    prim_info.elts = draw_elts;
-   prim_info.prim = fpme->input_prim;
+   prim_info.prim = prim_type(fpme->input_prim, prim_flags);
    prim_info.flags = prim_flags;
    prim_info.primitive_count = 1;
    prim_info.primitive_lengths = &draw_count;
@@ -524,7 +533,7 @@ llvm_middle_end_linear_run(struct draw_pt_middle_end *middle,
    prim_info.start = 0;
    prim_info.count = count;
    prim_info.elts = NULL;
-   prim_info.prim = fpme->input_prim;
+   prim_info.prim = prim_type(fpme->input_prim, prim_flags);
    prim_info.flags = prim_flags;
    prim_info.primitive_count = 1;
    prim_info.primitive_lengths = &count;
@@ -554,7 +563,7 @@ llvm_middle_end_linear_run_elts(struct draw_pt_middle_end *middle,
    prim_info.start = 0;
    prim_info.count = draw_count;
    prim_info.elts = draw_elts;
-   prim_info.prim = fpme->input_prim;
+   prim_info.prim = prim_type(fpme->input_prim, prim_flags);
    prim_info.flags = prim_flags;
    prim_info.primitive_count = 1;
    prim_info.primitive_lengths = &draw_count;

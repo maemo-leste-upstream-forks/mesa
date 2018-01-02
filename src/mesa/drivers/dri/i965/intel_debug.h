@@ -33,36 +33,47 @@
 
 extern uint64_t INTEL_DEBUG;
 
-#define DEBUG_TEXTURE	  0x1
-#define DEBUG_STATE	  0x2
-#define DEBUG_BLIT	  0x8
-#define DEBUG_MIPTREE     0x10
-#define DEBUG_PERF	  0x20
-#define DEBUG_PERFMON     0x40
-#define DEBUG_BATCH       0x80
-#define DEBUG_PIXEL       0x100
-#define DEBUG_BUFMGR      0x200
-#define DEBUG_FBO         0x800
-#define DEBUG_GS          0x1000
-#define DEBUG_SYNC	  0x2000
-#define DEBUG_PRIMS	  0x4000
-#define DEBUG_VERTS	  0x8000
-#define DEBUG_DRI         0x10000
-#define DEBUG_SF          0x20000
-#define DEBUG_STATS       0x100000
-#define DEBUG_WM          0x400000
-#define DEBUG_URB         0x800000
-#define DEBUG_VS          0x1000000
-#define DEBUG_CLIP        0x2000000
-#define DEBUG_AUB         0x4000000
-#define DEBUG_SHADER_TIME 0x8000000
-#define DEBUG_BLORP       0x10000000
-#define DEBUG_NO16        0x20000000
-#define DEBUG_VUE         0x40000000
-#define DEBUG_NO_DUAL_OBJECT_GS 0x80000000
-#define DEBUG_OPTIMIZER   0x100000000
-#define DEBUG_NO_ANNOTATION 0x200000000
-#define DEBUG_NO8        0x40000000
+#define DEBUG_TEXTURE             (1ull <<  0)
+#define DEBUG_STATE               (1ull <<  1)
+#define DEBUG_BLIT                (1ull <<  2)
+#define DEBUG_MIPTREE             (1ull <<  3)
+#define DEBUG_PERF                (1ull <<  4)
+#define DEBUG_PERFMON             (1ull <<  5)
+#define DEBUG_BATCH               (1ull <<  6)
+#define DEBUG_PIXEL               (1ull <<  7)
+#define DEBUG_BUFMGR              (1ull <<  8)
+#define DEBUG_FBO                 (1ull <<  9)
+#define DEBUG_GS                  (1ull << 10)
+#define DEBUG_SYNC                (1ull << 11)
+#define DEBUG_PRIMS               (1ull << 12)
+#define DEBUG_VERTS               (1ull << 13)
+#define DEBUG_DRI                 (1ull << 14)
+#define DEBUG_SF                  (1ull << 15)
+#define DEBUG_STATS               (1ull << 16)
+#define DEBUG_WM                  (1ull << 17)
+#define DEBUG_URB                 (1ull << 18)
+#define DEBUG_VS                  (1ull << 19)
+#define DEBUG_CLIP                (1ull << 20)
+#define DEBUG_AUB                 (1ull << 21)
+#define DEBUG_SHADER_TIME         (1ull << 22)
+#define DEBUG_BLORP               (1ull << 23)
+#define DEBUG_NO16                (1ull << 24)
+#define DEBUG_VUE                 (1ull << 25)
+#define DEBUG_NO_DUAL_OBJECT_GS   (1ull << 26)
+#define DEBUG_OPTIMIZER           (1ull << 27)
+#define DEBUG_ANNOTATION          (1ull << 28)
+#define DEBUG_NO8                 (1ull << 29)
+#define DEBUG_VEC4VS              (1ull << 30)
+#define DEBUG_SPILL_FS            (1ull << 31)
+#define DEBUG_SPILL_VEC4          (1ull << 32)
+#define DEBUG_CS                  (1ull << 33)
+#define DEBUG_HEX                 (1ull << 34)
+#define DEBUG_NO_COMPACTION       (1ull << 35)
+#define DEBUG_TCS                 (1ull << 36)
+#define DEBUG_TES                 (1ull << 37)
+#define DEBUG_L3                  (1ull << 38)
+#define DEBUG_DO32                (1ull << 39)
+#define DEBUG_NO_RBC              (1ull << 40)
 
 #ifdef HAVE_ANDROID_PLATFORM
 #define LOG_TAG "INTEL-MESA"
@@ -86,6 +97,7 @@ extern uint64_t INTEL_DEBUG;
       dbg_printf(__VA_ARGS__);                                  \
    if (brw->perf_debug)                                         \
       _mesa_gl_debug(&brw->ctx, &msg_id,                        \
+                     MESA_DEBUG_SOURCE_API,                     \
                      MESA_DEBUG_TYPE_PERFORMANCE,               \
                      MESA_DEBUG_SEVERITY_MEDIUM,                \
                      __VA_ARGS__);                              \
@@ -101,12 +113,13 @@ extern uint64_t INTEL_DEBUG;
          _warned = true;                                        \
                                                                 \
          _mesa_gl_debug(ctx, &msg_id,                           \
+                        MESA_DEBUG_SOURCE_API,                  \
                         MESA_DEBUG_TYPE_OTHER,                  \
                         MESA_DEBUG_SEVERITY_HIGH, fmt);         \
       }                                                         \
    }                                                            \
 } while (0)
 
-struct brw_context;
+extern uint64_t intel_debug_flag_for_shader_stage(gl_shader_stage stage);
 
-extern void brw_process_intel_debug_variable(struct brw_context *brw);
+extern void brw_process_intel_debug_variable(void);

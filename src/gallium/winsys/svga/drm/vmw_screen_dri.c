@@ -1,5 +1,5 @@
 /**********************************************************
- * Copyright 2009 VMware, Inc.  All rights reserved.
+ * Copyright 2009-2015 VMware, Inc.  All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person
  * obtaining a copy of this software and associated documentation
@@ -111,7 +111,7 @@ svga_drm_winsys_screen_create(int fd)
 			       &drm_compat, "vmwgfx drm driver"))
       return NULL;
 
-   vws = vmw_winsys_create( fd, FALSE );
+   vws = vmw_winsys_create(fd);
    if (!vws)
       goto out_no_vws;
 
@@ -126,7 +126,7 @@ out_no_vws:
    return NULL;
 }
 
-static INLINE boolean
+static inline boolean
 vmw_dri1_intersect_src_bbox(struct drm_clip_rect *dst,
 			    int dst_x,
 			    int dst_y,
@@ -185,6 +185,12 @@ vmw_drm_gb_surface_from_handle(struct svga_winsys_screen *sws,
     struct pb_buffer *pb_buf;
     uint32_t handle;
     int ret;
+
+    if (whandle->offset != 0) {
+       fprintf(stderr, "Attempt to import unsupported winsys offset %u\n",
+               whandle->offset);
+       return NULL;
+    }
 
     ret = vmw_ioctl_gb_surface_ref(vws, whandle, &flags, format,
                                    &mip_levels, &handle, &desc.region);
@@ -252,6 +258,12 @@ vmw_drm_surface_from_handle(struct svga_winsys_screen *sws,
     SVGA3dSize base_size;
     int ret;
     int i;
+
+    if (whandle->offset != 0) {
+       fprintf(stderr, "Attempt to import unsupported winsys offset %u\n",
+               whandle->offset);
+       return NULL;
+    }
 
     switch (whandle->type) {
     case DRM_API_HANDLE_TYPE_SHARED:
@@ -357,6 +369,7 @@ vmw_drm_surface_get_handle(struct svga_winsys_screen *sws,
     vsrf = vmw_svga_winsys_surface(surface);
     whandle->handle = vsrf->sid;
     whandle->stride = stride;
+    whandle->offset = 0;
 
     switch (whandle->type) {
     case DRM_API_HANDLE_TYPE_SHARED:

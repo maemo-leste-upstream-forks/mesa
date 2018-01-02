@@ -25,9 +25,11 @@
 # Authors:
 #    Ian Romanick <idr@us.ibm.com>
 
+import argparse
+import copy
+
 import license
 import gl_XML, glX_XML
-import sys, getopt, copy
 
 def should_use_push(registers):
     for [reg, offset] in registers:
@@ -138,20 +140,10 @@ class PrintGenericStubs(gl_XML.gl_print_base):
         print '#  define GL_PREFIX(n) GLNAME(CONCAT(gl,n))'
         print '# endif'
         print ''
-        print '#if defined(HAVE_PTHREAD) || defined(_WIN32)'
-        print '#  define THREADS'
-        print '#endif'
-        print ''
         print '\t.text'
         print ''
         print '#ifdef GLX_USE_TLS'
         print ''
-        print '\t.globl _x86_64_get_get_dispatch; HIDDEN(_x86_64_get_get_dispatch)'
-        print '_x86_64_get_get_dispatch:'
-        print '\tlea\t_x86_64_get_dispatch(%rip), %rax'
-        print '\tret'
-        print ''
-        print '\t.p2align\t4,,15'
         print '_x86_64_get_dispatch:'
         print '\tmovq\t_glapi_tls_Dispatch@GOTTPOFF(%rip), %rax'
         print '\tmovq\t%fs:(%rax), %rax'
@@ -170,7 +162,7 @@ class PrintGenericStubs(gl_XML.gl_print_base):
         print '\tmovl\t(%rax), %edi'
         print '\tjmp\tpthread_getspecific@PLT'
         print ''
-        print '#elif defined(THREADS)'
+        print '#else'
         print ''
         print '\t.extern\t_glapi_get_dispatch'
         print ''
@@ -191,7 +183,7 @@ class PrintGenericStubs(gl_XML.gl_print_base):
 
         # The x86-64 ABI divides function parameters into a couple
         # classes.  For the OpenGL interface, the only ones that are
-        # relevent are INTEGER and SSE.  Basically, the first 8
+        # relevant are INTEGER and SSE.  Basically, the first 8
         # GLfloat or GLdouble parameters are placed in %xmm0 - %xmm7,
         # the first 6 non-GLfloat / non-GLdouble parameters are placed
         # in registers listed in int_parameters.
@@ -293,30 +285,25 @@ class PrintGenericStubs(gl_XML.gl_print_base):
 
         return
 
-def show_usage():
-    print "Usage: %s [-f input_file_name] [-m output_mode]" % sys.argv[0]
-    sys.exit(1)
+
+def _parser():
+    """Parse arguments and return a namespace."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-f',
+                        default='gl_API.xml',
+                        dest='filename',
+                        help='An XML file describing an API')
+    return parser.parse_args()
+
+
+def main():
+    """Main file."""
+    args = _parser()
+    printer = PrintGenericStubs()
+    api = gl_XML.parse_GL_API(args.filename, glX_XML.glx_item_factory())
+
+    printer.Print(api)
+
 
 if __name__ == '__main__':
-    file_name = "gl_API.xml"
-    mode = "generic"
-
-    try:
-        (args, trail) = getopt.getopt(sys.argv[1:], "m:f:")
-    except Exception,e:
-        show_usage()
-
-    for (arg,val) in args:
-        if arg == '-m':
-            mode = val
-        elif arg == "-f":
-            file_name = val
-
-    if mode == "generic":
-        printer = PrintGenericStubs()
-    else:
-        print "ERROR: Invalid mode \"%s\" specified." % mode
-        show_usage()
-
-    api = gl_XML.parse_GL_API(file_name, glX_XML.glx_item_factory())
-    printer.Print(api)
+    main()

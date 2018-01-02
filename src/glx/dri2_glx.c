@@ -77,12 +77,6 @@ struct dri2_display
    const __DRIextension *loader_extensions[4];
 };
 
-struct dri2_context
-{
-   struct glx_context base;
-   __DRIcontext *driContext;
-};
-
 struct dri2_drawable
 {
    __GLXDRIdrawable base;
@@ -405,7 +399,7 @@ dri2CreateDrawable(struct glx_screen *base, XID xDrawable,
    }
 
    DRI2CreateDrawable(psc->base.dpy, xDrawable);
-   pdp = (struct dri2_display *)dpyPriv->dri2Display;;
+   pdp = (struct dri2_display *)dpyPriv->dri2Display;
    /* Create a new drawable */
    pdraw->driDrawable =
       (*psc->dri2->createNewDrawable) (psc->driScreen,
@@ -520,7 +514,7 @@ dri2GetCurrentContext()
    struct glx_context *gc = __glXGetCurrentContext();
    struct dri2_context *dri2Ctx = (struct dri2_context *)gc;
 
-   return dri2Ctx ? dri2Ctx->driContext : NULL;
+   return (gc != &dummyContext) ? dri2Ctx->driContext : NULL;
 }
 
 /**
@@ -1061,6 +1055,8 @@ static const struct glx_context_vtable dri2_context_vtable = {
    .bind_tex_image      = dri2_bind_tex_image,
    .release_tex_image   = dri2_release_tex_image,
    .get_proc_address    = NULL,
+   .interop_query_device_info = dri2_interop_query_device_info,
+   .interop_export_object = dri2_interop_export_object
 };
 
 static void
@@ -1102,9 +1098,14 @@ dri2BindExtensions(struct dri2_screen *psc, struct glx_display * priv,
       __glXEnableDirectExtension(&psc->base, "GLX_ARB_create_context");
       __glXEnableDirectExtension(&psc->base, "GLX_ARB_create_context_profile");
 
-      if ((mask & (1 << __DRI_API_GLES2)) != 0)
-	 __glXEnableDirectExtension(&psc->base,
-				    "GLX_EXT_create_context_es2_profile");
+      if ((mask & ((1 << __DRI_API_GLES) |
+                   (1 << __DRI_API_GLES2) |
+                   (1 << __DRI_API_GLES3))) != 0) {
+         __glXEnableDirectExtension(&psc->base,
+                                    "GLX_EXT_create_context_es_profile");
+         __glXEnableDirectExtension(&psc->base,
+                                    "GLX_EXT_create_context_es2_profile");
+      }
    }
 
    for (i = 0; extensions[i]; i++) {
@@ -1140,6 +1141,9 @@ dri2BindExtensions(struct dri2_screen *psc, struct glx_display * priv,
          psc->rendererQuery = (__DRI2rendererQueryExtension *) extensions[i];
          __glXEnableDirectExtension(&psc->base, "GLX_MESA_query_renderer");
       }
+
+      if (strcmp(extensions[i]->name, __DRI2_INTEROP) == 0)
+	 psc->interop = (__DRI2interopExtension*)extensions[i];
    }
 }
 
@@ -1183,15 +1187,7 @@ dri2CreateScreen(int screen, struct glx_display * priv)
       return NULL;
    }
 
-#ifdef O_CLOEXEC
-   psc->fd = open(deviceName, O_RDWR | O_CLOEXEC);
-   if (psc->fd == -1 && errno == EINVAL)
-#endif
-   {
-      psc->fd = open(deviceName, O_RDWR);
-      if (psc->fd != -1)
-         fcntl(psc->fd, F_SETFD, fcntl(psc->fd, F_GETFD) | FD_CLOEXEC);
-   }
+   psc->fd = loader_open_device(deviceName);
    if (psc->fd < 0) {
       ErrorMessageF("failed to open drm device: %s\n", strerror(errno));
       goto handle_error;
@@ -1210,7 +1206,7 @@ dri2CreateScreen(int screen, struct glx_display * priv)
    /* If Mesa knows about the appropriate driver for this fd, then trust it.
     * Otherwise, default to the server's value.
     */
-   loader_driverName = loader_get_driver_for_fd(psc->fd, 0);
+   loader_driverName = loader_get_driver_for_fd(psc->fd);
    if (loader_driverName) {
       free(driverName);
       driverName = loader_driverName;
@@ -1297,7 +1293,7 @@ dri2CreateScreen(int screen, struct glx_display * priv)
       __glXEnableDirectExtension(&psc->base, "GLX_OML_sync_control");
    }
 
-   /* DRI2 suports SubBuffer through DRI2CopyRegion, so it's always
+   /* DRI2 supports SubBuffer through DRI2CopyRegion, so it's always
     * available.*/
    psp->copySubBuffer = dri2CopySubBuffer;
    __glXEnableDirectExtension(&psc->base, "GLX_MESA_copy_sub_buffer");
@@ -1309,6 +1305,8 @@ dri2CreateScreen(int screen, struct glx_display * priv)
    psc->show_fps_interval = (tmp) ? atoi(tmp) : 0;
    if (psc->show_fps_interval < 0)
       psc->show_fps_interval = 0;
+
+   InfoMessageF("Using DRI2 for screen %d\n", screen);
 
    return &psc->base;
 

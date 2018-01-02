@@ -43,11 +43,13 @@
 #include "pipe/p_compiler.h"
 #include "pipe/p_defines.h"
 
+#include "svga_mksstats.h"
 
 struct svga_winsys_screen;
 struct svga_winsys_buffer;
 struct pipe_screen;
 struct pipe_context;
+struct pipe_debug_callback;
 struct pipe_fence_handle;
 struct pipe_resource;
 struct svga_region;
@@ -79,15 +81,153 @@ struct winsys_handle;
 #define SVGA_FENCE_FLAG_EXEC      (1 << 0)
 #define SVGA_FENCE_FLAG_QUERY     (1 << 1)
 
-#define SVGA_SURFACE_USAGE_SHARED (1 << 0)
+#define SVGA_SURFACE_USAGE_SHARED  (1 << 0)
+#define SVGA_SURFACE_USAGE_SCANOUT (1 << 1)
+
+#define SVGA_QUERY_FLAG_SET        (1 << 0)
+#define SVGA_QUERY_FLAG_REF        (1 << 1)
+
+#define SVGA_HINT_FLAG_CAN_PRE_FLUSH (1 << 0)  /* Can preemptively flush */
+
+/**
+ * SVGA mks statistics info
+ */
+struct svga_winsys_stats_timeframe {
+   void *counterTime;
+   uint64 startTime;
+   uint64 adjustedStartTime;
+   struct svga_winsys_stats_timeframe *enclosing;
+};
+
+enum svga_stats_count {
+   SVGA_STATS_COUNT_BLENDSTATE,
+   SVGA_STATS_COUNT_DEPTHSTENCILSTATE,
+   SVGA_STATS_COUNT_RASTERIZERSTATE,
+   SVGA_STATS_COUNT_SAMPLER,
+   SVGA_STATS_COUNT_SAMPLERVIEW,
+   SVGA_STATS_COUNT_SURFACEWRITEFLUSH,
+   SVGA_STATS_COUNT_TEXREADBACK,
+   SVGA_STATS_COUNT_VERTEXELEMENT,
+   SVGA_STATS_COUNT_MAX
+};
+
+enum svga_stats_time {
+   SVGA_STATS_TIME_BUFFERSFLUSH,
+   SVGA_STATS_TIME_BUFFERTRANSFERMAP,
+   SVGA_STATS_TIME_BUFFERTRANSFERUNMAP,
+   SVGA_STATS_TIME_CONTEXTFINISH,
+   SVGA_STATS_TIME_CONTEXTFLUSH,
+   SVGA_STATS_TIME_CREATEBACKEDSURFACEVIEW,
+   SVGA_STATS_TIME_CREATEBUFFER,
+   SVGA_STATS_TIME_CREATECONTEXT,
+   SVGA_STATS_TIME_CREATEFS,
+   SVGA_STATS_TIME_CREATEGS,
+   SVGA_STATS_TIME_CREATESURFACE,
+   SVGA_STATS_TIME_CREATESURFACEVIEW,
+   SVGA_STATS_TIME_CREATETEXTURE,
+   SVGA_STATS_TIME_CREATEVS,
+   SVGA_STATS_TIME_DEFINESHADER,
+   SVGA_STATS_TIME_DESTROYSURFACE,
+   SVGA_STATS_TIME_DRAWVBO,
+   SVGA_STATS_TIME_DRAWARRAYS,
+   SVGA_STATS_TIME_DRAWELEMENTS,
+   SVGA_STATS_TIME_EMITFS,
+   SVGA_STATS_TIME_EMITGS,
+   SVGA_STATS_TIME_EMITVS,
+   SVGA_STATS_TIME_FENCEFINISH,
+   SVGA_STATS_TIME_GENERATEINDICES,
+   SVGA_STATS_TIME_HWTNLDRAWARRAYS,
+   SVGA_STATS_TIME_HWTNLDRAWELEMENTS,
+   SVGA_STATS_TIME_HWTNLFLUSH,
+   SVGA_STATS_TIME_HWTNLPRIM,
+   SVGA_STATS_TIME_PROPAGATESURFACE,
+   SVGA_STATS_TIME_SETSAMPLERVIEWS,
+   SVGA_STATS_TIME_SURFACEFLUSH,
+   SVGA_STATS_TIME_SWTNLDRAWVBO,
+   SVGA_STATS_TIME_SWTNLUPDATEDRAW,
+   SVGA_STATS_TIME_SWTNLUPDATEVDECL,
+   SVGA_STATS_TIME_TEXTRANSFERMAP,
+   SVGA_STATS_TIME_TEXTRANSFERUNMAP,
+   SVGA_STATS_TIME_TGSIVGPU10TRANSLATE,
+   SVGA_STATS_TIME_TGSIVGPU9TRANSLATE,
+   SVGA_STATS_TIME_UPDATESTATE,
+   SVGA_STATS_TIME_VALIDATESURFACEVIEW,
+   SVGA_STATS_TIME_VBUFDRAWARRAYS,
+   SVGA_STATS_TIME_VBUFDRAWELEMENTS,
+   SVGA_STATS_TIME_VBUFRENDERALLOCVERT,
+   SVGA_STATS_TIME_VBUFRENDERMAPVERT,
+   SVGA_STATS_TIME_VBUFRENDERUNMAPVERT,
+   SVGA_STATS_TIME_VBUFSUBMITSTATE,
+   SVGA_STATS_TIME_MAX
+};
+
+#define SVGA_STATS_PREFIX "GuestGL_"
+
+#define SVGA_STATS_COUNT_NAMES                \
+   SVGA_STATS_PREFIX "BlendState",            \
+   SVGA_STATS_PREFIX "DepthStencilState",     \
+   SVGA_STATS_PREFIX "RasterizerState",       \
+   SVGA_STATS_PREFIX "Sampler",               \
+   SVGA_STATS_PREFIX "SamplerView",           \
+   SVGA_STATS_PREFIX "SurfaceWriteFlush",     \
+   SVGA_STATS_PREFIX "TextureReadback",       \
+   SVGA_STATS_PREFIX "VertexElement"          \
+
+#define SVGA_STATS_TIME_NAMES                       \
+   SVGA_STATS_PREFIX "BuffersFlush",                \
+   SVGA_STATS_PREFIX "BufferTransferMap",           \
+   SVGA_STATS_PREFIX "BufferTransferUnmap",         \
+   SVGA_STATS_PREFIX "ContextFinish",               \
+   SVGA_STATS_PREFIX "ContextFlush",                \
+   SVGA_STATS_PREFIX "CreateBackedSurfaceView",     \
+   SVGA_STATS_PREFIX "CreateBuffer",                \
+   SVGA_STATS_PREFIX "CreateContext",               \
+   SVGA_STATS_PREFIX "CreateFS",                    \
+   SVGA_STATS_PREFIX "CreateGS",                    \
+   SVGA_STATS_PREFIX "CreateSurface",               \
+   SVGA_STATS_PREFIX "CreateSurfaceView",           \
+   SVGA_STATS_PREFIX "CreateTexture",               \
+   SVGA_STATS_PREFIX "CreateVS",                    \
+   SVGA_STATS_PREFIX "DefineShader",                \
+   SVGA_STATS_PREFIX "DestroySurface",              \
+   SVGA_STATS_PREFIX "DrawVBO",                     \
+   SVGA_STATS_PREFIX "DrawArrays",                  \
+   SVGA_STATS_PREFIX "DrawElements",                \
+   SVGA_STATS_PREFIX "EmitFS",                      \
+   SVGA_STATS_PREFIX "EmitGS",                      \
+   SVGA_STATS_PREFIX "EmitVS",                      \
+   SVGA_STATS_PREFIX "FenceFinish",                 \
+   SVGA_STATS_PREFIX "GenerateIndices",             \
+   SVGA_STATS_PREFIX "HWtnlDrawArrays",             \
+   SVGA_STATS_PREFIX "HWtnlDrawElements",           \
+   SVGA_STATS_PREFIX "HWtnlFlush",                  \
+   SVGA_STATS_PREFIX "HWtnlPrim",                   \
+   SVGA_STATS_PREFIX "PropagateSurface",            \
+   SVGA_STATS_PREFIX "SetSamplerViews",             \
+   SVGA_STATS_PREFIX "SurfaceFlush",                \
+   SVGA_STATS_PREFIX "SwtnlDrawVBO",                \
+   SVGA_STATS_PREFIX "SwtnlUpdateDraw",             \
+   SVGA_STATS_PREFIX "SwtnlUpdateVDecl",            \
+   SVGA_STATS_PREFIX "TextureTransferMap",          \
+   SVGA_STATS_PREFIX "TextureTransferUnmap",        \
+   SVGA_STATS_PREFIX "TGSIVGPU10Translate",         \
+   SVGA_STATS_PREFIX "TGSIVGPU9Translate",          \
+   SVGA_STATS_PREFIX "UpdateState",                 \
+   SVGA_STATS_PREFIX "ValidateSurfaceView",         \
+   SVGA_STATS_PREFIX "VbufDrawArrays",              \
+   SVGA_STATS_PREFIX "VbufDrawElements",            \
+   SVGA_STATS_PREFIX "VbufRenderAllocVertices",     \
+   SVGA_STATS_PREFIX "VbufRenderMapVertices",       \
+   SVGA_STATS_PREFIX "VbufRenderUnmapVertices",     \
+   SVGA_STATS_PREFIX "VbufSubmitState"
+   
 
 /** Opaque surface handle */
 struct svga_winsys_surface;
 
-
 /** Opaque guest-backed objects */
 struct svga_winsys_gb_shader;
-
+struct svga_winsys_gb_query;
 
 
 /**
@@ -102,6 +242,12 @@ struct svga_winsys_context
    (*reserve)(struct svga_winsys_context *swc, 
 	      uint32_t nr_bytes, uint32_t nr_relocs );
    
+   /**
+    * Returns current size of command buffer, in bytes.
+    */
+   unsigned
+   (*get_command_buffer_size)(struct svga_winsys_context *swc);
+
    /**
     * Emit a relocation for a host surface.
     * 
@@ -143,7 +289,8 @@ struct svga_winsys_context
 	                uint32 *shid,
 			uint32 *mobid,
 			uint32 *offset,
-	                struct svga_winsys_gb_shader *shader);
+	                struct svga_winsys_gb_shader *shader,
+                        unsigned flags);
 
    /**
     * Emit a relocation for a guest-backed context.
@@ -173,6 +320,26 @@ struct svga_winsys_context
 		     uint32 offset,
 		     unsigned flags);
 
+   /**
+    * Emit a relocation for a guest-backed query object.
+    *
+    * NOTE: Order of this call does matter. It should be the same order
+    * as relocations appear in the command buffer.
+    */
+   void
+   (*query_relocation)(struct svga_winsys_context *swc,
+	               SVGAMobId *id,
+	               struct svga_winsys_gb_query *query);
+
+   /**
+    * Bind queries to context.
+    * \param flags  exactly one of SVGA_QUERY_FLAG_SET/REF
+    */
+   enum pipe_error
+   (*query_bind)(struct svga_winsys_context *sws,
+                 struct svga_winsys_gb_query *query,
+                 unsigned flags);
+
    void
    (*commit)(struct svga_winsys_context *swc);
    
@@ -187,6 +354,11 @@ struct svga_winsys_context
     * global to the entire SVGA device.
     */
    uint32 cid;
+
+   /**
+    * Flags to hint the current context state
+    */
+   uint32 hints;
 
    /**
     ** BEGIN new functions for guest-backed surfaces.
@@ -219,6 +391,42 @@ struct svga_winsys_context
                     struct svga_winsys_surface *surface,
                     boolean *rebind);
 
+   /**
+    * Create and define a DX GB shader that resides in the device COTable.
+    * Caller of this function will issue the DXDefineShader command.
+    */
+   struct svga_winsys_gb_shader *
+   (*shader_create)(struct svga_winsys_context *swc,
+                    uint32 shaderId,
+                    SVGA3dShaderType shaderType,
+                    const uint32 *bytecode,
+                    uint32 bytecodeLen);
+
+   /**
+    * Destroy a DX GB shader.
+    * This function will issue the DXDestroyShader command.
+    */
+   void
+   (*shader_destroy)(struct svga_winsys_context *swc,
+                     struct svga_winsys_gb_shader *shader);
+
+   /**
+    * Rebind a DX GB resource to a context.
+    * This is called to reference a DX GB resource in the command stream in
+    * order to page in the associated resource in case the memory has been
+    * paged out, and to fence it if necessary after command submission.
+    */
+   enum pipe_error
+   (*resource_rebind)(struct svga_winsys_context *swc,
+                      struct svga_winsys_surface *surface,
+                      struct svga_winsys_gb_shader *shader,
+                      unsigned flags);
+
+   /** To report perf/conformance/etc issues to the state tracker */
+   struct pipe_debug_callback *debug_callback;
+
+   /** The more recent command issued to command buffer */
+   SVGAFifo3dCmdId last_command;
 };
 
 
@@ -260,7 +468,7 @@ struct svga_winsys_screen
     * \param format Format Device surface format
     * \param usage Winsys usage: bitmask of SVGA_SURFACE_USAGE_x flags
     * \param size Surface size given in device format
-    * \param numFaces Number of faces of the surface (1 or 6)
+    * \param numLayers Number of layers of the surface (or cube faces)
     * \param numMipLevels Number of mipmap levels for each face
     *
     * Returns the surface ID (sid). Surfaces are generic
@@ -274,7 +482,7 @@ struct svga_winsys_screen
     * - Each face has a list of mipmap levels
     *
     * - Each mipmap image may have multiple volume
-    *   slices, if the image is three dimensional.
+    *   slices for 3D image, or multiple 2D slices for texture array.
     *
     * - Each slice is a 2D array of 'blocks'
     *
@@ -296,8 +504,9 @@ struct svga_winsys_screen
                      SVGA3dSurfaceFormat format,
                      unsigned usage,
                      SVGA3dSize size,
-                     uint32 numFaces,
-                     uint32 numMipLevels);
+                     uint32 numLayers,
+                     uint32 numMipLevels,
+                     unsigned sampleCount);
 
    /**
     * Creates a surface from a winsys handle.
@@ -343,8 +552,16 @@ struct svga_winsys_screen
    (*surface_can_create)(struct svga_winsys_screen *sws,
                          SVGA3dSurfaceFormat format,
                          SVGA3dSize size,
-                         uint32 numFaces,
+                         uint32 numLayers,
                          uint32 numMipLevels);
+
+   /**
+    * Invalidate the content of this surface
+    */
+   void
+   (*surface_invalidate)(struct svga_winsys_screen *sws,
+                         struct svga_winsys_surface *surface);
+
 
    /**
     * Buffer management. Buffer attributes are mostly fixed over its lifetime.
@@ -420,7 +637,7 @@ struct svga_winsys_screen
     */
    struct svga_winsys_gb_shader *
    (*shader_create)(struct svga_winsys_screen *sws,
-		    SVGA3dShaderType type,
+		    SVGA3dShaderType shaderType,
 		    const uint32 *bytecode,
 		    uint32 bytecodeLen);
 
@@ -432,6 +649,69 @@ struct svga_winsys_screen
    (*shader_destroy)(struct svga_winsys_screen *sws,
 		     struct svga_winsys_gb_shader *shader);
 
+   /**
+    * Create and define a GB query.
+    */
+   struct svga_winsys_gb_query *
+   (*query_create)(struct svga_winsys_screen *sws, uint32 len);
+
+   /**
+    * Destroy a GB query.
+    */
+   void
+   (*query_destroy)(struct svga_winsys_screen *sws,
+		    struct svga_winsys_gb_query *query);
+
+   /**
+    * Initialize the query state of the query that resides in the slot
+    * specified in offset
+    * \return zero on success.
+    */
+   int
+   (*query_init)(struct svga_winsys_screen *sws,
+                       struct svga_winsys_gb_query *query,
+                       unsigned offset,
+                       SVGA3dQueryState queryState);
+
+   /**
+    * Inquire for the query state and result of the query that resides
+    * in the slot specified in offset
+    */
+   void
+   (*query_get_result)(struct svga_winsys_screen *sws,
+                       struct svga_winsys_gb_query *query,
+                       unsigned offset,
+                       SVGA3dQueryState *queryState,
+                       void *result, uint32 resultLen);
+
+   /**
+    * Increment a statistic counter
+    */
+   void 
+   (*stats_inc)(enum svga_stats_count);
+
+   /**
+    * Push a time frame onto the stack
+    */
+   void
+   (*stats_time_push)(enum svga_stats_time, struct svga_winsys_stats_timeframe *);
+
+   /**
+    * Pop a time frame.
+    */
+   void
+   (*stats_time_pop)();
+
+
+   /** Have VGPU v10 hardware? */
+   boolean have_vgpu10;
+
+   /** To rebind resources at the beginnning of a new command buffer */
+   boolean need_to_rebind_resources;
+
+   boolean have_generate_mipmap_cmd;
+   boolean have_set_predication_cmd;
+   boolean have_transfer_from_buffer_cmd;
 };
 
 

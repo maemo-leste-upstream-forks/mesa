@@ -38,7 +38,8 @@ static void
 brw_track_state_batch(struct brw_context *brw,
 		      enum aub_state_struct_type type,
 		      uint32_t offset,
-		      int size)
+                      int size,
+                      int index)
 {
    struct intel_batchbuffer *batch = &brw->batch;
 
@@ -53,6 +54,7 @@ brw_track_state_batch(struct brw_context *brw,
    brw->state_batch_list[brw->state_batch_count].offset = offset;
    brw->state_batch_list[brw->state_batch_count].size = size;
    brw->state_batch_list[brw->state_batch_count].type = type;
+   brw->state_batch_list[brw->state_batch_count].index = index;
    brw->state_batch_count++;
 }
 
@@ -85,7 +87,7 @@ brw_annotate_aub(struct brw_context *brw)
    drm_intel_aub_annotation annotations[annotation_count];
    int a = 0;
    make_annotation(&annotations[a++], AUB_TRACE_TYPE_BATCH, 0,
-                   4*brw->batch.used);
+                   4 * USED_BATCH(brw->batch));
    for (int i = brw->state_batch_count; i-- > 0; ) {
       uint32_t type = brw->state_batch_list[i].type;
       uint32_t start_offset = brw->state_batch_list[i].offset;
@@ -108,18 +110,20 @@ brw_annotate_aub(struct brw_context *brw)
  * margin (4096 bytes, even if the object is just a 20-byte surface
  * state), and more buffers to walk and count for aperture size checking.
  *
- * However, due to the restrictions inposed by the aperture size
+ * However, due to the restrictions imposed by the aperture size
  * checking performance hacks, we can't have the batch point at a
  * separate indirect state buffer, because once the batch points at
  * it, no more relocations can be added to it.  So, we sneak these
  * buffers in at the top of the batchbuffer.
  */
 void *
-brw_state_batch(struct brw_context *brw,
-		enum aub_state_struct_type type,
-		int size,
-		int alignment,
-		uint32_t *out_offset)
+__brw_state_batch(struct brw_context *brw,
+                  enum aub_state_struct_type type,
+                  int size,
+                  int alignment,
+                  int index,
+                  uint32_t *out_offset)
+
 {
    struct intel_batchbuffer *batch = &brw->batch;
    uint32_t offset;
@@ -132,7 +136,7 @@ brw_state_batch(struct brw_context *brw,
     * space, then flush and try again.
     */
    if (batch->state_batch_offset < size ||
-       offset < 4*batch->used + batch->reserved_space) {
+       offset < 4 * USED_BATCH(*batch) + batch->reserved_space) {
       intel_batchbuffer_flush(brw);
       offset = ROUND_DOWN_TO(batch->state_batch_offset - size, alignment);
    }
@@ -140,7 +144,7 @@ brw_state_batch(struct brw_context *brw,
    batch->state_batch_offset = offset;
 
    if (unlikely(INTEL_DEBUG & (DEBUG_BATCH | DEBUG_AUB)))
-      brw_track_state_batch(brw, type, offset, size);
+      brw_track_state_batch(brw, type, offset, size, index);
 
    *out_offset = offset;
    return batch->map + (offset>>2);

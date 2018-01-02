@@ -31,7 +31,7 @@
 #include "freedreno_util.h"
 
 #include "fd3_query.h"
-#include "fd3_util.h"
+#include "fd3_format.h"
 
 
 struct fd_rb_samp_ctrs {
@@ -46,10 +46,10 @@ struct fd_rb_samp_ctrs {
  */
 
 static struct fd_hw_sample *
-occlusion_get_sample(struct fd_context *ctx, struct fd_ringbuffer *ring)
+occlusion_get_sample(struct fd_batch *batch, struct fd_ringbuffer *ring)
 {
 	struct fd_hw_sample *samp =
-			fd_hw_sample_init(ctx, sizeof(struct fd_rb_samp_ctrs));
+			fd_hw_sample_init(batch, sizeof(struct fd_rb_samp_ctrs));
 
 	/* Set RB_SAMPLE_COUNT_ADDR to samp->offset plus value of
 	 * HW_QUERY_BASE_REG register:
@@ -64,11 +64,11 @@ occlusion_get_sample(struct fd_context *ctx, struct fd_ringbuffer *ring)
 
 	OUT_PKT3(ring, CP_DRAW_INDX, 3);
 	OUT_RING(ring, 0x00000000);
-	OUT_RING(ring, DRAW(DI_PT_POINTLIST_A2XX, DI_SRC_SEL_AUTO_INDEX,
-			INDEX_SIZE_IGN, USE_VISIBILITY));
+	OUT_RING(ring, DRAW(DI_PT_POINTLIST_PSIZE, DI_SRC_SEL_AUTO_INDEX,
+						INDEX_SIZE_IGN, USE_VISIBILITY, 0));
 	OUT_RING(ring, 0);             /* NumIndices */
 
-	fd_event_write(ctx, ring, ZPASS_DONE);
+	fd_event_write(batch, ring, ZPASS_DONE);
 
 	OUT_PKT0(ring, REG_A3XX_RBBM_PERFCTR_CTL, 1);
 	OUT_RING(ring, A3XX_RBBM_PERFCTR_CTL_ENABLE);
@@ -119,14 +119,14 @@ occlusion_predicate_accumulate_result(struct fd_context *ctx,
 
 static const struct fd_hw_sample_provider occlusion_counter = {
 		.query_type = PIPE_QUERY_OCCLUSION_COUNTER,
-		.active = FD_STAGE_DRAW, /* | FD_STAGE_CLEAR ??? */
+		.active = FD_STAGE_DRAW,
 		.get_sample = occlusion_get_sample,
 		.accumulate_result = occlusion_counter_accumulate_result,
 };
 
 static const struct fd_hw_sample_provider occlusion_predicate = {
 		.query_type = PIPE_QUERY_OCCLUSION_PREDICATE,
-		.active = FD_STAGE_DRAW, /* | FD_STAGE_CLEAR ??? */
+		.active = FD_STAGE_DRAW,
 		.get_sample = occlusion_get_sample,
 		.accumulate_result = occlusion_predicate_accumulate_result,
 };

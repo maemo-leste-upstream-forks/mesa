@@ -28,8 +28,11 @@
 #ifndef ILO_SHADER_INTERNAL_H
 #define ILO_SHADER_INTERNAL_H
 
+#include "core/ilo_state_sbe.h"
+#include "core/ilo_state_sol.h"
+
 #include "ilo_common.h"
-#include "ilo_context.h"
+#include "ilo_state.h"
 #include "ilo_shader.h"
 
 /* XXX The interface needs to be reworked */
@@ -72,13 +75,27 @@ struct ilo_shader_variant {
    uint32_t saturate_tex_coords[3];
 };
 
+struct ilo_kernel_routing {
+   bool initialized;
+
+   bool is_point;
+   bool light_twoside;
+   uint32_t sprite_coord_enable;
+   int sprite_coord_mode;
+   int src_len;
+   int src_semantics[PIPE_MAX_SHADER_OUTPUTS];
+   int src_indices[PIPE_MAX_SHADER_OUTPUTS];
+
+   struct ilo_state_sbe sbe;
+};
+
 /**
  * A compiled shader.
  */
 struct ilo_shader {
    struct ilo_shader_variant variant;
 
-   struct ilo_shader_cso cso;
+   union ilo_shader_cso cso;
 
    struct {
       int semantic_names[PIPE_MAX_SHADER_INPUTS];
@@ -111,26 +128,41 @@ struct ilo_shader {
 
    bool stream_output;
    int svbi_post_inc;
-   struct pipe_stream_output_info so_info;
+
+   uint32_t sol_data[PIPE_MAX_SO_OUTPUTS][2];
+   struct ilo_state_sol sol;
 
    /* for VS stream output / rasterizer discard */
    int gs_offsets[3];
    int gs_start_grf;
+   int gs_bt_so_count;
 
    void *kernel;
    int kernel_size;
+   int per_thread_scratch_size;
 
-   bool routing_initialized;
-   int routing_src_semantics[PIPE_MAX_SHADER_OUTPUTS];
-   int routing_src_indices[PIPE_MAX_SHADER_OUTPUTS];
-   uint32_t routing_sprite_coord_enable;
    struct ilo_kernel_routing routing;
+   struct ilo_state_ps_params_info ps_params;
 
    /* what does the push constant buffer consist of? */
    struct {
       int cbuf0_size;
       int clip_state_size;
    } pcb;
+
+   /* binding table */
+   struct {
+      int rt_base, rt_count;
+      int tex_base, tex_count;
+      int const_base, const_count;
+      int res_base, res_count;
+
+      int gen6_so_base, gen6_so_count;
+
+      int global_base, global_count;
+
+      int total_count;
+   } bt;
 
    struct list_head list;
 
@@ -143,7 +175,7 @@ struct ilo_shader {
  * Information about a shader state.
  */
 struct ilo_shader_info {
-   const struct ilo_dev_info *dev;
+   const struct ilo_dev *dev;
    int type;
 
    const struct tgsi_token *tokens;
@@ -168,6 +200,8 @@ struct ilo_shader_info {
 
    uint32_t shadow_samplers;
    int num_samplers;
+
+   int constant_buffer_count;
 };
 
 /**
@@ -189,7 +223,7 @@ struct ilo_shader_state {
 void
 ilo_shader_variant_init(struct ilo_shader_variant *variant,
                         const struct ilo_shader_info *info,
-                        const struct ilo_context *ilo);
+                        const struct ilo_state_vector *vec);
 
 bool
 ilo_shader_state_use_variant(struct ilo_shader_state *state,

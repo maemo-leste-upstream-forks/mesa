@@ -30,7 +30,6 @@
   */
 
 
-#include "main/glheader.h"
 #include "main/macros.h"
 #include "main/enums.h"
 #include "program/program.h"
@@ -70,7 +69,7 @@ static struct brw_reg make_plane_ud(GLuint x, GLuint y, GLuint z, GLuint w)
 
 void brw_clip_init_planes( struct brw_clip_compile *c )
 {
-   struct brw_compile *p = &c->func;
+   struct brw_codegen *p = &c->func;
 
    if (!c->key.nr_userclip) {
       brw_MOV(p, get_element_ud(c->reg.fixed_planes, 0), make_plane_ud( 0,    0, 0xff, 1));
@@ -90,7 +89,7 @@ void brw_clip_init_planes( struct brw_clip_compile *c )
  */
 void brw_clip_project_position(struct brw_clip_compile *c, struct brw_reg pos )
 {
-   struct brw_compile *p = &c->func;
+   struct brw_codegen *p = &c->func;
 
    /* calc rhw
     */
@@ -99,7 +98,8 @@ void brw_clip_project_position(struct brw_clip_compile *c, struct brw_reg pos )
    /* value.xyz *= value.rhw
     */
    brw_set_default_access_mode(p, BRW_ALIGN_16);
-   brw_MUL(p, brw_writemask(pos, WRITEMASK_XYZ), pos, brw_swizzle1(pos, W));
+   brw_MUL(p, brw_writemask(pos, WRITEMASK_XYZ), pos,
+           brw_swizzle(pos, BRW_SWIZZLE_WWWW));
    brw_set_default_access_mode(p, BRW_ALIGN_1);
 }
 
@@ -107,7 +107,7 @@ void brw_clip_project_position(struct brw_clip_compile *c, struct brw_reg pos )
 static void brw_clip_project_vertex( struct brw_clip_compile *c,
 				     struct brw_indirect vert_addr )
 {
-   struct brw_compile *p = &c->func;
+   struct brw_codegen *p = &c->func;
    struct brw_reg tmp = get_tmp(c);
    GLuint hpos_offset = brw_varying_to_offset(&c->vue_map, VARYING_SLOT_POS);
    GLuint ndc_offset = brw_varying_to_offset(&c->vue_map,
@@ -119,7 +119,7 @@ static void brw_clip_project_vertex( struct brw_clip_compile *c,
    brw_MOV(p, tmp, deref_4f(vert_addr, hpos_offset));
    brw_clip_project_position(c, tmp);
    brw_MOV(p, deref_4f(vert_addr, ndc_offset), tmp);
-	
+
    release_tmp(c, tmp);
 }
 
@@ -138,7 +138,7 @@ void brw_clip_interp_vertex( struct brw_clip_compile *c,
 			     struct brw_reg t0,
 			     bool force_edgeflag)
 {
-   struct brw_compile *p = &c->func;
+   struct brw_codegen *p = &c->func;
    struct brw_reg t_nopersp, v0_ndc_copy;
    GLuint slot;
 
@@ -195,11 +195,11 @@ void brw_clip_interp_vertex( struct brw_clip_compile *c,
       brw_set_default_access_mode(p, BRW_ALIGN_16);
       brw_MOV(p,
               brw_writemask(t_nopersp, WRITEMASK_ZW),
-              brw_swizzle(tmp, 0, 1, 0, 1));
+              brw_swizzle(tmp, BRW_SWIZZLE_XYXY));
 
       /* t_nopersp = vec4(v1.xy, dest.xy) - v0.xyxy */
       brw_ADD(p, t_nopersp, t_nopersp,
-              negate(brw_swizzle(v0_ndc_copy, 0, 1, 0, 1)));
+              negate(brw_swizzle(v0_ndc_copy, BRW_SWIZZLE_XYXY)));
 
       /* Add the absolute values of the X and Y deltas so that if
        * the points aren't in the same place on the screen we get
@@ -213,8 +213,8 @@ void brw_clip_interp_vertex( struct brw_clip_compile *c,
        */
       brw_ADD(p,
               brw_writemask(t_nopersp, WRITEMASK_XY),
-              brw_abs(brw_swizzle(t_nopersp, 0, 2, 0, 0)),
-              brw_abs(brw_swizzle(t_nopersp, 1, 3, 0, 0)));
+              brw_abs(brw_swizzle(t_nopersp, BRW_SWIZZLE_XZXZ)),
+              brw_abs(brw_swizzle(t_nopersp, BRW_SWIZZLE_YWYW)));
       brw_set_default_access_mode(p, BRW_ALIGN_1);
 
       /* If the points are in the same place, just substitute a
@@ -224,7 +224,10 @@ void brw_clip_interp_vertex( struct brw_clip_compile *c,
               vec1(t_nopersp),
               brw_imm_f(0));
       brw_IF(p, BRW_EXECUTE_1);
-      brw_MOV(p, t_nopersp, brw_imm_vf4(1, 0, 0, 0));
+      brw_MOV(p, t_nopersp, brw_imm_vf4(brw_float_to_vf(1.0),
+                                        brw_float_to_vf(0.0),
+                                        brw_float_to_vf(0.0),
+                                        brw_float_to_vf(0.0)));
       brw_ENDIF(p);
 
       /* Now compute t_nopersp = t_nopersp.y/t_nopersp.x and broadcast it. */
@@ -232,7 +235,7 @@ void brw_clip_interp_vertex( struct brw_clip_compile *c,
       brw_MUL(p, vec1(t_nopersp), vec1(t_nopersp),
             vec1(suboffset(t_nopersp, 1)));
       brw_set_default_access_mode(p, BRW_ALIGN_16);
-      brw_MOV(p, t_nopersp, brw_swizzle(t_nopersp, 0, 0, 0, 0));
+      brw_MOV(p, t_nopersp, brw_swizzle(t_nopersp, BRW_SWIZZLE_XXXX));
       brw_set_default_access_mode(p, BRW_ALIGN_1);
 
       release_tmp(c, tmp);
@@ -271,10 +274,10 @@ void brw_clip_interp_vertex( struct brw_clip_compile *c,
 	  */
          GLuint interp = c->key.interpolation_mode.mode[slot];
 
-         if (interp != INTERP_QUALIFIER_FLAT) {
+         if (interp != INTERP_MODE_FLAT) {
             struct brw_reg tmp = get_tmp(c);
             struct brw_reg t =
-               interp == INTERP_QUALIFIER_NOPERSPECTIVE ? t_nopersp : t0;
+               interp == INTERP_MODE_NOPERSPECTIVE ? t_nopersp : t0;
 
             brw_MUL(p,
                   vec4(brw_null_reg()),
@@ -316,7 +319,7 @@ void brw_clip_emit_vue(struct brw_clip_compile *c,
                        enum brw_urb_write_flags flags,
 		       GLuint header)
 {
-   struct brw_compile *p = &c->func;
+   struct brw_codegen *p = &c->func;
    bool allocate = flags & BRW_URB_WRITE_ALLOCATE;
 
    brw_clip_ff_sync(c);
@@ -336,10 +339,10 @@ void brw_clip_emit_vue(struct brw_clip_compile *c,
    brw_MOV(p, get_element_ud(c->reg.R0, 2), brw_imm_ud(header));
 
 
-   /* Send each vertex as a seperate write to the urb.  This
+   /* Send each vertex as a separate write to the urb.  This
     * is different to the concept in brw_sf_emit.c, where
     * subsequent writes are used to build up a single urb
-    * entry.  Each of these writes instantiates a seperate
+    * entry.  Each of these writes instantiates a separate
     * urb entry - (I think... what about 'allocate'?)
     */
    brw_urb_WRITE(p,
@@ -357,7 +360,7 @@ void brw_clip_emit_vue(struct brw_clip_compile *c,
 
 void brw_clip_kill_thread(struct brw_clip_compile *c)
 {
-   struct brw_compile *p = &c->func;
+   struct brw_codegen *p = &c->func;
 
    brw_clip_ff_sync(c);
    /* Send an empty message to kill the thread and release any
@@ -400,10 +403,10 @@ struct brw_reg brw_clip_plane_stride( struct brw_clip_compile *c )
 void brw_clip_copy_flatshaded_attributes( struct brw_clip_compile *c,
 			   GLuint to, GLuint from )
 {
-   struct brw_compile *p = &c->func;
+   struct brw_codegen *p = &c->func;
 
    for (int i = 0; i < c->vue_map.num_slots; i++) {
-      if (c->key.interpolation_mode.mode[i] == INTERP_QUALIFIER_FLAT) {
+      if (c->key.interpolation_mode.mode[i] == INTERP_MODE_FLAT) {
          brw_MOV(p,
                  byte_offset(c->reg.vertex[to], brw_vue_slot_to_offset(i)),
                  byte_offset(c->reg.vertex[from], brw_vue_slot_to_offset(i)));
@@ -415,9 +418,8 @@ void brw_clip_copy_flatshaded_attributes( struct brw_clip_compile *c,
 
 void brw_clip_init_clipmask( struct brw_clip_compile *c )
 {
-   struct brw_compile *p = &c->func;
+   struct brw_codegen *p = &c->func;
    struct brw_reg incoming = get_element_ud(c->reg.R0, 2);
-   struct brw_context *brw = p->brw;
 
    /* Shift so that lowest outcode bit is rightmost:
     */
@@ -429,7 +431,7 @@ void brw_clip_init_clipmask( struct brw_clip_compile *c )
       /* Rearrange userclip outcodes so that they come directly after
        * the fixed plane bits.
        */
-      if (brw->gen == 5 || brw->is_g4x)
+      if (p->devinfo->gen == 5 || p->devinfo->is_g4x)
          brw_AND(p, tmp, incoming, brw_imm_ud(0xff<<14));
       else
          brw_AND(p, tmp, incoming, brw_imm_ud(0x3f<<14));
@@ -443,12 +445,11 @@ void brw_clip_init_clipmask( struct brw_clip_compile *c )
 
 void brw_clip_ff_sync(struct brw_clip_compile *c)
 {
-    struct brw_compile *p = &c->func;
-    struct brw_context *brw = p->brw;
+    struct brw_codegen *p = &c->func;
 
-    if (brw->gen == 5) {
+    if (p->devinfo->gen == 5) {
         brw_AND(p, brw_null_reg(), c->reg.ff_sync, brw_imm_ud(0x1));
-        brw_inst_set_cond_modifier(brw, brw_last_inst, BRW_CONDITIONAL_Z);
+        brw_inst_set_cond_modifier(p->devinfo, brw_last_inst, BRW_CONDITIONAL_Z);
         brw_IF(p, BRW_EXECUTE_1);
         {
             brw_OR(p, c->reg.ff_sync, c->reg.ff_sync, brw_imm_ud(0x1));
@@ -467,11 +468,9 @@ void brw_clip_ff_sync(struct brw_clip_compile *c)
 
 void brw_clip_init_ff_sync(struct brw_clip_compile *c)
 {
-    struct brw_context *brw = c->func.brw;
+    struct brw_codegen *p = &c->func;
 
-    if (brw->gen == 5) {
-	struct brw_compile *p = &c->func;
-
+    if (p->devinfo->gen == 5) {
         brw_MOV(p, c->reg.ff_sync, brw_imm_ud(0));
     }
 }

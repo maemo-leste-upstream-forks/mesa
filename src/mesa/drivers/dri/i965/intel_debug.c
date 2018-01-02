@@ -31,61 +31,77 @@
 
 #include "brw_context.h"
 #include "intel_debug.h"
-#include "utils.h"
+#include "util/u_atomic.h" /* for p_atomic_cmpxchg */
+#include "util/debug.h"
 
 uint64_t INTEL_DEBUG = 0;
 
-static const struct dri_debug_control debug_control[] = {
-   { "tex",   DEBUG_TEXTURE},
-   { "state", DEBUG_STATE},
-   { "blit",  DEBUG_BLIT},
-   { "mip",   DEBUG_MIPTREE},
-   { "fall",  DEBUG_PERF},
-   { "perf",  DEBUG_PERF},
-   { "perfmon", DEBUG_PERFMON},
-   { "bat",   DEBUG_BATCH},
-   { "pix",   DEBUG_PIXEL},
-   { "buf",   DEBUG_BUFMGR},
-   { "fbo",   DEBUG_FBO},
-   { "fs",    DEBUG_WM },
-   { "gs",    DEBUG_GS},
-   { "sync",  DEBUG_SYNC},
-   { "prim",  DEBUG_PRIMS },
-   { "vert",  DEBUG_VERTS },
-   { "dri",   DEBUG_DRI },
-   { "sf",    DEBUG_SF },
-   { "stats", DEBUG_STATS },
-   { "wm",    DEBUG_WM },
-   { "urb",   DEBUG_URB },
-   { "vs",    DEBUG_VS },
-   { "clip",  DEBUG_CLIP },
-   { "aub",   DEBUG_AUB },
+static const struct debug_control debug_control[] = {
+   { "tex",         DEBUG_TEXTURE},
+   { "state",       DEBUG_STATE},
+   { "blit",        DEBUG_BLIT},
+   { "mip",         DEBUG_MIPTREE},
+   { "fall",        DEBUG_PERF},
+   { "perf",        DEBUG_PERF},
+   { "perfmon",     DEBUG_PERFMON},
+   { "bat",         DEBUG_BATCH},
+   { "pix",         DEBUG_PIXEL},
+   { "buf",         DEBUG_BUFMGR},
+   { "fbo",         DEBUG_FBO},
+   { "fs",          DEBUG_WM },
+   { "gs",          DEBUG_GS},
+   { "sync",        DEBUG_SYNC},
+   { "prim",        DEBUG_PRIMS },
+   { "vert",        DEBUG_VERTS },
+   { "dri",         DEBUG_DRI },
+   { "sf",          DEBUG_SF },
+   { "stats",       DEBUG_STATS },
+   { "wm",          DEBUG_WM },
+   { "urb",         DEBUG_URB },
+   { "vs",          DEBUG_VS },
+   { "clip",        DEBUG_CLIP },
+   { "aub",         DEBUG_AUB },
    { "shader_time", DEBUG_SHADER_TIME },
-   { "no16",  DEBUG_NO16 },
-   { "blorp", DEBUG_BLORP },
-   { "nodualobj", DEBUG_NO_DUAL_OBJECT_GS },
-   { "optimizer", DEBUG_OPTIMIZER },
-   { "noann", DEBUG_NO_ANNOTATION },
-   { "no8",  DEBUG_NO8 },
+   { "no16",        DEBUG_NO16 },
+   { "blorp",       DEBUG_BLORP },
+   { "nodualobj",   DEBUG_NO_DUAL_OBJECT_GS },
+   { "optimizer",   DEBUG_OPTIMIZER },
+   { "ann",         DEBUG_ANNOTATION },
+   { "no8",         DEBUG_NO8 },
+   { "vec4",        DEBUG_VEC4VS },
+   { "spill_fs",    DEBUG_SPILL_FS },
+   { "spill_vec4",  DEBUG_SPILL_VEC4 },
+   { "cs",          DEBUG_CS },
+   { "hex",         DEBUG_HEX },
+   { "nocompact",   DEBUG_NO_COMPACTION },
+   { "hs",          DEBUG_TCS },
+   { "tcs",         DEBUG_TCS },
+   { "ds",          DEBUG_TES },
+   { "tes",         DEBUG_TES },
+   { "l3",          DEBUG_L3 },
+   { "do32",        DEBUG_DO32 },
+   { "norbc",       DEBUG_NO_RBC },
    { NULL,    0 }
 };
 
-void
-brw_process_intel_debug_variable(struct brw_context *brw)
+uint64_t
+intel_debug_flag_for_shader_stage(gl_shader_stage stage)
 {
-   INTEL_DEBUG = driParseDebugString(getenv("INTEL_DEBUG"), debug_control);
-   if (INTEL_DEBUG & DEBUG_BUFMGR)
-      dri_bufmgr_set_debug(brw->bufmgr, true);
+   uint64_t flags[] = {
+      [MESA_SHADER_VERTEX] = DEBUG_VS,
+      [MESA_SHADER_TESS_CTRL] = DEBUG_TCS,
+      [MESA_SHADER_TESS_EVAL] = DEBUG_TES,
+      [MESA_SHADER_GEOMETRY] = DEBUG_GS,
+      [MESA_SHADER_FRAGMENT] = DEBUG_WM,
+      [MESA_SHADER_COMPUTE] = DEBUG_CS,
+   };
+   STATIC_ASSERT(MESA_SHADER_STAGES == 6);
+   return flags[stage];
+}
 
-   if ((INTEL_DEBUG & DEBUG_SHADER_TIME) && brw->gen < 7) {
-      fprintf(stderr,
-              "shader_time debugging requires gen7 (Ivybridge) or better.\n");
-      INTEL_DEBUG &= ~DEBUG_SHADER_TIME;
-   }
-
-   if (INTEL_DEBUG & DEBUG_PERF)
-      brw->perf_debug = true;
-
-   if (INTEL_DEBUG & DEBUG_AUB)
-      drm_intel_bufmgr_gem_set_aub_dump(brw->bufmgr, true);
+void
+brw_process_intel_debug_variable(void)
+{
+   uint64_t intel_debug = parse_debug_string(getenv("INTEL_DEBUG"), debug_control);
+   (void) p_atomic_cmpxchg(&INTEL_DEBUG, 0, intel_debug);
 }

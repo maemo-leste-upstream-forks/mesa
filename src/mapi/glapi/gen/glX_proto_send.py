@@ -2,6 +2,7 @@
 
 # (C) Copyright IBM Corporation 2004, 2005
 # All Rights Reserved.
+# Copyright (c) 2015 Intel Corporation
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the "Software"),
@@ -26,8 +27,10 @@
 #    Ian Romanick <idr@us.ibm.com>
 #    Jeremy Kolb <jkolb@brandeis.edu>
 
+import argparse
+
 import gl_XML, glX_XML, glX_proto_common, license
-import sys, getopt, copy, string
+import copy, string
 
 def convertStringForXCB(str):
     tmp = ""
@@ -171,13 +174,35 @@ class PrintGlxProtoStubs(glX_proto_common.glx_print_proto):
         print '#include <X11/Xlib-xcb.h>'
         print '#include <xcb/xcb.h>'
         print '#include <xcb/glx.h>'
+        print '#include <limits.h>'
 
-        print ''
-        print '#define __GLX_PAD(n) (((n) + 3) & ~3)'
         print ''
         self.printFastcall()
         self.printNoinline()
         print ''
+
+        print 'static _X_INLINE int safe_add(int a, int b)'
+        print '{'
+        print '    if (a < 0 || b < 0) return -1;'
+        print '    if (INT_MAX - a < b) return -1;'
+        print '    return a + b;'
+        print '}'
+        print 'static _X_INLINE int safe_mul(int a, int b)'
+        print '{'
+        print '    if (a < 0 || b < 0) return -1;'
+        print '    if (a == 0 || b == 0) return 0;'
+        print '    if (a > INT_MAX / b) return -1;'
+        print '    return a * b;'
+        print '}'
+        print 'static _X_INLINE int safe_pad(int a)'
+        print '{'
+        print '    int ret;'
+        print '    if (a < 0) return -1;'
+        print '    if ((ret = safe_add(a, 3)) < 0) return -1;'
+        print '    return ret & (GLuint)~3;'
+        print '}'
+        print ''
+
         print '#ifndef __GNUC__'
         print '#  define __builtin_expect(x, y) x'
         print '#endif'
@@ -574,7 +599,7 @@ generic_%u_byte( GLint rop, const void * ptr )
         print '    struct glx_context * const gc = __glXGetCurrentContext();'
 
         # The only reason that single and vendor private commands need
-        # a variable called 'dpy' is becuase they use the SyncHandle
+        # a variable called 'dpy' is because they use the SyncHandle
         # macro.  For whatever brain-dead reason, that macro is hard-
         # coded to use a variable called 'dpy' instead of taking a
         # parameter.
@@ -609,6 +634,15 @@ generic_%u_byte( GLint rop, const void * ptr )
         self.emit_packet_size_calculation(f, 0)
         if name != None and name not in f.glx_vendorpriv_names:
             print '#endif'
+
+        if f.command_variable_length() != "":
+            print "    if (0%s < 0) {" % f.command_variable_length()
+            print "        __glXSetError(gc, GL_INVALID_VALUE);"
+            if f.return_type != 'void':
+                print "        return 0;"
+            else:
+                print "        return;"
+            print "    }"
 
         condition_list = []
         for p in f.parameterIterateCounters():
@@ -1085,42 +1119,41 @@ extern _X_HIDDEN NOINLINE FASTCALL GLubyte * __glXSetupVendorRequest(
         print '#endif'
 
 
-def show_usage():
-    print "Usage: %s [-f input_file_name] [-m output_mode] [-d]" % sys.argv[0]
-    print "    -m output_mode   Output mode can be one of 'proto', 'init_c' or 'init_h'."
-    print "    -d               Enable extra debug information in the generated code."
-    sys.exit(1)
+def _parser():
+    """Parse input and returned a parsed namespace."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-f',
+                        default='gl_API.xml',
+                        dest='filename',
+                        help='An XML file describing an API')
+    parser.add_argument('-m',
+                        required=True,
+                        dest='mode',
+                        choices=frozenset(['proto', 'init_c', 'init_h']),
+                        help='which file to generate')
+    parser.add_argument('-d',
+                        action='store_true',
+                        dest='debug',
+                        help='turn debug mode on.')
+    return parser.parse_args()
+
+
+def main():
+    """Main function."""
+    args = _parser()
+
+    if args.mode == "proto":
+        printer = PrintGlxProtoStubs()
+    elif args.mode == "init_c":
+        printer = PrintGlxProtoInit_c()
+    elif args.mode == "init_h":
+        printer = PrintGlxProtoInit_h()
+
+    printer.debug = args.debug
+    api = gl_XML.parse_GL_API(args.filename, glX_XML.glx_item_factory())
+
+    printer.Print( api )
 
 
 if __name__ == '__main__':
-    file_name = "gl_API.xml"
-
-    try:
-        (args, trail) = getopt.getopt(sys.argv[1:], "f:m:d")
-    except Exception,e:
-        show_usage()
-
-    debug = 0
-    mode = "proto"
-    for (arg,val) in args:
-        if arg == "-f":
-            file_name = val
-        elif arg == "-m":
-            mode = val
-        elif arg == "-d":
-            debug = 1
-
-    if mode == "proto":
-        printer = PrintGlxProtoStubs()
-    elif mode == "init_c":
-        printer = PrintGlxProtoInit_c()
-    elif mode == "init_h":
-        printer = PrintGlxProtoInit_h()
-    else:
-        show_usage()
-
-
-    printer.debug = debug
-    api = gl_XML.parse_GL_API( file_name, glX_XML.glx_item_factory() )
-
-    printer.Print( api )
+    main()

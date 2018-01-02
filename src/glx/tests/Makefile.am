@@ -2,6 +2,7 @@ if HAVE_SHARED_GLAPI
 AM_CFLAGS = $(PTHREAD_CFLAGS)
 AM_CPPFLAGS = \
 	-I$(top_srcdir)/src/gtest/include \
+	-I$(top_srcdir)/src \
 	-I$(top_srcdir)/src/mapi \
 	-I$(top_srcdir)/src/mesa \
 	-I$(top_srcdir)/src/glx \
@@ -9,7 +10,7 @@ AM_CPPFLAGS = \
 	-I$(top_srcdir)/include/GL/internal \
 	$(DEFINES) \
 	$(LIBDRM_CFLAGS) \
-	$(X11_CFLAGS)
+	$(X11_INCLUDES)
 
 TESTS = glx-test
 check_PROGRAMS = glx-test
@@ -19,7 +20,9 @@ glx_test_SOURCES =			\
 	create_context_unittest.cpp	\
 	enum_sizes.cpp			\
 	fake_glx_screen.cpp		\
+	fake_glx_screen.h		\
 	indirect_api.cpp		\
+	mock_xdisplay.h			\
 	query_renderer_unittest.cpp
 
 if HAVE_DRI2

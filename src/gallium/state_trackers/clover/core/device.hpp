@@ -64,8 +64,11 @@ namespace clover {
       cl_uint max_clock_frequency() const;
       cl_uint max_compute_units() const;
       bool image_support() const;
+      bool has_doubles() const;
 
       std::vector<size_t> max_block_size() const;
+      cl_uint subgroup_size() const;
+      cl_uint address_bits() const;
       std::string device_name() const;
       std::string vendor_name() const;
       enum pipe_shader_ir ir_format() const;

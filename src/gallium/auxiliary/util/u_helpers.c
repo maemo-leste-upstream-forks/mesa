@@ -81,10 +81,31 @@ void util_set_vertex_buffers_count(struct pipe_vertex_buffer *dst,
                                    const struct pipe_vertex_buffer *src,
                                    unsigned start_slot, unsigned count)
 {
-   uint32_t enabled_buffers = (1ull << *dst_count) - 1;
+   unsigned i;
+   uint32_t enabled_buffers = 0;
+
+   for (i = 0; i < *dst_count; i++) {
+      if (dst[i].buffer || dst[i].user_buffer)
+         enabled_buffers |= (1ull << i);
+   }
 
    util_set_vertex_buffers_mask(dst, &enabled_buffers, src, start_slot,
                                 count);
 
    *dst_count = util_last_bit(enabled_buffers);
+}
+
+
+void
+util_set_index_buffer(struct pipe_index_buffer *dst,
+                      const struct pipe_index_buffer *src)
+{
+   if (src) {
+      pipe_resource_reference(&dst->buffer, src->buffer);
+      memcpy(dst, src, sizeof(*dst));
+   }
+   else {
+      pipe_resource_reference(&dst->buffer, NULL);
+      memset(dst, 0, sizeof(*dst));
+   }
 }

@@ -54,7 +54,7 @@ typedef thrd_t pipe_thread;
 #define PIPE_THREAD_ROUTINE( name, param ) \
    int name( void *param )
 
-static INLINE pipe_thread pipe_thread_create( PIPE_THREAD_ROUTINE((*routine), ), void *param )
+static inline pipe_thread pipe_thread_create( PIPE_THREAD_ROUTINE((*routine), ), void *param )
 {
    pipe_thread thread;
 #ifdef HAVE_PTHREAD
@@ -75,14 +75,25 @@ static INLINE pipe_thread pipe_thread_create( PIPE_THREAD_ROUTINE((*routine), ),
    return thread;
 }
 
-static INLINE int pipe_thread_wait( pipe_thread thread )
+static inline int pipe_thread_wait( pipe_thread thread )
 {
    return thrd_join( thread, NULL );
 }
 
-static INLINE int pipe_thread_destroy( pipe_thread thread )
+static inline int pipe_thread_destroy( pipe_thread thread )
 {
    return thrd_detach( thread );
+}
+
+static inline void pipe_thread_setname( const char *name )
+{
+#if defined(HAVE_PTHREAD)
+#  if defined(__GNU_LIBRARY__) && defined(__GLIBC__) && defined(__GLIBC_MINOR__) && \
+      (__GLIBC__ >= 3 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 12))
+   pthread_setname_np(pthread_self(), name);
+#  endif
+#endif
+   (void)name;
 }
 
 
@@ -105,6 +116,22 @@ typedef mtx_t pipe_mutex;
 #define pipe_mutex_unlock(mutex) \
    (void) mtx_unlock(&(mutex))
 
+#define pipe_mutex_assert_locked(mutex) \
+   __pipe_mutex_assert_locked(&(mutex))
+
+static inline void
+__pipe_mutex_assert_locked(pipe_mutex *mutex)
+{
+#ifdef DEBUG
+   /* NOTE: this would not work for recursive mutexes, but
+    * pipe_mutex doesn't support those
+    */
+   int ret = mtx_trylock(mutex);
+   assert(ret == thrd_busy);
+   if (ret == thrd_success)
+      mtx_unlock(mutex);
+#endif
+}
 
 /* pipe_condvar
  */
@@ -134,17 +161,17 @@ typedef cnd_t pipe_condvar;
 
 typedef pthread_barrier_t pipe_barrier;
 
-static INLINE void pipe_barrier_init(pipe_barrier *barrier, unsigned count)
+static inline void pipe_barrier_init(pipe_barrier *barrier, unsigned count)
 {
    pthread_barrier_init(barrier, NULL, count);
 }
 
-static INLINE void pipe_barrier_destroy(pipe_barrier *barrier)
+static inline void pipe_barrier_destroy(pipe_barrier *barrier)
 {
    pthread_barrier_destroy(barrier);
 }
 
-static INLINE void pipe_barrier_wait(pipe_barrier *barrier)
+static inline void pipe_barrier_wait(pipe_barrier *barrier)
 {
    pthread_barrier_wait(barrier);
 }
@@ -160,7 +187,7 @@ typedef struct {
    pipe_condvar condvar;
 } pipe_barrier;
 
-static INLINE void pipe_barrier_init(pipe_barrier *barrier, unsigned count)
+static inline void pipe_barrier_init(pipe_barrier *barrier, unsigned count)
 {
    barrier->count = count;
    barrier->waiters = 0;
@@ -169,14 +196,14 @@ static INLINE void pipe_barrier_init(pipe_barrier *barrier, unsigned count)
    pipe_condvar_init(barrier->condvar);
 }
 
-static INLINE void pipe_barrier_destroy(pipe_barrier *barrier)
+static inline void pipe_barrier_destroy(pipe_barrier *barrier)
 {
    assert(barrier->waiters == 0);
    pipe_mutex_destroy(barrier->mutex);
    pipe_condvar_destroy(barrier->condvar);
 }
 
-static INLINE void pipe_barrier_wait(pipe_barrier *barrier)
+static inline void pipe_barrier_wait(pipe_barrier *barrier)
 {
    pipe_mutex_lock(barrier->mutex);
 
@@ -214,7 +241,7 @@ typedef struct
 } pipe_semaphore;
 
 
-static INLINE void
+static inline void
 pipe_semaphore_init(pipe_semaphore *sema, int init_val)
 {
    pipe_mutex_init(sema->mutex);
@@ -222,7 +249,7 @@ pipe_semaphore_init(pipe_semaphore *sema, int init_val)
    sema->counter = init_val;
 }
 
-static INLINE void
+static inline void
 pipe_semaphore_destroy(pipe_semaphore *sema)
 {
    pipe_mutex_destroy(sema->mutex);
@@ -230,7 +257,7 @@ pipe_semaphore_destroy(pipe_semaphore *sema)
 }
 
 /** Signal/increment semaphore counter */
-static INLINE void
+static inline void
 pipe_semaphore_signal(pipe_semaphore *sema)
 {
    pipe_mutex_lock(sema->mutex);
@@ -240,7 +267,7 @@ pipe_semaphore_signal(pipe_semaphore *sema)
 }
 
 /** Wait for semaphore counter to be greater than zero */
-static INLINE void
+static inline void
 pipe_semaphore_wait(pipe_semaphore *sema)
 {
    pipe_mutex_lock(sema->mutex);
@@ -266,7 +293,7 @@ typedef struct {
 #define PIPE_TSD_INIT_MAGIC 0xff8adc98
 
 
-static INLINE void
+static inline void
 pipe_tsd_init(pipe_tsd *tsd)
 {
    if (tss_create(&tsd->key, NULL/*free*/) != 0) {
@@ -275,7 +302,7 @@ pipe_tsd_init(pipe_tsd *tsd)
    tsd->initMagic = PIPE_TSD_INIT_MAGIC;
 }
 
-static INLINE void *
+static inline void *
 pipe_tsd_get(pipe_tsd *tsd)
 {
    if (tsd->initMagic != (int) PIPE_TSD_INIT_MAGIC) {
@@ -284,7 +311,7 @@ pipe_tsd_get(pipe_tsd *tsd)
    return tss_get(tsd->key);
 }
 
-static INLINE void
+static inline void
 pipe_tsd_set(pipe_tsd *tsd, void *value)
 {
    if (tsd->initMagic != (int) PIPE_TSD_INIT_MAGIC) {

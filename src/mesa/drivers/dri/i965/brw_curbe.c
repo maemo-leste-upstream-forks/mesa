@@ -50,13 +50,14 @@
  */
 
 
-#include "main/glheader.h"
+#include "compiler/nir/nir.h"
 #include "main/context.h"
 #include "main/macros.h"
 #include "main/enums.h"
 #include "program/prog_parameter.h"
 #include "program/prog_print.h"
 #include "program/prog_statevars.h"
+#include "util/bitscan.h"
 #include "intel_batchbuffer.h"
 #include "intel_buffer_objects.h"
 #include "brw_context.h"
@@ -75,17 +76,17 @@
 static void calculate_curbe_offsets( struct brw_context *brw )
 {
    struct gl_context *ctx = &brw->ctx;
-   /* CACHE_NEW_WM_PROG */
-   const GLuint nr_fp_regs = (brw->wm.prog_data->base.nr_params + 15) / 16;
+   /* BRW_NEW_FS_PROG_DATA */
+   const GLuint nr_fp_regs = (brw->wm.base.prog_data->nr_params + 15) / 16;
 
-   /* CACHE_NEW_VS_PROG */
-   const GLuint nr_vp_regs = (brw->vs.prog_data->base.base.nr_params + 15) / 16;
+   /* BRW_NEW_VS_PROG_DATA */
+   const GLuint nr_vp_regs = (brw->vs.base.prog_data->nr_params + 15) / 16;
    GLuint nr_clip_regs = 0;
    GLuint total_regs;
 
    /* _NEW_TRANSFORM */
    if (ctx->Transform.ClipPlanesEnabled) {
-      GLuint nr_planes = 6 + _mesa_bitcount_64(ctx->Transform.ClipPlanesEnabled);
+      GLuint nr_planes = 6 + _mesa_bitcount(ctx->Transform.ClipPlanesEnabled);
       nr_clip_regs = (nr_planes * 4 + 15) / 16;
    }
 
@@ -134,7 +135,7 @@ static void calculate_curbe_offsets( struct brw_context *brw )
                  brw->curbe.vs_start,
                  brw->curbe.vs_size );
 
-      brw->state.dirty.brw |= BRW_NEW_CURBE_OFFSETS;
+      brw->ctx.NewDriverState |= BRW_NEW_CURBE_OFFSETS;
    }
 }
 
@@ -142,8 +143,10 @@ static void calculate_curbe_offsets( struct brw_context *brw )
 const struct brw_tracked_state brw_curbe_offsets = {
    .dirty = {
       .mesa = _NEW_TRANSFORM,
-      .brw  = BRW_NEW_CONTEXT,
-      .cache = CACHE_NEW_VS_PROG | CACHE_NEW_WM_PROG
+      .brw  = BRW_NEW_CONTEXT |
+              BRW_NEW_BLORP |
+              BRW_NEW_FS_PROG_DATA |
+              BRW_NEW_VS_PROG_DATA,
    },
    .emit = calculate_curbe_offsets
 };
@@ -175,7 +178,7 @@ void brw_upload_cs_urb_state(struct brw_context *brw)
    ADVANCE_BATCH();
 }
 
-static GLfloat fixed_plane[6][4] = {
+static const GLfloat fixed_plane[6][4] = {
    { 0,    0,   -1, 1 },
    { 0,    0,    1, 1 },
    { 0,   -1,    0, 1 },
@@ -211,19 +214,21 @@ brw_upload_constant_buffer(struct brw_context *brw)
 
    /* fragment shader constants */
    if (brw->curbe.wm_size) {
+      _mesa_load_state_parameters(ctx, brw->fragment_program->Base.Parameters);
+
       /* BRW_NEW_CURBE_OFFSETS */
       GLuint offset = brw->curbe.wm_start * 16;
 
-      /* CACHE_NEW_WM_PROG | _NEW_PROGRAM_CONSTANTS: copy uniform values */
-      for (i = 0; i < brw->wm.prog_data->base.nr_params; i++) {
-	 buf[offset + i] = *brw->wm.prog_data->base.param[i];
+      /* BRW_NEW_FS_PROG_DATA | _NEW_PROGRAM_CONSTANTS: copy uniform values */
+      for (i = 0; i < brw->wm.base.prog_data->nr_params; i++) {
+	 buf[offset + i] = *brw->wm.base.prog_data->param[i];
       }
    }
 
    /* clipper constants */
    if (brw->curbe.clip_size) {
       GLuint offset = brw->curbe.clip_start * 16;
-      GLuint j;
+      GLbitfield mask;
 
       /* If any planes are going this way, send them all this way:
        */
@@ -238,24 +243,26 @@ brw_upload_constant_buffer(struct brw_context *brw)
        * clip-space:
        */
       clip_planes = brw_select_clip_planes(ctx);
-      for (j = 0; j < MAX_CLIP_PLANES; j++) {
-	 if (ctx->Transform.ClipPlanesEnabled & (1<<j)) {
-	    buf[offset + i * 4 + 0].f = clip_planes[j][0];
-	    buf[offset + i * 4 + 1].f = clip_planes[j][1];
-	    buf[offset + i * 4 + 2].f = clip_planes[j][2];
-	    buf[offset + i * 4 + 3].f = clip_planes[j][3];
-	    i++;
-	 }
+      mask = ctx->Transform.ClipPlanesEnabled;
+      while (mask) {
+         const int j = u_bit_scan(&mask);
+         buf[offset + i * 4 + 0].f = clip_planes[j][0];
+         buf[offset + i * 4 + 1].f = clip_planes[j][1];
+         buf[offset + i * 4 + 2].f = clip_planes[j][2];
+         buf[offset + i * 4 + 3].f = clip_planes[j][3];
+         i++;
       }
    }
 
    /* vertex shader constants */
    if (brw->curbe.vs_size) {
+      _mesa_load_state_parameters(ctx, brw->vertex_program->Base.Parameters);
+
       GLuint offset = brw->curbe.vs_start * 16;
 
-      /* CACHE_NEW_VS_PROG | _NEW_PROGRAM_CONSTANTS: copy uniform values */
-      for (i = 0; i < brw->vs.prog_data->base.base.nr_params; i++) {
-         buf[offset + i] = *brw->vs.prog_data->base.base.param[i];
+      /* BRW_NEW_VS_PROG_DATA | _NEW_PROGRAM_CONSTANTS: copy uniform values */
+      for (i = 0; i < brw->vs.base.prog_data->nr_params; i++) {
+         buf[offset + i] = *brw->vs.base.prog_data->param[i];
       }
    }
 
@@ -299,17 +306,45 @@ emit:
 		(brw->curbe.total_size - 1) + brw->curbe.curbe_offset);
    }
    ADVANCE_BATCH();
+
+   /* Work around a Broadwater/Crestline depth interpolator bug.  The
+    * following sequence will cause GPU hangs:
+    *
+    * 1. Change state so that all depth related fields in CC_STATE are
+    *    disabled, and in WM_STATE, only "PS Use Source Depth" is enabled.
+    * 2. Emit a CONSTANT_BUFFER packet.
+    * 3. Draw via 3DPRIMITIVE.
+    *
+    * The recommended workaround is to emit a non-pipelined state change after
+    * emitting CONSTANT_BUFFER, in order to drain the windowizer pipeline.
+    *
+    * We arbitrarily choose 3DSTATE_GLOBAL_DEPTH_CLAMP_OFFSET (as it's small),
+    * and always emit it when "PS Use Source Depth" is set.  We could be more
+    * precise, but the additional complexity is probably not worth it.
+    *
+    * BRW_NEW_FRAGMENT_PROGRAM
+    */
+   if (brw->gen == 4 && !brw->is_g4x &&
+       (brw->fragment_program->Base.nir->info.inputs_read &
+        (1 << VARYING_SLOT_POS))) {
+      BEGIN_BATCH(2);
+      OUT_BATCH(_3DSTATE_GLOBAL_DEPTH_OFFSET_CLAMP << 16 | (2 - 2));
+      OUT_BATCH(0);
+      ADVANCE_BATCH();
+   }
 }
 
 const struct brw_tracked_state brw_constant_buffer = {
    .dirty = {
       .mesa = _NEW_PROGRAM_CONSTANTS,
-      .brw  = (BRW_NEW_URB_FENCE |
-	       BRW_NEW_PSP | /* Implicit - hardware requires this, not used above */
-	       BRW_NEW_CURBE_OFFSETS |
-	       BRW_NEW_BATCH),
-      .cache = (CACHE_NEW_VS_PROG |
-                CACHE_NEW_WM_PROG)
+      .brw  = BRW_NEW_BATCH |
+              BRW_NEW_BLORP |
+              BRW_NEW_CURBE_OFFSETS |
+              BRW_NEW_FRAGMENT_PROGRAM |
+              BRW_NEW_FS_PROG_DATA |
+              BRW_NEW_PSP | /* Implicit - hardware requires this, not used above */
+              BRW_NEW_URB_FENCE |
+              BRW_NEW_VS_PROG_DATA,
    },
    .emit = brw_upload_constant_buffer,
 };

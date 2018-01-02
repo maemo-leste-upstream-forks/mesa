@@ -32,15 +32,17 @@ LOCAL_SRC_FILES := \
 	$(C_SOURCES) \
 	$(NV30_C_SOURCES) \
 	$(NV50_CODEGEN_SOURCES) \
-	$(NV50_C_SOURES) \
+	$(NV50_C_SOURCES) \
 	$(NVC0_CODEGEN_SOURCES) \
 	$(NVC0_C_SOURCES)
 
-LOCAL_C_INCLUDES := \
-	$(TARGET_OUT_HEADERS)/libdrm
-
+LOCAL_SHARED_LIBRARIES := libdrm_nouveau
 LOCAL_MODULE := libmesa_pipe_nouveau
 
+ifeq ($(MESA_LOLLIPOP_BUILD),true)
+LOCAL_C_INCLUDES := external/libcxx/include
+else
 include external/stlport/libstlport.mk
+endif
 include $(GALLIUM_COMMON_MK)
 include $(BUILD_STATIC_LIBRARY)

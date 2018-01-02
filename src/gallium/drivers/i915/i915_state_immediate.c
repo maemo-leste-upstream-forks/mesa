@@ -39,7 +39,7 @@
 /* Convinience function to check immediate state.
  */
 
-static INLINE void set_immediate(struct i915_context *i915,
+static inline void set_immediate(struct i915_context *i915,
                                  unsigned offset,
                                  const unsigned state)
 {
@@ -222,7 +222,7 @@ static void update_immediate(struct i915_context *i915)
 {
    int i;
 
-   for (i = 0; i < Elements(atoms); i++)
+   for (i = 0; i < ARRAY_SIZE(atoms); i++)
       if (i915->dirty & atoms[i]->dirty)
          atoms[i]->update(i915);
 }
@@ -230,5 +230,5 @@ static void update_immediate(struct i915_context *i915)
 struct i915_tracked_state i915_hw_immediate = {
    "immediate",
    update_immediate,
-   ~0 /* all state atoms, becuase we do internal checking */
+   ~0 /* all state atoms, because we do internal checking */
 };

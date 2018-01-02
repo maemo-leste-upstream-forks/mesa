@@ -37,7 +37,11 @@
 XA_EXPORT void
 xa_context_flush(struct xa_context *ctx)
 {
-	ctx->pipe->flush(ctx->pipe, &ctx->last_fence, 0);
+    if (ctx->last_fence) {
+        struct pipe_screen *screen = ctx->xa->screen;
+        screen->fence_reference(screen, &ctx->last_fence, NULL);
+    }
+    ctx->pipe->flush(ctx->pipe, &ctx->last_fence, 0);
 }
 
 XA_EXPORT struct xa_context *
@@ -52,7 +56,7 @@ xa_context_create(struct xa_tracker *xa)
     struct xa_context *ctx = calloc(1, sizeof(*ctx));
 
     ctx->xa = xa;
-    ctx->pipe = xa->screen->context_create(xa->screen, NULL);
+    ctx->pipe = xa->screen->context_create(xa->screen, NULL, 0);
     ctx->cso = cso_create_context(ctx->pipe);
     ctx->shaders = xa_shaders_create(ctx);
     renderer_init_state(ctx);
@@ -82,7 +86,6 @@ xa_context_destroy(struct xa_context *r)
         pipe_surface_reference(&r->srf, NULL);
 
     if (r->cso) {
-	cso_release_all(r->cso);
 	cso_destroy_context(r->cso);
 	r->cso = NULL;
     }
@@ -380,7 +383,7 @@ xa_fence_wait(struct xa_fence *fence, uint64_t timeout)
 	struct pipe_screen *screen = fence->xa->screen;
 	boolean timed_out;
 
-	timed_out = !screen->fence_finish(screen, fence->pipe_fence, timeout);
+	timed_out = !screen->fence_finish(screen, NULL, fence->pipe_fence, timeout);
 	if (timed_out)
 	    return -XA_ERR_BUSY;
 

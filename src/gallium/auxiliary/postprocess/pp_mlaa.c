@@ -62,13 +62,9 @@ static void
 up_consts(struct pp_queue_t *ppq)
 {
    struct pipe_context *pipe = ppq->p->pipe;
-   struct pipe_box box;
 
-   u_box_2d(0, 0, sizeof(constants), 1, &box);
-
-   pipe->transfer_inline_write(pipe, ppq->constbuf, 0, PIPE_TRANSFER_WRITE,
-                               &box, constants, sizeof(constants),
-                               sizeof(constants));
+   pipe->buffer_subdata(pipe, ppq->constbuf, PIPE_TRANSFER_WRITE,
+                        0, sizeof(constants), constants);
 }
 
 /** Run function of the MLAA filter. */
@@ -141,8 +137,10 @@ pp_jimenezmlaa_run(struct pp_queue_t *ppq, struct pipe_resource *in,
    p->pipe->clear(p->pipe, PIPE_CLEAR_STENCIL | PIPE_CLEAR_COLOR0,
                   &p->clear_color, 0, 0);
 
-   cso_single_sampler(p->cso, PIPE_SHADER_FRAGMENT, 0, &p->sampler_point);
-   cso_single_sampler_done(p->cso, PIPE_SHADER_FRAGMENT);
+   {
+      const struct pipe_sampler_state *samplers[] = {&p->sampler_point};
+      cso_set_samplers(p->cso, PIPE_SHADER_FRAGMENT, 1, samplers);
+   }
    cso_set_sampler_views(p->cso, PIPE_SHADER_FRAGMENT, 1, &p->view);
 
    cso_set_vertex_shader_handle(p->cso, ppq->shaders[n][1]);    /* offsetvs */
@@ -168,10 +166,11 @@ pp_jimenezmlaa_run(struct pp_queue_t *ppq, struct pipe_resource *in,
 
    pp_filter_set_clear_fb(p);
 
-   cso_single_sampler(p->cso, PIPE_SHADER_FRAGMENT, 0, &p->sampler_point);
-   cso_single_sampler(p->cso, PIPE_SHADER_FRAGMENT, 1, &p->sampler_point);
-   cso_single_sampler(p->cso, PIPE_SHADER_FRAGMENT, 2, &p->sampler);
-   cso_single_sampler_done(p->cso, PIPE_SHADER_FRAGMENT);
+   {
+      const struct pipe_sampler_state *samplers[] =
+         {&p->sampler_point, &p->sampler_point, &p->sampler};
+      cso_set_samplers(p->cso, PIPE_SHADER_FRAGMENT, 3, samplers);
+   }
 
    arr[0] = p->view;
    cso_set_sampler_views(p->cso, PIPE_SHADER_FRAGMENT, 3, arr);
@@ -199,9 +198,11 @@ pp_jimenezmlaa_run(struct pp_queue_t *ppq, struct pipe_resource *in,
    u_sampler_view_default_template(&v_tmp, in, in->format);
    arr[0] = p->pipe->create_sampler_view(p->pipe, in, &v_tmp);
 
-   cso_single_sampler(p->cso, PIPE_SHADER_FRAGMENT, 0, &p->sampler_point);
-   cso_single_sampler(p->cso, PIPE_SHADER_FRAGMENT, 1, &p->sampler_point);
-   cso_single_sampler_done(p->cso, PIPE_SHADER_FRAGMENT);
+   {
+      const struct pipe_sampler_state *samplers[] =
+         {&p->sampler_point, &p->sampler_point};
+      cso_set_samplers(p->cso, PIPE_SHADER_FRAGMENT, 2, samplers);
+   }
 
    arr[1] = p->view;
    cso_set_sampler_views(p->cso, PIPE_SHADER_FRAGMENT, 2, arr);
@@ -233,7 +234,7 @@ pp_jimenezmlaa_init_run(struct pp_queue_t *ppq, unsigned int n,
    tmp_text = CALLOC(sizeof(blend2fs_1) + sizeof(blend2fs_2) +
                      IMM_SPACE, sizeof(char));
 
-   if (tmp_text == NULL) {
+   if (!tmp_text) {
       pp_debug("Failed to allocate shader space\n");
       return FALSE;
    }
@@ -275,9 +276,9 @@ pp_jimenezmlaa_init_run(struct pp_queue_t *ppq, unsigned int n,
    
    u_box_2d(0, 0, 165, 165, &box);
 
-   ppq->p->pipe->transfer_inline_write(ppq->p->pipe, ppq->areamaptex, 0,
-                                       PIPE_TRANSFER_WRITE, &box,
-                                       areamap, 165 * 2, sizeof(areamap));
+   ppq->p->pipe->texture_subdata(ppq->p->pipe, ppq->areamaptex, 0,
+                                 PIPE_TRANSFER_WRITE, &box,
+                                 areamap, 165 * 2, sizeof(areamap));
 
    ppq->shaders[n][1] = pp_tgsi_to_state(ppq->p->pipe, offsetvs, true,
                                          "offsetvs");
@@ -329,6 +330,9 @@ void
 pp_jimenezmlaa(struct pp_queue_t *ppq, struct pipe_resource *in,
                struct pipe_resource *out, unsigned int n)
 {
+   if (!ppq->depth) {
+      return;
+   }
    pp_jimenezmlaa_run(ppq, in, out, n, false);
 }
 
@@ -349,13 +353,11 @@ void
 pp_jimenezmlaa_free(struct pp_queue_t *ppq, unsigned int n)
 {
    if (ppq->areamaptex) {
-      ppq->p->screen->resource_destroy(ppq->p->screen, ppq->areamaptex);
-      ppq->areamaptex = NULL;
+      pipe_resource_reference(&ppq->areamaptex, NULL);
    }
 
    if (ppq->constbuf) {
-      ppq->p->screen->resource_destroy(ppq->p->screen, ppq->constbuf);
-      ppq->constbuf = NULL;
+      pipe_resource_reference(&ppq->constbuf, NULL);
    }
 }
 

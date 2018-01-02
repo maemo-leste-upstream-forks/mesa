@@ -26,17 +26,27 @@
 #include "brw_defines.h"
 #include "intel_batchbuffer.h"
 #include "main/fbobject.h"
+#include "main/framebuffer.h"
+#include "main/viewport.h"
 
 static void
 gen8_upload_sf_clip_viewport(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
-   const GLfloat depth_scale = 1.0F / ctx->DrawBuffer->_DepthMaxF;
+   const struct gen_device_info *devinfo = &brw->screen->devinfo;
    float y_scale, y_bias;
-   const bool render_to_fbo = _mesa_is_user_fbo(ctx->DrawBuffer);
+
+   /* BRW_NEW_VIEWPORT_COUNT */
+   const unsigned viewport_count = brw->clip.viewport_count;
+
+   /* _NEW_BUFFERS */
+   struct gl_framebuffer *fb = ctx->DrawBuffer;
+   const bool render_to_fbo = _mesa_is_user_fbo(fb);
+   const uint32_t fb_width = _mesa_geometric_width(ctx->DrawBuffer);
+   const uint32_t fb_height = _mesa_geometric_height(ctx->DrawBuffer);
 
    float *vp = brw_state_batch(brw, AUB_TRACE_SF_VP_STATE,
-                               16 * 4 * ctx->Const.MaxViewports,
+                               16 * 4 * viewport_count,
                                64, &brw->sf.vp_offset);
    /* Also assign to clip.vp_offset in case something uses it. */
    brw->clip.vp_offset = brw->sf.vp_offset;
@@ -47,58 +57,28 @@ gen8_upload_sf_clip_viewport(struct brw_context *brw)
       y_bias = 0;
    } else {
       y_scale = -1.0;
-      y_bias = ctx->DrawBuffer->Height;
+      y_bias = (float)fb_height;
    }
 
-   for (unsigned i = 0; i < ctx->Const.MaxViewports; i++) {
-      const GLfloat *const v = ctx->ViewportArray[i]._WindowMap.m;
+   for (unsigned i = 0; i < viewport_count; i++) {
+      float scale[3], translate[3];
+      _mesa_get_viewport_xform(ctx, i, scale, translate);
 
       /* _NEW_VIEWPORT: Viewport Matrix Elements */
-      vp[0] = v[MAT_SX];                    /* m00 */
-      vp[1] = v[MAT_SY] * y_scale;          /* m11 */
-      vp[2] = v[MAT_SZ] * depth_scale;      /* m22 */
-      vp[3] = v[MAT_TX];                    /* m30 */
-      vp[4] = v[MAT_TY] * y_scale + y_bias; /* m31 */
-      vp[5] = v[MAT_TZ] * depth_scale;      /* m32 */
+      vp[0] = scale[0];                        /* m00 */
+      vp[1] = scale[1] * y_scale;              /* m11 */
+      vp[2] = scale[2];                        /* m22 */
+      vp[3] = translate[0];                    /* m30 */
+      vp[4] = translate[1] * y_scale + y_bias; /* m31 */
+      vp[5] = translate[2];                    /* m32 */
 
       /* Reserved */
       vp[6] = 0;
       vp[7] = 0;
 
-      /* According to the "Vertex X,Y Clamping and Quantization" section of the
-       * Strips and Fans documentation, objects must not have a screen-space
-       * extents of over 8192 pixels, or they may be mis-rasterized.  The
-       * maximum screen space coordinates of a small object may larger, but we
-       * have no way to enforce the object size other than through clipping.
-       *
-       * The goal is to create the maximum sized guardband (8K x 8K) with the
-       * viewport rectangle in the center of the guardband. This looks weird
-       * because the hardware wants coordinates that are scaled to the viewport
-       * in NDC. In other words, an 8K x 8K viewport would have [-1,1] for X and Y.
-       * A 4K viewport would be [-2,2], 2K := [-4,4] etc.
-       *
-       * --------------------------------
-       * |Guardband                     |
-       * |                              |
-       * |         ------------         |
-       * |         |viewport  |         |
-       * |         |          |         |
-       * |         |          |         |
-       * |         |__________|         |
-       * |                              |
-       * |                              |
-       * |______________________________|
-       *
-       */
-      const float maximum_guardband_extent = 8192;
-      float gbx = maximum_guardband_extent / ctx->ViewportArray[i].Width;
-      float gby = maximum_guardband_extent / ctx->ViewportArray[i].Height;
-
-      /* _NEW_VIEWPORT: Guardband Clipping */
-      vp[8]  = -gbx; /* x-min */
-      vp[9]  =  gbx; /* x-max */
-      vp[10] = -gby; /* y-min */
-      vp[11] =  gby; /* y-max */
+      brw_calculate_guardband_size(devinfo, fb_width, fb_height,
+                                   vp[0], vp[1], vp[3], vp[4],
+                                   &vp[8], &vp[9], &vp[10], &vp[11]);
 
       /* _NEW_VIEWPORT | _NEW_BUFFERS: Screen Space Viewport
        * The hardware will take the intersection of the drawing rectangle,
@@ -115,8 +95,8 @@ gen8_upload_sf_clip_viewport(struct brw_context *brw)
       } else {
          vp[12] = ctx->ViewportArray[i].X;
          vp[13] = viewport_Xmax - 1;
-         vp[14] = ctx->DrawBuffer->Height - viewport_Ymax;
-         vp[15] = ctx->DrawBuffer->Height - ctx->ViewportArray[i].Y - 1;
+         vp[14] = fb_height - viewport_Ymax;
+         vp[15] = fb_height - ctx->ViewportArray[i].Y - 1;
       }
 
       vp += 16;
@@ -130,9 +110,11 @@ gen8_upload_sf_clip_viewport(struct brw_context *brw)
 
 const struct brw_tracked_state gen8_sf_clip_viewport = {
    .dirty = {
-      .mesa = _NEW_BUFFERS | _NEW_VIEWPORT,
-      .brw = BRW_NEW_BATCH,
-      .cache = 0,
+      .mesa = _NEW_BUFFERS |
+              _NEW_VIEWPORT,
+      .brw = BRW_NEW_BATCH |
+             BRW_NEW_BLORP |
+             BRW_NEW_VIEWPORT_COUNT,
    },
    .emit = gen8_upload_sf_clip_viewport,
 };

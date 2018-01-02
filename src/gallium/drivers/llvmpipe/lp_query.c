@@ -184,7 +184,7 @@ llvmpipe_get_query_result(struct pipe_context *pipe,
 }
 
 
-static void
+static boolean
 llvmpipe_begin_query(struct pipe_context *pipe, struct pipe_query *q)
 {
    struct llvmpipe_context *llvmpipe = llvmpipe_context( pipe );
@@ -235,10 +235,11 @@ llvmpipe_begin_query(struct pipe_context *pipe, struct pipe_query *q)
    default:
       break;
    }
+   return true;
 }
 
 
-static void
+static bool
 llvmpipe_end_query(struct pipe_context *pipe, struct pipe_query *q)
 {
    struct llvmpipe_context *llvmpipe = llvmpipe_context( pipe );
@@ -297,6 +298,8 @@ llvmpipe_end_query(struct pipe_context *pipe, struct pipe_query *q)
    default:
       break;
    }
+
+   return true;
 }
 
 boolean
@@ -314,9 +317,14 @@ llvmpipe_check_render_cond(struct llvmpipe_context *lp)
 
    b = pipe->get_query_result(pipe, lp->render_cond_query, wait, (void*)&result);
    if (b)
-      return (!result == lp->render_cond_cond);
+      return ((!result) == lp->render_cond_cond);
    else
       return TRUE;
+}
+
+static void
+llvmpipe_set_active_query_state(struct pipe_context *pipe, boolean enable)
+{
 }
 
 void llvmpipe_init_query_funcs(struct llvmpipe_context *llvmpipe )
@@ -326,6 +334,7 @@ void llvmpipe_init_query_funcs(struct llvmpipe_context *llvmpipe )
    llvmpipe->pipe.begin_query = llvmpipe_begin_query;
    llvmpipe->pipe.end_query = llvmpipe_end_query;
    llvmpipe->pipe.get_query_result = llvmpipe_get_query_result;
+   llvmpipe->pipe.set_active_query_state = llvmpipe_set_active_query_state;
 }
 
 

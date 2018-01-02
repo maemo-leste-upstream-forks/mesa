@@ -32,6 +32,7 @@
 #include "brw_context.h"
 #include "brw_state.h"
 #include "brw_defines.h"
+#include "main/framebuffer.h"
 
 static void
 upload_clip_vp(struct brw_context *brw)
@@ -59,7 +60,9 @@ brw_upload_clip_unit(struct brw_context *brw)
    struct brw_clip_unit_state *clip;
 
    /* _NEW_BUFFERS */
-   struct gl_framebuffer *fb = ctx->DrawBuffer;
+   const struct gl_framebuffer *fb = ctx->DrawBuffer;
+   const float fb_width = (float)_mesa_geometric_width(fb);
+   const float fb_height = (float)_mesa_geometric_height(fb);
 
    upload_clip_vp(brw);
 
@@ -67,7 +70,7 @@ brw_upload_clip_unit(struct brw_context *brw)
 			  sizeof(*clip), 32, &brw->clip.state_offset);
    memset(clip, 0, sizeof(*clip));
 
-   /* BRW_NEW_PROGRAM_CACHE | CACHE_NEW_CLIP_PROG */
+   /* BRW_NEW_PROGRAM_CACHE | BRW_NEW_CLIP_PROG_DATA */
    clip->thread0.grf_reg_count = (ALIGN(brw->clip.prog_data->total_grf, 16) /
 				 16 - 1);
    clip->thread0.kernel_start_pointer =
@@ -127,8 +130,8 @@ brw_upload_clip_unit(struct brw_context *brw)
    /* enable guardband clipping if we can */
    if (ctx->ViewportArray[0].X == 0 &&
        ctx->ViewportArray[0].Y == 0 &&
-       ctx->ViewportArray[0].Width == (float) fb->Width &&
-       ctx->ViewportArray[0].Height == (float) fb->Height)
+       ctx->ViewportArray[0].Width == fb_width &&
+       ctx->ViewportArray[0].Height == fb_height)
    {
       clip->clip5.guard_band_enable = 1;
       clip->clip6.clipper_viewport_state_ptr =
@@ -147,7 +150,10 @@ brw_upload_clip_unit(struct brw_context *brw)
       clip->clip5.viewport_z_clip_enable = 1;
    clip->clip5.viewport_xy_clip_enable = 1;
    clip->clip5.vertex_position_space = BRW_CLIP_NDCSPACE;
-   clip->clip5.api_mode = BRW_CLIP_API_OGL;
+   if (ctx->Transform.ClipDepthMode == GL_ZERO_TO_ONE)
+      clip->clip5.api_mode = BRW_CLIP_API_DX;
+   else
+      clip->clip5.api_mode = BRW_CLIP_API_OGL;
    clip->clip5.clip_mode = brw->clip.prog_data->clip_mode;
 
    if (brw->is_g4x)
@@ -158,17 +164,20 @@ brw_upload_clip_unit(struct brw_context *brw)
    clip->viewport_ymin = -1;
    clip->viewport_ymax = 1;
 
-   brw->state.dirty.cache |= CACHE_NEW_CLIP_UNIT;
+   brw->ctx.NewDriverState |= BRW_NEW_GEN4_UNIT_STATE;
 }
 
 const struct brw_tracked_state brw_clip_unit = {
    .dirty = {
-      .mesa  = _NEW_TRANSFORM | _NEW_BUFFERS | _NEW_VIEWPORT,
-      .brw   = (BRW_NEW_BATCH |
-		BRW_NEW_PROGRAM_CACHE |
-		BRW_NEW_CURBE_OFFSETS |
-		BRW_NEW_URB_FENCE),
-      .cache = CACHE_NEW_CLIP_PROG
+      .mesa  = _NEW_BUFFERS |
+               _NEW_TRANSFORM |
+               _NEW_VIEWPORT,
+      .brw   = BRW_NEW_BATCH |
+               BRW_NEW_BLORP |
+               BRW_NEW_CLIP_PROG_DATA |
+               BRW_NEW_CURBE_OFFSETS |
+               BRW_NEW_PROGRAM_CACHE |
+               BRW_NEW_URB_FENCE,
    },
    .emit = brw_upload_clip_unit,
 };

@@ -28,53 +28,76 @@
 #ifndef ILO_SHADER_H
 #define ILO_SHADER_H
 
+#include "core/ilo_state_shader.h"
+
 #include "ilo_common.h"
 
 enum ilo_kernel_param {
    ILO_KERNEL_INPUT_COUNT,
    ILO_KERNEL_OUTPUT_COUNT,
-   ILO_KERNEL_URB_DATA_START_REG,
+   ILO_KERNEL_SAMPLER_COUNT,
    ILO_KERNEL_SKIP_CBUF0_UPLOAD,
    ILO_KERNEL_PCB_CBUF0_SIZE,
+
+   ILO_KERNEL_SURFACE_TOTAL_COUNT,
+   ILO_KERNEL_SURFACE_TEX_BASE,
+   ILO_KERNEL_SURFACE_TEX_COUNT,
+   ILO_KERNEL_SURFACE_CONST_BASE,
+   ILO_KERNEL_SURFACE_CONST_COUNT,
+   ILO_KERNEL_SURFACE_RES_BASE,
+   ILO_KERNEL_SURFACE_RES_COUNT,
 
    ILO_KERNEL_VS_INPUT_INSTANCEID,
    ILO_KERNEL_VS_INPUT_VERTEXID,
    ILO_KERNEL_VS_INPUT_EDGEFLAG,
    ILO_KERNEL_VS_PCB_UCP_SIZE,
    ILO_KERNEL_VS_GEN6_SO,
-   ILO_KERNEL_VS_GEN6_SO_START_REG,
    ILO_KERNEL_VS_GEN6_SO_POINT_OFFSET,
    ILO_KERNEL_VS_GEN6_SO_LINE_OFFSET,
    ILO_KERNEL_VS_GEN6_SO_TRI_OFFSET,
+   ILO_KERNEL_VS_GEN6_SO_SURFACE_COUNT,
 
    ILO_KERNEL_GS_DISCARD_ADJACENCY,
    ILO_KERNEL_GS_GEN6_SVBI_POST_INC,
+   ILO_KERNEL_GS_GEN6_SURFACE_SO_BASE,
+   ILO_KERNEL_GS_GEN6_SURFACE_SO_COUNT,
 
-   ILO_KERNEL_FS_INPUT_Z,
-   ILO_KERNEL_FS_INPUT_W,
-   ILO_KERNEL_FS_OUTPUT_Z,
-   ILO_KERNEL_FS_USE_KILL,
    ILO_KERNEL_FS_BARYCENTRIC_INTERPOLATIONS,
    ILO_KERNEL_FS_DISPATCH_16_OFFSET,
+   ILO_KERNEL_FS_SURFACE_RT_BASE,
+   ILO_KERNEL_FS_SURFACE_RT_COUNT,
+
+   ILO_KERNEL_CS_LOCAL_SIZE,
+   ILO_KERNEL_CS_PRIVATE_SIZE,
+   ILO_KERNEL_CS_INPUT_SIZE,
+   ILO_KERNEL_CS_SIMD_SIZE,
+   ILO_KERNEL_CS_SURFACE_GLOBAL_BASE,
+   ILO_KERNEL_CS_SURFACE_GLOBAL_COUNT,
 
    ILO_KERNEL_PARAM_COUNT,
 };
 
-struct ilo_kernel_routing {
-   uint32_t const_interp_enable;
-   uint32_t point_sprite_enable;
-   unsigned source_skip, source_len;
-
-   bool swizzle_enable;
-   uint16_t swizzles[16];
-};
-
 struct intel_bo;
-struct ilo_context;
+struct ilo_builder;
 struct ilo_rasterizer_state;
 struct ilo_shader_cache;
 struct ilo_shader_state;
-struct ilo_shader_cso;
+struct ilo_state_sbe;
+struct ilo_state_sol;
+struct ilo_state_vector;
+
+union ilo_shader_cso {
+   struct ilo_state_vs vs;
+   struct ilo_state_hs hs;
+   struct ilo_state_ds ds;
+   struct ilo_state_gs gs;
+   struct ilo_state_ps ps;
+
+   struct {
+      struct ilo_state_vs vs;
+      struct ilo_state_gs sol;
+   } vs_sol;
+};
 
 struct ilo_shader_cache *
 ilo_shader_cache_create(void);
@@ -90,46 +113,51 @@ void
 ilo_shader_cache_remove(struct ilo_shader_cache *shc,
                         struct ilo_shader_state *shader);
 
-int
+void
 ilo_shader_cache_upload(struct ilo_shader_cache *shc,
-                        struct intel_bo *bo, unsigned offset,
-                        bool incremental);
+                        struct ilo_builder *builder);
+
+void
+ilo_shader_cache_invalidate(struct ilo_shader_cache *shc);
+
+void
+ilo_shader_cache_get_max_scratch_sizes(const struct ilo_shader_cache *shc,
+                                       int *vs_scratch_size,
+                                       int *gs_scratch_size,
+                                       int *fs_scratch_size);
 
 struct ilo_shader_state *
-ilo_shader_create_vs(const struct ilo_dev_info *dev,
+ilo_shader_create_vs(const struct ilo_dev *dev,
                      const struct pipe_shader_state *state,
-                     const struct ilo_context *precompile);
+                     const struct ilo_state_vector *precompile);
 
 struct ilo_shader_state *
-ilo_shader_create_gs(const struct ilo_dev_info *dev,
+ilo_shader_create_gs(const struct ilo_dev *dev,
                      const struct pipe_shader_state *state,
-                     const struct ilo_context *precompile);
+                     const struct ilo_state_vector *precompile);
 
 struct ilo_shader_state *
-ilo_shader_create_fs(const struct ilo_dev_info *dev,
+ilo_shader_create_fs(const struct ilo_dev *dev,
                      const struct pipe_shader_state *state,
-                     const struct ilo_context *precompile);
+                     const struct ilo_state_vector *precompile);
 
 struct ilo_shader_state *
-ilo_shader_create_cs(const struct ilo_dev_info *dev,
+ilo_shader_create_cs(const struct ilo_dev *dev,
                      const struct pipe_compute_state *state,
-                     const struct ilo_context *precompile);
+                     const struct ilo_state_vector *precompile);
 
 void
 ilo_shader_destroy(struct ilo_shader_state *shader);
 
-int
-ilo_shader_get_type(const struct ilo_shader_state *shader);
-
 bool
 ilo_shader_select_kernel(struct ilo_shader_state *shader,
-                         const struct ilo_context *ilo,
+                         const struct ilo_state_vector *vec,
                          uint32_t dirty);
 
 bool
-ilo_shader_select_kernel_routing(struct ilo_shader_state *shader,
-                                 const struct ilo_shader_state *source,
-                                 const struct ilo_rasterizer_state *rasterizer);
+ilo_shader_select_kernel_sbe(struct ilo_shader_state *shader,
+                             const struct ilo_shader_state *source,
+                             const struct ilo_rasterizer_state *rasterizer);
 
 uint32_t
 ilo_shader_get_kernel_offset(const struct ilo_shader_state *shader);
@@ -138,13 +166,16 @@ int
 ilo_shader_get_kernel_param(const struct ilo_shader_state *shader,
                             enum ilo_kernel_param param);
 
-const struct ilo_shader_cso *
+const union ilo_shader_cso *
 ilo_shader_get_kernel_cso(const struct ilo_shader_state *shader);
 
 const struct pipe_stream_output_info *
 ilo_shader_get_kernel_so_info(const struct ilo_shader_state *shader);
 
-const struct ilo_kernel_routing *
-ilo_shader_get_kernel_routing(const struct ilo_shader_state *shader);
+const struct ilo_state_sol *
+ilo_shader_get_kernel_sol(const struct ilo_shader_state *shader);
+
+const struct ilo_state_sbe *
+ilo_shader_get_kernel_sbe(const struct ilo_shader_state *shader);
 
 #endif /* ILO_SHADER_H */

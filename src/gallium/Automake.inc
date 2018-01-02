@@ -16,6 +16,7 @@ GALLIUM_DRIVER_CFLAGS = \
 	-I$(top_srcdir)/src/gallium/include \
 	-I$(top_srcdir)/src/gallium/auxiliary \
 	-I$(top_srcdir)/src/gallium/drivers \
+	-I$(top_srcdir)/src/gallium/winsys \
 	$(DEFINES) \
 	$(VISIBILITY_CFLAGS)
 
@@ -26,10 +27,12 @@ GALLIUM_DRIVER_CXXFLAGS = \
 	-I$(top_srcdir)/src/gallium/include \
 	-I$(top_srcdir)/src/gallium/auxiliary \
 	-I$(top_srcdir)/src/gallium/drivers \
+	-I$(top_srcdir)/src/gallium/winsys \
 	$(DEFINES) \
 	$(VISIBILITY_CXXFLAGS)
 
 GALLIUM_TARGET_CFLAGS = \
+	-I$(top_srcdir)/src \
 	-I$(top_srcdir)/include \
 	-I$(top_srcdir)/src/loader \
 	-I$(top_srcdir)/src/gallium/include \
@@ -48,6 +51,7 @@ GALLIUM_COMMON_LIB_DEPS = \
 	$(DLOPEN_LIBS)
 
 GALLIUM_WINSYS_CFLAGS = \
+	-I$(top_srcdir)/src \
 	-I$(top_srcdir)/include \
 	-I$(top_srcdir)/src/gallium/include \
 	-I$(top_srcdir)/src/gallium/auxiliary \
@@ -56,16 +60,16 @@ GALLIUM_WINSYS_CFLAGS = \
 
 
 GALLIUM_PIPE_LOADER_WINSYS_LIBS = \
-	$(top_builddir)/src/gallium/winsys/sw/null/libws_null.la
+	$(top_builddir)/src/gallium/winsys/sw/null/libws_null.la \
+	$(top_builddir)/src/gallium/winsys/sw/wrapper/libwsw.la
 
 if HAVE_DRISW
 GALLIUM_PIPE_LOADER_WINSYS_LIBS += \
 	$(top_builddir)/src/gallium/winsys/sw/dri/libswdri.la
 endif
 
-if NEED_WINSYS_XLIB
+if HAVE_DRISW_KMS
 GALLIUM_PIPE_LOADER_WINSYS_LIBS += \
-	$(top_builddir)/src/gallium/winsys/sw/xlib/libws_xlib.la \
-	-lX11 -lXext -lXfixes \
+	$(top_builddir)/src/gallium/winsys/sw/kms-dri/libswkmsdri.la \
 	$(LIBDRM_LIBS)
 endif

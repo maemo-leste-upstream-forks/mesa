@@ -109,6 +109,9 @@ _mesa_ClearStencil( GLint s )
 {
    GET_CURRENT_CONTEXT(ctx);
 
+   if (MESA_VERBOSE & VERBOSE_API)
+      _mesa_debug(ctx, "glClearStencil(%d)\n", s);
+
    ctx->Stencil.Clear = (GLuint) s;
 }
 
@@ -124,8 +127,8 @@ _mesa_ClearStencil( GLint s )
  * \sa glStencilFunc().
  *
  * Verifies the parameters and updates the respective values in
- * __struct gl_contextRec::Stencil. On change flushes the vertices and notifies the
- * driver via the dd_function_table::StencilFunc callback.
+ * __struct gl_contextRec::Stencil. On change flushes the vertices and notifies
+ * the driver via the dd_function_table::StencilFunc callback.
  */
 void GLAPIENTRY
 _mesa_StencilFuncSeparateATI( GLenum frontfunc, GLenum backfunc, GLint ref, GLuint mask )
@@ -178,8 +181,8 @@ _mesa_StencilFuncSeparateATI( GLenum frontfunc, GLenum backfunc, GLint ref, GLui
  * \sa glStencilFunc().
  *
  * Verifies the parameters and updates the respective values in
- * __struct gl_contextRec::Stencil. On change flushes the vertices and notifies the
- * driver via the dd_function_table::StencilFunc callback.
+ * __struct gl_contextRec::Stencil. On change flushes the vertices and notifies
+ * the driver via the dd_function_table::StencilFunc callback.
  */
 void GLAPIENTRY
 _mesa_StencilFunc( GLenum func, GLint ref, GLuint mask )
@@ -298,8 +301,8 @@ _mesa_StencilMask( GLuint mask )
  * \sa glStencilOp().
  * 
  * Verifies the parameters and updates the respective fields in
- * __struct gl_contextRec::Stencil. On change flushes the vertices and notifies the
- * driver via the dd_function_table::StencilOp callback.
+ * __struct gl_contextRec::Stencil. On change flushes the vertices and notifies
+ * the driver via the dd_function_table::StencilOp callback.
  */
 void GLAPIENTRY
 _mesa_StencilOp(GLenum fail, GLenum zfail, GLenum zpass)
@@ -389,12 +392,6 @@ _mesa_ActiveStencilFaceEXT(GLenum face)
 
 
 
-/**
- * OpenGL 2.0 function.
- * \todo Make StencilOp() call this function.  And eventually remove the
- * ctx->Driver.StencilOp function and use ctx->Driver.StencilOpSeparate
- * instead.
- */
 void GLAPIENTRY
 _mesa_StencilOpSeparate(GLenum face, GLenum sfail, GLenum zfail, GLenum zpass)
 {
@@ -573,12 +570,24 @@ _mesa_init_stencil(struct gl_context *ctx)
    ctx->Stencil.Ref[0] = 0;
    ctx->Stencil.Ref[1] = 0;
    ctx->Stencil.Ref[2] = 0;
-   ctx->Stencil.ValueMask[0] = ~0U;
-   ctx->Stencil.ValueMask[1] = ~0U;
-   ctx->Stencil.ValueMask[2] = ~0U;
-   ctx->Stencil.WriteMask[0] = ~0U;
-   ctx->Stencil.WriteMask[1] = ~0U;
-   ctx->Stencil.WriteMask[2] = ~0U;
+
+   /* 4.1.4 Stencil Test section of the GL-ES 3.0 specification says:
+    *
+    *     "In the initial state, [...] the front and back stencil mask are both
+    *     set to the value 2^s − 1, where s is greater than or equal to the
+    *     number of bits in the deepest stencil buffer* supported by the GL
+    *     implementation."
+    *
+    * Since the maximum supported precision for stencil buffers is 8 bits,
+    * mask values should be initialized to 2^8 - 1 = 0xFF.
+    */
+   ctx->Stencil.ValueMask[0] = 0xFF;
+   ctx->Stencil.ValueMask[1] = 0xFF;
+   ctx->Stencil.ValueMask[2] = 0xFF;
+   ctx->Stencil.WriteMask[0] = 0xFF;
+   ctx->Stencil.WriteMask[1] = 0xFF;
+   ctx->Stencil.WriteMask[2] = 0xFF;
+
    ctx->Stencil.Clear = 0;
    ctx->Stencil._BackFace = 1;
 }

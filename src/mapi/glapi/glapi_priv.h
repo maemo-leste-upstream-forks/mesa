@@ -26,9 +26,6 @@
 #ifndef _GLAPI_PRIV_H
 #define _GLAPI_PRIV_H
 
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
 
 #ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
@@ -52,15 +49,9 @@ typedef void *GLeglImageOES;
 #include "glapi/glapi.h"
 
 
-/* getproc */
-
-extern void
-_glapi_check_table_not_null(const struct _glapi_table *table);
-
-
-extern void
-_glapi_check_table(const struct _glapi_table *table);
-
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /* entrypoint */
 
@@ -86,10 +77,8 @@ get_entrypoint_address(unsigned int functionOffset);
 #if defined(USE_X86_ASM)
 # if defined(GLX_USE_TLS)
 #  define DISPATCH_FUNCTION_SIZE  16
-# elif defined(THREADS)
-#  define DISPATCH_FUNCTION_SIZE  32
 # else
-#  define DISPATCH_FUNCTION_SIZE  16
+#  define DISPATCH_FUNCTION_SIZE  32
 # endif
 #endif
 
@@ -110,5 +99,9 @@ get_entrypoint_address(unsigned int functionOffset);
  */
 #define MAX_EXTENSION_FUNCS 256
 
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

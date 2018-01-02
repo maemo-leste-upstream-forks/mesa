@@ -20,8 +20,6 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include <tr1/unordered_set>
-
 #include "codegen/nv50_ir.h"
 #include "codegen/nv50_ir_build_util.h"
 
@@ -36,8 +34,9 @@ private:
    // we want to insert calls to the builtin library only after optimization
    void handleDIV(Instruction *); // integer division, modulus
    void handleRCPRSQ(Instruction *); // double precision float recip/rsqrt
+   void handleFTZ(Instruction *);
 
-private:
+protected:
    BuildUtil bld;
 };
 
@@ -56,10 +55,11 @@ private:
 
    struct TexUse
    {
-      TexUse(Instruction *use, const Instruction *tex)
-         : insn(use), tex(tex), level(-1) { }
+      TexUse(Instruction *use, const Instruction *tex, bool after)
+         : insn(use), tex(tex), after(after), level(-1) { }
       Instruction *insn;
       const Instruction *tex; // or split / mov
+      bool after;
       int level;
    };
    struct Limits
@@ -70,18 +70,17 @@ private:
    };
    bool insertTextureBarriers(Function *);
    inline bool insnDominatedBy(const Instruction *, const Instruction *) const;
-   void findFirstUses(const Instruction *tex, const Instruction *def,
-                      std::list<TexUse>&,
-                      std::tr1::unordered_set<const Instruction *>&);
-   void findOverwritingDefs(const Instruction *tex, Instruction *insn,
-                            const BasicBlock *term,
-                            std::list<TexUse>&);
+   void findFirstUses(Instruction *texi, std::list<TexUse> &uses);
+   void findFirstUsesBB(int minGPR, int maxGPR, Instruction *start,
+                        const Instruction *texi, std::list<TexUse> &uses,
+                        unordered_set<const BasicBlock *> &visited);
    void addTexUse(std::list<TexUse>&, Instruction *, const Instruction *);
    const Instruction *recurseDef(const Instruction *);
 
 private:
    LValue *rZero;
    LValue *carry;
+   LValue *pOne;
    const bool needTexBar;
 };
 
@@ -104,25 +103,43 @@ protected:
    bool handleTXQ(TexInstruction *);
    virtual bool handleManualTXD(TexInstruction *);
    bool handleTXLQ(TexInstruction *);
+   bool handleSUQ(TexInstruction *);
    bool handleATOM(Instruction *);
    bool handleCasExch(Instruction *, bool needCctl);
+   void handleSurfaceOpGM107(TexInstruction *);
    void handleSurfaceOpNVE4(TexInstruction *);
+   void handleSurfaceOpNVC0(TexInstruction *);
+   void handleSharedATOM(Instruction *);
+   void handleSharedATOMNVE4(Instruction *);
+   void handleLDST(Instruction *);
+   bool handleBUFQ(Instruction *);
 
    void checkPredicate(Instruction *);
+
+   virtual bool visit(Instruction *);
 
 private:
    virtual bool visit(Function *);
    virtual bool visit(BasicBlock *);
-   virtual bool visit(Instruction *);
 
    void readTessCoord(LValue *dst, int c);
 
-   Value *loadResInfo32(Value *ptr, uint32_t off);
+   Value *loadResInfo32(Value *ptr, uint32_t off, uint16_t base);
+   Value *loadResInfo64(Value *ptr, uint32_t off, uint16_t base);
+   Value *loadResLength32(Value *ptr, uint32_t off, uint16_t base);
+   Value *loadSuInfo32(Value *ptr, int slot, uint32_t off);
+   Value *loadBufInfo64(Value *ptr, uint32_t off);
+   Value *loadBufLength32(Value *ptr, uint32_t off);
+   Value *loadUboInfo64(Value *ptr, uint32_t off);
+   Value *loadUboLength32(Value *ptr, uint32_t off);
    Value *loadMsInfo32(Value *ptr, uint32_t off);
    Value *loadTexHandle(Value *ptr, unsigned int slot);
 
    void adjustCoordinatesMS(TexInstruction *);
+   void processSurfaceCoordsGM107(TexInstruction *);
    void processSurfaceCoordsNVE4(TexInstruction *);
+   void processSurfaceCoordsNVC0(TexInstruction *);
+   void convertSurfaceFormat(TexInstruction *);
 
 protected:
    BuildUtil bld;

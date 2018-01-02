@@ -20,18 +20,15 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
+include Makefile.sources
 include $(top_srcdir)/src/gallium/Automake.inc
 
 AM_CFLAGS = \
 	$(GALLIUM_CFLAGS) \
 	$(VISIBILITY_CFLAGS) \
+	$(VL_CFLAGS) \
 	$(OMX_CFLAGS)
 
 noinst_LTLIBRARIES = libomxtracker.la
 
-libomxtracker_la_SOURCES = \
-	entrypoint.c \
-	vid_dec.c \
-	vid_dec_mpeg12.c \
-	vid_dec_h264.c \
-	vid_enc.c
+libomxtracker_la_SOURCES = $(C_SOURCES)

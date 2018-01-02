@@ -45,7 +45,7 @@ nv30_context_kick_notify(struct nouveau_pushbuf *push)
    screen = &nv30->screen->base;
 
    nouveau_fence_next(screen);
-   nouveau_fence_update(screen, TRUE);
+   nouveau_fence_update(screen, true);
 
    if (push->bufctx) {
       struct nouveau_bufref *bref;
@@ -165,6 +165,12 @@ nv30_context_destroy(struct pipe_context *pipe)
    if (nv30->draw)
       draw_destroy(nv30->draw);
 
+   if (nv30->blit_vp)
+      nouveau_heap_free(&nv30->blit_vp);
+
+   if (nv30->blit_fp)
+      pipe_resource_reference(&nv30->blit_fp, NULL);
+
    if (nv30->screen->base.pushbuf->user_priv == &nv30->bufctx)
       nv30->screen->base.pushbuf->user_priv = NULL;
 
@@ -184,7 +190,7 @@ nv30_context_destroy(struct pipe_context *pipe)
    } while(0)
 
 struct pipe_context *
-nv30_context_create(struct pipe_screen *pscreen, void *priv)
+nv30_context_create(struct pipe_screen *pscreen, void *priv, unsigned ctxflags)
 {
    struct nv30_screen *screen = nv30_screen(pscreen);
    struct nv30_context *nv30 = CALLOC_STRUCT(nv30_context);
@@ -233,9 +239,10 @@ nv30_context_create(struct pipe_screen *pscreen, void *priv)
 
    nv30->config.aniso = NV40_3D_TEX_WRAP_ANISO_MIP_FILTER_OPTIMIZATION_OFF;
 
-   if (debug_get_bool_option("NV30_SWTNL", FALSE))
+   if (debug_get_bool_option("NV30_SWTNL", false))
       nv30->draw_flags |= NV30_NEW_SWTNL;
 
+   nouveau_context_init(&nv30->base);
    nv30->sample_mask = 0xffff;
    nv30_vbo_init(pipe);
    nv30_query_init(pipe);

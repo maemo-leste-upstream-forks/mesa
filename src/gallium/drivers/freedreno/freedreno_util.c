@@ -44,6 +44,9 @@ fd_pipe2depth(enum pipe_format format)
 	case PIPE_FORMAT_X8Z24_UNORM:
 	case PIPE_FORMAT_S8_UINT_Z24_UNORM:
 		return DEPTHX_24_8;
+	case PIPE_FORMAT_Z32_FLOAT:
+	case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
+		return DEPTHX_32;
 	default:
 		return ~0;
 	}
@@ -101,10 +104,13 @@ fd_blend_factor(unsigned factor)
 	case PIPE_BLENDFACTOR_INV_CONST_ALPHA:
 		return FACTOR_ONE_MINUS_CONSTANT_ALPHA;
 	case PIPE_BLENDFACTOR_INV_SRC1_COLOR:
+		return FACTOR_ONE_MINUS_SRC1_COLOR;
 	case PIPE_BLENDFACTOR_INV_SRC1_ALPHA:
+		return FACTOR_ONE_MINUS_SRC1_ALPHA;
 	case PIPE_BLENDFACTOR_SRC1_COLOR:
+		return FACTOR_SRC1_COLOR;
 	case PIPE_BLENDFACTOR_SRC1_ALPHA:
-		/* I don't think these are supported */
+		return FACTOR_SRC1_ALPHA;
 	default:
 		DBG("invalid blend factor: %x", factor);
 		return 0;

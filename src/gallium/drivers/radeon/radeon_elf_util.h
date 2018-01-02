@@ -27,13 +27,24 @@
 #ifndef RADEON_ELF_UTIL_H
 #define RADEON_ELF_UTIL_H
 
+#include <stdint.h>
+
 struct radeon_shader_binary;
+struct radeon_shader_reloc;
 
 /*
  * Parse the elf binary stored in \p elf_data and create a
  * radeon_shader_binary object.
  */
 void radeon_elf_read(const char *elf_data, unsigned elf_size,
-		struct radeon_shader_binary *binary, unsigned debug);
+		     struct radeon_shader_binary *binary);
+
+/**
+ * @returns A pointer to the start of the configuration information for
+ * the function starting at \p symbol_offset of the binary.
+ */
+const unsigned char *radeon_shader_binary_config_start(
+	const struct radeon_shader_binary *binary,
+	uint64_t symbol_offset);
 
 #endif /* RADEON_ELF_UTIL_H */

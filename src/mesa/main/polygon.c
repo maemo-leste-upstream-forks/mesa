@@ -56,7 +56,7 @@ _mesa_CullFace( GLenum mode )
    GET_CURRENT_CONTEXT(ctx);
 
    if (MESA_VERBOSE&VERBOSE_API)
-      _mesa_debug(ctx, "glCullFace %s\n", _mesa_lookup_enum_by_nr(mode));
+      _mesa_debug(ctx, "glCullFace %s\n", _mesa_enum_to_string(mode));
 
    if (mode!=GL_FRONT && mode!=GL_BACK && mode!=GL_FRONT_AND_BACK) {
       _mesa_error( ctx, GL_INVALID_ENUM, "glCullFace" );
@@ -91,20 +91,18 @@ _mesa_FrontFace( GLenum mode )
    GET_CURRENT_CONTEXT(ctx);
 
    if (MESA_VERBOSE&VERBOSE_API)
-      _mesa_debug(ctx, "glFrontFace %s\n", _mesa_lookup_enum_by_nr(mode));
+      _mesa_debug(ctx, "glFrontFace %s\n", _mesa_enum_to_string(mode));
+
+   if (ctx->Polygon.FrontFace == mode)
+      return;
 
    if (mode!=GL_CW && mode!=GL_CCW) {
       _mesa_error( ctx, GL_INVALID_ENUM, "glFrontFace" );
       return;
    }
 
-   if (ctx->Polygon.FrontFace == mode)
-      return;
-
    FLUSH_VERTICES(ctx, _NEW_POLYGON);
    ctx->Polygon.FrontFace = mode;
-
-   ctx->Polygon._FrontBit = (GLboolean) (mode == GL_CW);
 
    if (ctx->Driver.FrontFace)
       ctx->Driver.FrontFace( ctx, mode );
@@ -130,8 +128,8 @@ _mesa_PolygonMode( GLenum face, GLenum mode )
 
    if (MESA_VERBOSE&VERBOSE_API)
       _mesa_debug(ctx, "glPolygonMode %s %s\n",
-                  _mesa_lookup_enum_by_nr(face),
-                  _mesa_lookup_enum_by_nr(mode));
+                  _mesa_enum_to_string(face),
+                  _mesa_enum_to_string(mode));
 
    if (mode!=GL_POINT && mode!=GL_LINE && mode!=GL_FILL) {
       _mesa_error( ctx, GL_INVALID_ENUM, "glPolygonMode(mode)" );
@@ -178,19 +176,18 @@ _mesa_PolygonMode( GLenum face, GLenum mode )
 
 
 /**
- * This routine updates the ctx->Polygon.Stipple state.
- * If we're getting the stipple data from a PBO, we map the buffer
- * in order to access the data.
- * In any case, we obey the current pixel unpacking parameters when fetching
- * the stipple data.
- *
- * In the future, this routine should be used as a fallback, called via
- * ctx->Driver.PolygonStipple().  We'll have to update all the DRI drivers
- * too.
+ * Called by glPolygonStipple.
  */
-void
-_mesa_polygon_stipple(struct gl_context *ctx, const GLubyte *pattern)
+void GLAPIENTRY
+_mesa_PolygonStipple(const GLubyte *pattern)
 {
+   GET_CURRENT_CONTEXT(ctx);
+
+   if (MESA_VERBOSE & VERBOSE_API)
+      _mesa_debug(ctx, "glPolygonStipple\n");
+
+   FLUSH_VERTICES(ctx, _NEW_POLYGONSTIPPLE);
+
    pattern = _mesa_map_validate_pbo_source(ctx, 2,
                                            &ctx->Unpack, 32, 32, 1,
                                            GL_COLOR_INDEX, GL_BITMAP,
@@ -202,23 +199,6 @@ _mesa_polygon_stipple(struct gl_context *ctx, const GLubyte *pattern)
    _mesa_unpack_polygon_stipple(pattern, ctx->PolygonStipple, &ctx->Unpack);
 
    _mesa_unmap_pbo_source(ctx, &ctx->Unpack);
-}
-
-
-/**
- * Called by glPolygonStipple.
- */
-void GLAPIENTRY
-_mesa_PolygonStipple( const GLubyte *pattern )
-{
-   GET_CURRENT_CONTEXT(ctx);
-
-   if (MESA_VERBOSE&VERBOSE_API)
-      _mesa_debug(ctx, "glPolygonStipple\n");
-
-   FLUSH_VERTICES(ctx, _NEW_POLYGONSTIPPLE);
-
-   _mesa_polygon_stipple(ctx, pattern);
 
    if (ctx->Driver.PolygonStipple)
       ctx->Driver.PolygonStipple(ctx, pattern);
@@ -255,6 +235,23 @@ _mesa_GetPolygonStipple( GLubyte *dest )
    _mesa_GetnPolygonStippleARB(INT_MAX, dest);
 }
 
+void
+_mesa_polygon_offset_clamp(struct gl_context *ctx,
+                           GLfloat factor, GLfloat units, GLfloat clamp)
+{
+   if (ctx->Polygon.OffsetFactor == factor &&
+       ctx->Polygon.OffsetUnits == units &&
+       ctx->Polygon.OffsetClamp == clamp)
+      return;
+
+   FLUSH_VERTICES(ctx, _NEW_POLYGON);
+   ctx->Polygon.OffsetFactor = factor;
+   ctx->Polygon.OffsetUnits = units;
+   ctx->Polygon.OffsetClamp = clamp;
+
+   if (ctx->Driver.PolygonOffset)
+      ctx->Driver.PolygonOffset( ctx, factor, units, clamp );
+}
 
 void GLAPIENTRY
 _mesa_PolygonOffset( GLfloat factor, GLfloat units )
@@ -264,16 +261,7 @@ _mesa_PolygonOffset( GLfloat factor, GLfloat units )
    if (MESA_VERBOSE&VERBOSE_API)
       _mesa_debug(ctx, "glPolygonOffset %f %f\n", factor, units);
 
-   if (ctx->Polygon.OffsetFactor == factor &&
-       ctx->Polygon.OffsetUnits == units)
-      return;
-
-   FLUSH_VERTICES(ctx, _NEW_POLYGON);
-   ctx->Polygon.OffsetFactor = factor;
-   ctx->Polygon.OffsetUnits = units;
-
-   if (ctx->Driver.PolygonOffset)
-      ctx->Driver.PolygonOffset( ctx, factor, units );
+   _mesa_polygon_offset_clamp(ctx, factor, units, 0.0);
 }
 
 
@@ -283,6 +271,23 @@ _mesa_PolygonOffsetEXT( GLfloat factor, GLfloat bias )
    GET_CURRENT_CONTEXT(ctx);
    /* XXX mult by DepthMaxF here??? */
    _mesa_PolygonOffset(factor, bias * ctx->DrawBuffer->_DepthMaxF );
+}
+
+void GLAPIENTRY
+_mesa_PolygonOffsetClampEXT( GLfloat factor, GLfloat units, GLfloat clamp )
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   if (!ctx->Extensions.EXT_polygon_offset_clamp) {
+      _mesa_error(ctx, GL_INVALID_OPERATION,
+                  "unsupported function (glPolygonOffsetClampEXT) called");
+      return;
+   }
+
+   if (MESA_VERBOSE&VERBOSE_API)
+      _mesa_debug(ctx, "glPolygonOffsetClampEXT %f %f %f\n", factor, units, clamp);
+
+   _mesa_polygon_offset_clamp(ctx, factor, units, clamp);
 }
 
 
@@ -312,6 +317,7 @@ void _mesa_init_polygon( struct gl_context * ctx )
    ctx->Polygon.StippleFlag = GL_FALSE;
    ctx->Polygon.OffsetFactor = 0.0F;
    ctx->Polygon.OffsetUnits = 0.0F;
+   ctx->Polygon.OffsetClamp = 0.0F;
    ctx->Polygon.OffsetPoint = GL_FALSE;
    ctx->Polygon.OffsetLine = GL_FALSE;
    ctx->Polygon.OffsetFill = GL_FALSE;

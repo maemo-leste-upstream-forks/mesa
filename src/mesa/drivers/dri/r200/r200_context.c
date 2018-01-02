@@ -37,7 +37,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "main/api_arrayelt.h"
 #include "main/api_exec.h"
 #include "main/context.h"
-#include "main/simple_list.h"
+#include "util/simple_list.h"
 #include "main/imports.h"
 #include "main/extensions.h"
 #include "main/version.h"
@@ -143,27 +143,6 @@ static void r200InitDriverFuncs( struct dd_function_table *functions )
 }
 
 
-static void r200_get_lock(radeonContextPtr radeon)
-{
-   r200ContextPtr rmesa = (r200ContextPtr)radeon;
-   drm_radeon_sarea_t *sarea = radeon->sarea;
-
-   R200_STATECHANGE( rmesa, ctx );
-   if (rmesa->radeon.sarea->tiling_enabled) {
-      rmesa->hw.ctx.cmd[CTX_RB3D_COLORPITCH] |= R200_COLOR_TILE_ENABLE;
-   }
-   else rmesa->hw.ctx.cmd[CTX_RB3D_COLORPITCH] &= ~R200_COLOR_TILE_ENABLE;
-
-   if ( sarea->ctx_owner != rmesa->radeon.dri.hwContext ) {
-      sarea->ctx_owner = rmesa->radeon.dri.hwContext;
-   }
-
-}
-
-static void r200_vtbl_emit_cs_header(struct radeon_cs *cs, radeonContextPtr rmesa)
-{
-}
-
 static void r200_emit_query_finish(radeonContextPtr radeon)
 {
    BATCH_LOCALS(radeon);
@@ -180,9 +159,6 @@ static void r200_emit_query_finish(radeonContextPtr radeon)
 
 static void r200_init_vtbl(radeonContextPtr radeon)
 {
-   radeon->vtbl.get_lock = r200_get_lock;
-   radeon->vtbl.update_viewport_offset = r200UpdateViewportOffset;
-   radeon->vtbl.emit_cs_header = r200_vtbl_emit_cs_header;
    radeon->vtbl.swtcl_flush = r200_swtcl_flush;
    radeon->vtbl.fallback = r200Fallback;
    radeon->vtbl.update_scissor = r200_vtbl_update_scissor;
@@ -249,18 +225,9 @@ GLboolean r200CreateContext( gl_api api,
    rmesa->radeon.initialMaxAnisotropy = driQueryOptionf(&rmesa->radeon.optionCache,
 							"def_max_anisotropy");
 
-   if ( sPriv->drm_version.major == 1
-       && driQueryOptionb( &rmesa->radeon.optionCache, "hyperz" ) ) {
-      if ( sPriv->drm_version.minor < 13 )
-	 fprintf( stderr, "DRM version 1.%d too old to support HyperZ, "
-			  "disabling.\n", sPriv->drm_version.minor );
-      else
-	 rmesa->using_hyperz = GL_TRUE;
-   }
+   if (driQueryOptionb( &rmesa->radeon.optionCache, "hyperz"))
+      rmesa->using_hyperz = GL_TRUE;
  
-   if ( sPriv->drm_version.minor >= 15 )
-      rmesa->texmicrotile = GL_TRUE;
-
    /* Init default driver functions then plug in our R200-specific functions
     * (the texture functions are especially important)
     */

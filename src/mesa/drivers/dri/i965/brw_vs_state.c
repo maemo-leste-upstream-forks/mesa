@@ -39,7 +39,11 @@
 static void
 brw_upload_vs_unit(struct brw_context *brw)
 {
+   const struct gen_device_info *devinfo = &brw->screen->devinfo;
    struct brw_stage_state *stage_state = &brw->vs.base;
+   const struct brw_stage_prog_data *prog_data = stage_state->prog_data;
+   const struct brw_vue_prog_data *vue_prog_data =
+      brw_vue_prog_data(stage_state->prog_data);
 
    struct brw_vs_unit_state *vs;
 
@@ -47,9 +51,8 @@ brw_upload_vs_unit(struct brw_context *brw)
 			sizeof(*vs), 32, &stage_state->state_offset);
    memset(vs, 0, sizeof(*vs));
 
-   /* BRW_NEW_PROGRAM_CACHE | CACHE_NEW_VS_PROG */
-   vs->thread0.grf_reg_count =
-      ALIGN(brw->vs.prog_data->base.total_grf, 16) / 16 - 1;
+   /* BRW_NEW_PROGRAM_CACHE | BRW_NEW_VS_PROG_DATA */
+   vs->thread0.grf_reg_count = ALIGN(vue_prog_data->total_grf, 16) / 16 - 1;
    vs->thread0.kernel_start_pointer =
       brw_program_reloc(brw,
 			stage_state->state_offset +
@@ -57,10 +60,7 @@ brw_upload_vs_unit(struct brw_context *brw)
 			stage_state->prog_offset +
 			(vs->thread0.grf_reg_count << 1)) >> 6;
 
-   /* Use ALT floating point mode for ARB vertex programs, because they
-    * require 0^0 == 1.
-    */
-   if (brw->ctx.Shader.CurrentProgram[MESA_SHADER_VERTEX] == NULL)
+   if (prog_data->use_alt_mode)
       vs->thread1.floating_point_mode = BRW_FLOATING_POINT_NON_IEEE_754;
    else
       vs->thread1.floating_point_mode = BRW_FLOATING_POINT_IEEE_754;
@@ -80,26 +80,24 @@ brw_upload_vs_unit(struct brw_context *brw)
    vs->thread1.single_program_flow = (brw->gen == 5);
 
    vs->thread1.binding_table_entry_count =
-      brw->vs.prog_data->base.base.binding_table.size_bytes / 4;
+      prog_data->binding_table.size_bytes / 4;
 
-   if (brw->vs.prog_data->base.total_scratch != 0) {
+   if (prog_data->total_scratch != 0) {
       vs->thread2.scratch_space_base_pointer =
 	 stage_state->scratch_bo->offset64 >> 10; /* reloc */
       vs->thread2.per_thread_scratch_space =
-	 ffs(brw->vs.prog_data->base.total_scratch) - 11;
+	 ffs(stage_state->per_thread_scratch) - 11;
    } else {
       vs->thread2.scratch_space_base_pointer = 0;
       vs->thread2.per_thread_scratch_space = 0;
    }
 
-   vs->thread3.urb_entry_read_length = brw->vs.prog_data->base.urb_read_length;
-   vs->thread3.const_urb_entry_read_length
-      = brw->vs.prog_data->base.curb_read_length;
-   vs->thread3.dispatch_grf_start_reg =
-      brw->vs.prog_data->base.base.dispatch_grf_start_reg;
+   vs->thread3.urb_entry_read_length = vue_prog_data->urb_read_length;
+   vs->thread3.const_urb_entry_read_length = prog_data->curb_read_length;
+   vs->thread3.dispatch_grf_start_reg = prog_data->dispatch_grf_start_reg;
    vs->thread3.urb_entry_read_offset = 0;
 
-   /* BRW_NEW_CURBE_OFFSETS, _NEW_TRANSFORM, BRW_NEW_VERTEX_PROGRAM */
+   /* BRW_NEW_CURBE_OFFSETS */
    vs->thread3.const_urb_entry_read_offset = brw->curbe.vs_start * 2;
 
    /* BRW_NEW_URB_FENCE */
@@ -140,12 +138,11 @@ brw_upload_vs_unit(struct brw_context *brw)
    vs->thread4.urb_entry_allocation_size = brw->urb.vsize - 1;
 
    vs->thread4.max_threads = CLAMP(brw->urb.nr_vs_entries / 2,
-				   1, brw->max_vs_threads) - 1;
+				   1, devinfo->max_vs_threads) - 1;
 
    if (brw->gen == 5)
       vs->vs5.sampler_count = 0; /* hardware requirement */
    else {
-      /* CACHE_NEW_SAMPLER */
       vs->vs5.sampler_count = (stage_state->sampler_count + 3) / 4;
    }
 
@@ -160,6 +157,7 @@ brw_upload_vs_unit(struct brw_context *brw)
    /* Set the sampler state pointer, and its reloc
     */
    if (stage_state->sampler_count) {
+      /* BRW_NEW_SAMPLER_STATE_TABLE - reloc */
       vs->vs5.sampler_state_pointer =
          (brw->batch.bo->offset64 + stage_state->sampler_offset) >> 5;
       drm_intel_bo_emit_reloc(brw->batch.bo,
@@ -172,7 +170,7 @@ brw_upload_vs_unit(struct brw_context *brw)
    }
 
    /* Emit scratch space relocation */
-   if (brw->vs.prog_data->base.total_scratch != 0) {
+   if (prog_data->total_scratch != 0) {
       drm_intel_bo_emit_reloc(brw->batch.bo,
 			      stage_state->state_offset +
 			      offsetof(struct brw_vs_unit_state, thread2),
@@ -181,18 +179,19 @@ brw_upload_vs_unit(struct brw_context *brw)
 			      I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER);
    }
 
-   brw->state.dirty.cache |= CACHE_NEW_VS_UNIT;
+   brw->ctx.NewDriverState |= BRW_NEW_GEN4_UNIT_STATE;
 }
 
 const struct brw_tracked_state brw_vs_unit = {
    .dirty = {
-      .mesa  = _NEW_TRANSFORM,
-      .brw   = (BRW_NEW_BATCH |
-		BRW_NEW_PROGRAM_CACHE |
-		BRW_NEW_CURBE_OFFSETS |
-		BRW_NEW_URB_FENCE |
-                BRW_NEW_VERTEX_PROGRAM),
-      .cache = CACHE_NEW_VS_PROG | CACHE_NEW_SAMPLER
+      .mesa  = 0,
+      .brw   = BRW_NEW_BATCH |
+               BRW_NEW_BLORP |
+               BRW_NEW_CURBE_OFFSETS |
+               BRW_NEW_PROGRAM_CACHE |
+               BRW_NEW_SAMPLER_STATE_TABLE |
+               BRW_NEW_URB_FENCE |
+               BRW_NEW_VS_PROG_DATA,
    },
    .emit = brw_upload_vs_unit,
 };

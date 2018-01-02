@@ -25,6 +25,8 @@
  *    Keith Whitwell <keithw@vmware.com>
  */
 
+#include <stdio.h>
+
 #include "main/glheader.h"
 #include "main/bufferobj.h"
 #include "main/condrender.h"
@@ -33,6 +35,7 @@
 #include "main/mtypes.h"
 #include "main/macros.h"
 #include "main/enums.h"
+#include "util/half_float.h"
 
 #include "t_context.h"
 #include "tnl.h"
@@ -255,7 +258,7 @@ static GLboolean *_tnl_import_edgeflag( struct gl_context *ctx,
    GLuint i;
 
    for (i = 0; i < count; i++) {
-      *bptr++ = ((GLfloat *)ptr)[0] == 1.0;
+      *bptr++ = ((GLfloat *)ptr)[0] == 1.0F;
       ptr += stride;
    }
 
@@ -423,6 +426,7 @@ void _tnl_draw_prims(struct gl_context *ctx,
 			 GLuint min_index,
 			 GLuint max_index,
 			 struct gl_transform_feedback_object *tfb_vertcount,
+                         unsigned stream,
 			 struct gl_buffer_object *indirect)
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
@@ -446,10 +450,10 @@ void _tnl_draw_prims(struct gl_context *ctx,
 
    if (0)
    {
-      printf("%s %d..%d\n", __FUNCTION__, min_index, max_index);
+      printf("%s %d..%d\n", __func__, min_index, max_index);
       for (i = 0; i < nr_prims; i++)
 	 printf("prim %d: %s start %d count %d\n", i, 
-		_mesa_lookup_enum_by_nr(prim[i].mode),
+		_mesa_enum_to_string(prim[i].mode),
 		prim[i].start,
 		prim[i].count);
    }

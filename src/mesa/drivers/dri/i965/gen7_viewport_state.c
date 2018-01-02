@@ -26,18 +26,28 @@
 #include "brw_defines.h"
 #include "intel_batchbuffer.h"
 #include "main/fbobject.h"
+#include "main/framebuffer.h"
+#include "main/viewport.h"
 
 static void
 gen7_upload_sf_clip_viewport(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
-   const GLfloat depth_scale = 1.0F / ctx->DrawBuffer->_DepthMaxF;
+   const struct gen_device_info *devinfo = &brw->screen->devinfo;
    GLfloat y_scale, y_bias;
-   const bool render_to_fbo = _mesa_is_user_fbo(ctx->DrawBuffer);
    struct gen7_sf_clip_viewport *vp;
 
+   /* BRW_NEW_VIEWPORT_COUNT */
+   const unsigned viewport_count = brw->clip.viewport_count;
+
+   /* _NEW_BUFFERS */
+   struct gl_framebuffer *fb = ctx->DrawBuffer;
+   const bool render_to_fbo = _mesa_is_user_fbo(fb);
+   const uint32_t fb_width = _mesa_geometric_width(ctx->DrawBuffer);
+   const uint32_t fb_height = _mesa_geometric_height(ctx->DrawBuffer);
+
    vp = brw_state_batch(brw, AUB_TRACE_SF_VP_STATE,
-                        sizeof(*vp) * ctx->Const.MaxViewports, 64,
+                        sizeof(*vp) * viewport_count, 64,
                         &brw->sf.vp_offset);
    /* Also assign to clip.vp_offset in case something uses it. */
    brw->clip.vp_offset = brw->sf.vp_offset;
@@ -45,43 +55,31 @@ gen7_upload_sf_clip_viewport(struct brw_context *brw)
    /* _NEW_BUFFERS */
    if (render_to_fbo) {
       y_scale = 1.0;
-      y_bias = 0;
+      y_bias = 0.0;
    } else {
       y_scale = -1.0;
-      y_bias = ctx->DrawBuffer->Height;
+      y_bias = (float)fb_height;
    }
 
-   for (unsigned i = 0; i < ctx->Const.MaxViewports; i++) {
-      const GLfloat *const v = ctx->ViewportArray[i]._WindowMap.m;
-
-      /* According to the "Vertex X,Y Clamping and Quantization" section of
-       * the Strips and Fans documentation, objects must not have a
-       * screen-space extents of over 8192 pixels, or they may be
-       * mis-rasterized.  The maximum screen space coordinates of a small
-       * object may larger, but we have no way to enforce the object size
-       * other than through clipping.
-       *
-       * If you're surprised that we set clip to -gbx to +gbx and it seems
-       * like we'll end up with 16384 wide, note that for a 8192-wide render
-       * target, we'll end up with a normal (-1, 1) clip volume that just
-       * covers the drawable.
-       */
-      const float maximum_guardband_extent = 8192;
-      const float gbx = maximum_guardband_extent / ctx->ViewportArray[i].Width;
-      const float gby = maximum_guardband_extent / ctx->ViewportArray[i].Height;
-
-      vp[i].guardband.xmin = -gbx;
-      vp[i].guardband.xmax = gbx;
-      vp[i].guardband.ymin = -gby;
-      vp[i].guardband.ymax = gby;
+   for (unsigned i = 0; i < viewport_count; i++) {
+      float scale[3], translate[3];
+      _mesa_get_viewport_xform(ctx, i, scale, translate);
 
       /* _NEW_VIEWPORT */
-      vp[i].viewport.m00 = v[MAT_SX];
-      vp[i].viewport.m11 = v[MAT_SY] * y_scale;
-      vp[i].viewport.m22 = v[MAT_SZ] * depth_scale;
-      vp[i].viewport.m30 = v[MAT_TX];
-      vp[i].viewport.m31 = v[MAT_TY] * y_scale + y_bias;
-      vp[i].viewport.m32 = v[MAT_TZ] * depth_scale;
+      vp[i].viewport.m00 = scale[0];
+      vp[i].viewport.m11 = scale[1] * y_scale;
+      vp[i].viewport.m22 = scale[2];
+      vp[i].viewport.m30 = translate[0];
+      vp[i].viewport.m31 = translate[1] * y_scale + y_bias;
+      vp[i].viewport.m32 = translate[2];
+
+      brw_calculate_guardband_size(devinfo, fb_width, fb_height,
+                                   vp[i].viewport.m00, vp[i].viewport.m11,
+                                   vp[i].viewport.m30, vp[i].viewport.m31,
+                                   &vp[i].guardband.xmin,
+                                   &vp[i].guardband.xmax,
+                                   &vp[i].guardband.ymin,
+                                   &vp[i].guardband.ymax);
    }
 
    BEGIN_BATCH(2);
@@ -92,28 +90,11 @@ gen7_upload_sf_clip_viewport(struct brw_context *brw)
 
 const struct brw_tracked_state gen7_sf_clip_viewport = {
    .dirty = {
-      .mesa = _NEW_VIEWPORT | _NEW_BUFFERS,
-      .brw = BRW_NEW_BATCH,
-      .cache = 0,
+      .mesa = _NEW_BUFFERS |
+              _NEW_VIEWPORT,
+      .brw = BRW_NEW_BATCH |
+             BRW_NEW_BLORP |
+             BRW_NEW_VIEWPORT_COUNT,
    },
    .emit = gen7_upload_sf_clip_viewport,
-};
-
-/* ----------------------------------------------------- */
-
-static void upload_cc_viewport_state_pointer(struct brw_context *brw)
-{
-   BEGIN_BATCH(2);
-   OUT_BATCH(_3DSTATE_VIEWPORT_STATE_POINTERS_CC << 16 | (2 - 2));
-   OUT_BATCH(brw->cc.vp_offset);
-   ADVANCE_BATCH();
-}
-
-const struct brw_tracked_state gen7_cc_viewport_state_pointer = {
-   .dirty = {
-      .mesa = 0,
-      .brw = BRW_NEW_BATCH,
-      .cache = CACHE_NEW_CC_VP
-   },
-   .emit = upload_cc_viewport_state_pointer,
 };

@@ -44,7 +44,7 @@
 
 #include <limits.h>
 
-#include "main/bitset.h"
+#include "util/bitset.h"
 #include "main/hash.h"
 #include "main/macros.h"
 #include "main/mtypes.h"
@@ -150,7 +150,7 @@ enum brw_counter_groups {
  * documentation, but is available by reading the source code for the
  * intel_perf_counters utility (shipped as part of intel-gpu-tools).
  */
-const static struct gl_perf_monitor_counter gen5_raw_chaps_counters[] = {
+static const struct gl_perf_monitor_counter gen5_raw_chaps_counters[] = {
    COUNTER("cycles the CS unit is starved"),
    COUNTER("cycles the CS unit is stalled"),
    COUNTER("cycles the VF unit is starved"),
@@ -182,7 +182,7 @@ const static struct gl_perf_monitor_counter gen5_raw_chaps_counters[] = {
    COUNTER("cycles any EU is stalled for math"),
 };
 
-const static int gen5_oa_snapshot_layout[] =
+static const int gen5_oa_snapshot_layout[] =
 {
    -1, /* Report ID */
    -1, /* TIMESTAMP (64-bit) */
@@ -218,7 +218,7 @@ const static int gen5_oa_snapshot_layout[] =
    28, /* cycles any EU is stalled for math */
 };
 
-const static struct gl_perf_monitor_group gen5_groups[] = {
+static const struct gl_perf_monitor_group gen5_groups[] = {
    [OA_COUNTERS] = GROUP("CHAPS Counters", INT_MAX, gen5_raw_chaps_counters),
    /* Our pipeline statistics counter handling requires hardware contexts. */
 };
@@ -237,7 +237,7 @@ const static struct gl_perf_monitor_group gen5_groups[] = {
 /**
  * Aggregating counters A0-A28:
  */
-const static struct gl_perf_monitor_counter gen6_raw_oa_counters[] = {
+static const struct gl_perf_monitor_counter gen6_raw_oa_counters[] = {
    /* A0:   0 */ COUNTER("Aggregated Core Array Active"),
    /* A1:   1 */ COUNTER("Aggregated Core Array Stalled"),
    /* A2:   2 */ COUNTER("Vertex Shader Active Time"),
@@ -278,7 +278,7 @@ const static struct gl_perf_monitor_counter gen6_raw_oa_counters[] = {
  *
  * (Yes, this is a strange order.)  We also have to remap for missing counters.
  */
-const static int gen6_oa_snapshot_layout[] =
+static const int gen6_oa_snapshot_layout[] =
 {
    -1, /* Report ID */
    -1, /* TIMESTAMP (64-bit) */
@@ -314,7 +314,7 @@ const static int gen6_oa_snapshot_layout[] =
    18, /* A21: Pixel Kill Count */
 };
 
-const static struct gl_perf_monitor_counter gen6_statistics_counters[] = {
+static const struct gl_perf_monitor_counter gen6_statistics_counters[] = {
    COUNTER64("IA_VERTICES_COUNT"),
    COUNTER64("IA_PRIMITIVES_COUNT"),
    COUNTER64("VS_INVOCATION_COUNT"),
@@ -329,7 +329,7 @@ const static struct gl_perf_monitor_counter gen6_statistics_counters[] = {
 };
 
 /** MMIO register addresses for each pipeline statistics counter. */
-const static int gen6_statistics_register_addresses[] = {
+static const int gen6_statistics_register_addresses[] = {
    IA_VERTICES_COUNT,
    IA_PRIMITIVES_COUNT,
    VS_INVOCATION_COUNT,
@@ -343,7 +343,7 @@ const static int gen6_statistics_register_addresses[] = {
    GEN6_SO_PRIM_STORAGE_NEEDED,
 };
 
-const static struct gl_perf_monitor_group gen6_groups[] = {
+static const struct gl_perf_monitor_group gen6_groups[] = {
    GROUP("Observability Architecture Counters", INT_MAX, gen6_raw_oa_counters),
    GROUP("Pipeline Statistics Registers", INT_MAX, gen6_statistics_counters),
 };
@@ -353,7 +353,7 @@ const static struct gl_perf_monitor_group gen6_groups[] = {
  * Ivybridge/Baytrail/Haswell:
  *  @{
  */
-const static struct gl_perf_monitor_counter gen7_raw_oa_counters[] = {
+static const struct gl_perf_monitor_counter gen7_raw_oa_counters[] = {
    COUNTER("Aggregated Core Array Active"),
    COUNTER("Aggregated Core Array Stalled"),
    COUNTER("Vertex Shader Active Time"),
@@ -399,7 +399,7 @@ const static struct gl_perf_monitor_counter gen7_raw_oa_counters[] = {
  * B7   B6   B5   B4   B3   B2   B1    B0
  * Rsv  Rsv  Rsv  Rsv  Rsv  Rsv  Rsv   Rsv
  */
-const static int gen7_oa_snapshot_layout[] =
+static const int gen7_oa_snapshot_layout[] =
 {
    -1, /* Report ID */
    -1, /* TIMESTAMP (64-bit) */
@@ -467,7 +467,7 @@ const static int gen7_oa_snapshot_layout[] =
    -1, /* Reserved */
 };
 
-const static struct gl_perf_monitor_counter gen7_statistics_counters[] = {
+static const struct gl_perf_monitor_counter gen7_statistics_counters[] = {
    COUNTER64("IA_VERTICES_COUNT"),
    COUNTER64("IA_PRIMITIVES_COUNT"),
    COUNTER64("VS_INVOCATION_COUNT"),
@@ -490,7 +490,7 @@ const static struct gl_perf_monitor_counter gen7_statistics_counters[] = {
 };
 
 /** MMIO register addresses for each pipeline statistics counter. */
-const static int gen7_statistics_register_addresses[] = {
+static const int gen7_statistics_register_addresses[] = {
    IA_VERTICES_COUNT,
    IA_PRIMITIVES_COUNT,
    VS_INVOCATION_COUNT,
@@ -512,7 +512,7 @@ const static int gen7_statistics_register_addresses[] = {
    GEN7_SO_PRIM_STORAGE_NEEDED(3),
 };
 
-const static struct gl_perf_monitor_group gen7_groups[] = {
+static const struct gl_perf_monitor_group gen7_groups[] = {
    GROUP("Observability Architecture Counters", INT_MAX, gen7_raw_oa_counters),
    GROUP("Pipeline Statistics Registers", INT_MAX, gen7_statistics_counters),
 };
@@ -574,14 +574,13 @@ monitor_needs_statistics_registers(struct brw_context *brw,
 static void
 snapshot_statistics_registers(struct brw_context *brw,
                               struct brw_perf_monitor_object *monitor,
-                              uint32_t offset_in_bytes)
+                              uint32_t offset)
 {
    struct gl_context *ctx = &brw->ctx;
-   const int offset = offset_in_bytes / sizeof(uint64_t);
    const int group = PIPELINE_STATS_COUNTERS;
    const int num_counters = ctx->PerfMonitor.Groups[group].NumCounters;
 
-   intel_batchbuffer_emit_mi_flush(brw);
+   brw_emit_mi_flush(brw);
 
    for (int i = 0; i < num_counters; i++) {
       if (BITSET_TEST(monitor->base.ActiveCounters[group], i)) {
@@ -590,7 +589,7 @@ snapshot_statistics_registers(struct brw_context *brw,
 
          brw_store_register_mem64(brw, monitor->pipeline_stats_bo,
                                   brw->perfmon.statistics_registers[i],
-                                  offset + i);
+                                  offset + i * sizeof(uint64_t));
       }
    }
 }
@@ -687,12 +686,12 @@ stop_oa_counters(struct brw_context *brw)
  * The amount of batch space it takes to emit an MI_REPORT_PERF_COUNT snapshot,
  * including the required PIPE_CONTROL flushes.
  *
- * Sandybridge is the worst case scenario: intel_batchbuffer_emit_mi_flush
- * expands to three PIPE_CONTROLs which are 4 DWords each.  We have to flush
- * before and after MI_REPORT_PERF_COUNT, so multiply by two.  Finally, add
- * the 3 DWords for MI_REPORT_PERF_COUNT itself.
+ * Sandybridge is the worst case scenario: brw_emit_mi_flush expands to four
+ * PIPE_CONTROLs which are 5 DWords each.  We have to flush before and after
+ * MI_REPORT_PERF_COUNT, so multiply by two.  Finally, add the 3 DWords for
+ * MI_REPORT_PERF_COUNT itself.
  */
-#define MI_REPORT_PERF_COUNT_BATCH_DWORDS (2 * (3 * 4) + 3)
+#define MI_REPORT_PERF_COUNT_BATCH_DWORDS (2 * (4 * 5) + 3)
 
 /**
  * Emit an MI_REPORT_PERF_COUNT command packet.
@@ -710,10 +709,10 @@ emit_mi_report_perf_count(struct brw_context *brw,
    /* Make sure the commands to take a snapshot fits in a single batch. */
    intel_batchbuffer_require_space(brw, MI_REPORT_PERF_COUNT_BATCH_DWORDS * 4,
                                    RENDER_RING);
-   int batch_used = brw->batch.used;
+   int batch_used = USED_BATCH(brw->batch);
 
    /* Reports apparently don't always get written unless we flush first. */
-   intel_batchbuffer_emit_mi_flush(brw);
+   brw_emit_mi_flush(brw);
 
    if (brw->gen == 5) {
       /* Ironlake requires two MI_REPORT_PERF_COUNT commands to write all
@@ -751,10 +750,10 @@ emit_mi_report_perf_count(struct brw_context *brw,
    }
 
    /* Reports apparently don't always get written unless we flush after. */
-   intel_batchbuffer_emit_mi_flush(brw);
+   brw_emit_mi_flush(brw);
 
    (void) batch_used;
-   assert(brw->batch.used - batch_used <= MI_REPORT_PERF_COUNT_BATCH_DWORDS * 4);
+   assert(USED_BATCH(brw->batch) - batch_used <= MI_REPORT_PERF_COUNT_BATCH_DWORDS * 4);
 }
 
 /**
@@ -907,7 +906,7 @@ gather_oa_results(struct brw_context *brw,
       return;
    }
 
-   const int snapshot_size = brw->perfmon.entries_per_oa_snapshot;
+   const ptrdiff_t snapshot_size = brw->perfmon.entries_per_oa_snapshot;
 
    /* First, add the contributions from the "head" interval:
     * (snapshot taken at BeginPerfMonitor time,
@@ -1017,7 +1016,7 @@ wrap_bookend_bo(struct brw_context *brw)
 }
 
 /* This is fairly arbitrary; the trade off is memory usage vs. extra overhead
- * from wrapping.  On Gen7, 32768 should be enough for for 128 snapshots before
+ * from wrapping.  On Gen7, 32768 should be enough for 128 snapshots before
  * wrapping (since each is 256 bytes).
  */
 #define BOOKEND_BO_SIZE_BYTES 32768
@@ -1264,6 +1263,7 @@ brw_get_perf_monitor_result(struct gl_context *ctx,
 {
    struct brw_context *brw = brw_context(ctx);
    struct brw_perf_monitor_object *monitor = brw_perf_monitor(m);
+   const GLuint *const data_end = (GLuint *)((uint8_t *) data + data_size);
 
    DBG("GetResult(%d)\n", m->Name);
    brw_dump_perf_monitors(brw);
@@ -1309,9 +1309,11 @@ brw_get_perf_monitor_result(struct gl_context *ctx,
          if (counter < 0 || !BITSET_TEST(m->ActiveCounters[group], counter))
             continue;
 
-         data[offset++] = group;
-         data[offset++] = counter;
-         data[offset++] = monitor->oa_results[i];
+         if (data + offset + 3 <= data_end) {
+            data[offset++] = group;
+            data[offset++] = counter;
+            data[offset++] = monitor->oa_results[i];
+         }
       }
 
       clean_bookend_bo(brw);
@@ -1335,10 +1337,12 @@ brw_get_perf_monitor_result(struct gl_context *ctx,
 
       for (int i = 0; i < num_counters; i++) {
          if (BITSET_TEST(m->ActiveCounters[PIPELINE_STATS_COUNTERS], i)) {
-            data[offset++] = PIPELINE_STATS_COUNTERS;
-            data[offset++] = i;
-            *((uint64_t *) (&data[offset])) = monitor->pipeline_stats_results[i];
-            offset += 2;
+            if (data + offset + 4 <= data_end) {
+               data[offset++] = PIPELINE_STATS_COUNTERS;
+               data[offset++] = i;
+               *((uint64_t *) (&data[offset])) = monitor->pipeline_stats_results[i];
+               offset += 2;
+            }
          }
       }
    }
@@ -1353,6 +1357,7 @@ brw_get_perf_monitor_result(struct gl_context *ctx,
 static struct gl_perf_monitor_object *
 brw_new_perf_monitor(struct gl_context *ctx)
 {
+   (void) ctx;
    return calloc(1, sizeof(struct brw_perf_monitor_object));
 }
 
@@ -1380,7 +1385,7 @@ void
 brw_perf_monitor_new_batch(struct brw_context *brw)
 {
    assert(brw->batch.ring == RENDER_RING);
-   assert(brw->gen < 6 || brw->batch.used == 0);
+   assert(brw->gen < 6 || USED_BATCH(brw->batch) == 0);
 
    if (brw->perfmon.oa_users == 0)
       return;

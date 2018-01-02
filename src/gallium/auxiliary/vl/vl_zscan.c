@@ -49,6 +49,13 @@ enum VS_OUTPUT
    VS_O_VTEX = 0
 };
 
+const int vl_zscan_normal_16[] =
+{
+   /* Zig-Zag scan pattern */
+    0, 1, 4, 8, 5, 2, 3, 6,
+    9,12,13,10, 7,11,14,15
+};
+
 const int vl_zscan_linear[] =
 {
    /* Linear scan pattern */
@@ -92,17 +99,14 @@ static void *
 create_vert_shader(struct vl_zscan *zscan)
 {
    struct ureg_program *shader;
-
    struct ureg_src scale;
    struct ureg_src vrect, vpos, block_num;
-
    struct ureg_dst tmp;
    struct ureg_dst o_vpos;
    struct ureg_dst *o_vtex;
+   unsigned i;
 
-   signed i;
-
-   shader = ureg_create(TGSI_PROCESSOR_VERTEX);
+   shader = ureg_create(PIPE_SHADER_VERTEX);
    if (!shader)
       return NULL;
 
@@ -148,7 +152,7 @@ create_vert_shader(struct vl_zscan *zscan)
    for (i = 0; i < zscan->num_channels; ++i) {
       ureg_ADD(shader, ureg_writemask(tmp, TGSI_WRITEMASK_X), ureg_scalar(ureg_src(tmp), TGSI_SWIZZLE_Y),
                ureg_imm1f(shader, 1.0f / (zscan->blocks_per_line * VL_BLOCK_WIDTH)
-                * (i - (signed)zscan->num_channels / 2)));
+                * ((signed)i - (signed)zscan->num_channels / 2)));
 
       ureg_MAD(shader, ureg_writemask(o_vtex[i], TGSI_WRITEMASK_X), vrect,
                ureg_imm1f(shader, 1.0f / zscan->blocks_per_line), ureg_src(tmp));
@@ -179,7 +183,7 @@ create_frag_shader(struct vl_zscan *zscan)
 
    unsigned i;
 
-   shader = ureg_create(TGSI_PROCESSOR_FRAGMENT);
+   shader = ureg_create(PIPE_SHADER_FRAGMENT);
    if (!shader)
       return NULL;
 
@@ -470,11 +474,9 @@ vl_zscan_init_buffer(struct vl_zscan *zscan, struct vl_zscan_buffer *buffer,
    buffer->viewport.scale[0] = dst->width;
    buffer->viewport.scale[1] = dst->height;
    buffer->viewport.scale[2] = 1;
-   buffer->viewport.scale[3] = 1;
    buffer->viewport.translate[0] = 0;
    buffer->viewport.translate[1] = 0;
    buffer->viewport.translate[2] = 0;
-   buffer->viewport.translate[3] = 0;
 
    buffer->fb_state.width = dst->width;
    buffer->fb_state.height = dst->height;

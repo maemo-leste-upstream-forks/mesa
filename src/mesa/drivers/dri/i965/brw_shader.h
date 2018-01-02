@@ -21,73 +21,94 @@
  * IN THE SOFTWARE.
  */
 
+#pragma once
+
 #include <stdint.h>
 #include "brw_reg.h"
 #include "brw_defines.h"
-#include "main/compiler.h"
-#include "glsl/ir.h"
+#include "brw_context.h"
+#include "compiler/nir/nir.h"
 
-#pragma once
-
-enum PACKED register_file {
-   BAD_FILE,
-   GRF,
-   MRF,
-   IMM,
-   HW_REG, /* a struct brw_reg */
-   ATTR,
-   UNIFORM, /* prog_data->params[reg] */
-};
-
-struct backend_reg
-{
 #ifdef __cplusplus
-   bool is_zero() const;
-   bool is_one() const;
-   bool is_null() const;
-   bool is_accumulator() const;
+#include "brw_ir_allocator.h"
 #endif
 
-   enum register_file file; /**< Register file: GRF, MRF, IMM. */
-   enum brw_reg_type type;  /**< Register type: BRW_REGISTER_TYPE_* */
+#define MAX_SAMPLER_MESSAGE_SIZE 11
+#define MAX_VGRF_SIZE 16
 
-   /**
-    * Register number.
-    *
-    * For GRF, it's a virtual register number until register allocation.
-    *
-    * For MRF, it's the hardware register.
-    */
-   uint16_t reg;
+#ifdef __cplusplus
+struct backend_reg : private brw_reg
+{
+   backend_reg() {}
+   backend_reg(const struct brw_reg &reg) : brw_reg(reg) {}
 
-   /**
-    * Offset within the virtual register.
-    *
-    * In the scalar backend, this is in units of a float per pixel for pre-
-    * register allocation registers (i.e., one register in SIMD8 mode and two
-    * registers in SIMD16 mode).
-    *
-    * For uniforms, this is in units of 1 float.
-    */
-   int reg_offset;
+   const brw_reg &as_brw_reg() const
+   {
+      assert(file == ARF || file == FIXED_GRF || file == MRF || file == IMM);
+      assert(offset == 0);
+      return static_cast<const brw_reg &>(*this);
+   }
 
-   struct brw_reg fixed_hw_reg;
+   brw_reg &as_brw_reg()
+   {
+      assert(file == ARF || file == FIXED_GRF || file == MRF || file == IMM);
+      assert(offset == 0);
+      return static_cast<brw_reg &>(*this);
+   }
 
-   bool negate;
-   bool abs;
+   bool equals(const backend_reg &r) const;
+
+   bool is_zero() const;
+   bool is_one() const;
+   bool is_negative_one() const;
+   bool is_null() const;
+   bool is_accumulator() const;
+
+   /** Offset from the start of the (virtual) register in bytes. */
+   uint16_t offset;
+
+   using brw_reg::type;
+   using brw_reg::file;
+   using brw_reg::negate;
+   using brw_reg::abs;
+   using brw_reg::address_mode;
+   using brw_reg::subnr;
+   using brw_reg::nr;
+
+   using brw_reg::swizzle;
+   using brw_reg::writemask;
+   using brw_reg::indirect_offset;
+   using brw_reg::vstride;
+   using brw_reg::width;
+   using brw_reg::hstride;
+
+   using brw_reg::df;
+   using brw_reg::f;
+   using brw_reg::d;
+   using brw_reg::ud;
 };
+#endif
 
 struct cfg_t;
+struct bblock_t;
 
 #ifdef __cplusplus
 struct backend_instruction : public exec_node {
+   bool is_3src(const struct gen_device_info *devinfo) const;
    bool is_tex() const;
    bool is_math() const;
    bool is_control_flow() const;
+   bool is_commutative() const;
    bool can_do_source_mods() const;
    bool can_do_saturate() const;
+   bool can_do_cmod() const;
    bool reads_accumulator_implicitly() const;
-   bool writes_accumulator_implicitly(struct brw_context *brw) const;
+   bool writes_accumulator_implicitly(const struct gen_device_info *devinfo) const;
+
+   void remove(bblock_t *block);
+   void insert_after(bblock_t *block, backend_instruction *inst);
+   void insert_before(bblock_t *block, backend_instruction *inst);
+   void insert_before(bblock_t *block, exec_list *list);
 
    /**
     * True if the instruction has side effects other than writing to
@@ -95,6 +116,12 @@ struct backend_instruction : public exec_node {
     * optimize these out unless you know what you are doing.
     */
    bool has_side_effects() const;
+
+   /**
+    * True if the instruction might be affected by side effects of other
+    * instructions.
+    */
+   bool is_volatile() const;
 #else
 struct backend_instruction {
    struct exec_node link;
@@ -106,11 +133,11 @@ struct backend_instruction {
    const char *annotation;
    /** @} */
 
-   uint32_t texture_offset; /**< Texture offset bitfield */
-   uint32_t offset; /**< spill/unspill offset */
+   uint32_t offset; /**< spill/unspill offset or texture offset bitfield */
    uint8_t mlen; /**< SEND message length */
    int8_t base_mrf; /**< First MRF in the SEND message, if mlen is nonzero. */
    uint8_t target; /**< MRT target. */
+   unsigned size_written; /**< Data written to the destination register in bytes. */
 
    enum opcode opcode; /* BRW_OPCODE_* or FS_OPCODE_* */
    enum brw_conditional_mod conditional_mod; /**< BRW_CONDITIONAL_* */
@@ -121,6 +148,15 @@ struct backend_instruction {
    bool no_dd_clear:1;
    bool no_dd_check:1;
    bool saturate:1;
+   bool shadow_compare:1;
+
+   /* Chooses which flag subregister (f0.0 or f0.1) is used for conditional
+    * mod and predication.
+    */
+   unsigned flag_subreg:1;
+
+   /** The number of hardware registers used for a message header. */
+   uint8_t header_size;
 };
 
 #ifdef __cplusplus
@@ -132,22 +168,22 @@ enum instruction_scheduler_mode {
    SCHEDULE_POST,
 };
 
-class backend_visitor : public ir_visitor {
+struct backend_shader {
 protected:
 
-   backend_visitor(struct brw_context *brw,
-                   struct gl_shader_program *shader_prog,
-                   struct gl_program *prog,
-                   struct brw_stage_prog_data *stage_prog_data,
-                   gl_shader_stage stage);
+   backend_shader(const struct brw_compiler *compiler,
+                  void *log_data,
+                  void *mem_ctx,
+                  const nir_shader *shader,
+                  struct brw_stage_prog_data *stage_prog_data);
 
 public:
 
-   struct brw_context * const brw;
-   struct gl_context * const ctx;
-   struct brw_shader * const shader;
-   struct gl_shader_program * const shader_prog;
-   struct gl_program * const prog;
+   const struct brw_compiler *compiler;
+   void *log_data; /* Passed to compiler->*_log functions */
+
+   const struct gen_device_info * const devinfo;
+   const nir_shader *nir;
    struct brw_stage_prog_data * const stage_prog_data;
 
    /** ralloc context for temporary data used during compile */
@@ -162,6 +198,12 @@ public:
    cfg_t *cfg;
 
    gl_shader_stage stage;
+   bool debug_enabled;
+   const char *stage_name;
+   const char *stage_abbrev;
+   bool is_passthrough_shader;
+
+   brw::simple_allocator alloc;
 
    virtual void dump_instruction(backend_instruction *inst) = 0;
    virtual void dump_instruction(backend_instruction *inst, FILE *file) = 0;
@@ -169,18 +211,84 @@ public:
    virtual void dump_instructions(const char *name);
 
    void calculate_cfg();
-   void invalidate_cfg();
-
-   void assign_common_binding_table_offsets(uint32_t next_binding_table_offset);
 
    virtual void invalidate_live_intervals() = 0;
 };
 
-uint32_t brw_texture_offset(struct gl_context *ctx, ir_constant *offset);
+uint32_t brw_texture_offset(int *offsets, unsigned num_components);
 
+void brw_setup_image_uniform_values(gl_shader_stage stage,
+                                    struct brw_stage_prog_data *stage_prog_data,
+                                    unsigned param_start_index,
+                                    const gl_uniform_storage *storage);
+
+#else
+struct backend_shader;
 #endif /* __cplusplus */
 
 enum brw_reg_type brw_type_for_base_type(const struct glsl_type *type);
 enum brw_conditional_mod brw_conditional_for_comparison(unsigned int op);
 uint32_t brw_math_function(enum opcode op);
-const char *brw_instruction_name(enum opcode op);
+const char *brw_instruction_name(const struct gen_device_info *devinfo,
+                                 enum opcode op);
+bool brw_saturate_immediate(enum brw_reg_type type, struct brw_reg *reg);
+bool brw_negate_immediate(enum brw_reg_type type, struct brw_reg *reg);
+bool brw_abs_immediate(enum brw_reg_type type, struct brw_reg *reg);
+
+bool opt_predicated_break(struct backend_shader *s);
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/**
+ * Scratch data used when compiling a GLSL geometry shader.
+ */
+struct brw_gs_compile
+{
+   struct brw_gs_prog_key key;
+   struct brw_vue_map input_vue_map;
+
+   unsigned control_data_bits_per_vertex;
+   unsigned control_data_header_size_bits;
+};
+
+uint32_t
+brw_assign_common_binding_table_offsets(gl_shader_stage stage,
+                                        const struct gen_device_info *devinfo,
+                                        const struct gl_shader_program *shader_prog,
+                                        const struct gl_program *prog,
+                                        struct brw_stage_prog_data *stage_prog_data,
+                                        uint32_t next_binding_table_offset);
+
+bool brw_vs_precompile(struct gl_context *ctx,
+                       struct gl_shader_program *shader_prog,
+                       struct gl_program *prog);
+bool brw_tcs_precompile(struct gl_context *ctx,
+                        struct gl_shader_program *shader_prog,
+                        struct gl_program *prog);
+bool brw_tes_precompile(struct gl_context *ctx,
+                        struct gl_shader_program *shader_prog,
+                        struct gl_program *prog);
+bool brw_gs_precompile(struct gl_context *ctx,
+                       struct gl_shader_program *shader_prog,
+                       struct gl_program *prog);
+bool brw_fs_precompile(struct gl_context *ctx,
+                       struct gl_shader_program *shader_prog,
+                       struct gl_program *prog);
+bool brw_cs_precompile(struct gl_context *ctx,
+                       struct gl_shader_program *shader_prog,
+                       struct gl_program *prog);
+
+GLboolean brw_link_shader(struct gl_context *ctx, struct gl_shader_program *prog);
+struct gl_linked_shader *brw_new_shader(gl_shader_stage stage);
+
+unsigned tesslevel_outer_components(GLenum tes_primitive_mode);
+unsigned tesslevel_inner_components(GLenum tes_primitive_mode);
+unsigned writemask_for_backwards_vector(unsigned mask);
+
+unsigned get_atomic_counter_op(nir_intrinsic_op op);
+
+#ifdef __cplusplus
+}
+#endif

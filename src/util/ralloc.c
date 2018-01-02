@@ -51,7 +51,20 @@ _CRTIMP int _vscprintf(const char *format, va_list argptr);
 
 #define CANARY 0x5A1106
 
-struct ralloc_header
+/* Align the header's size so that ralloc() allocations will return with the
+ * same alignment as a libc malloc would have (8 on 32-bit GLIBC, 16 on
+ * 64-bit), avoiding performance penalities on x86 and alignment faults on
+ * ARM.
+ */
+struct
+#ifdef _MSC_VER
+ __declspec(align(8))
+#elif defined(__LP64__)
+ __attribute__((aligned(16)))
+#else
+ __attribute__((aligned(8)))
+#endif
+   ralloc_header
 {
 #ifdef DEBUG
    /* A canary value used to determine whether a pointer is ralloc'd. */
@@ -110,6 +123,18 @@ ralloc_context(const void *ctx)
 void *
 ralloc_size(const void *ctx, size_t size)
 {
+   /* ralloc_size was originally implemented using calloc, which meant some
+    * code accidentally relied on its zero filling behavior.
+    *
+    * TODO: Make ralloc_size not zero fill memory, and cleanup any code that
+    * should instead be using rzalloc.
+    */
+   return rzalloc_size(ctx, size);
+}
+
+void *
+rzalloc_size(const void *ctx, size_t size)
+{
    void *block = calloc(1, size + sizeof(ralloc_header));
    ralloc_header *info;
    ralloc_header *parent;
@@ -126,15 +151,6 @@ ralloc_size(const void *ctx, size_t size)
 #endif
 
    return PTR_FROM_HEADER(info);
-}
-
-void *
-rzalloc_size(const void *ctx, size_t size)
-{
-   void *ptr = ralloc_size(ctx, size);
-   if (likely(ptr != NULL))
-      memset(ptr, 0, size);
-   return ptr;
 }
 
 /* helper function - assumes ptr != NULL */
@@ -271,6 +287,33 @@ ralloc_steal(const void *new_ctx, void *ptr)
    add_child(parent, info);
 }
 
+void
+ralloc_adopt(const void *new_ctx, void *old_ctx)
+{
+   ralloc_header *new_info, *old_info, *child;
+
+   if (unlikely(old_ctx == NULL))
+      return;
+
+   old_info = get_header(old_ctx);
+   new_info = get_header(new_ctx);
+
+   /* If there are no children, bail. */
+   if (unlikely(old_info->child == NULL))
+      return;
+
+   /* Set all the children's parent to new_ctx; get a pointer to the last child. */
+   for (child = old_info->child; child->next != NULL; child = child->next) {
+      child->parent = new_info;
+   }
+
+   /* Connect the two lists together; parent them to new_ctx; make old_ctx empty. */
+   child->next = new_info->child;
+   child->parent = new_info;
+   new_info->child = old_info->child;
+   old_info->child = NULL;
+}
+
 void *
 ralloc_parent(const void *ptr)
 {
@@ -333,10 +376,7 @@ ralloc_strndup(const void *ctx, const char *str, size_t max)
    if (unlikely(str == NULL))
       return NULL;
 
-   n = strlen(str);
-   if (n > max)
-      n = max;
-
+   n = strnlen(str, max);
    ptr = ralloc_array(ctx, char, n + 1);
    memcpy(ptr, str, n);
    ptr[n] = '\0';
@@ -476,6 +516,7 @@ ralloc_vasprintf_rewrite_tail(char **str, size_t *start, const char *fmt,
    if (unlikely(*str == NULL)) {
       // Assuming a NULL context is probably bad, but it's expected behavior.
       *str = ralloc_vasprintf(NULL, fmt, args);
+      *start = strlen(*str);
       return true;
    }
 

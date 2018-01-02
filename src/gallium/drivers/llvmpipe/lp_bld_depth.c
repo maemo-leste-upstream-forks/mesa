@@ -359,11 +359,12 @@ get_z_shift_and_mask(const struct util_format_description *format_desc,
 
    z_swizzle = format_desc->swizzle[0];
 
-   if (z_swizzle == UTIL_FORMAT_SWIZZLE_NONE)
+   if (z_swizzle == PIPE_SWIZZLE_NONE)
       return FALSE;
 
    *width = format_desc->channel[z_swizzle].size;
-   *shift = format_desc->channel[z_swizzle].shift;
+   /* & 31 is for the same reason as the 32-bit limit above */
+   *shift = format_desc->channel[z_swizzle].shift & 31;
 
    if (*width == total_bits) {
       *mask = 0xffffffff;
@@ -389,7 +390,7 @@ get_s_shift_and_mask(const struct util_format_description *format_desc,
 
    s_swizzle = format_desc->swizzle[1];
 
-   if (s_swizzle == UTIL_FORMAT_SWIZZLE_NONE)
+   if (s_swizzle == PIPE_SWIZZLE_NONE)
       return FALSE;
 
    /* just special case 64bit d/s format */
@@ -872,8 +873,8 @@ lp_build_depth_stencil_test(struct gallivm_state *gallivm,
       const unsigned z_swizzle = format_desc->swizzle[0];
       const unsigned s_swizzle = format_desc->swizzle[1];
 
-      assert(z_swizzle != UTIL_FORMAT_SWIZZLE_NONE ||
-             s_swizzle != UTIL_FORMAT_SWIZZLE_NONE);
+      assert(z_swizzle != PIPE_SWIZZLE_NONE ||
+             s_swizzle != PIPE_SWIZZLE_NONE);
 
       assert(depth->enabled || stencil[0].enabled);
 
@@ -973,10 +974,6 @@ lp_build_depth_stencil_test(struct gallivm_state *gallivm,
          front_facing = LLVMBuildBitCast(builder, front_facing,
                                          s_bld.int_vec_type, "");
       }
-
-      /* convert scalar stencil refs into vectors */
-      stencil_refs[0] = lp_build_broadcast_scalar(&s_bld, stencil_refs[0]);
-      stencil_refs[1] = lp_build_broadcast_scalar(&s_bld, stencil_refs[1]);
 
       s_pass_mask = lp_build_stencil_test(&s_bld, stencil,
                                           stencil_refs, stencil_vals,

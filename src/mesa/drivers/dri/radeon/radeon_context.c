@@ -39,7 +39,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "main/api_arrayelt.h"
 #include "main/api_exec.h"
 #include "main/context.h"
-#include "main/simple_list.h"
+#include "util/simple_list.h"
 #include "main/imports.h"
 #include "main/extensions.h"
 #include "main/version.h"
@@ -92,29 +92,6 @@ static const struct tnl_pipeline_stage *radeon_pipeline[] = {
    NULL,
 };
 
-static void r100_get_lock(radeonContextPtr radeon)
-{
-   r100ContextPtr rmesa = (r100ContextPtr)radeon;
-   drm_radeon_sarea_t *sarea = radeon->sarea;
-
-   RADEON_STATECHANGE(rmesa, ctx);
-   if (rmesa->radeon.sarea->tiling_enabled) {
-      rmesa->hw.ctx.cmd[CTX_RB3D_COLORPITCH] |=
-	 RADEON_COLOR_TILE_ENABLE;
-   } else {
-      rmesa->hw.ctx.cmd[CTX_RB3D_COLORPITCH] &=
-	 ~RADEON_COLOR_TILE_ENABLE;
-   }
-   
-   if (sarea->ctx_owner != rmesa->radeon.dri.hwContext) {
-      sarea->ctx_owner = rmesa->radeon.dri.hwContext;
-   }
-}
-
-static void r100_vtbl_emit_cs_header(struct radeon_cs *cs, radeonContextPtr rmesa)
-{
-}
-
 static void r100_vtbl_pre_emit_state(radeonContextPtr radeon)
 {
    r100ContextPtr rmesa = (r100ContextPtr)radeon;
@@ -146,9 +123,6 @@ static void r100_emit_query_finish(radeonContextPtr radeon)
 
 static void r100_init_vtbl(radeonContextPtr radeon)
 {
-   radeon->vtbl.get_lock = r100_get_lock;
-   radeon->vtbl.update_viewport_offset = radeonUpdateViewportOffset;
-   radeon->vtbl.emit_cs_header = r100_vtbl_emit_cs_header;
    radeon->vtbl.swtcl_flush = r100_swtcl_flush;
    radeon->vtbl.pre_emit_state = r100_vtbl_pre_emit_state;
    radeon->vtbl.fallback = radeonFallback;
@@ -217,16 +191,8 @@ r100CreateContext( gl_api api,
    rmesa->radeon.initialMaxAnisotropy = driQueryOptionf(&rmesa->radeon.optionCache,
                                                  "def_max_anisotropy");
 
-   if ( driQueryOptionb( &rmesa->radeon.optionCache, "hyperz" ) ) {
-      if ( sPriv->drm_version.minor < 13 )
-	 fprintf( stderr, "DRM version 1.%d too old to support HyperZ, "
-			  "disabling.\n", sPriv->drm_version.minor );
-      else
-	 rmesa->using_hyperz = GL_TRUE;
-   }
-
-   if ( sPriv->drm_version.minor >= 15 )
-      rmesa->texmicrotile = GL_TRUE;
+   if (driQueryOptionb(&rmesa->radeon.optionCache, "hyperz"))
+      rmesa->using_hyperz = GL_TRUE;
 
    /* Init default driver functions then plug in our Radeon-specific functions
     * (the texture functions are especially important)
@@ -375,8 +341,8 @@ r100CreateContext( gl_api api,
 
 
 #if DO_DEBUG
-   RADEON_DEBUG = driParseDebugString( getenv( "RADEON_DEBUG" ),
-				       debug_control );
+   RADEON_DEBUG = parse_debug_string( getenv( "RADEON_DEBUG" ),
+                                      debug_control );
 #endif
 
    tcl_mode = driQueryOptioni(&rmesa->radeon.optionCache, "tcl_mode");

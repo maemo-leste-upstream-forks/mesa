@@ -31,6 +31,7 @@
 #include "util/u_rect.h"
 #include "util/u_surface.h"
 #include "util/u_pack_color.h"
+#include "util/u_string.h"
 
 #include "os/os_time.h"
 
@@ -42,6 +43,7 @@
 #include "lp_query.h"
 #include "lp_rast.h"
 #include "lp_rast_priv.h"
+#include "gallivm/lp_bld_format.h"
 #include "gallivm/lp_bld_debug.h"
 #include "lp_scene.h"
 #include "lp_tex_sample.h"
@@ -81,7 +83,7 @@ lp_rast_end( struct lp_rasterizer *rast )
 
 
 /**
- * Begining rasterization of a tile.
+ * Beginning rasterization of a tile.
  * \param x  window X position of the tile, in pixels
  * \param y  window Y position of the tile, in pixels
  */
@@ -90,6 +92,9 @@ lp_rast_tile_begin(struct lp_rasterizer_task *task,
                    const struct cmd_bin *bin,
                    int x, int y)
 {
+   unsigned i;
+   struct lp_scene *scene = task->scene;
+
    LP_DBG(DEBUG_RAST, "%s %d,%d\n", __FUNCTION__, x, y);
 
    task->bin = bin;
@@ -103,9 +108,18 @@ lp_rast_tile_begin(struct lp_rasterizer_task *task,
    task->thread_data.vis_counter = 0;
    task->ps_invocations = 0;
 
-   /* reset pointers to color and depth tile(s) */
-   memset(task->color_tiles, 0, sizeof(task->color_tiles));
-   task->depth_tile = NULL;
+   for (i = 0; i < task->scene->fb.nr_cbufs; i++) {
+      if (task->scene->fb.cbufs[i]) {
+         task->color_tiles[i] = scene->cbufs[i].map +
+                                scene->cbufs[i].stride * task->y +
+                                scene->cbufs[i].format_bytes * task->x;
+      }
+   }
+   if (task->scene->fb.zsbuf) {
+      task->depth_tile = scene->zsbuf.map +
+                         scene->zsbuf.stride * task->y +
+                         scene->zsbuf.format_bytes * task->x;
+   }
 }
 
 
@@ -185,7 +199,7 @@ lp_rast_clear_zstencil(struct lp_rasterizer_task *task,
 
    if (scene->fb.zsbuf) {
       unsigned layer;
-      uint8_t *dst_layer = lp_rast_get_depth_tile_pointer(task, LP_TEX_USAGE_READ_WRITE);
+      uint8_t *dst_layer = task->depth_tile;
       block_size = util_format_get_blocksize(scene->fb.zsbuf->format);
 
       clear_value &= clear_mask;
@@ -651,6 +665,17 @@ rasterize_scene(struct lp_rasterizer_task *task,
 {
    task->scene = scene;
 
+   /* Clear the cache tags. This should not always be necessary but
+      simpler for now. */
+#if LP_USE_TEXTURE_CACHE
+   memset(task->thread_data.cache->cache_tags, 0,
+          sizeof(task->thread_data.cache->cache_tags));
+#if LP_BUILD_FORMAT_CACHE_DEBUG
+   task->thread_data.cache->cache_access_total = 0;
+   task->thread_data.cache->cache_access_miss = 0;
+#endif
+#endif
+
    if (!task->rast->no_rast && !scene->discard) {
       /* loop over scene bins, rasterize each */
       {
@@ -665,6 +690,20 @@ rasterize_scene(struct lp_rasterizer_task *task,
       }
    }
 
+
+#if LP_BUILD_FORMAT_CACHE_DEBUG
+   {
+      uint64_t total, miss;
+      total = task->thread_data.cache->cache_access_total;
+      miss = task->thread_data.cache->cache_access_miss;
+      if (total) {
+         debug_printf("thread %d cache access %llu miss %llu hit rate %f\n",
+                 task->thread_index, (long long unsigned)total,
+                 (long long unsigned)miss,
+                 (float)(total - miss)/(float)total);
+      }
+   }
+#endif
 
    if (scene->fence) {
       lp_fence_signal(scene->fence);
@@ -747,11 +786,16 @@ static PIPE_THREAD_ROUTINE( thread_function, init_data )
    struct lp_rasterizer_task *task = (struct lp_rasterizer_task *) init_data;
    struct lp_rasterizer *rast = task->rast;
    boolean debug = false;
-   unsigned fpstate = util_fpstate_get();
+   char thread_name[16];
+   unsigned fpstate;
+
+   util_snprintf(thread_name, sizeof thread_name, "llvmpipe-%u", task->thread_index);
+   pipe_thread_setname(thread_name);
 
    /* Make sure that denorms are treated like zeros. This is 
     * the behavior required by D3D10. OpenGL doesn't care.
     */
+   fpstate = util_fpstate_get();
    util_fpstate_set_denorms_to_zero(fpstate);
 
    while (1) {
@@ -800,6 +844,10 @@ static PIPE_THREAD_ROUTINE( thread_function, init_data )
       pipe_semaphore_signal(&task->work_done);
    }
 
+#ifdef _WIN32
+   pipe_semaphore_signal(&task->work_done);
+#endif
+
    return 0;
 }
 
@@ -844,10 +892,15 @@ lp_rast_create( unsigned num_threads )
       goto no_full_scenes;
    }
 
-   for (i = 0; i < Elements(rast->tasks); i++) {
+   for (i = 0; i < MAX2(1, num_threads); i++) {
       struct lp_rasterizer_task *task = &rast->tasks[i];
       task->rast = rast;
       task->thread_index = i;
+      task->thread_data.cache = align_malloc(sizeof(struct lp_build_format_cache),
+                                             16);
+      if (!task->thread_data.cache) {
+         goto no_thread_data_cache;
+      }
    }
 
    rast->num_threads = num_threads;
@@ -857,12 +910,22 @@ lp_rast_create( unsigned num_threads )
    create_rast_threads(rast);
 
    /* for synchronizing rasterization threads */
-   pipe_barrier_init( &rast->barrier, rast->num_threads );
+   if (rast->num_threads > 0) {
+      pipe_barrier_init( &rast->barrier, rast->num_threads );
+   }
 
    memset(lp_dummy_tile, 0, sizeof lp_dummy_tile);
 
    return rast;
 
+no_thread_data_cache:
+   for (i = 0; i < MAX2(1, rast->num_threads); i++) {
+      if (rast->tasks[i].thread_data.cache) {
+         align_free(rast->tasks[i].thread_data.cache);
+      }
+   }
+
+   lp_scene_queue_destroy(rast->full_scenes);
 no_full_scenes:
    FREE(rast);
 no_rast:
@@ -885,9 +948,15 @@ void lp_rast_destroy( struct lp_rasterizer *rast )
       pipe_semaphore_signal(&rast->tasks[i].work_ready);
    }
 
-   /* Wait for threads to terminate before cleaning up per-thread data */
+   /* Wait for threads to terminate before cleaning up per-thread data.
+    * We don't actually call pipe_thread_wait to avoid dead lock on Windows
+    * per https://bugs.freedesktop.org/show_bug.cgi?id=76252 */
    for (i = 0; i < rast->num_threads; i++) {
+#ifdef _WIN32
+      pipe_semaphore_wait(&rast->tasks[i].work_done);
+#else
       pipe_thread_wait(rast->threads[i]);
+#endif
    }
 
    /* Clean up per-thread data */
@@ -895,9 +964,14 @@ void lp_rast_destroy( struct lp_rasterizer *rast )
       pipe_semaphore_destroy(&rast->tasks[i].work_ready);
       pipe_semaphore_destroy(&rast->tasks[i].work_done);
    }
+   for (i = 0; i < MAX2(1, rast->num_threads); i++) {
+      align_free(rast->tasks[i].thread_data.cache);
+   }
 
    /* for synchronizing rasterization threads */
-   pipe_barrier_destroy( &rast->barrier );
+   if (rast->num_threads > 0) {
+      pipe_barrier_destroy( &rast->barrier );
+   }
 
    lp_scene_queue_destroy(rast->full_scenes);
 

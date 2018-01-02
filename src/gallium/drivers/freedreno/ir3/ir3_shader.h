@@ -29,41 +29,102 @@
 #ifndef IR3_SHADER_H_
 #define IR3_SHADER_H_
 
+#include "pipe/p_state.h"
+#include "compiler/shader_enums.h"
+
 #include "ir3.h"
 #include "disasm.h"
 
-typedef uint16_t ir3_semantic;  /* semantic name + index */
-static inline ir3_semantic
-ir3_semantic_name(uint8_t name, uint16_t index)
-{
-	return (name << 8) | (index & 0xff);
-}
+/* driver param indices: */
+enum ir3_driver_param {
+	IR3_DP_VTXID_BASE = 0,
+	IR3_DP_VTXCNT_MAX = 1,
+	/* user-clip-plane components, up to 8x vec4's: */
+	IR3_DP_UCP0_X     = 4,
+	/* .... */
+	IR3_DP_UCP7_W     = 35,
+	IR3_DP_COUNT      = 36   /* must be aligned to vec4 */
+};
 
-static inline uint8_t sem2name(ir3_semantic sem)
-{
-	return sem >> 8;
-}
-
-static inline uint16_t sem2idx(ir3_semantic sem)
-{
-	return sem & 0xff;
-}
+/* Layout of constant registers:
+ *
+ *    num_uniform * vec4  -  user consts
+ *    4 * vec4            -  UBO addresses
+ *    if (vertex shader) {
+ *        N * vec4        -  driver params (IR3_DP_*)
+ *        1 * vec4        -  stream-out addresses
+ *    }
+ *
+ * TODO this could be made more dynamic, to at least skip sections
+ * that we don't need..
+ */
+#define IR3_UBOS_OFF         0  /* UBOs after user consts */
+#define IR3_DRIVER_PARAM_OFF 4  /* driver params after UBOs */
+#define IR3_TFBOS_OFF       (IR3_DRIVER_PARAM_OFF + IR3_DP_COUNT/4)
 
 /* Configuration key used to identify a shader variant.. different
  * shader variants can be used to implement features not supported
  * in hw (two sided color), binning-pass vertex shader, etc.
  */
 struct ir3_shader_key {
-	/* vertex shader variant parameters: */
-	unsigned binning_pass : 1;
+	union {
+		struct {
+			/*
+			 * Combined Vertex/Fragment shader parameters:
+			 */
+			unsigned ucp_enables : 8;
 
-	/* fragment shader variant parameters: */
-	unsigned color_two_side : 1;
-	unsigned half_precision : 1;
+			/* do we need to check {v,f}saturate_{s,t,r}? */
+			unsigned has_per_samp : 1;
+
+			/*
+			 * Vertex shader variant parameters:
+			 */
+			unsigned binning_pass : 1;
+			unsigned vclamp_color : 1;
+
+			/*
+			 * Fragment shader variant parameters:
+			 */
+			unsigned color_two_side : 1;
+			unsigned half_precision : 1;
+			/* used when shader needs to handle flat varyings (a4xx)
+			 * for front/back color inputs to frag shader:
+			 */
+			unsigned rasterflat : 1;
+			unsigned fclamp_color : 1;
+		};
+		uint32_t global;
+	};
+
+	/* bitmask of sampler which needs coords clamped for vertex
+	 * shader:
+	 */
+	uint16_t vsaturate_s, vsaturate_t, vsaturate_r;
+
+	/* bitmask of sampler which needs coords clamped for frag
+	 * shader:
+	 */
+	uint16_t fsaturate_s, fsaturate_t, fsaturate_r;
+
+	/* bitmask of samplers which need astc srgb workaround: */
+	uint16_t vastc_srgb, fastc_srgb;
 };
+
+static inline bool
+ir3_shader_key_equal(struct ir3_shader_key *a, struct ir3_shader_key *b)
+{
+	/* slow-path if we need to check {v,f}saturate_{s,t,r} */
+	if (a->has_per_samp || b->has_per_samp)
+		return memcmp(a, b, sizeof(struct ir3_shader_key)) == 0;
+	return a->global == b->global;
+}
 
 struct ir3_shader_variant {
 	struct fd_bo *bo;
+
+	/* variant id (for debug) */
+	uint32_t id;
 
 	struct ir3_shader_key key;
 
@@ -71,7 +132,8 @@ struct ir3_shader_variant {
 	struct ir3 *ir;
 
 	/* the instructions length is in units of instruction groups
-	 * (4 instructions, 8 dwords):
+	 * (4 instructions for a3xx, 16 instructions for a4xx.. each
+	 * instruction is 2 dwords):
 	 */
 	unsigned instrlen;
 
@@ -93,42 +155,85 @@ struct ir3_shader_variant {
 	 * to bary.f instructions
 	 */
 	uint8_t pos_regid;
-	bool frag_coord, frag_face;
+	bool frag_coord, frag_face, color0_mrt;
+
+	/* NOTE: for input/outputs, slot is:
+	 *   gl_vert_attrib  - for VS inputs
+	 *   gl_varying_slot - for VS output / FS input
+	 *   gl_frag_result  - for FS output
+	 */
 
 	/* varyings/outputs: */
 	unsigned outputs_count;
 	struct {
-		ir3_semantic semantic;
+		uint8_t slot;
 		uint8_t regid;
 	} outputs[16 + 2];  /* +POSITION +PSIZE */
 	bool writes_pos, writes_psize;
 
-	/* vertices/inputs: */
+	/* attributes (VS) / varyings (FS):
+	 * Note that sysval's should come *after* normal inputs.
+	 */
 	unsigned inputs_count;
 	struct {
-		ir3_semantic semantic;
+		uint8_t slot;
 		uint8_t regid;
 		uint8_t compmask;
 		uint8_t ncomp;
-		/* in theory inloc of fs should match outloc of vs: */
+		/* In theory inloc of fs should match outloc of vs.  Or
+		 * rather the outloc of the vs is 8 plus the offset passed
+		 * to bary.f.  Presumably that +8 is to account for
+		 * gl_Position/gl_PointSize?
+		 *
+		 * NOTE inloc is currently aligned to 4 (we don't try
+		 * to pack varyings).  Changing this would likely break
+		 * assumptions in few places (like setting up of flat
+		 * shading in fd3_program) so be sure to check all the
+		 * spots where inloc is used.
+		 */
 		uint8_t inloc;
-		uint8_t bary;
+		/* vertex shader specific: */
+		bool    sysval     : 1;   /* slot is a gl_system_value */
+		/* fragment shader specific: */
+		bool    bary       : 1;   /* fetched varying (vs one loaded into reg) */
+		bool    rasterflat : 1;   /* special handling for emit->rasterflat */
+		enum glsl_interp_mode interpolate;
 	} inputs[16 + 2];  /* +POSITION +FACE */
 
-	unsigned total_in;       /* sum of inputs (scalar) */
+	/* sum of input components (scalar).  For frag shaders, it only counts
+	 * the varying inputs:
+	 */
+	unsigned total_in;
+
+	/* For frag shaders, the total number of inputs (not scalar,
+	 * ie. SP_VS_PARAM_REG.TOTALVSOUTVAR)
+	 */
+	unsigned varying_in;
 
 	/* do we have one or more texture sample instructions: */
 	bool has_samp;
+
+	/* do we have kill instructions: */
+	bool has_kill;
 
 	/* const reg # of first immediate, ie. 1 == c1
 	 * (not regid, because TGSI thinks in terms of vec4 registers,
 	 * not scalar registers)
 	 */
+	unsigned first_driver_param;
 	unsigned first_immediate;
 	unsigned immediates_count;
 	struct {
 		uint32_t val[4];
 	} immediates[64];
+
+	/* for astc srgb workaround, the number/base of additional
+	 * alpha tex states we need, and index of original tex states
+	 */
+	struct {
+		unsigned base, count;
+		unsigned orig_idx[16];
+	} astc_srgb;
 
 	/* shader variants form a linked list: */
 	struct ir3_shader_variant *next;
@@ -138,26 +243,115 @@ struct ir3_shader_variant {
 	struct ir3_shader *shader;
 };
 
+typedef struct nir_shader nir_shader;
+
 struct ir3_shader {
 	enum shader_t type;
 
-	struct pipe_context *pctx;
-	const struct tgsi_token *tokens;
+	/* shader id (for debug): */
+	uint32_t id;
+	uint32_t variant_count;
+
+	/* so we know when we can disable TGSI related hacks: */
+	bool from_tgsi;
+
+	struct ir3_compiler *compiler;
+
+	nir_shader *nir;
+	struct pipe_stream_output_info stream_output;
 
 	struct ir3_shader_variant *variants;
-
-	/* so far, only used for blit_prog shader.. values for
-	 * VPC_VARYING_INTERP[i].MODE and VPC_VARYING_PS_REPL[i].MODE
-	 */
-	uint32_t vinterp[4], vpsrepl[4];
 };
 
+void * ir3_shader_assemble(struct ir3_shader_variant *v, uint32_t gpu_id);
 
-struct ir3_shader * ir3_shader_create(struct pipe_context *pctx,
-		const struct tgsi_token *tokens, enum shader_t type);
+struct ir3_shader * ir3_shader_create(struct ir3_compiler *compiler,
+		const struct pipe_shader_state *cso, enum shader_t type,
+		struct pipe_debug_callback *debug);
 void ir3_shader_destroy(struct ir3_shader *shader);
-
 struct ir3_shader_variant * ir3_shader_variant(struct ir3_shader *shader,
-		struct ir3_shader_key key);
+		struct ir3_shader_key key, struct pipe_debug_callback *debug);
+void ir3_shader_disasm(struct ir3_shader_variant *so, uint32_t *bin);
+uint64_t ir3_shader_outputs(const struct ir3_shader *so);
+
+struct fd_ringbuffer;
+struct fd_context;
+void ir3_emit_consts(const struct ir3_shader_variant *v, struct fd_ringbuffer *ring,
+		struct fd_context *ctx, const struct pipe_draw_info *info, uint32_t dirty);
+
+static inline const char *
+ir3_shader_stage(struct ir3_shader *shader)
+{
+	switch (shader->type) {
+	case SHADER_VERTEX:     return "VERT";
+	case SHADER_FRAGMENT:   return "FRAG";
+	case SHADER_COMPUTE:    return "CL";
+	default:
+		unreachable("invalid type");
+		return NULL;
+	}
+}
+
+/*
+ * Helper/util:
+ */
+
+#include "pipe/p_shader_tokens.h"
+
+static inline int
+ir3_find_output(const struct ir3_shader_variant *so, gl_varying_slot slot)
+{
+	int j;
+
+	for (j = 0; j < so->outputs_count; j++)
+		if (so->outputs[j].slot == slot)
+			return j;
+
+	/* it seems optional to have a OUT.BCOLOR[n] for each OUT.COLOR[n]
+	 * in the vertex shader.. but the fragment shader doesn't know this
+	 * so  it will always have both IN.COLOR[n] and IN.BCOLOR[n].  So
+	 * at link time if there is no matching OUT.BCOLOR[n], we must map
+	 * OUT.COLOR[n] to IN.BCOLOR[n].  And visa versa if there is only
+	 * a OUT.BCOLOR[n] but no matching OUT.COLOR[n]
+	 */
+	if (slot == VARYING_SLOT_BFC0) {
+		slot = VARYING_SLOT_COL0;
+	} else if (slot == VARYING_SLOT_BFC1) {
+		slot = VARYING_SLOT_COL1;
+	} else if (slot == VARYING_SLOT_COL0) {
+		slot = VARYING_SLOT_BFC0;
+	} else if (slot == VARYING_SLOT_COL1) {
+		slot = VARYING_SLOT_BFC1;
+	} else {
+		return 0;
+	}
+
+	for (j = 0; j < so->outputs_count; j++)
+		if (so->outputs[j].slot == slot)
+			return j;
+
+	debug_assert(0);
+
+	return 0;
+}
+
+static inline int
+ir3_next_varying(const struct ir3_shader_variant *so, int i)
+{
+	while (++i < so->inputs_count)
+		if (so->inputs[i].compmask && so->inputs[i].bary)
+			break;
+	return i;
+}
+
+static inline uint32_t
+ir3_find_output_regid(const struct ir3_shader_variant *so, unsigned slot)
+{
+	int j;
+	for (j = 0; j < so->outputs_count; j++)
+		if (so->outputs[j].slot == slot)
+			return so->outputs[j].regid;
+	return regid(63, 0);
+}
 
 #endif /* IR3_SHADER_H_ */

@@ -29,8 +29,7 @@
 #define ILO_BLITTER_H
 
 #include "ilo_common.h"
-#include "ilo_context.h"
-#include "ilo_gpe.h"
+#include "ilo_state.h"
 
 enum ilo_blitter_uses {
    ILO_BLITTER_USE_DSA           = 1 << 0,
@@ -40,15 +39,10 @@ enum ilo_blitter_uses {
    ILO_BLITTER_USE_FB_STENCIL    = 1 << 4,
 };
 
-enum ilo_blitter_rectlist_op {
-   ILO_BLITTER_RECTLIST_CLEAR_ZS,
-   ILO_BLITTER_RECTLIST_RESOLVE_Z,
-   ILO_BLITTER_RECTLIST_RESOLVE_HIZ,
-};
-
 struct blitter_context;
 struct pipe_resource;
 struct pipe_surface;
+struct ilo_context;
 
 struct ilo_blitter {
    struct ilo_context *ilo;
@@ -57,35 +51,42 @@ struct ilo_blitter {
    /*
     * A minimal context with the goal to send RECTLISTs down the pipeline.
     */
-   enum ilo_blitter_rectlist_op op;
+   enum ilo_state_raster_earlyz_op earlyz_op;
+   bool earlyz_stencil_clear;
    uint32_t uses;
 
    bool initialized;
 
-   struct {
-      struct pipe_resource *res;
-      unsigned offset, size;
-   } buffer;
+   float vertices[3][2];
+   struct gen6_3dprimitive_info draw_info;
 
-   struct ilo_ve_state ve;
-   struct ilo_vb_state vb;
-   struct pipe_draw_info draw;
+   uint32_t vf_data[4];
+   struct ilo_state_vf vf;
 
-   struct ilo_viewport_cso viewport;
-   struct ilo_dsa_state dsa;
+   struct ilo_state_vs vs;
+   struct ilo_state_hs hs;
+   struct ilo_state_ds ds;
+   struct ilo_state_gs gs;
 
-   struct {
-      struct pipe_stencil_ref stencil_ref;
-      ubyte alpha_ref;
-      struct pipe_blend_color blend_color;
-   } cc;
+   struct ilo_state_sol sol;
+
+   struct ilo_state_viewport vp;
+   uint32_t vp_data[20];
+
+   struct ilo_state_sbe sbe;
+   struct ilo_state_ps ps;
+   struct ilo_state_cc cc;
 
    uint32_t depth_clear_value;
+
+   struct ilo_state_urb urb;
 
    struct {
       struct ilo_surface_cso dst;
       unsigned width, height;
       unsigned num_samples;
+
+      struct ilo_state_raster rs;
    } fb;
 };
 

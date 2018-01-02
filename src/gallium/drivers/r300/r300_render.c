@@ -215,7 +215,7 @@ static boolean r300_reserve_cs_dwords(struct r300_context *r300,
     cs_dwords += r300_get_num_cs_end_dwords(r300);
 
     /* Reserve requested CS space. */
-    if (cs_dwords > (RADEON_MAX_CMDBUF_DWORDS - r300->cs->cdw)) {
+    if (!r300->rws->cs_check_space(r300->cs, cs_dwords)) {
         r300_flush(&r300->context, RADEON_FLUSH_ASYNC, NULL);
         flushed = TRUE;
     }
@@ -373,7 +373,7 @@ static void r300_draw_arrays_immediate(struct r300_context *r300,
         /* Map the buffer. */
         if (!map[vbi]) {
             map[vbi] = (uint32_t*)r300->rws->buffer_map(
-                r300_resource(vbuf->buffer)->cs_buf,
+                r300_resource(vbuf->buffer)->buf,
                 r300->cs, PIPE_TRANSFER_READ | PIPE_TRANSFER_UNSYNCHRONIZED);
             map[vbi] += (vbuf->buffer_offset / 4) + stride[i] * info->start;
         }
@@ -606,7 +606,7 @@ static void r300_draw_elements(struct r300_context *r300,
     /* Fallback for misaligned ushort indices. */
     if (indexSize == 2 && (start & 1) && indexBuffer) {
         /* If we got here, then orgIndexBuffer == indexBuffer. */
-        uint16_t *ptr = r300->rws->buffer_map(r300_resource(orgIndexBuffer)->cs_buf,
+        uint16_t *ptr = r300->rws->buffer_map(r300_resource(orgIndexBuffer)->buf,
                                               r300->cs,
                                               PIPE_TRANSFER_READ |
                                               PIPE_TRANSFER_UNSYNCHRONIZED);
@@ -784,8 +784,6 @@ static void r300_draw_vbo(struct pipe_context* pipe,
     struct r300_context* r300 = r300_context(pipe);
     struct pipe_draw_info info = *dinfo;
 
-    info.indexed = info.indexed;
-
     if (r300->skip_rendering ||
         !u_trim_pipe_prim(info.mode, &info.count)) {
         return;
@@ -873,7 +871,7 @@ struct r300_render {
     uint8_t *vbo_ptr;
 };
 
-static INLINE struct r300_render*
+static inline struct r300_render*
 r300_render(struct vbuf_render* render)
 {
     return (struct r300_render*)render;
@@ -901,19 +899,18 @@ static boolean r300_render_allocate_vertices(struct vbuf_render* render,
 
     if (!r300->vbo || size + r300->draw_vbo_offset > r300->vbo->size) {
 	pb_reference(&r300->vbo, NULL);
-        r300->vbo_cs = NULL;
+        r300->vbo = NULL;
         r300render->vbo_ptr = NULL;
 
         r300->vbo = rws->buffer_create(rws,
                                        MAX2(R300_MAX_DRAW_VBO_SIZE, size),
-                                       R300_BUFFER_ALIGNMENT, TRUE,
+                                       R300_BUFFER_ALIGNMENT,
                                        RADEON_DOMAIN_GTT, 0);
         if (!r300->vbo) {
             return FALSE;
         }
-        r300->vbo_cs = rws->buffer_get_cs_handle(r300->vbo);
         r300->draw_vbo_offset = 0;
-        r300render->vbo_ptr = rws->buffer_map(r300->vbo_cs, r300->cs,
+        r300render->vbo_ptr = rws->buffer_map(r300->vbo, r300->cs,
                                               PIPE_TRANSFER_WRITE);
     }
 
@@ -1013,7 +1010,7 @@ static void r300_render_draw_elements(struct vbuf_render* render,
     CS_LOCALS(r300);
     DBG(r300, DBG_DRAW, "r300: render_draw_elements (count: %d)\n", count);
 
-    u_upload_data(r300->uploader, 0, count * 2, indices,
+    u_upload_data(r300->uploader, 0, count * 2, 4, indices,
                   &index_buffer_offset, &index_buffer);
     if (!index_buffer) {
         return;

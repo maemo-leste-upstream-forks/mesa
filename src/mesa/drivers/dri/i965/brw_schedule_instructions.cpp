@@ -26,9 +26,10 @@
  */
 
 #include "brw_fs.h"
+#include "brw_fs_live_variables.h"
 #include "brw_vec4.h"
-#include "glsl/glsl_types.h"
-#include "glsl/ir_optimization.h"
+#include "brw_cfg.h"
+#include "brw_shader.h"
 
 using namespace brw;
 
@@ -85,7 +86,35 @@ public:
     * its children, or just the issue_time if it's a leaf node.
     */
    int delay;
+
+   /**
+    * Preferred exit node among the (direct or indirect) successors of this
+    * node.  Among the scheduler nodes blocked by this node, this will be the
+    * one that may cause earliest program termination, or NULL if none of the
+    * successors is an exit node.
+    */
+   schedule_node *exit;
+
+   bool is_barrier;
 };
+
+/**
+ * Lower bound of the scheduling time after which one of the instructions
+ * blocked by this node may lead to program termination.
+ *
+ * exit_unblocked_time() determines a strict partial ordering relation '«' on
+ * the set of scheduler nodes as follows:
+ *
+ *   n « m <-> exit_unblocked_time(n) < exit_unblocked_time(m)
+ *
+ * which can be used to heuristically order nodes according to how early they
+ * can unblock an exit node and lead to program termination.
+ */
+static inline int
+exit_unblocked_time(const schedule_node *n)
+{
+   return n->exit ? n->exit->unblocked_time : INT_MAX;
+}
 
 void
 schedule_node::set_latency_gen4()
@@ -214,7 +243,9 @@ schedule_node::set_latency_gen7(bool is_haswell)
    case SHADER_OPCODE_TEX:
    case SHADER_OPCODE_TXD:
    case SHADER_OPCODE_TXF:
+   case SHADER_OPCODE_TXF_LZ:
    case SHADER_OPCODE_TXL:
+   case SHADER_OPCODE_TXL_LZ:
       /* 18 cycles:
        * mov(8)  g115<1>F   0F                         { align1 WE_normal 1Q };
        * mov(8)  g114<1>F   0F                         { align1 WE_normal 1Q };
@@ -293,8 +324,10 @@ schedule_node::set_latency_gen7(bool is_haswell)
       latency = 100;
       break;
 
-   case FS_OPCODE_VARYING_PULL_CONSTANT_LOAD:
+   case FS_OPCODE_VARYING_PULL_CONSTANT_LOAD_GEN4:
+   case FS_OPCODE_VARYING_PULL_CONSTANT_LOAD_GEN7:
    case FS_OPCODE_UNIFORM_PULL_CONSTANT_LOAD:
+   case FS_OPCODE_UNIFORM_PULL_CONSTANT_LOAD_GEN7:
    case VS_OPCODE_PULL_CONSTANT_LOAD:
       /* testing using varying-index pull constants:
        *
@@ -338,6 +371,7 @@ schedule_node::set_latency_gen7(bool is_haswell)
       break;
 
    case SHADER_OPCODE_UNTYPED_ATOMIC:
+   case SHADER_OPCODE_TYPED_ATOMIC:
       /* Test code:
        *   mov(8)    g112<1>ud       0x00000000ud       { align1 WE_all 1Q };
        *   mov(1)    g112.7<1>ud     g1.7<0,1,0>ud      { align1 WE_all };
@@ -356,6 +390,9 @@ schedule_node::set_latency_gen7(bool is_haswell)
       break;
 
    case SHADER_OPCODE_UNTYPED_SURFACE_READ:
+   case SHADER_OPCODE_UNTYPED_SURFACE_WRITE:
+   case SHADER_OPCODE_TYPED_SURFACE_READ:
+   case SHADER_OPCODE_TYPED_SURFACE_WRITE:
       /* Test code:
        *   mov(8)    g112<1>UD       0x00000000UD       { align1 WE_all 1Q };
        *   mov(1)    g112.7<1>UD     g1.7<0,1,0>UD      { align1 WE_all };
@@ -393,23 +430,50 @@ schedule_node::set_latency_gen7(bool is_haswell)
 
 class instruction_scheduler {
 public:
-   instruction_scheduler(backend_visitor *v, int grf_count,
+   instruction_scheduler(backend_shader *s, int grf_count,
+                         int hw_reg_count, int block_count,
                          instruction_scheduler_mode mode)
    {
-      this->bv = v;
+      this->bs = s;
       this->mem_ctx = ralloc_context(NULL);
       this->grf_count = grf_count;
+      this->hw_reg_count = hw_reg_count;
       this->instructions.make_empty();
       this->instructions_to_schedule = 0;
       this->post_reg_alloc = (mode == SCHEDULE_POST);
       this->mode = mode;
       this->time = 0;
       if (!post_reg_alloc) {
-         this->remaining_grf_uses = rzalloc_array(mem_ctx, int, grf_count);
-         this->grf_active = rzalloc_array(mem_ctx, bool, grf_count);
+         this->reg_pressure_in = rzalloc_array(mem_ctx, int, block_count);
+
+         this->livein = ralloc_array(mem_ctx, BITSET_WORD *, block_count);
+         for (int i = 0; i < block_count; i++)
+            this->livein[i] = rzalloc_array(mem_ctx, BITSET_WORD,
+                                            BITSET_WORDS(grf_count));
+
+         this->liveout = ralloc_array(mem_ctx, BITSET_WORD *, block_count);
+         for (int i = 0; i < block_count; i++)
+            this->liveout[i] = rzalloc_array(mem_ctx, BITSET_WORD,
+                                             BITSET_WORDS(grf_count));
+
+         this->hw_liveout = ralloc_array(mem_ctx, BITSET_WORD *, block_count);
+         for (int i = 0; i < block_count; i++)
+            this->hw_liveout[i] = rzalloc_array(mem_ctx, BITSET_WORD,
+                                                BITSET_WORDS(hw_reg_count));
+
+         this->written = rzalloc_array(mem_ctx, bool, grf_count);
+
+         this->reads_remaining = rzalloc_array(mem_ctx, int, grf_count);
+
+         this->hw_reads_remaining = rzalloc_array(mem_ctx, int, hw_reg_count);
       } else {
-         this->remaining_grf_uses = NULL;
-         this->grf_active = NULL;
+         this->reg_pressure_in = NULL;
+         this->livein = NULL;
+         this->liveout = NULL;
+         this->hw_liveout = NULL;
+         this->written = NULL;
+         this->reads_remaining = NULL;
+         this->hw_reads_remaining = NULL;
       }
    }
 
@@ -421,9 +485,10 @@ public:
    void add_dep(schedule_node *before, schedule_node *after, int latency);
    void add_dep(schedule_node *before, schedule_node *after);
 
-   void run(exec_list *instructions);
-   void add_inst(backend_instruction *inst);
-   void compute_delay(schedule_node *node);
+   void run(cfg_t *cfg);
+   void add_insts_from_block(bblock_t *block);
+   void compute_delays();
+   void compute_exits();
    virtual void calculate_deps() = 0;
    virtual schedule_node *choose_instruction_to_schedule() = 0;
 
@@ -436,44 +501,75 @@ public:
     */
    virtual int issue_time(backend_instruction *inst) = 0;
 
-   virtual void count_remaining_grf_uses(backend_instruction *inst) = 0;
+   virtual void count_reads_remaining(backend_instruction *inst) = 0;
+   virtual void setup_liveness(cfg_t *cfg) = 0;
    virtual void update_register_pressure(backend_instruction *inst) = 0;
    virtual int get_register_pressure_benefit(backend_instruction *inst) = 0;
 
-   void schedule_instructions(backend_instruction *next_block_header);
+   void schedule_instructions(bblock_t *block);
 
    void *mem_ctx;
 
    bool post_reg_alloc;
    int instructions_to_schedule;
    int grf_count;
+   int hw_reg_count;
    int time;
+   int reg_pressure;
+   int block_idx;
    exec_list instructions;
-   backend_visitor *bv;
+   backend_shader *bs;
 
    instruction_scheduler_mode mode;
 
-   /**
-    * Number of instructions left to schedule that reference each vgrf.
-    *
-    * Used so that we can prefer scheduling instructions that will end the
-    * live intervals of multiple variables, to reduce register pressure.
+   /*
+    * The register pressure at the beginning of each basic block.
     */
-   int *remaining_grf_uses;
 
-   /**
-    * Tracks whether each VGRF has had an instruction scheduled that uses it.
-    *
-    * This is used to estimate whether scheduling a new instruction will
-    * increase register pressure.
+   int *reg_pressure_in;
+
+   /*
+    * The virtual GRF's whose range overlaps the beginning of each basic block.
     */
-   bool *grf_active;
+
+   BITSET_WORD **livein;
+
+   /*
+    * The virtual GRF's whose range overlaps the end of each basic block.
+    */
+
+   BITSET_WORD **liveout;
+
+   /*
+    * The hardware GRF's whose range overlaps the end of each basic block.
+    */
+
+   BITSET_WORD **hw_liveout;
+
+   /*
+    * Whether we've scheduled a write for this virtual GRF yet.
+    */
+
+   bool *written;
+
+   /*
+    * How many reads we haven't scheduled for this virtual GRF yet.
+    */
+
+   int *reads_remaining;
+
+   /*
+    * How many reads we haven't scheduled for this hardware GRF yet.
+    */
+
+   int *hw_reads_remaining;
 };
 
 class fs_instruction_scheduler : public instruction_scheduler
 {
 public:
-   fs_instruction_scheduler(fs_visitor *v, int grf_count,
+   fs_instruction_scheduler(fs_visitor *v, int grf_count, int hw_reg_count,
+                            int block_count,
                             instruction_scheduler_mode mode);
    void calculate_deps();
    bool is_compressed(fs_inst *inst);
@@ -481,35 +577,108 @@ public:
    int issue_time(backend_instruction *inst);
    fs_visitor *v;
 
-   void count_remaining_grf_uses(backend_instruction *inst);
+   void count_reads_remaining(backend_instruction *inst);
+   void setup_liveness(cfg_t *cfg);
    void update_register_pressure(backend_instruction *inst);
    int get_register_pressure_benefit(backend_instruction *inst);
 };
 
 fs_instruction_scheduler::fs_instruction_scheduler(fs_visitor *v,
-                                                   int grf_count,
+                                                   int grf_count, int hw_reg_count,
+                                                   int block_count,
                                                    instruction_scheduler_mode mode)
-   : instruction_scheduler(v, grf_count, mode),
+   : instruction_scheduler(v, grf_count, hw_reg_count, block_count, mode),
      v(v)
 {
 }
 
+static bool
+is_src_duplicate(fs_inst *inst, int src)
+{
+   for (int i = 0; i < src; i++)
+     if (inst->src[i].equals(inst->src[src]))
+       return true;
+
+  return false;
+}
+
 void
-fs_instruction_scheduler::count_remaining_grf_uses(backend_instruction *be)
+fs_instruction_scheduler::count_reads_remaining(backend_instruction *be)
 {
    fs_inst *inst = (fs_inst *)be;
 
-   if (!remaining_grf_uses)
+   if (!reads_remaining)
       return;
 
-   if (inst->dst.file == GRF)
-      remaining_grf_uses[inst->dst.reg]++;
-
    for (int i = 0; i < inst->sources; i++) {
-      if (inst->src[i].file != GRF)
+      if (is_src_duplicate(inst, i))
          continue;
 
-      remaining_grf_uses[inst->src[i].reg]++;
+      if (inst->src[i].file == VGRF) {
+         reads_remaining[inst->src[i].nr]++;
+      } else if (inst->src[i].file == FIXED_GRF) {
+         if (inst->src[i].nr >= hw_reg_count)
+            continue;
+
+         for (unsigned j = 0; j < regs_read(inst, i); j++)
+            hw_reads_remaining[inst->src[i].nr + j]++;
+      }
+   }
+}
+
+void
+fs_instruction_scheduler::setup_liveness(cfg_t *cfg)
+{
+   /* First, compute liveness on a per-GRF level using the in/out sets from
+    * liveness calculation.
+    */
+   for (int block = 0; block < cfg->num_blocks; block++) {
+      for (int i = 0; i < v->live_intervals->num_vars; i++) {
+         if (BITSET_TEST(v->live_intervals->block_data[block].livein, i)) {
+            int vgrf = v->live_intervals->vgrf_from_var[i];
+            if (!BITSET_TEST(livein[block], vgrf)) {
+               reg_pressure_in[block] += v->alloc.sizes[vgrf];
+               BITSET_SET(livein[block], vgrf);
+            }
+         }
+
+         if (BITSET_TEST(v->live_intervals->block_data[block].liveout, i))
+            BITSET_SET(liveout[block], v->live_intervals->vgrf_from_var[i]);
+      }
+   }
+
+   /* Now, extend the live in/live out sets for when a range crosses a block
+    * boundary, which matches what our register allocator/interference code
+    * does to account for force_writemask_all and incompatible exec_mask's.
+    */
+   for (int block = 0; block < cfg->num_blocks - 1; block++) {
+      for (int i = 0; i < grf_count; i++) {
+         if (v->virtual_grf_start[i] <= cfg->blocks[block]->end_ip &&
+             v->virtual_grf_end[i] >= cfg->blocks[block + 1]->start_ip) {
+            if (!BITSET_TEST(livein[block + 1], i)) {
+                reg_pressure_in[block + 1] += v->alloc.sizes[i];
+                BITSET_SET(livein[block + 1], i);
+            }
+
+            BITSET_SET(liveout[block], i);
+         }
+      }
+   }
+
+   int payload_last_use_ip[hw_reg_count];
+   v->calculate_payload_ranges(hw_reg_count, payload_last_use_ip);
+
+   for (int i = 0; i < hw_reg_count; i++) {
+      if (payload_last_use_ip[i] == -1)
+         continue;
+
+      for (int block = 0; block < cfg->num_blocks; block++) {
+         if (cfg->blocks[block]->start_ip <= payload_last_use_ip[i])
+            reg_pressure_in[block]++;
+
+         if (cfg->blocks[block]->end_ip <= payload_last_use_ip[i])
+            BITSET_SET(hw_liveout[block], i);
+      }
    }
 }
 
@@ -518,18 +687,23 @@ fs_instruction_scheduler::update_register_pressure(backend_instruction *be)
 {
    fs_inst *inst = (fs_inst *)be;
 
-   if (!remaining_grf_uses)
+   if (!reads_remaining)
       return;
 
-   if (inst->dst.file == GRF) {
-      remaining_grf_uses[inst->dst.reg]--;
-      grf_active[inst->dst.reg] = true;
+   if (inst->dst.file == VGRF) {
+      written[inst->dst.nr] = true;
    }
 
    for (int i = 0; i < inst->sources; i++) {
-      if (inst->src[i].file == GRF) {
-         remaining_grf_uses[inst->src[i].reg]--;
-         grf_active[inst->src[i].reg] = true;
+      if (is_src_duplicate(inst, i))
+          continue;
+
+      if (inst->src[i].file == VGRF) {
+         reads_remaining[inst->src[i].nr]--;
+      } else if (inst->src[i].file == FIXED_GRF &&
+                 inst->src[i].nr < hw_reg_count) {
+         for (unsigned off = 0; off < regs_read(inst, i); off++)
+            hw_reads_remaining[inst->src[i].nr + off]--;
       }
    }
 }
@@ -540,21 +714,31 @@ fs_instruction_scheduler::get_register_pressure_benefit(backend_instruction *be)
    fs_inst *inst = (fs_inst *)be;
    int benefit = 0;
 
-   if (inst->dst.file == GRF) {
-      if (remaining_grf_uses[inst->dst.reg] == 1)
-         benefit += v->virtual_grf_sizes[inst->dst.reg];
-      if (!grf_active[inst->dst.reg])
-         benefit -= v->virtual_grf_sizes[inst->dst.reg];
+   if (inst->dst.file == VGRF) {
+      if (!BITSET_TEST(livein[block_idx], inst->dst.nr) &&
+          !written[inst->dst.nr])
+         benefit -= v->alloc.sizes[inst->dst.nr];
    }
 
    for (int i = 0; i < inst->sources; i++) {
-      if (inst->src[i].file != GRF)
+      if (is_src_duplicate(inst, i))
          continue;
 
-      if (remaining_grf_uses[inst->src[i].reg] == 1)
-         benefit += v->virtual_grf_sizes[inst->src[i].reg];
-      if (!grf_active[inst->src[i].reg])
-         benefit -= v->virtual_grf_sizes[inst->src[i].reg];
+      if (inst->src[i].file == VGRF &&
+          !BITSET_TEST(liveout[block_idx], inst->src[i].nr) &&
+          reads_remaining[inst->src[i].nr] == 1)
+         benefit += v->alloc.sizes[inst->src[i].nr];
+
+      if (inst->src[i].file == FIXED_GRF &&
+          inst->src[i].nr < hw_reg_count) {
+         for (unsigned off = 0; off < regs_read(inst, i); off++) {
+            int reg = inst->src[i].nr + off;
+            if (!BITSET_TEST(hw_liveout[block_idx], reg) &&
+                hw_reads_remaining[reg] == 1) {
+               benefit++;
+            }
+         }
+      }
    }
 
    return benefit;
@@ -569,20 +753,26 @@ public:
    int issue_time(backend_instruction *inst);
    vec4_visitor *v;
 
-   void count_remaining_grf_uses(backend_instruction *inst);
+   void count_reads_remaining(backend_instruction *inst);
+   void setup_liveness(cfg_t *cfg);
    void update_register_pressure(backend_instruction *inst);
    int get_register_pressure_benefit(backend_instruction *inst);
 };
 
 vec4_instruction_scheduler::vec4_instruction_scheduler(vec4_visitor *v,
                                                        int grf_count)
-   : instruction_scheduler(v, grf_count, SCHEDULE_POST),
+   : instruction_scheduler(v, grf_count, 0, 0, SCHEDULE_POST),
      v(v)
 {
 }
 
 void
-vec4_instruction_scheduler::count_remaining_grf_uses(backend_instruction *be)
+vec4_instruction_scheduler::count_reads_remaining(backend_instruction *be)
+{
+}
+
+void
+vec4_instruction_scheduler::setup_liveness(cfg_t *cfg)
 {
 }
 
@@ -600,7 +790,7 @@ vec4_instruction_scheduler::get_register_pressure_benefit(backend_instruction *b
 schedule_node::schedule_node(backend_instruction *inst,
                              instruction_scheduler *sched)
 {
-   struct brw_context *brw = sched->bv->brw;
+   const struct gen_device_info *devinfo = sched->bs->devinfo;
 
    this->inst = inst;
    this->child_array_size = 0;
@@ -611,43 +801,74 @@ schedule_node::schedule_node(backend_instruction *inst,
    this->unblocked_time = 0;
    this->cand_generation = 0;
    this->delay = 0;
+   this->exit = NULL;
+   this->is_barrier = false;
 
    /* We can't measure Gen6 timings directly but expect them to be much
     * closer to Gen7 than Gen4.
     */
    if (!sched->post_reg_alloc)
       this->latency = 1;
-   else if (brw->gen >= 6)
-      set_latency_gen7(brw->is_haswell);
+   else if (devinfo->gen >= 6)
+      set_latency_gen7(devinfo->is_haswell);
    else
       set_latency_gen4();
 }
 
 void
-instruction_scheduler::add_inst(backend_instruction *inst)
+instruction_scheduler::add_insts_from_block(bblock_t *block)
 {
-   schedule_node *n = new(mem_ctx) schedule_node(inst, this);
+   foreach_inst_in_block(backend_instruction, inst, block) {
+      schedule_node *n = new(mem_ctx) schedule_node(inst, this);
 
-   assert(!inst->is_head_sentinel());
-   assert(!inst->is_tail_sentinel());
+      instructions.push_tail(n);
+   }
 
-   this->instructions_to_schedule++;
-
-   inst->remove();
-   instructions.push_tail(n);
+   this->instructions_to_schedule = block->end_ip - block->start_ip + 1;
 }
 
-/** Recursive computation of the delay member of a node. */
+/** Computation of the delay member of each node. */
 void
-instruction_scheduler::compute_delay(schedule_node *n)
+instruction_scheduler::compute_delays()
 {
-   if (!n->child_count) {
-      n->delay = issue_time(n->inst);
-   } else {
+   foreach_in_list_reverse(schedule_node, n, &instructions) {
+      if (!n->child_count) {
+         n->delay = issue_time(n->inst);
+      } else {
+         for (int i = 0; i < n->child_count; i++) {
+            assert(n->children[i]->delay);
+            n->delay = MAX2(n->delay, n->latency + n->children[i]->delay);
+         }
+      }
+   }
+}
+
+void
+instruction_scheduler::compute_exits()
+{
+   /* Calculate a lower bound of the scheduling time of each node in the
+    * graph.  This is analogous to the node's critical path but calculated
+    * from the top instead of from the bottom of the block.
+    */
+   foreach_in_list(schedule_node, n, &instructions) {
       for (int i = 0; i < n->child_count; i++) {
-         if (!n->children[i]->delay)
-            compute_delay(n->children[i]);
-         n->delay = MAX2(n->delay, n->latency + n->children[i]->delay);
+         n->children[i]->unblocked_time =
+            MAX2(n->children[i]->unblocked_time,
+                 n->unblocked_time + issue_time(n->inst) + n->child_latency[i]);
+      }
+   }
+
+   /* Calculate the exit of each node by induction based on the exit nodes of
+    * its children.  The preferred exit of a node is the one among the exit
+    * nodes of its children which can be unblocked first according to the
+    * optimistic unblocked time estimate calculated above.
+    */
+   foreach_in_list_reverse(schedule_node, n, &instructions) {
+      n->exit = (n->inst->opcode == FS_OPCODE_DISCARD_JUMP ? n : NULL);
+
+      for (int i = 0; i < n->child_count; i++) {
+         if (exit_unblocked_time(n->children[i]) < exit_unblocked_time(n))
+            n->exit = n->children[i]->exit;
       }
    }
 }
@@ -660,7 +881,7 @@ instruction_scheduler::compute_delay(schedule_node *n)
  */
 void
 instruction_scheduler::add_dep(schedule_node *before, schedule_node *after,
-			       int latency)
+                               int latency)
 {
    if (!before || !after)
       return;
@@ -669,22 +890,22 @@ instruction_scheduler::add_dep(schedule_node *before, schedule_node *after,
 
    for (int i = 0; i < before->child_count; i++) {
       if (before->children[i] == after) {
-	 before->child_latency[i] = MAX2(before->child_latency[i], latency);
-	 return;
+         before->child_latency[i] = MAX2(before->child_latency[i], latency);
+         return;
       }
    }
 
    if (before->child_array_size <= before->child_count) {
       if (before->child_array_size < 16)
-	 before->child_array_size = 16;
+         before->child_array_size = 16;
       else
-	 before->child_array_size *= 2;
+         before->child_array_size *= 2;
 
       before->children = reralloc(mem_ctx, before->children,
-				  schedule_node *,
-				  before->child_array_size);
+                                  schedule_node *,
+                                  before->child_array_size);
       before->child_latency = reralloc(mem_ctx, before->child_latency,
-				       int, before->child_array_size);
+                                       int, before->child_array_size);
    }
 
    before->children[before->child_count] = after;
@@ -713,17 +934,23 @@ instruction_scheduler::add_barrier_deps(schedule_node *n)
    schedule_node *prev = (schedule_node *)n->prev;
    schedule_node *next = (schedule_node *)n->next;
 
+   n->is_barrier = true;
+
    if (prev) {
       while (!prev->is_head_sentinel()) {
-	 add_dep(prev, n, 0);
-	 prev = (schedule_node *)prev->prev;
+         add_dep(prev, n, 0);
+         if (prev->is_barrier)
+            break;
+         prev = (schedule_node *)prev->prev;
       }
    }
 
    if (next) {
       while (!next->is_tail_sentinel()) {
-	 add_dep(n, next, 0);
-	 next = (schedule_node *)next->next;
+         add_dep(n, next, 0);
+         if (next->is_barrier)
+            break;
+         next = (schedule_node *)next->next;
       }
    }
 }
@@ -734,9 +961,15 @@ instruction_scheduler::add_barrier_deps(schedule_node *n)
 bool
 fs_instruction_scheduler::is_compressed(fs_inst *inst)
 {
-   return (v->dispatch_width == 16 &&
-	   !inst->force_uncompressed &&
-	   !inst->force_sechalf);
+   return inst->exec_size == 16;
+}
+
+static bool
+is_scheduling_barrier(const fs_inst *inst)
+{
+   return inst->opcode == FS_OPCODE_PLACEHOLDER_HALT ||
+          inst->is_control_flow() ||
+          inst->has_side_effects();
 }
 
 void
@@ -747,8 +980,8 @@ fs_instruction_scheduler::calculate_deps()
     * GRF registers.
     */
    schedule_node *last_grf_write[grf_count * 16];
-   schedule_node *last_mrf_write[BRW_MAX_MRF];
-   schedule_node *last_conditional_mod[2] = { NULL, NULL };
+   schedule_node *last_mrf_write[BRW_MAX_MRF(v->devinfo->gen)];
+   schedule_node *last_conditional_mod[4] = {};
    schedule_node *last_accumulator_write = NULL;
    /* Fixed HW registers are assumed to be separate from the virtual
     * GRFs, so they can be tracked separately.  We don't really write
@@ -756,16 +989,6 @@ fs_instruction_scheduler::calculate_deps()
     * granular level.
     */
    schedule_node *last_fixed_grf_write = NULL;
-   int reg_width = v->dispatch_width / 8;
-
-   /* The last instruction always needs to still be the last
-    * instruction.  Either it's flow control (IF, ELSE, ENDIF, DO,
-    * WHILE) and scheduling other things after it would disturb the
-    * basic block, or it's FB_WRITE and we should do a better job at
-    * dead code elimination anyway.
-    */
-   schedule_node *last = (schedule_node *)instructions.get_tail();
-   add_barrier_deps(last);
 
    memset(last_grf_write, 0, sizeof(last_grf_write));
    memset(last_mrf_write, 0, sizeof(last_mrf_write));
@@ -774,57 +997,52 @@ fs_instruction_scheduler::calculate_deps()
    foreach_in_list(schedule_node, n, &instructions) {
       fs_inst *inst = (fs_inst *)n->inst;
 
-      if (inst->opcode == FS_OPCODE_PLACEHOLDER_HALT ||
-         inst->has_side_effects())
+      if (is_scheduling_barrier(inst))
          add_barrier_deps(n);
 
       /* read-after-write deps. */
       for (int i = 0; i < inst->sources; i++) {
-	 if (inst->src[i].file == GRF) {
+         if (inst->src[i].file == VGRF) {
             if (post_reg_alloc) {
-               for (int r = 0; r < reg_width * inst->regs_read(v, i); r++)
-                  add_dep(last_grf_write[inst->src[i].reg + r], n);
+               for (unsigned r = 0; r < regs_read(inst, i); r++)
+                  add_dep(last_grf_write[inst->src[i].nr + r], n);
             } else {
-               for (int r = 0; r < inst->regs_read(v, i); r++) {
-                  add_dep(last_grf_write[inst->src[i].reg * 16 + inst->src[i].reg_offset + r], n);
+               for (unsigned r = 0; r < regs_read(inst, i); r++) {
+                  add_dep(last_grf_write[inst->src[i].nr * 16 +
+                                         inst->src[i].offset / REG_SIZE + r], n);
                }
             }
-	 } else if (inst->src[i].file == HW_REG &&
-		    (inst->src[i].fixed_hw_reg.file ==
-		     BRW_GENERAL_REGISTER_FILE)) {
-	    if (post_reg_alloc) {
-               int size = reg_width;
-               if (inst->src[i].fixed_hw_reg.vstride == BRW_VERTICAL_STRIDE_0)
-                  size = 1;
-               for (int r = 0; r < size; r++)
-                  add_dep(last_grf_write[inst->src[i].fixed_hw_reg.nr + r], n);
+         } else if (inst->src[i].file == FIXED_GRF) {
+            if (post_reg_alloc) {
+               for (unsigned r = 0; r < regs_read(inst, i); r++)
+                  add_dep(last_grf_write[inst->src[i].nr + r], n);
             } else {
                add_dep(last_fixed_grf_write, n);
             }
          } else if (inst->src[i].is_accumulator()) {
             add_dep(last_accumulator_write, n);
-	 } else if (inst->src[i].file != BAD_FILE &&
-		    inst->src[i].file != IMM &&
-		    inst->src[i].file != UNIFORM &&
-                    (inst->src[i].file != HW_REG ||
-                     inst->src[i].fixed_hw_reg.file != IMM)) {
-	    assert(inst->src[i].file != MRF);
-	    add_barrier_deps(n);
-	 }
+         } else if (inst->src[i].file == ARF) {
+            add_barrier_deps(n);
+         }
       }
 
       if (inst->base_mrf != -1) {
-	 for (int i = 0; i < inst->mlen; i++) {
-	    /* It looks like the MRF regs are released in the send
-	     * instruction once it's sent, not when the result comes
-	     * back.
-	     */
-	    add_dep(last_mrf_write[inst->base_mrf + i], n);
-	 }
+         for (int i = 0; i < inst->mlen; i++) {
+            /* It looks like the MRF regs are released in the send
+             * instruction once it's sent, not when the result comes
+             * back.
+             */
+            add_dep(last_mrf_write[inst->base_mrf + i], n);
+         }
       }
 
-      if (inst->reads_flag()) {
-	 add_dep(last_conditional_mod[inst->flag_subreg], n);
+      if (const unsigned mask = inst->flags_read(v->devinfo)) {
+         assert(mask < (1 << ARRAY_SIZE(last_conditional_mod)));
+
+         for (unsigned i = 0; i < ARRAY_SIZE(last_conditional_mod); i++) {
+            if (mask & (1 << i))
+               add_dep(last_conditional_mod[i], n);
+         }
       }
 
       if (inst->reads_accumulator_implicitly()) {
@@ -832,59 +1050,66 @@ fs_instruction_scheduler::calculate_deps()
       }
 
       /* write-after-write deps. */
-      if (inst->dst.file == GRF) {
+      if (inst->dst.file == VGRF) {
          if (post_reg_alloc) {
-            for (int r = 0; r < inst->regs_written * reg_width; r++) {
-               add_dep(last_grf_write[inst->dst.reg + r], n);
-               last_grf_write[inst->dst.reg + r] = n;
+            for (unsigned r = 0; r < regs_written(inst); r++) {
+               add_dep(last_grf_write[inst->dst.nr + r], n);
+               last_grf_write[inst->dst.nr + r] = n;
             }
          } else {
-            for (int r = 0; r < inst->regs_written; r++) {
-               add_dep(last_grf_write[inst->dst.reg * 16 + inst->dst.reg_offset + r], n);
-               last_grf_write[inst->dst.reg * 16 + inst->dst.reg_offset + r] = n;
+            for (unsigned r = 0; r < regs_written(inst); r++) {
+               add_dep(last_grf_write[inst->dst.nr * 16 +
+                                      inst->dst.offset / REG_SIZE + r], n);
+               last_grf_write[inst->dst.nr * 16 +
+                              inst->dst.offset / REG_SIZE + r] = n;
             }
          }
       } else if (inst->dst.file == MRF) {
-	 int reg = inst->dst.reg & ~BRW_MRF_COMPR4;
+         int reg = inst->dst.nr & ~BRW_MRF_COMPR4;
 
-	 add_dep(last_mrf_write[reg], n);
-	 last_mrf_write[reg] = n;
-	 if (is_compressed(inst)) {
-	    if (inst->dst.reg & BRW_MRF_COMPR4)
-	       reg += 4;
-	    else
-	       reg++;
-	    add_dep(last_mrf_write[reg], n);
-	    last_mrf_write[reg] = n;
-	 }
-      } else if (inst->dst.file == HW_REG &&
-		 inst->dst.fixed_hw_reg.file == BRW_GENERAL_REGISTER_FILE) {
+         add_dep(last_mrf_write[reg], n);
+         last_mrf_write[reg] = n;
+         if (is_compressed(inst)) {
+            if (inst->dst.nr & BRW_MRF_COMPR4)
+               reg += 4;
+            else
+               reg++;
+            add_dep(last_mrf_write[reg], n);
+            last_mrf_write[reg] = n;
+         }
+      } else if (inst->dst.file == FIXED_GRF) {
          if (post_reg_alloc) {
-            for (int r = 0; r < reg_width; r++)
-               last_grf_write[inst->dst.fixed_hw_reg.nr + r] = n;
+            for (unsigned r = 0; r < regs_written(inst); r++)
+               last_grf_write[inst->dst.nr + r] = n;
          } else {
             last_fixed_grf_write = n;
          }
       } else if (inst->dst.is_accumulator()) {
          add_dep(last_accumulator_write, n);
          last_accumulator_write = n;
-      } else if (inst->dst.file != BAD_FILE) {
-	 add_barrier_deps(n);
+      } else if (inst->dst.file == ARF && !inst->dst.is_null()) {
+         add_barrier_deps(n);
       }
 
       if (inst->mlen > 0 && inst->base_mrf != -1) {
-	 for (int i = 0; i < v->implied_mrf_writes(inst); i++) {
-	    add_dep(last_mrf_write[inst->base_mrf + i], n);
-	    last_mrf_write[inst->base_mrf + i] = n;
-	 }
+         for (int i = 0; i < v->implied_mrf_writes(inst); i++) {
+            add_dep(last_mrf_write[inst->base_mrf + i], n);
+            last_mrf_write[inst->base_mrf + i] = n;
+         }
       }
 
-      if (inst->writes_flag()) {
-	 add_dep(last_conditional_mod[inst->flag_subreg], n, 0);
-	 last_conditional_mod[inst->flag_subreg] = n;
+      if (const unsigned mask = inst->flags_written()) {
+         assert(mask < (1 << ARRAY_SIZE(last_conditional_mod)));
+
+         for (unsigned i = 0; i < ARRAY_SIZE(last_conditional_mod); i++) {
+            if (mask & (1 << i)) {
+               add_dep(last_conditional_mod[i], n, 0);
+               last_conditional_mod[i] = n;
+            }
+         }
       }
 
-      if (inst->writes_accumulator_implicitly(v->brw) &&
+      if (inst->writes_accumulator_implicitly(v->devinfo) &&
           !inst->dst.is_accumulator()) {
          add_dep(last_accumulator_write, n);
          last_accumulator_write = n;
@@ -898,61 +1123,52 @@ fs_instruction_scheduler::calculate_deps()
    last_accumulator_write = NULL;
    last_fixed_grf_write = NULL;
 
-   exec_node *node;
-   exec_node *prev;
-   for (node = instructions.get_tail(), prev = node->prev;
-	!node->is_head_sentinel();
-	node = prev, prev = node->prev) {
-      schedule_node *n = (schedule_node *)node;
+   foreach_in_list_reverse_safe(schedule_node, n, &instructions) {
       fs_inst *inst = (fs_inst *)n->inst;
 
       /* write-after-read deps. */
       for (int i = 0; i < inst->sources; i++) {
-	 if (inst->src[i].file == GRF) {
+         if (inst->src[i].file == VGRF) {
             if (post_reg_alloc) {
-               for (int r = 0; r < reg_width * inst->regs_read(v, i); r++)
-                  add_dep(n, last_grf_write[inst->src[i].reg + r]);
+               for (unsigned r = 0; r < regs_read(inst, i); r++)
+                  add_dep(n, last_grf_write[inst->src[i].nr + r], 0);
             } else {
-               for (int r = 0; r < inst->regs_read(v, i); r++) {
-                  add_dep(n, last_grf_write[inst->src[i].reg * 16 + inst->src[i].reg_offset + r]);
+               for (unsigned r = 0; r < regs_read(inst, i); r++) {
+                  add_dep(n, last_grf_write[inst->src[i].nr * 16 +
+                                            inst->src[i].offset / REG_SIZE + r], 0);
                }
             }
-	 } else if (inst->src[i].file == HW_REG &&
-		    (inst->src[i].fixed_hw_reg.file ==
-		     BRW_GENERAL_REGISTER_FILE)) {
-	    if (post_reg_alloc) {
-               int size = reg_width;
-               if (inst->src[i].fixed_hw_reg.vstride == BRW_VERTICAL_STRIDE_0)
-                  size = 1;
-               for (int r = 0; r < size; r++)
-                  add_dep(n, last_grf_write[inst->src[i].fixed_hw_reg.nr + r]);
+         } else if (inst->src[i].file == FIXED_GRF) {
+            if (post_reg_alloc) {
+               for (unsigned r = 0; r < regs_read(inst, i); r++)
+                  add_dep(n, last_grf_write[inst->src[i].nr + r], 0);
             } else {
-               add_dep(n, last_fixed_grf_write);
+               add_dep(n, last_fixed_grf_write, 0);
             }
          } else if (inst->src[i].is_accumulator()) {
-            add_dep(n, last_accumulator_write);
-         } else if (inst->src[i].file != BAD_FILE &&
-		    inst->src[i].file != IMM &&
-		    inst->src[i].file != UNIFORM &&
-                    (inst->src[i].file != HW_REG ||
-                     inst->src[i].fixed_hw_reg.file != IMM)) {
-	    assert(inst->src[i].file != MRF);
-	    add_barrier_deps(n);
-	 }
+            add_dep(n, last_accumulator_write, 0);
+         } else if (inst->src[i].file == ARF) {
+            add_barrier_deps(n);
+         }
       }
 
       if (inst->base_mrf != -1) {
-	 for (int i = 0; i < inst->mlen; i++) {
-	    /* It looks like the MRF regs are released in the send
-	     * instruction once it's sent, not when the result comes
-	     * back.
-	     */
-	    add_dep(n, last_mrf_write[inst->base_mrf + i], 2);
-	 }
+         for (int i = 0; i < inst->mlen; i++) {
+            /* It looks like the MRF regs are released in the send
+             * instruction once it's sent, not when the result comes
+             * back.
+             */
+            add_dep(n, last_mrf_write[inst->base_mrf + i], 2);
+         }
       }
 
-      if (inst->reads_flag()) {
-	 add_dep(n, last_conditional_mod[inst->flag_subreg]);
+      if (const unsigned mask = inst->flags_read(v->devinfo)) {
+         assert(mask < (1 << ARRAY_SIZE(last_conditional_mod)));
+
+         for (unsigned i = 0; i < ARRAY_SIZE(last_conditional_mod); i++) {
+            if (mask & (1 << i))
+               add_dep(n, last_conditional_mod[i]);
+         }
       }
 
       if (inst->reads_accumulator_implicitly()) {
@@ -962,63 +1178,75 @@ fs_instruction_scheduler::calculate_deps()
       /* Update the things this instruction wrote, so earlier reads
        * can mark this as WAR dependency.
        */
-      if (inst->dst.file == GRF) {
+      if (inst->dst.file == VGRF) {
          if (post_reg_alloc) {
-            for (int r = 0; r < inst->regs_written * reg_width; r++)
-               last_grf_write[inst->dst.reg + r] = n;
+            for (unsigned r = 0; r < regs_written(inst); r++)
+               last_grf_write[inst->dst.nr + r] = n;
          } else {
-            for (int r = 0; r < inst->regs_written; r++) {
-               last_grf_write[inst->dst.reg * 16 + inst->dst.reg_offset + r] = n;
+            for (unsigned r = 0; r < regs_written(inst); r++) {
+               last_grf_write[inst->dst.nr * 16 +
+                              inst->dst.offset / REG_SIZE + r] = n;
             }
          }
       } else if (inst->dst.file == MRF) {
-	 int reg = inst->dst.reg & ~BRW_MRF_COMPR4;
+         int reg = inst->dst.nr & ~BRW_MRF_COMPR4;
 
-	 last_mrf_write[reg] = n;
+         last_mrf_write[reg] = n;
 
-	 if (is_compressed(inst)) {
-	    if (inst->dst.reg & BRW_MRF_COMPR4)
-	       reg += 4;
-	    else
-	       reg++;
+         if (is_compressed(inst)) {
+            if (inst->dst.nr & BRW_MRF_COMPR4)
+               reg += 4;
+            else
+               reg++;
 
-	    last_mrf_write[reg] = n;
-	 }
-      } else if (inst->dst.file == HW_REG &&
-		 inst->dst.fixed_hw_reg.file == BRW_GENERAL_REGISTER_FILE) {
+            last_mrf_write[reg] = n;
+         }
+      } else if (inst->dst.file == FIXED_GRF) {
          if (post_reg_alloc) {
-            for (int r = 0; r < reg_width; r++)
-               last_grf_write[inst->dst.fixed_hw_reg.nr + r] = n;
+            for (unsigned r = 0; r < regs_written(inst); r++)
+               last_grf_write[inst->dst.nr + r] = n;
          } else {
             last_fixed_grf_write = n;
          }
       } else if (inst->dst.is_accumulator()) {
          last_accumulator_write = n;
-      } else if (inst->dst.file != BAD_FILE) {
-	 add_barrier_deps(n);
+      } else if (inst->dst.file == ARF && !inst->dst.is_null()) {
+         add_barrier_deps(n);
       }
 
       if (inst->mlen > 0 && inst->base_mrf != -1) {
-	 for (int i = 0; i < v->implied_mrf_writes(inst); i++) {
-	    last_mrf_write[inst->base_mrf + i] = n;
-	 }
+         for (int i = 0; i < v->implied_mrf_writes(inst); i++) {
+            last_mrf_write[inst->base_mrf + i] = n;
+         }
       }
 
-      if (inst->writes_flag()) {
-	 last_conditional_mod[inst->flag_subreg] = n;
+      if (const unsigned mask = inst->flags_written()) {
+         assert(mask < (1 << ARRAY_SIZE(last_conditional_mod)));
+
+         for (unsigned i = 0; i < ARRAY_SIZE(last_conditional_mod); i++) {
+            if (mask & (1 << i))
+               last_conditional_mod[i] = n;
+         }
       }
 
-      if (inst->writes_accumulator_implicitly(v->brw)) {
+      if (inst->writes_accumulator_implicitly(v->devinfo)) {
          last_accumulator_write = n;
       }
    }
+}
+
+static bool
+is_scheduling_barrier(const vec4_instruction *inst)
+{
+   return inst->is_control_flow() ||
+          inst->has_side_effects();
 }
 
 void
 vec4_instruction_scheduler::calculate_deps()
 {
    schedule_node *last_grf_write[grf_count];
-   schedule_node *last_mrf_write[BRW_MAX_MRF];
+   schedule_node *last_mrf_write[BRW_MAX_MRF(v->devinfo->gen)];
    schedule_node *last_conditional_mod = NULL;
    schedule_node *last_accumulator_write = NULL;
    /* Fixed HW registers are assumed to be separate from the virtual
@@ -1028,15 +1256,6 @@ vec4_instruction_scheduler::calculate_deps()
     */
    schedule_node *last_fixed_grf_write = NULL;
 
-   /* The last instruction always needs to still be the last instruction.
-    * Either it's flow control (IF, ELSE, ENDIF, DO, WHILE) and scheduling
-    * other things after it would disturb the basic block, or it's the EOT
-    * URB_WRITE and we should do a better job at dead code eliminating
-    * anything that could have been scheduled after it.
-    */
-   schedule_node *last = (schedule_node *)instructions.get_tail();
-   add_barrier_deps(last);
-
    memset(last_grf_write, 0, sizeof(last_grf_write));
    memset(last_mrf_write, 0, sizeof(last_mrf_write));
 
@@ -1044,38 +1263,32 @@ vec4_instruction_scheduler::calculate_deps()
    foreach_in_list(schedule_node, n, &instructions) {
       vec4_instruction *inst = (vec4_instruction *)n->inst;
 
-      if (inst->has_side_effects())
+      if (is_scheduling_barrier(inst))
          add_barrier_deps(n);
 
       /* read-after-write deps. */
       for (int i = 0; i < 3; i++) {
-         if (inst->src[i].file == GRF) {
-            add_dep(last_grf_write[inst->src[i].reg], n);
-         } else if (inst->src[i].file == HW_REG &&
-                    (inst->src[i].fixed_hw_reg.file ==
-                     BRW_GENERAL_REGISTER_FILE)) {
+         if (inst->src[i].file == VGRF) {
+            for (unsigned j = 0; j < regs_read(inst, i); ++j)
+               add_dep(last_grf_write[inst->src[i].nr + j], n);
+         } else if (inst->src[i].file == FIXED_GRF) {
             add_dep(last_fixed_grf_write, n);
          } else if (inst->src[i].is_accumulator()) {
             assert(last_accumulator_write);
             add_dep(last_accumulator_write, n);
-         } else if (inst->src[i].file != BAD_FILE &&
-                    inst->src[i].file != IMM &&
-                    inst->src[i].file != UNIFORM &&
-                    (inst->src[i].file != HW_REG ||
-                     inst->src[i].fixed_hw_reg.file != IMM)) {
-            /* No reads from MRF, and ATTR is already translated away */
-            assert(inst->src[i].file != MRF &&
-                   inst->src[i].file != ATTR);
+         } else if (inst->src[i].file == ARF) {
             add_barrier_deps(n);
          }
       }
 
-      for (int i = 0; i < inst->mlen; i++) {
-         /* It looks like the MRF regs are released in the send
-          * instruction once it's sent, not when the result comes
-          * back.
-          */
-         add_dep(last_mrf_write[inst->base_mrf + i], n);
+      if (!inst->is_send_from_grf()) {
+         for (int i = 0; i < inst->mlen; i++) {
+            /* It looks like the MRF regs are released in the send
+             * instruction once it's sent, not when the result comes
+             * back.
+             */
+            add_dep(last_mrf_write[inst->base_mrf + i], n);
+         }
       }
 
       if (inst->reads_flag()) {
@@ -1089,23 +1302,24 @@ vec4_instruction_scheduler::calculate_deps()
       }
 
       /* write-after-write deps. */
-      if (inst->dst.file == GRF) {
-         add_dep(last_grf_write[inst->dst.reg], n);
-         last_grf_write[inst->dst.reg] = n;
+      if (inst->dst.file == VGRF) {
+         for (unsigned j = 0; j < regs_written(inst); ++j) {
+            add_dep(last_grf_write[inst->dst.nr + j], n);
+            last_grf_write[inst->dst.nr + j] = n;
+         }
       } else if (inst->dst.file == MRF) {
-         add_dep(last_mrf_write[inst->dst.reg], n);
-         last_mrf_write[inst->dst.reg] = n;
-     } else if (inst->dst.file == HW_REG &&
-                 inst->dst.fixed_hw_reg.file == BRW_GENERAL_REGISTER_FILE) {
+         add_dep(last_mrf_write[inst->dst.nr], n);
+         last_mrf_write[inst->dst.nr] = n;
+     } else if (inst->dst.file == FIXED_GRF) {
          last_fixed_grf_write = n;
       } else if (inst->dst.is_accumulator()) {
          add_dep(last_accumulator_write, n);
          last_accumulator_write = n;
-      } else if (inst->dst.file != BAD_FILE) {
+      } else if (inst->dst.file == ARF && !inst->dst.is_null()) {
          add_barrier_deps(n);
       }
 
-      if (inst->mlen > 0) {
+      if (inst->mlen > 0 && !inst->is_send_from_grf()) {
          for (int i = 0; i < v->implied_mrf_writes(inst); i++) {
             add_dep(last_mrf_write[inst->base_mrf + i], n);
             last_mrf_write[inst->base_mrf + i] = n;
@@ -1117,7 +1331,7 @@ vec4_instruction_scheduler::calculate_deps()
          last_conditional_mod = n;
       }
 
-      if (inst->writes_accumulator_implicitly(v->brw) &&
+      if (inst->writes_accumulator_implicitly(v->devinfo) &&
           !inst->dst.is_accumulator()) {
          add_dep(last_accumulator_write, n);
          last_accumulator_write = n;
@@ -1131,41 +1345,31 @@ vec4_instruction_scheduler::calculate_deps()
    last_accumulator_write = NULL;
    last_fixed_grf_write = NULL;
 
-   exec_node *node;
-   exec_node *prev;
-   for (node = instructions.get_tail(), prev = node->prev;
-        !node->is_head_sentinel();
-        node = prev, prev = node->prev) {
-      schedule_node *n = (schedule_node *)node;
+   foreach_in_list_reverse_safe(schedule_node, n, &instructions) {
       vec4_instruction *inst = (vec4_instruction *)n->inst;
 
       /* write-after-read deps. */
       for (int i = 0; i < 3; i++) {
-         if (inst->src[i].file == GRF) {
-            add_dep(n, last_grf_write[inst->src[i].reg]);
-         } else if (inst->src[i].file == HW_REG &&
-                    (inst->src[i].fixed_hw_reg.file ==
-                     BRW_GENERAL_REGISTER_FILE)) {
+         if (inst->src[i].file == VGRF) {
+            for (unsigned j = 0; j < regs_read(inst, i); ++j)
+               add_dep(n, last_grf_write[inst->src[i].nr + j]);
+         } else if (inst->src[i].file == FIXED_GRF) {
             add_dep(n, last_fixed_grf_write);
          } else if (inst->src[i].is_accumulator()) {
             add_dep(n, last_accumulator_write);
-         } else if (inst->src[i].file != BAD_FILE &&
-                    inst->src[i].file != IMM &&
-                    inst->src[i].file != UNIFORM &&
-                    (inst->src[i].file != HW_REG ||
-                     inst->src[i].fixed_hw_reg.file != IMM)) {
-            assert(inst->src[i].file != MRF &&
-                   inst->src[i].file != ATTR);
+         } else if (inst->src[i].file == ARF) {
             add_barrier_deps(n);
          }
       }
 
-      for (int i = 0; i < inst->mlen; i++) {
-         /* It looks like the MRF regs are released in the send
-          * instruction once it's sent, not when the result comes
-          * back.
-          */
-         add_dep(n, last_mrf_write[inst->base_mrf + i], 2);
+      if (!inst->is_send_from_grf()) {
+         for (int i = 0; i < inst->mlen; i++) {
+            /* It looks like the MRF regs are released in the send
+             * instruction once it's sent, not when the result comes
+             * back.
+             */
+            add_dep(n, last_mrf_write[inst->base_mrf + i], 2);
+         }
       }
 
       if (inst->reads_flag()) {
@@ -1179,20 +1383,20 @@ vec4_instruction_scheduler::calculate_deps()
       /* Update the things this instruction wrote, so earlier reads
        * can mark this as WAR dependency.
        */
-      if (inst->dst.file == GRF) {
-         last_grf_write[inst->dst.reg] = n;
+      if (inst->dst.file == VGRF) {
+         for (unsigned j = 0; j < regs_written(inst); ++j)
+            last_grf_write[inst->dst.nr + j] = n;
       } else if (inst->dst.file == MRF) {
-         last_mrf_write[inst->dst.reg] = n;
-      } else if (inst->dst.file == HW_REG &&
-                 inst->dst.fixed_hw_reg.file == BRW_GENERAL_REGISTER_FILE) {
+         last_mrf_write[inst->dst.nr] = n;
+      } else if (inst->dst.file == FIXED_GRF) {
          last_fixed_grf_write = n;
       } else if (inst->dst.is_accumulator()) {
          last_accumulator_write = n;
-      } else if (inst->dst.file != BAD_FILE) {
+      } else if (inst->dst.file == ARF && !inst->dst.is_null()) {
          add_barrier_deps(n);
       }
 
-      if (inst->mlen > 0) {
+      if (inst->mlen > 0 && !inst->is_send_from_grf()) {
          for (int i = 0; i < v->implied_mrf_writes(inst); i++) {
             last_mrf_write[inst->base_mrf + i] = n;
          }
@@ -1202,7 +1406,7 @@ vec4_instruction_scheduler::calculate_deps()
          last_conditional_mod = n;
       }
 
-      if (inst->writes_accumulator_implicitly(v->brw)) {
+      if (inst->writes_accumulator_implicitly(v->devinfo)) {
          last_accumulator_write = n;
       }
    }
@@ -1211,17 +1415,20 @@ vec4_instruction_scheduler::calculate_deps()
 schedule_node *
 fs_instruction_scheduler::choose_instruction_to_schedule()
 {
-   struct brw_context *brw = v->brw;
    schedule_node *chosen = NULL;
 
    if (mode == SCHEDULE_PRE || mode == SCHEDULE_POST) {
       int chosen_time = 0;
 
-      /* Of the instructions ready to execute or the closest to
-       * being ready, choose the oldest one.
+      /* Of the instructions ready to execute or the closest to being ready,
+       * choose the one most likely to unblock an early program exit, or
+       * otherwise the oldest one.
        */
       foreach_in_list(schedule_node, n, &instructions) {
-         if (!chosen || n->unblocked_time < chosen_time) {
+         if (!chosen ||
+             exit_unblocked_time(n) < exit_unblocked_time(chosen) ||
+             (exit_unblocked_time(n) == exit_unblocked_time(chosen) &&
+              n->unblocked_time < chosen_time)) {
             chosen = n;
             chosen_time = n->unblocked_time;
          }
@@ -1279,18 +1486,19 @@ fs_instruction_scheduler::choose_instruction_to_schedule()
              * then the MRFs for the next SEND, then the next SEND, then the
              * MRFs, etc., without ever consuming the results of a send.
              */
-            if (brw->gen < 7) {
+            if (v->devinfo->gen < 7) {
                fs_inst *chosen_inst = (fs_inst *)chosen->inst;
 
-               /* We use regs_written > 1 as our test for the kind of send
-                * instruction to avoid -- only sends generate many regs, and a
-                * single-result send is probably actually reducing register
-                * pressure.
+               /* We use size_written > 4 * exec_size as our test for the kind
+                * of send instruction to avoid -- only sends generate many
+                * regs, and a single-result send is probably actually reducing
+                * register pressure.
                 */
-               if (inst->regs_written <= 1 && chosen_inst->regs_written > 1) {
+               if (inst->size_written <= 4 * inst->exec_size &&
+                   chosen_inst->size_written > 4 * chosen_inst->exec_size) {
                   chosen = n;
                   continue;
-               } else if (inst->regs_written > chosen_inst->regs_written) {
+               } else if (inst->size_written > chosen_inst->size_written) {
                   continue;
                }
             }
@@ -1306,6 +1514,15 @@ fs_instruction_scheduler::choose_instruction_to_schedule()
             chosen = n;
             continue;
          } else if (n->delay < chosen->delay) {
+            continue;
+         }
+
+         /* Prefer the node most likely to unblock an early program exit.
+          */
+         if (exit_unblocked_time(n) < exit_unblocked_time(chosen)) {
+            chosen = n;
+            continue;
+         } else if (exit_unblocked_time(n) > exit_unblocked_time(chosen)) {
             continue;
          }
 
@@ -1354,15 +1571,18 @@ vec4_instruction_scheduler::issue_time(backend_instruction *inst)
 }
 
 void
-instruction_scheduler::schedule_instructions(backend_instruction *next_block_header)
+instruction_scheduler::schedule_instructions(bblock_t *block)
 {
-   struct brw_context *brw = bv->brw;
+   const struct gen_device_info *devinfo = bs->devinfo;
    time = 0;
+   if (!post_reg_alloc)
+      reg_pressure = reg_pressure_in[block->num];
+   block_idx = block->num;
 
    /* Remove non-DAG heads from the list. */
    foreach_in_list_safe(schedule_node, n, &instructions) {
       if (n->parent_count != 0)
-	 n->remove();
+         n->remove();
    }
 
    unsigned cand_generation = 1;
@@ -1372,25 +1592,33 @@ instruction_scheduler::schedule_instructions(backend_instruction *next_block_hea
       /* Schedule this instruction. */
       assert(chosen);
       chosen->remove();
-      next_block_header->insert_before(chosen->inst);
+      chosen->inst->exec_node::remove();
+      block->instructions.push_tail(chosen->inst);
       instructions_to_schedule--;
-      update_register_pressure(chosen->inst);
+
+      if (!post_reg_alloc) {
+         reg_pressure -= get_register_pressure_benefit(chosen->inst);
+         update_register_pressure(chosen->inst);
+      }
+
+      /* If we expected a delay for scheduling, then bump the clock to reflect
+       * that.  In reality, the hardware will switch to another hyperthread
+       * and may not return to dispatching our thread for a while even after
+       * we're unblocked.  After this, we have the time when the chosen
+       * instruction will start executing.
+       */
+      time = MAX2(time, chosen->unblocked_time);
 
       /* Update the clock for how soon an instruction could start after the
        * chosen one.
        */
       time += issue_time(chosen->inst);
 
-      /* If we expected a delay for scheduling, then bump the clock to reflect
-       * that as well.  In reality, the hardware will switch to another
-       * hyperthread and may not return to dispatching our thread for a while
-       * even after we're unblocked.
-       */
-      time = MAX2(time, chosen->unblocked_time);
-
       if (debug) {
          fprintf(stderr, "clock %4d, scheduled: ", time);
-         bv->dump_instruction(chosen->inst);
+         bs->dump_instruction(chosen->inst);
+         if (!post_reg_alloc)
+            fprintf(stderr, "(register pressure %d)\n", reg_pressure);
       }
 
       /* Now that we've scheduled a new instruction, some of its
@@ -1399,24 +1627,24 @@ instruction_scheduler::schedule_instructions(backend_instruction *next_block_hea
        * DAG edge as we do so.
        */
       for (int i = chosen->child_count - 1; i >= 0; i--) {
-	 schedule_node *child = chosen->children[i];
+         schedule_node *child = chosen->children[i];
 
-	 child->unblocked_time = MAX2(child->unblocked_time,
-				      time + chosen->child_latency[i]);
+         child->unblocked_time = MAX2(child->unblocked_time,
+                                      time + chosen->child_latency[i]);
 
          if (debug) {
             fprintf(stderr, "\tchild %d, %d parents: ", i, child->parent_count);
-            bv->dump_instruction(child->inst);
+            bs->dump_instruction(child->inst);
          }
 
          child->cand_generation = cand_generation;
-	 child->parent_count--;
-	 if (child->parent_count == 0) {
+         child->parent_count--;
+         if (child->parent_count == 0) {
             if (debug) {
                fprintf(stderr, "\t\tnow available\n");
             }
-	    instructions.push_head(child);
-	 }
+            instructions.push_head(child);
+         }
       }
       cand_generation++;
 
@@ -1425,81 +1653,97 @@ instruction_scheduler::schedule_instructions(backend_instruction *next_block_hea
        * the next math instruction isn't going to make progress until the first
        * is done.
        */
-      if (brw->gen < 6 && chosen->inst->is_math()) {
+      if (devinfo->gen < 6 && chosen->inst->is_math()) {
          foreach_in_list(schedule_node, n, &instructions) {
-	    if (n->inst->is_math())
-	       n->unblocked_time = MAX2(n->unblocked_time,
-					time + chosen->latency);
-	 }
+            if (n->inst->is_math())
+               n->unblocked_time = MAX2(n->unblocked_time,
+                                        time + chosen->latency);
+         }
       }
    }
 
    assert(instructions_to_schedule == 0);
+
+   block->cycle_count = time;
+}
+
+static unsigned get_cycle_count(cfg_t *cfg)
+{
+   unsigned count = 0, multiplier = 1;
+   foreach_block(block, cfg) {
+      if (block->start()->opcode == BRW_OPCODE_DO)
+         multiplier *= 10; /* assume that loops execute ~10 times */
+
+      count += block->cycle_count * multiplier;
+
+      if (block->end()->opcode == BRW_OPCODE_WHILE)
+         multiplier /= 10;
+   }
+
+   return count;
 }
 
 void
-instruction_scheduler::run(exec_list *all_instructions)
+instruction_scheduler::run(cfg_t *cfg)
 {
-   backend_instruction *next_block_header =
-      (backend_instruction *)all_instructions->head;
-
-   if (debug) {
+   if (debug && !post_reg_alloc) {
       fprintf(stderr, "\nInstructions before scheduling (reg_alloc %d)\n",
               post_reg_alloc);
-      bv->dump_instructions();
+         bs->dump_instructions();
    }
 
-   /* Populate the remaining GRF uses array to improve the pre-regalloc
-    * scheduling.
-    */
-   if (remaining_grf_uses) {
-      foreach_in_list(schedule_node, node, all_instructions) {
-         count_remaining_grf_uses((backend_instruction *)node);
-      }
-   }
+   if (!post_reg_alloc)
+      setup_liveness(cfg);
 
-   while (!next_block_header->is_tail_sentinel()) {
-      /* Add things to be scheduled until we get to a new BB. */
-      while (!next_block_header->is_tail_sentinel()) {
-	 backend_instruction *inst = next_block_header;
-	 next_block_header = (backend_instruction *)next_block_header->next;
+   foreach_block(block, cfg) {
+      if (block->end_ip - block->start_ip <= 1)
+         continue;
 
-	 add_inst(inst);
-         if (inst->is_control_flow())
-	    break;
+      if (reads_remaining) {
+         memset(reads_remaining, 0,
+                grf_count * sizeof(*reads_remaining));
+         memset(hw_reads_remaining, 0,
+                hw_reg_count * sizeof(*hw_reads_remaining));
+         memset(written, 0, grf_count * sizeof(*written));
+
+         foreach_inst_in_block(fs_inst, inst, block)
+            count_reads_remaining(inst);
       }
+
+      add_insts_from_block(block);
+
       calculate_deps();
 
-      foreach_in_list(schedule_node, n, &instructions) {
-         compute_delay(n);
-      }
+      compute_delays();
+      compute_exits();
 
-      schedule_instructions(next_block_header);
+      schedule_instructions(block);
    }
 
-   if (debug) {
+   if (debug && !post_reg_alloc) {
       fprintf(stderr, "\nInstructions after scheduling (reg_alloc %d)\n",
               post_reg_alloc);
-      bv->dump_instructions();
+      bs->dump_instructions();
    }
+
+   cfg->cycle_count = get_cycle_count(cfg);
 }
 
 void
 fs_visitor::schedule_instructions(instruction_scheduler_mode mode)
 {
+   if (mode != SCHEDULE_POST)
+      calculate_live_intervals();
+
    int grf_count;
    if (mode == SCHEDULE_POST)
       grf_count = grf_used;
    else
-      grf_count = virtual_grf_count;
+      grf_count = alloc.count;
 
-   fs_instruction_scheduler sched(this, grf_count, mode);
-   sched.run(&instructions);
-
-   if (unlikely(INTEL_DEBUG & DEBUG_WM) && mode == SCHEDULE_POST) {
-      fprintf(stderr, "fs%d estimated execution time: %d cycles\n",
-             dispatch_width, sched.time);
-   }
+   fs_instruction_scheduler sched(this, grf_count, first_non_payload_grf,
+                                  cfg->num_blocks, mode);
+   sched.run(cfg);
 
    invalidate_live_intervals();
 }
@@ -1508,11 +1752,7 @@ void
 vec4_visitor::opt_schedule_instructions()
 {
    vec4_instruction_scheduler sched(this, prog_data->total_grf);
-   sched.run(&instructions);
-
-   if (unlikely(debug_flag)) {
-      fprintf(stderr, "vec4 estimated execution time: %d cycles\n", sched.time);
-   }
+   sched.run(cfg);
 
    invalidate_live_intervals();
 }

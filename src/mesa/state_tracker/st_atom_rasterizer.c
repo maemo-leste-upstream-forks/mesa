@@ -31,8 +31,11 @@
   */
  
 #include "main/macros.h"
+#include "main/framebuffer.h"
 #include "st_context.h"
 #include "st_atom.h"
+#include "st_debug.h"
+#include "st_program.h"
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
 #include "cso_cache/cso_context.h"
@@ -61,7 +64,6 @@ static void update_raster_state( struct st_context *st )
    struct pipe_rasterizer_state *raster = &st->state.rasterizer;
    const struct gl_vertex_program *vertProg = ctx->VertexProgram._Current;
    const struct gl_fragment_program *fragProg = ctx->FragmentProgram._Current;
-   uint i;
 
    memset(raster, 0, sizeof(*raster));
 
@@ -69,6 +71,11 @@ static void update_raster_state( struct st_context *st )
     */
    {
       raster->front_ccw = (ctx->Polygon.FrontFace == GL_CCW);
+
+      /* _NEW_TRANSFORM */
+      if (ctx->Transform.ClipOrigin == GL_UPPER_LEFT) {
+         raster->front_ccw ^= 1;
+      }
 
       /*
        * Gallium's surfaces are Y=0=TOP orientation.  OpenGL is the
@@ -118,8 +125,14 @@ static void update_raster_state( struct st_context *st )
    /* _NEW_POLYGON
     */
    {
-      raster->fill_front = translate_fill( ctx->Polygon.FrontMode );
-      raster->fill_back = translate_fill( ctx->Polygon.BackMode );
+      if (ST_DEBUG & DEBUG_WIREFRAME) {
+         raster->fill_front = PIPE_POLYGON_MODE_LINE;
+         raster->fill_back = PIPE_POLYGON_MODE_LINE;
+      }
+      else {
+         raster->fill_front = translate_fill( ctx->Polygon.FrontMode );
+         raster->fill_back = translate_fill( ctx->Polygon.BackMode );
+      }
 
       /* Simplify when culling is active:
        */
@@ -142,6 +155,7 @@ static void update_raster_state( struct st_context *st )
       raster->offset_tri = ctx->Polygon.OffsetFill;
       raster->offset_units = ctx->Polygon.OffsetUnits;
       raster->offset_scale = ctx->Polygon.OffsetFactor;
+      raster->offset_clamp = ctx->Polygon.OffsetClamp;
    }
 
    raster->poly_smooth = ctx->Polygon.SmoothFlag;
@@ -166,14 +180,12 @@ static void update_raster_state( struct st_context *st )
        * that we need to replace GENERIC[k] attrib with an automatically
        * computed texture coord.
        */
-      for (i = 0; i < MAX_TEXTURE_COORD_UNITS; i++) {
-         if (ctx->Point.CoordReplace[i]) {
-            raster->sprite_coord_enable |= 1 << i;
-         }
-      }
-      if (fragProg->Base.InputsRead & VARYING_BIT_PNTC) {
+      raster->sprite_coord_enable = ctx->Point.CoordReplace &
+         ((1u << MAX_TEXTURE_COORD_UNITS) - 1);
+      if (!st->needs_texcoord_semantic &&
+          fragProg->Base.InputsRead & VARYING_BIT_PNTC) {
          raster->sprite_coord_enable |=
-            1 << (VARYING_SLOT_PNTC - VARYING_SLOT_TEX0);
+            1 << st_get_generic_varying_index(st, VARYING_SLOT_PNTC);
       }
 
       raster->point_quad_rasterization = 1;
@@ -188,9 +200,23 @@ static void update_raster_state( struct st_context *st )
             raster->point_size_per_vertex = TRUE;
          }
       }
-      else if (ctx->VertexProgram.PointSizeEnabled) {
-         /* user-defined program and GL_VERTEX_PROGRAM_POINT_SIZE set */
+      else if (ctx->API != API_OPENGLES2) {
+         /* PointSizeEnabled is always set in ES2 contexts */
          raster->point_size_per_vertex = ctx->VertexProgram.PointSizeEnabled;
+      }
+      else {
+         /* ST_NEW_TESSEVAL_PROGRAM | ST_NEW_GEOMETRY_PROGRAM */
+         /* We have to check the last bound stage and see if it writes psize */
+         struct gl_program *last = NULL;
+         if (ctx->GeometryProgram._Current)
+            last = &ctx->GeometryProgram._Current->Base;
+         else if (ctx->TessEvalProgram._Current)
+            last = &ctx->TessEvalProgram._Current->Base;
+         else if (ctx->VertexProgram._Current)
+            last = &ctx->VertexProgram._Current->Base;
+         if (last)
+            raster->point_size_per_vertex =
+               !!(last->OutputsWritten & BITFIELD64_BIT(VARYING_SLOT_PSIZ));
       }
    }
    if (!raster->point_size_per_vertex) {
@@ -205,13 +231,13 @@ static void update_raster_state( struct st_context *st )
    raster->line_smooth = ctx->Line.SmoothFlag;
    if (ctx->Line.SmoothFlag) {
       raster->line_width = CLAMP(ctx->Line.Width,
-                                ctx->Const.MinLineWidthAA,
-                                ctx->Const.MaxLineWidthAA);
+                                 ctx->Const.MinLineWidthAA,
+                                 ctx->Const.MaxLineWidthAA);
    }
    else {
       raster->line_width = CLAMP(ctx->Line.Width,
-                                ctx->Const.MinLineWidth,
-                                ctx->Const.MaxLineWidth);
+                                 ctx->Const.MinLineWidth,
+                                 ctx->Const.MaxLineWidth);
    }
 
    raster->line_stipple_enable = ctx->Line.StippleFlag;
@@ -220,7 +246,15 @@ static void update_raster_state( struct st_context *st )
    raster->line_stipple_factor = ctx->Line.StippleFactor - 1;
 
    /* _NEW_MULTISAMPLE */
-   raster->multisample = ctx->Multisample._Enabled;
+   raster->multisample = _mesa_is_multisample_enabled(ctx);
+
+   /* _NEW_MULTISAMPLE | _NEW_BUFFERS */
+   raster->force_persample_interp =
+         !st->force_persample_in_shader &&
+         _mesa_is_multisample_enabled(ctx) &&
+         ctx->Multisample.SampleShading &&
+         ctx->Multisample.MinSampleShadingValue *
+         _mesa_geometric_samples(ctx->DrawBuffer) > 1;
 
    /* _NEW_SCISSOR */
    raster->scissor = ctx->Scissor.EnableFlags;
@@ -232,6 +266,9 @@ static void update_raster_state( struct st_context *st )
    raster->half_pixel_center = 1;
    if (st_fb_orientation(ctx->DrawBuffer) == Y_0_TOP)
       raster->bottom_edge_rule = 1;
+   /* _NEW_TRANSFORM */
+   if (ctx->Transform.ClipOrigin == GL_UPPER_LEFT)
+      raster->bottom_edge_rule ^= 1;
 
    /* ST_NEW_RASTERIZER */
    raster->rasterizer_discard = ctx->RasterDiscard;
@@ -247,25 +284,11 @@ static void update_raster_state( struct st_context *st )
    /* _NEW_TRANSFORM */
    raster->depth_clip = !ctx->Transform.DepthClamp;
    raster->clip_plane_enable = ctx->Transform.ClipPlanesEnabled;
+   raster->clip_halfz = (ctx->Transform.ClipDepthMode == GL_ZERO_TO_ONE);
 
    cso_set_rasterizer(st->cso_context, raster);
 }
 
 const struct st_tracked_state st_update_rasterizer = {
-   "st_update_rasterizer",    /* name */
-   {
-      (_NEW_BUFFERS |
-       _NEW_LIGHT |
-       _NEW_LINE |
-       _NEW_MULTISAMPLE |
-       _NEW_POINT |
-       _NEW_POLYGON |
-       _NEW_PROGRAM |
-       _NEW_SCISSOR |
-       _NEW_FRAG_CLAMP |
-       _NEW_TRANSFORM),      /* mesa state dependencies*/
-      (ST_NEW_VERTEX_PROGRAM |
-       ST_NEW_RASTERIZER),  /* state tracker dependencies */
-   },
    update_raster_state     /* update function */
 };

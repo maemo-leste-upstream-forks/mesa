@@ -34,16 +34,21 @@ include $(LOCAL_PATH)/Makefile.sources
 LOCAL_MODULE := libmesa_dri_common
 LOCAL_MODULE_CLASS := STATIC_LIBRARIES
 
-intermediates := $(call local-intermediates-dir)
+intermediates := $(call local-generated-sources-dir)
 
 LOCAL_C_INCLUDES := \
-    $(intermediates) \
     $(MESA_DRI_C_INCLUDES)
 
-LOCAL_SRC_FILES := $(DRI_COMMON_FILES)
+LOCAL_EXPORT_C_INCLUDE_DIRS := \
+    $(LOCAL_PATH) \
+    $(intermediates)
 
-LOCAL_GENERATED_SOURCES := \
-    $(intermediates)/xmlpool/options.h
+LOCAL_SRC_FILES := \
+	$(DRI_COMMON_FILES) \
+	$(XMLCONFIG_FILES)
+
+MESA_DRI_OPTIONS_H := $(intermediates)/xmlpool/options.h
+LOCAL_GENERATED_SOURCES := $(MESA_DRI_OPTIONS_H)
 
 #
 # Generate options.h from gettext translations.
@@ -69,20 +74,23 @@ $(intermediates)/xmlpool/%.po: $(LOCAL_PATH)/xmlpool/%.po $(POT)
 		sed -i -e 's/charset=.*\\n/charset=UTF-8\\n/' $@; \
 	fi
 
-$(intermediates)/xmlpool/%/LC_MESSAGES/options.mo: $(intermediates)/xmlpool/%.po
+PRIVATE_SCRIPT := $(LOCAL_PATH)/xmlpool/gen_xmlpool.py
+PRIVATE_LOCALEDIR := $(intermediates)/xmlpool
+PRIVATE_TEMPLATE_HEADER := $(LOCAL_PATH)/xmlpool/t_options.h
+PRIVATE_MO_FILES := $(MESA_DRI_OPTIONS_LANGS:%=$(intermediates)/xmlpool/%/LC_MESSAGES/options.mo)
+
+LOCAL_GENERATED_SOURCES += $(PRIVATE_MO_FILES)
+
+$(PRIVATE_MO_FILES): $(intermediates)/xmlpool/%/LC_MESSAGES/options.mo: $(intermediates)/xmlpool/%.po
 	mkdir -p $(dir $@)
 	msgfmt -o $@ $<
 
-$(intermediates)/xmlpool/options.h: PRIVATE_SCRIPT := $(LOCAL_PATH)/xmlpool/gen_xmlpool.py
-$(intermediates)/xmlpool/options.h: PRIVATE_LOCALEDIR := $(intermediates)/xmlpool
-$(intermediates)/xmlpool/options.h: PRIVATE_TEMPLATE_HEADER := $(LOCAL_PATH)/xmlpool/t_options.h
-$(intermediates)/xmlpool/options.h: PRIVATE_MO_FILES := $(MESA_DRI_OPTIONS_LANGS:%=$(intermediates)/xmlpool/%/LC_MESSAGES/options.mo)
-.SECONDEXPANSION:
-$(intermediates)/xmlpool/options.h: $$(PRIVATE_SCRIPT) $$(PRIVATE_TEMPLATE_HEADER) $$(PRIVATE_MO_FILES)
-	mkdir -p $(dir $@)
-	mkdir -p $(PRIVATE_LOCALEDIR)
-	$(MESA_PYTHON2) $(PRIVATE_SCRIPT) $(PRIVATE_TEMPLATE_HEADER) \
+$(LOCAL_GENERATED_SOURCES): PRIVATE_PYTHON := $(MESA_PYTHON2)
+$(LOCAL_GENERATED_SOURCES): PRIVATE_CUSTOM_TOOL = $(PRIVATE_PYTHON) $^ $(PRIVATE_TEMPLATE_HEADER) \
 		$(PRIVATE_LOCALEDIR) $(MESA_DRI_OPTIONS_LANGS) > $@
+
+$(MESA_DRI_OPTIONS_H): $(PRIVATE_SCRIPT) $(PRIVATE_TEMPLATE_HEADER) $(PRIVATE_MO_FILES)
+	$(transform-generated-source)
 
 include $(MESA_COMMON_MK)
 include $(BUILD_STATIC_LIBRARY)

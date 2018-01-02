@@ -41,26 +41,28 @@ fd_create_surface(struct pipe_context *pctx,
 //	struct fd_resource* tex = fd_resource(ptex);
 	struct fd_surface* surface = CALLOC_STRUCT(fd_surface);
 
-	assert(surf_tmpl->u.tex.first_layer == surf_tmpl->u.tex.last_layer);
+	if (!surface)
+		return NULL;
 
-	if (surface) {
-		struct pipe_surface *psurf = &surface->base;
-		unsigned level = surf_tmpl->u.tex.level;
+	debug_assert(ptex->target != PIPE_BUFFER);
+	debug_assert(surf_tmpl->u.tex.first_layer == surf_tmpl->u.tex.last_layer);
 
-		pipe_reference_init(&psurf->reference, 1);
-		pipe_resource_reference(&psurf->texture, ptex);
+	struct pipe_surface *psurf = &surface->base;
+	unsigned level = surf_tmpl->u.tex.level;
 
-		psurf->context = pctx;
-		psurf->format = surf_tmpl->format;
-		psurf->width = u_minify(ptex->width0, level);
-		psurf->height = u_minify(ptex->height0, level);
-		psurf->u.tex.level = level;
-		psurf->u.tex.first_layer = surf_tmpl->u.tex.first_layer;
-		psurf->u.tex.last_layer = surf_tmpl->u.tex.last_layer;
+	pipe_reference_init(&psurf->reference, 1);
+	pipe_resource_reference(&psurf->texture, ptex);
 
-		// TODO
-		DBG("TODO: %ux%u", psurf->width, psurf->height);
-	}
+	psurf->context = pctx;
+	psurf->format = surf_tmpl->format;
+	psurf->width = u_minify(ptex->width0, level);
+	psurf->height = u_minify(ptex->height0, level);
+	psurf->u.tex.level = level;
+	psurf->u.tex.first_layer = surf_tmpl->u.tex.first_layer;
+	psurf->u.tex.last_layer = surf_tmpl->u.tex.last_layer;
+
+	// TODO
+	DBG("TODO: %ux%u", psurf->width, psurf->height);
 
 	return &surface->base;
 }

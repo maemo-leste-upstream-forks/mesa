@@ -67,9 +67,9 @@ util_dump_enum_continuous(unsigned value,
    util_dump_##_name(unsigned value, boolean shortened) \
    { \
       if(shortened) \
-         return util_dump_enum_continuous(value, Elements(util_dump_##_name##_short_names), util_dump_##_name##_short_names); \
+         return util_dump_enum_continuous(value, ARRAY_SIZE(util_dump_##_name##_short_names), util_dump_##_name##_short_names); \
       else \
-         return util_dump_enum_continuous(value, Elements(util_dump_##_name##_names), util_dump_##_name##_names); \
+         return util_dump_enum_continuous(value, ARRAY_SIZE(util_dump_##_name##_names), util_dump_##_name##_names); \
    }
 
 
@@ -81,12 +81,12 @@ util_dump_enum_continuous(unsigned value,
    const char * \
    util_dump_##_name(unsigned value, boolean shortened) \
    { \
-      STATIC_ASSERT(Elements(util_dump_##_name##_names) == _count); \
-      STATIC_ASSERT(Elements(util_dump_##_name##_short_names) == _count); \
+      STATIC_ASSERT(ARRAY_SIZE(util_dump_##_name##_names) == _count); \
+      STATIC_ASSERT(ARRAY_SIZE(util_dump_##_name##_short_names) == _count); \
       if(shortened) \
-         return util_dump_enum_continuous(value, Elements(util_dump_##_name##_short_names), util_dump_##_name##_short_names); \
+         return util_dump_enum_continuous(value, ARRAY_SIZE(util_dump_##_name##_short_names), util_dump_##_name##_short_names); \
       else \
-         return util_dump_enum_continuous(value, Elements(util_dump_##_name##_names), util_dump_##_name##_names); \
+         return util_dump_enum_continuous(value, ARRAY_SIZE(util_dump_##_name##_names), util_dump_##_name##_names); \
    }
 
 
@@ -392,3 +392,44 @@ util_dump_query_type_short_names[] = {
 };
 
 DEFINE_UTIL_DUMP_CONTINUOUS(query_type)
+
+
+static const char *
+util_dump_prim_mode_names[] = {
+   "PIPE_PRIM_POINTS",
+   "PIPE_PRIM_LINES",
+   "PIPE_PRIM_LINE_LOOP",
+   "PIPE_PRIM_LINE_STRIP",
+   "PIPE_PRIM_TRIANGLES",
+   "PIPE_PRIM_TRIANGLE_STRIP",
+   "PIPE_PRIM_TRIANGLE_FAN",
+   "PIPE_PRIM_QUADS",
+   "PIPE_PRIM_QUAD_STRIP",
+   "PIPE_PRIM_POLYGON",
+   "PIPE_PRIM_LINES_ADJACENCY",
+   "PIPE_PRIM_LINE_STRIP_ADJACENCY",
+   "PIPE_PRIM_TRIANGLES_ADJACENCY",
+   "PIPE_PRIM_TRIANGLE_STRIP_ADJACENCY",
+   "PIPE_PRIM_PATCHES",
+};
+
+static const char *
+util_dump_prim_mode_short_names[] = {
+   "points",
+   "lines",
+   "line_loop",
+   "line_strip",
+   "triangles",
+   "triangle_strip",
+   "triangle_fan",
+   "quads",
+   "quad_strip",
+   "polygon",
+   "lines_adjacency",
+   "line_strip_adjacency",
+   "triangles_adjacency",
+   "triangle_strip_adjacency",
+   "patches",
+};
+
+DEFINE_UTIL_DUMP_CONTINUOUS(prim_mode)

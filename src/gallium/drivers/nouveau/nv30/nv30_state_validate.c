@@ -107,9 +107,6 @@ nv30_validate_fb(struct nv30_context *nv30)
    PUSH_DATA (push, w << 16);
    PUSH_DATA (push, h << 16);
    PUSH_DATA (push, rt_format);
-   BEGIN_NV04(push, NV30_3D(VIEWPORT_HORIZ), 2);
-   PUSH_DATA (push, w << 16);
-   PUSH_DATA (push, h << 16);
    BEGIN_NV04(push, NV30_3D(VIEWPORT_TX_ORIGIN), 4);
    PUSH_DATA (push, (y << 16) | x);
    PUSH_DATA (push, 0);
@@ -250,18 +247,27 @@ nv30_validate_viewport(struct nv30_context *nv30)
    struct nouveau_pushbuf *push = nv30->base.pushbuf;
    struct pipe_viewport_state *vp = &nv30->viewport;
 
+   unsigned x = CLAMP(vp->translate[0] - fabsf(vp->scale[0]), 0, 4095);
+   unsigned y = CLAMP(vp->translate[1] - fabsf(vp->scale[1]), 0, 4095);
+   unsigned w = CLAMP(2.0f * fabsf(vp->scale[0]), 0, 4096);
+   unsigned h = CLAMP(2.0f * fabsf(vp->scale[1]), 0, 4096);
+
    BEGIN_NV04(push, NV30_3D(VIEWPORT_TRANSLATE_X), 8);
    PUSH_DATAf(push, vp->translate[0]);
    PUSH_DATAf(push, vp->translate[1]);
    PUSH_DATAf(push, vp->translate[2]);
-   PUSH_DATAf(push, vp->translate[3]);
+   PUSH_DATAf(push, 0.0f);
    PUSH_DATAf(push, vp->scale[0]);
    PUSH_DATAf(push, vp->scale[1]);
    PUSH_DATAf(push, vp->scale[2]);
-   PUSH_DATAf(push, vp->scale[3]);
+   PUSH_DATAf(push, 0.0f);
    BEGIN_NV04(push, NV30_3D(DEPTH_RANGE_NEAR), 2);
    PUSH_DATAf(push, vp->translate[2] - fabsf(vp->scale[2]));
    PUSH_DATAf(push, vp->translate[2] + fabsf(vp->scale[2]));
+
+   BEGIN_NV04(push, NV30_3D(VIEWPORT_HORIZ), 2);
+   PUSH_DATA (push, (w << 16) | x);
+   PUSH_DATA (push, (h << 16) | y);
 }
 
 static void
@@ -272,15 +278,13 @@ nv30_validate_clip(struct nv30_context *nv30)
    uint32_t clpd_enable = 0;
 
    for (i = 0; i < 6; i++) {
-      if (nv30->rast->pipe.clip_plane_enable & (1 << i)) {
-         if (nv30->dirty & NV30_NEW_CLIP) {
-            BEGIN_NV04(push, NV30_3D(VP_UPLOAD_CONST_ID), 5);
-            PUSH_DATA (push, i);
-            PUSH_DATAp(push, nv30->clip.ucp[i], 4);
-         }
-
-         clpd_enable |= 1 << (1 + 4*i);
+      if (nv30->dirty & NV30_NEW_CLIP) {
+         BEGIN_NV04(push, NV30_3D(VP_UPLOAD_CONST_ID), 5);
+         PUSH_DATA (push, i);
+         PUSH_DATAp(push, nv30->clip.ucp[i], 4);
       }
+      if (nv30->rast->pipe.clip_plane_enable & (1 << i))
+         clpd_enable |= 2 << (4*i);
    }
 
    BEGIN_NV04(push, NV30_3D(VP_CLIP_PLANES_ENABLE), 1);
@@ -389,7 +393,7 @@ static struct state_validate hwtnl_validate_list[] = {
     { nv30_validate_stipple,       NV30_NEW_STIPPLE },
     { nv30_validate_scissor,       NV30_NEW_SCISSOR | NV30_NEW_RASTERIZER },
     { nv30_validate_viewport,      NV30_NEW_VIEWPORT },
-    { nv30_validate_clip,          NV30_NEW_CLIP },
+    { nv30_validate_clip,          NV30_NEW_CLIP | NV30_NEW_RASTERIZER },
     { nv30_fragprog_validate,      NV30_NEW_FRAGPROG | NV30_NEW_FRAGCONST },
     { nv30_vertprog_validate,      NV30_NEW_VERTPROG | NV30_NEW_VERTCONST |
                                    NV30_NEW_FRAGPROG | NV30_NEW_RASTERIZER },
@@ -455,8 +459,8 @@ nv30_state_context_switch(struct nv30_context *nv30)
    nv30->base.pushbuf->user_priv = &nv30->bufctx;
 }
 
-boolean
-nv30_state_validate(struct nv30_context *nv30, boolean hwtnl)
+bool
+nv30_state_validate(struct nv30_context *nv30, uint32_t mask, bool hwtnl)
 {
    struct nouveau_screen *screen = &nv30->screen->base;
    struct nouveau_pushbuf *push = nv30->base.pushbuf;
@@ -481,20 +485,22 @@ nv30_state_validate(struct nv30_context *nv30, boolean hwtnl)
    else
       validate = swtnl_validate_list;
 
-   if (nv30->dirty) {
+   mask &= nv30->dirty;
+
+   if (mask) {
       while (validate->func) {
-         if (nv30->dirty & validate->mask)
+         if (mask & validate->mask)
             validate->func(nv30);
          validate++;
       }
 
-      nv30->dirty = 0;
+      nv30->dirty &= ~mask;
    }
 
    nouveau_pushbuf_bufctx(push, bctx);
    if (nouveau_pushbuf_validate(push)) {
       nouveau_pushbuf_bufctx(push, NULL);
-      return FALSE;
+      return false;
    }
 
    /*XXX*/
@@ -528,7 +534,7 @@ nv30_state_validate(struct nv30_context *nv30, boolean hwtnl)
       }
    }
 
-   return TRUE;
+   return true;
 }
 
 void

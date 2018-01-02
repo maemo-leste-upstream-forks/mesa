@@ -44,11 +44,14 @@
 
 #include <bellagio/st_static_component_loader.h>
 #include <bellagio/omx_base_filter.h>
+#include <bellagio/omx_base_video_port.h>
 
 #include "pipe/p_video_state.h"
 #include "state_tracker/drm_driver.h"
 #include "os/os_thread.h"
-#include "util/u_double_list.h"
+#include "util/list.h"
+
+#include "vl/vl_compositor.h"
 
 #define OMX_VID_DEC_BASE_NAME "OMX.mesa.video_decoder"
 
@@ -57,6 +60,11 @@
 
 #define OMX_VID_DEC_AVC_NAME "OMX.mesa.video_decoder.avc"
 #define OMX_VID_DEC_AVC_ROLE "video_decoder.avc"
+
+#define OMX_VID_DEC_HEVC_NAME "OMX.mesa.video_decoder.hevc"
+#define OMX_VID_DEC_HEVC_ROLE "video_decoder.hevc"
+
+#define OMX_VID_DEC_TIMESTAMP_INVALID ((OMX_TICKS) -1)
 
 struct vl_vlc;
 
@@ -68,7 +76,7 @@ DERIVEDCLASS(vid_dec_PrivateType, omx_base_filter_PrivateType)
    struct pipe_video_codec *codec; \
    void (*Decode)(vid_dec_PrivateType *priv, struct vl_vlc *vlc, unsigned min_bits_left); \
    void (*EndFrame)(vid_dec_PrivateType *priv); \
-   struct pipe_video_buffer *(*Flush)(vid_dec_PrivateType *priv); \
+   struct pipe_video_buffer *(*Flush)(vid_dec_PrivateType *priv, OMX_TICKS *timestamp); \
    struct pipe_video_buffer *target, *shadow; \
    union { \
       struct { \
@@ -89,20 +97,41 @@ DERIVEDCLASS(vid_dec_PrivateType, omx_base_filter_PrivateType)
          struct list_head dpb_list; \
          unsigned dpb_num; \
       } h264; \
+      struct { \
+         unsigned temporal_id; \
+         unsigned level_idc; \
+         unsigned pic_width_in_luma_samples; \
+         unsigned pic_height_in_luma_samples; \
+         bool IdrPicFlag; \
+         int slice_prev_poc; \
+         void *ref_pic_set_list; \
+         void *rps; \
+         struct pipe_h265_sps sps[16]; \
+         struct pipe_h265_pps pps[64]; \
+         struct list_head dpb_list; \
+         unsigned dpb_num; \
+      } h265; \
    } codec_data; \
    union { \
       struct pipe_picture_desc base; \
       struct pipe_mpeg12_picture_desc mpeg12; \
       struct pipe_h264_picture_desc h264; \
+      struct pipe_h265_picture_desc h265; \
    } picture; \
    unsigned num_in_buffers; \
    OMX_BUFFERHEADERTYPE *in_buffers[2]; \
    const void *inputs[2]; \
    unsigned sizes[2]; \
+   OMX_TICKS timestamps[2]; \
+   OMX_TICKS timestamp; \
+   bool first_buf_in_frame; \
    bool frame_finished; \
    bool frame_started; \
    unsigned bytes_left; \
-   const void *slice;
+   const void *slice; \
+   bool disable_tunnel; \
+   struct vl_compositor compositor; \
+   struct vl_compositor_state cstate;
 ENDCLASS(vid_dec_PrivateType)
 
 OMX_ERRORTYPE vid_dec_LoaderComponent(stLoaderComponentType *comp);
@@ -115,5 +144,8 @@ void vid_dec_mpeg12_Init(vid_dec_PrivateType *priv);
 
 /* vid_dec_h264.c */
 void vid_dec_h264_Init(vid_dec_PrivateType *priv);
+
+/* vid_dec_h265.c */
+void vid_dec_h265_Init(vid_dec_PrivateType *priv);
 
 #endif

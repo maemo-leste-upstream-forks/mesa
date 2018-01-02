@@ -26,27 +26,55 @@
  *    Rob Clark <robclark@freedesktop.org>
  */
 
+#include "util/u_inlines.h"
+
 #include "freedreno_fence.h"
+#include "freedreno_context.h"
 #include "freedreno_util.h"
 
-boolean
-fd_fence_wait(struct fd_fence *fence)
-{
-	DBG("TODO: ");
-	return false;
-}
-
-boolean
-fd_fence_signalled(struct fd_fence *fence)
-{
-	DBG("TODO: ");
-	return false;
-}
+struct pipe_fence_handle {
+	struct pipe_reference reference;
+	struct fd_context *ctx;
+	struct fd_screen *screen;
+	uint32_t timestamp;
+};
 
 void
-fd_fence_del(struct fd_fence *fence)
+fd_fence_ref(struct pipe_screen *pscreen,
+		struct pipe_fence_handle **ptr,
+		struct pipe_fence_handle *pfence)
 {
+	if (pipe_reference(&(*ptr)->reference, &pfence->reference))
+		FREE(*ptr);
 
+	*ptr = pfence;
 }
 
+boolean fd_fence_finish(struct pipe_screen *pscreen,
+		struct pipe_context *ctx,
+		struct pipe_fence_handle *fence,
+		uint64_t timeout)
+{
+	if (fd_pipe_wait_timeout(fence->screen->pipe, fence->timestamp, timeout))
+		return false;
 
+	return true;
+}
+
+struct pipe_fence_handle * fd_fence_create(struct fd_context *ctx,
+		uint32_t timestamp)
+{
+	struct pipe_fence_handle *fence;
+
+	fence = CALLOC_STRUCT(pipe_fence_handle);
+	if (!fence)
+		return NULL;
+
+	pipe_reference_init(&fence->reference, 1);
+
+	fence->ctx = ctx;
+	fence->screen = ctx->screen;
+	fence->timestamp = timestamp;
+
+	return fence;
+}

@@ -30,6 +30,7 @@
 
 
 #include "context.h"
+#include "enums.h"
 #include "macros.h"
 #include "mtypes.h"
 #include "viewport.h"
@@ -51,33 +52,26 @@ set_viewport_no_notify(struct gl_context *ctx, unsigned idx,
     *     determined by calling GetFloatv with the symbolic constant
     *     VIEWPORT_BOUNDS_RANGE (see section 6.1)."
     */
-   if (ctx->Extensions.ARB_viewport_array) {
+   if (ctx->Extensions.ARB_viewport_array ||
+       (ctx->Extensions.OES_viewport_array &&
+        _mesa_is_gles31(ctx))) {
       x = CLAMP(x,
                 ctx->Const.ViewportBounds.Min, ctx->Const.ViewportBounds.Max);
       y = CLAMP(y,
                 ctx->Const.ViewportBounds.Min, ctx->Const.ViewportBounds.Max);
    }
 
+   if (ctx->ViewportArray[idx].X == x &&
+       ctx->ViewportArray[idx].Width == width &&
+       ctx->ViewportArray[idx].Y == y &&
+       ctx->ViewportArray[idx].Height == height)
+      return;
+
    ctx->ViewportArray[idx].X = x;
    ctx->ViewportArray[idx].Width = width;
    ctx->ViewportArray[idx].Y = y;
    ctx->ViewportArray[idx].Height = height;
    ctx->NewState |= _NEW_VIEWPORT;
-
-#if 1
-   /* XXX remove this someday.  Currently the DRI drivers rely on
-    * the WindowMap matrix being up to date in the driver's Viewport
-    * and DepthRange functions.
-    */
-   _math_matrix_viewport(&ctx->ViewportArray[idx]._WindowMap,
-                         ctx->ViewportArray[idx].X,
-                         ctx->ViewportArray[idx].Y,
-                         ctx->ViewportArray[idx].Width,
-                         ctx->ViewportArray[idx].Height,
-                         ctx->ViewportArray[idx].Near,
-                         ctx->ViewportArray[idx].Far,
-                         ctx->DrawBuffer->_DepthMaxF);
-#endif
 }
 
 struct gl_viewport_inputs {
@@ -136,8 +130,8 @@ _mesa_Viewport(GLint x, GLint y, GLsizei width, GLsizei height)
 
 
 /**
- * Set new viewport parameters and update derived state (the _WindowMap
- * matrix).  Usually called from _mesa_Viewport().
+ * Set new viewport parameters and update derived state.
+ * Usually called from _mesa_Viewport().
  * 
  * \param ctx GL context.
  * \param idx    Index of the viewport to be updated.
@@ -249,21 +243,6 @@ set_depth_range_no_notify(struct gl_context *ctx, unsigned idx,
    ctx->ViewportArray[idx].Near = CLAMP(nearval, 0.0, 1.0);
    ctx->ViewportArray[idx].Far = CLAMP(farval, 0.0, 1.0);
    ctx->NewState |= _NEW_VIEWPORT;
-
-#if 1
-   /* XXX remove this someday.  Currently the DRI drivers rely on
-    * the WindowMap matrix being up to date in the driver's Viewport
-    * and DepthRange functions.
-    */
-   _math_matrix_viewport(&ctx->ViewportArray[idx]._WindowMap,
-                         ctx->ViewportArray[idx].X,
-                         ctx->ViewportArray[idx].Y,
-                         ctx->ViewportArray[idx].Width,
-                         ctx->ViewportArray[idx].Height,
-                         ctx->ViewportArray[idx].Near,
-                         ctx->ViewportArray[idx].Far,
-                         ctx->DrawBuffer->_DepthMaxF);
-#endif
 }
 
 void
@@ -353,6 +332,29 @@ _mesa_DepthRangeArrayv(GLuint first, GLsizei count, const GLclampd *v)
       ctx->Driver.DepthRange(ctx);
 }
 
+void GLAPIENTRY
+_mesa_DepthRangeArrayfvOES(GLuint first, GLsizei count, const GLfloat *v)
+{
+   int i;
+   GET_CURRENT_CONTEXT(ctx);
+
+   if (MESA_VERBOSE & VERBOSE_API)
+      _mesa_debug(ctx, "glDepthRangeArrayfv %d %d\n", first, count);
+
+   if ((first + count) > ctx->Const.MaxViewports) {
+      _mesa_error(ctx, GL_INVALID_VALUE,
+                  "glDepthRangeArrayfv: first (%d) + count (%d) >= MaxViewports (%d)",
+                  first, count, ctx->Const.MaxViewports);
+      return;
+   }
+
+   for (i = 0; i < count; i++)
+      set_depth_range_no_notify(ctx, i + first, v[i * 2], v[i * 2 + 1]);
+
+   if (ctx->Driver.DepthRange)
+      ctx->Driver.DepthRange(ctx);
+}
+
 /**
  * Update a single DepthRange
  *
@@ -381,14 +383,22 @@ _mesa_DepthRangeIndexed(GLuint index, GLclampd nearval, GLclampd farval)
    _mesa_set_depth_range(ctx, index, nearval, farval);
 }
 
+void GLAPIENTRY
+_mesa_DepthRangeIndexedfOES(GLuint index, GLfloat nearval, GLfloat farval)
+{
+   _mesa_DepthRangeIndexed(index, nearval, farval);
+}
+
 /** 
  * Initialize the context viewport attribute group.
  * \param ctx  the GL context.
  */
 void _mesa_init_viewport(struct gl_context *ctx)
 {
-   GLfloat depthMax = 65535.0F; /* sorf of arbitrary */
    unsigned i;
+
+   ctx->Transform.ClipOrigin = GL_LOWER_LEFT;
+   ctx->Transform.ClipDepthMode = GL_NEGATIVE_ONE_TO_ONE;
 
    /* Note: ctx->Const.MaxViewports may not have been set by the driver yet,
     * so just initialize all of them.
@@ -401,23 +411,92 @@ void _mesa_init_viewport(struct gl_context *ctx)
       ctx->ViewportArray[i].Height = 0;
       ctx->ViewportArray[i].Near = 0.0;
       ctx->ViewportArray[i].Far = 1.0;
-      _math_matrix_ctr(&ctx->ViewportArray[i]._WindowMap);
-
-      _math_matrix_viewport(&ctx->ViewportArray[i]._WindowMap, 0, 0, 0, 0,
-                            0.0F, 1.0F, depthMax);
    }
 }
 
 
-/** 
- * Free the context viewport attribute group data.
- * \param ctx  the GL context.
- */
-void _mesa_free_viewport_data(struct gl_context *ctx)
+extern void GLAPIENTRY
+_mesa_ClipControl(GLenum origin, GLenum depth)
 {
-   unsigned i;
+   GET_CURRENT_CONTEXT(ctx);
 
-   for (i = 0; i < MAX_VIEWPORTS; i++)
-      _math_matrix_dtr(&ctx->ViewportArray[i]._WindowMap);
+   if (MESA_VERBOSE&VERBOSE_API)
+      _mesa_debug(ctx, "glClipControl(%s, %s)\n",
+	          _mesa_enum_to_string(origin),
+                  _mesa_enum_to_string(depth));
+
+   ASSERT_OUTSIDE_BEGIN_END(ctx);
+
+   if (!ctx->Extensions.ARB_clip_control) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "glClipControl");
+      return;
+   }
+
+   if (origin != GL_LOWER_LEFT && origin != GL_UPPER_LEFT) {
+      _mesa_error(ctx, GL_INVALID_ENUM, "glClipControl");
+      return;
+   }
+
+   if (depth != GL_NEGATIVE_ONE_TO_ONE && depth != GL_ZERO_TO_ONE) {
+      _mesa_error(ctx, GL_INVALID_ENUM, "glClipControl");
+      return;
+   }
+
+   if (ctx->Transform.ClipOrigin == origin &&
+       ctx->Transform.ClipDepthMode == depth)
+      return;
+
+   /* Affects transform state and the viewport transform */
+   FLUSH_VERTICES(ctx, _NEW_TRANSFORM | _NEW_VIEWPORT);
+
+   if (ctx->Transform.ClipOrigin != origin) {
+      ctx->Transform.ClipOrigin = origin;
+
+      /* Affects the winding order of the front face. */
+      ctx->NewState |= _NEW_POLYGON;
+
+      if (ctx->Driver.FrontFace)
+         ctx->Driver.FrontFace(ctx, ctx->Polygon.FrontFace);
+   }
+
+   if (ctx->Transform.ClipDepthMode != depth) {
+      ctx->Transform.ClipDepthMode = depth;
+
+      if (ctx->Driver.DepthRange)
+         ctx->Driver.DepthRange(ctx);
+   }
 }
 
+/**
+ * Computes the scaling and the translation part of the
+ * viewport transform matrix of the \param i-th viewport
+ * and writes that into \param scale and \param translate.
+ */
+void
+_mesa_get_viewport_xform(struct gl_context *ctx, unsigned i,
+                         float scale[3], float translate[3])
+{
+   float x = ctx->ViewportArray[i].X;
+   float y = ctx->ViewportArray[i].Y;
+   float half_width = 0.5f * ctx->ViewportArray[i].Width;
+   float half_height = 0.5f * ctx->ViewportArray[i].Height;
+   double n = ctx->ViewportArray[i].Near;
+   double f = ctx->ViewportArray[i].Far;
+
+   scale[0] = half_width;
+   translate[0] = half_width + x;
+   if (ctx->Transform.ClipOrigin == GL_UPPER_LEFT) {
+      scale[1] = -half_height;
+   } else {
+      scale[1] = half_height;
+   }
+   translate[1] = half_height + y;
+
+   if (ctx->Transform.ClipDepthMode == GL_NEGATIVE_ONE_TO_ONE) {
+      scale[2] = 0.5 * (f - n);
+      translate[2] = 0.5 * (n + f);
+   } else {
+      scale[2] = f - n;
+      translate[2] = n;
+   }
+}

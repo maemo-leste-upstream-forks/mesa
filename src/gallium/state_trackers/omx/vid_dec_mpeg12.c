@@ -61,10 +61,24 @@ static uint8_t default_non_intra_matrix[64] = {
 
 static void vid_dec_mpeg12_Decode(vid_dec_PrivateType *priv, struct vl_vlc *vlc, unsigned min_bits_left);
 static void vid_dec_mpeg12_EndFrame(vid_dec_PrivateType *priv);
-static struct pipe_video_buffer *vid_dec_mpeg12_Flush(vid_dec_PrivateType *priv);
+static struct pipe_video_buffer *vid_dec_mpeg12_Flush(vid_dec_PrivateType *priv, OMX_TICKS *timestamp);
 
 void vid_dec_mpeg12_Init(vid_dec_PrivateType *priv)
 {
+   struct pipe_video_codec templat = {};
+   omx_base_video_PortType *port;
+
+   port = (omx_base_video_PortType *)priv->ports[OMX_BASE_FILTER_INPUTPORT_INDEX];
+   templat.profile = priv->profile;
+   templat.entrypoint = PIPE_VIDEO_ENTRYPOINT_BITSTREAM;
+   templat.chroma_format = PIPE_VIDEO_CHROMA_FORMAT_420;
+   templat.max_references = 2;
+   templat.expect_chunked_decode = true;
+   templat.width = port->sPortParam.format.video.nFrameWidth;
+   templat.height = port->sPortParam.format.video.nFrameHeight;
+
+   priv->codec = priv->pipe->create_video_codec(priv->pipe, &templat);
+
    priv->picture.base.profile = PIPE_VIDEO_PROFILE_MPEG2_MAIN;
    priv->picture.mpeg12.intra_matrix = default_intra_matrix;
    priv->picture.mpeg12.non_intra_matrix = default_non_intra_matrix;
@@ -117,10 +131,12 @@ static void vid_dec_mpeg12_EndFrame(vid_dec_PrivateType *priv)
    priv->in_buffers[0]->pInputPortPrivate = done;
 }
 
-static struct pipe_video_buffer *vid_dec_mpeg12_Flush(vid_dec_PrivateType *priv)
+static struct pipe_video_buffer *vid_dec_mpeg12_Flush(vid_dec_PrivateType *priv, OMX_TICKS *timestamp)
 {
    struct pipe_video_buffer *result = priv->picture.mpeg12.ref[1];
    priv->picture.mpeg12.ref[1] = NULL;
+   if (timestamp)
+      *timestamp = OMX_VID_DEC_TIMESTAMP_INVALID;
    return result;
 }
 

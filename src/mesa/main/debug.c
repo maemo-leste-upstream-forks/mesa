@@ -23,13 +23,14 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include <stdio.h>
 #include "mtypes.h"
 #include "attrib.h"
-#include "colormac.h"
 #include "enums.h"
 #include "formats.h"
 #include "hash.h"
 #include "imports.h"
+#include "macros.h"
 #include "debug.h"
 #include "get.h"
 #include "pixelstore.h"
@@ -58,8 +59,8 @@ tex_target_name(GLenum tgt)
       { GL_TEXTURE_EXTERNAL_OES, "GL_TEXTURE_EXTERNAL_OES" }
    };
    GLuint i;
-   STATIC_ASSERT(Elements(tex_targets) == NUM_TEXTURE_TARGETS);
-   for (i = 0; i < Elements(tex_targets); i++) {
+   STATIC_ASSERT(ARRAY_SIZE(tex_targets) == NUM_TEXTURE_TARGETS);
+   for (i = 0; i < ARRAY_SIZE(tex_targets); i++) {
       if (tex_targets[i].target == tgt)
          return tex_targets[i].name;
    }
@@ -117,11 +118,6 @@ void _mesa_print_info( struct gl_context *ctx )
     */
    _mesa_debug(NULL, "Mesa GL_EXTENSIONS = %s\n", ctx->Extensions.String);
 
-#if defined(THREADS)
-   _mesa_debug(NULL, "Mesa thread-safe: YES\n");
-#else
-   _mesa_debug(NULL, "Mesa thread-safe: NO\n");
-#endif
 #if defined(USE_X86_ASM)
    _mesa_debug(NULL, "Mesa x86-optimized: YES\n");
 #else
@@ -168,7 +164,7 @@ set_verbose_flags(const char *str)
       return;
 
    MESA_VERBOSE = 0x0;
-   for (i = 0; i < Elements(opts); i++) {
+   for (i = 0; i < ARRAY_SIZE(opts); i++) {
       if (strstr(str, opts[i].name) || strcmp(str, "all") == 0)
          MESA_VERBOSE |= opts[i].flag;
    }
@@ -201,7 +197,7 @@ set_debug_flags(const char *str)
       return;
 
    MESA_DEBUG_FLAGS = 0x0;
-   for (i = 0; i < Elements(opts); i++) {
+   for (i = 0; i < ARRAY_SIZE(opts); i++) {
       if (strstr(str, opts[i].name))
          MESA_DEBUG_FLAGS |= opts[i].flag;
    }
@@ -215,8 +211,8 @@ set_debug_flags(const char *str)
 void 
 _mesa_init_debug( struct gl_context *ctx )
 {
-   set_debug_flags(_mesa_getenv("MESA_DEBUG"));
-   set_verbose_flags(_mesa_getenv("MESA_VERBOSE"));
+   set_debug_flags(getenv("MESA_DEBUG"));
+   set_verbose_flags(getenv("MESA_VERBOSE"));
 }
 
 
@@ -276,7 +272,9 @@ write_texture_image(struct gl_texture_object *texObj,
       store = ctx->Pack; /* save */
       ctx->Pack = ctx->DefaultPacking;
 
-      ctx->Driver.GetTexImage(ctx, GL_RGBA, GL_UNSIGNED_BYTE, buffer, img);
+      ctx->Driver.GetTexSubImage(ctx,
+                                 0, 0, 0, img->Width, img->Height, img->Depth,
+                                 GL_RGBA, GL_UNSIGNED_BYTE, buffer, img);
 
       /* make filename */
       _mesa_snprintf(s, sizeof(s), "/tmp/tex%u.l%u.f%u.ppm", texObj->Name, level, face);
@@ -415,7 +413,7 @@ dump_renderbuffer(const struct gl_renderbuffer *rb, GLboolean writeImage)
 {
    printf("Renderbuffer %u: %u x %u  IntFormat = %s\n",
 	  rb->Name, rb->Width, rb->Height,
-	  _mesa_lookup_enum_by_nr(rb->InternalFormat));
+	  _mesa_enum_to_string(rb->InternalFormat));
    if (writeImage) {
       _mesa_write_renderbuffer_image(rb);
    }

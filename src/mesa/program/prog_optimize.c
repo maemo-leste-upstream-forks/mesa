@@ -57,55 +57,46 @@ get_src_arg_mask(const struct prog_instruction *inst,
    GLuint read_mask, channel_mask;
    GLuint comp;
 
-   ASSERT(arg < _mesa_num_inst_src_regs(inst->Opcode));
+   assert(arg < _mesa_num_inst_src_regs(inst->Opcode));
 
    /* Form the dst register, find the written channels */
-   if (inst->CondUpdate) {
+   switch (inst->Opcode) {
+   case OPCODE_MOV:
+   case OPCODE_MIN:
+   case OPCODE_MAX:
+   case OPCODE_ABS:
+   case OPCODE_ADD:
+   case OPCODE_MAD:
+   case OPCODE_MUL:
+   case OPCODE_SUB:
+   case OPCODE_CMP:
+   case OPCODE_FLR:
+   case OPCODE_FRC:
+   case OPCODE_LRP:
+   case OPCODE_SGE:
+   case OPCODE_SLT:
+   case OPCODE_SSG:
+      channel_mask = inst->DstReg.WriteMask & dst_mask;
+      break;
+   case OPCODE_RCP:
+   case OPCODE_SIN:
+   case OPCODE_COS:
+   case OPCODE_RSQ:
+   case OPCODE_POW:
+   case OPCODE_EX2:
+   case OPCODE_LOG:
+      channel_mask = WRITEMASK_X;
+      break;
+   case OPCODE_DP2:
+      channel_mask = WRITEMASK_XY;
+      break;
+   case OPCODE_DP3:
+   case OPCODE_XPD:
+      channel_mask = WRITEMASK_XYZ;
+      break;
+   default:
       channel_mask = WRITEMASK_XYZW;
-   }
-   else {
-      switch (inst->Opcode) {
-      case OPCODE_MOV:
-      case OPCODE_MIN:
-      case OPCODE_MAX:
-      case OPCODE_ABS:
-      case OPCODE_ADD:
-      case OPCODE_MAD:
-      case OPCODE_MUL:
-      case OPCODE_SUB:
-      case OPCODE_CMP:
-      case OPCODE_FLR:
-      case OPCODE_FRC:
-      case OPCODE_LRP:
-      case OPCODE_SEQ:
-      case OPCODE_SGE:
-      case OPCODE_SGT:
-      case OPCODE_SLE:
-      case OPCODE_SLT:
-      case OPCODE_SNE:
-      case OPCODE_SSG:
-         channel_mask = inst->DstReg.WriteMask & dst_mask;
-         break;
-      case OPCODE_RCP:
-      case OPCODE_SIN:
-      case OPCODE_COS:
-      case OPCODE_RSQ:
-      case OPCODE_POW:
-      case OPCODE_EX2:
-      case OPCODE_LOG:
-         channel_mask = WRITEMASK_X;
-         break;
-      case OPCODE_DP2:
-         channel_mask = WRITEMASK_XY;
-         break;
-      case OPCODE_DP3:
-      case OPCODE_XPD:
-         channel_mask = WRITEMASK_XYZ;
-         break;
-      default:
-         channel_mask = WRITEMASK_XYZW;
-         break;
-      }
+      break;
    }
 
    /* Now, given the src swizzle and the written channels, find which
@@ -133,7 +124,7 @@ get_dst_mask_for_mov(const struct prog_instruction *mov, GLuint src_mask)
    GLuint comp;
    GLuint updated_mask = 0x0;
 
-   ASSERT(mov->Opcode == OPCODE_MOV);
+   assert(mov->Opcode == OPCODE_MOV);
 
    for (comp = 0; comp < 4; ++comp) {
       GLuint src_comp;
@@ -225,13 +216,13 @@ replace_regs(struct gl_program *prog, gl_register_file file, const GLint map[])
       for (j = 0; j < numSrc; j++) {
          if (inst->SrcReg[j].File == file) {
             GLuint index = inst->SrcReg[j].Index;
-            ASSERT(map[index] >= 0);
+            assert(map[index] >= 0);
             inst->SrcReg[j].Index = map[index];
          }
       }
       if (inst->DstReg.File == file) {
          const GLuint index = inst->DstReg.Index;
-         ASSERT(map[index] >= 0);
+         assert(map[index] >= 0);
          inst->DstReg.Index = map[index];
       }
    }
@@ -259,7 +250,7 @@ _mesa_remove_dead_code_global(struct gl_program *prog)
    }
 
    removeInst =
-      calloc(1, prog->NumInstructions * sizeof(GLboolean));
+      calloc(prog->NumInstructions, sizeof(GLboolean));
 
    /* Determine which temps are read and written */
    for (i = 0; i < prog->NumInstructions; i++) {
@@ -272,7 +263,7 @@ _mesa_remove_dead_code_global(struct gl_program *prog)
          if (inst->SrcReg[j].File == PROGRAM_TEMPORARY) {
             const GLuint index = inst->SrcReg[j].Index;
             GLuint read_mask;
-            ASSERT(index < REG_ALLOCATE_MAX_PROGRAM_TEMPS);
+            assert(index < REG_ALLOCATE_MAX_PROGRAM_TEMPS);
 	    read_mask = get_src_arg_mask(inst, j, NO_MASK);
 
             if (inst->SrcReg[j].RelAddr) {
@@ -294,24 +285,12 @@ _mesa_remove_dead_code_global(struct gl_program *prog)
 
       /* check dst reg */
       if (inst->DstReg.File == PROGRAM_TEMPORARY) {
-         const GLuint index = inst->DstReg.Index;
-         ASSERT(index < REG_ALLOCATE_MAX_PROGRAM_TEMPS);
+         assert(inst->DstReg.Index < REG_ALLOCATE_MAX_PROGRAM_TEMPS);
 
          if (inst->DstReg.RelAddr) {
             if (dbg)
                printf("abort remove dead code (indirect temp)\n");
             goto done;
-         }
-
-         if (inst->CondUpdate) {
-            /* If we're writing to this register and setting condition
-             * codes we cannot remove the instruction.  Prevent removal
-             * by setting the 'read' flag.
-             */
-            tempRead[index][0] = GL_TRUE;
-            tempRead[index][1] = GL_TRUE;
-            tempRead[index][2] = GL_TRUE;
-            tempRead[index][3] = GL_TRUE;
          }
       }
    }
@@ -408,7 +387,7 @@ find_next_use(const struct gl_program *prog,
             for (j = 0; j < numSrc; j++) {
                if (inst->SrcReg[j].RelAddr ||
                    (inst->SrcReg[j].File == PROGRAM_TEMPORARY &&
-                   inst->SrcReg[j].Index == index &&
+                   inst->SrcReg[j].Index == (GLint)index &&
                    (get_src_arg_mask(inst,j,NO_MASK) & mask)))
                   return READ;
             }
@@ -461,14 +440,9 @@ can_downward_mov_be_modifed(const struct prog_instruction *mov)
 {
    return
       mov->Opcode == OPCODE_MOV &&
-      mov->CondUpdate == GL_FALSE &&
       mov->SrcReg[0].RelAddr == 0 &&
       mov->SrcReg[0].Negate == 0 &&
-      mov->SrcReg[0].Abs == 0 &&
-      mov->SrcReg[0].HasIndex2 == 0 &&
-      mov->SrcReg[0].RelAddr2 == 0 &&
-      mov->DstReg.RelAddr == 0 &&
-      mov->DstReg.CondMask == COND_TR;
+      mov->DstReg.RelAddr == 0;
 }
 
 
@@ -478,7 +452,7 @@ can_upward_mov_be_modifed(const struct prog_instruction *mov)
    return
       can_downward_mov_be_modifed(mov) &&
       mov->DstReg.File == PROGRAM_TEMPORARY &&
-      mov->SaturateMode == SATURATE_OFF;
+      !mov->Saturate;
 }
 
 
@@ -536,8 +510,7 @@ _mesa_remove_extra_move_use(struct gl_program *prog)
 
 	    if (inst2->SrcReg[arg].File != mov->DstReg.File ||
 		inst2->SrcReg[arg].Index != mov->DstReg.Index ||
-		inst2->SrcReg[arg].RelAddr ||
-		inst2->SrcReg[arg].Abs)
+		inst2->SrcReg[arg].RelAddr)
 	       continue;
             read_mask = get_src_arg_mask(inst2, arg, NO_MASK);
 
@@ -601,7 +574,7 @@ _mesa_remove_dead_code_local(struct gl_program *prog)
    GLuint i, arg, rem = 0;
 
    removeInst =
-      calloc(1, prog->NumInstructions * sizeof(GLboolean));
+      calloc(prog->NumInstructions, sizeof(GLboolean));
 
    for (i = 0; i < prog->NumInstructions; i++) {
       const struct prog_instruction *inst = prog->Instructions + i;
@@ -653,7 +626,7 @@ _mesa_merge_mov_into_inst(struct prog_instruction *inst,
    if (mask != (inst->DstReg.WriteMask & mask))
       return GL_FALSE;
 
-   inst->SaturateMode |= mov->SaturateMode;
+   inst->Saturate |= mov->Saturate;
 
    /* Depending on the instruction, we may need to recompute the swizzles.
     * Also, some other instructions (like TEX) are not linear. We will only
@@ -676,7 +649,7 @@ _mesa_merge_mov_into_inst(struct prog_instruction *inst,
       for (dst_comp = 0; dst_comp < 4; ++dst_comp) {
          if (mov->DstReg.WriteMask & (1 << dst_comp)) {
             const GLuint src_comp = GET_SWZ(mov->SrcReg[0].Swizzle, dst_comp);
-            ASSERT(src_comp < 4);
+            assert(src_comp < 4);
             dst_to_src_comp[dst_comp] = src_comp;
          }
       }
@@ -692,9 +665,9 @@ _mesa_merge_mov_into_inst(struct prog_instruction *inst,
             if ((mov->DstReg.WriteMask & (1 << dst_comp)) == 0)
                continue;
             src_comp = dst_to_src_comp[dst_comp];
-            ASSERT(src_comp < 4);
+            assert(src_comp < 4);
             arg_comp = GET_SWZ(arg_swz, src_comp);
-            ASSERT(arg_comp < 4);
+            assert(arg_comp < 4);
             inst->SrcReg[arg].Swizzle |= arg_comp << (3*dst_comp);
          }
       }
@@ -742,7 +715,7 @@ _mesa_remove_extra_moves(struct gl_program *prog)
    }
 
    removeInst =
-      calloc(1, prog->NumInstructions * sizeof(GLboolean));
+      calloc(prog->NumInstructions, sizeof(GLboolean));
 
    /*
     * Look for sequences such as this:
@@ -786,8 +759,7 @@ _mesa_remove_extra_moves(struct gl_program *prog)
 
             if (prevInst->DstReg.File == PROGRAM_TEMPORARY &&
                 prevInst->DstReg.Index == id &&
-                prevInst->DstReg.RelAddr == 0 &&
-                prevInst->DstReg.CondMask == COND_TR) {
+                prevInst->DstReg.RelAddr == 0) {
 
                const GLuint dst_mask = prevInst->DstReg.WriteMask;
                enum inst_use next_use = find_next_use(prog, i+1, id, dst_mask);
@@ -871,7 +843,7 @@ insert_interval_by_end(struct interval_list *list, const struct interval *inv)
    {
       GLuint i;
       for (i = 0; i + 1 < list->Num; i++) {
-         ASSERT(list->Intervals[i].End <= list->Intervals[i + 1].End);
+         assert(list->Intervals[i].End <= list->Intervals[i + 1].End);
       }
    }
 #endif
@@ -887,8 +859,8 @@ remove_interval(struct interval_list *list, const struct interval *inv)
    for (k = 0; k < list->Num; k++) {
       if (list->Intervals[k].Reg == inv->Reg) {
          /* found, remove it */
-         ASSERT(list->Intervals[k].Start == inv->Start);
-         ASSERT(list->Intervals[k].End == inv->End);
+         assert(list->Intervals[k].Start == inv->Start);
+         assert(list->Intervals[k].End == inv->End);
          while (k < list->Num - 1) {
             list->Intervals[k] = list->Intervals[k + 1];
             k++;
@@ -924,7 +896,7 @@ sort_interval_list_by_start(struct interval_list *list)
    {
       GLuint i;
       for (i = 0; i + 1 < list->Num; i++) {
-         ASSERT(list->Intervals[i].Start <= list->Intervals[i + 1].Start);
+         assert(list->Intervals[i].Start <= list->Intervals[i + 1].Start);
       }
    }
 #endif
@@ -944,7 +916,7 @@ update_interval(GLint intBegin[], GLint intEnd[],
 		struct loop_info *loopStack, GLuint loopStackDepth,
 		GLuint index, GLuint ic)
 {
-   int i;
+   unsigned i;
    GLuint begin = ic;
    GLuint end = ic;
 
@@ -966,9 +938,9 @@ update_interval(GLint intBegin[], GLint intEnd[],
       begin = loopStack[0].Start;
    }
 
-   ASSERT(index < REG_ALLOCATE_MAX_PROGRAM_TEMPS);
+   assert(index < REG_ALLOCATE_MAX_PROGRAM_TEMPS);
    if (intBegin[index] == -1) {
-      ASSERT(intEnd[index] == -1);
+      assert(intEnd[index] == -1);
       intBegin[index] = begin;
       intEnd[index] = end;
    }
@@ -1176,7 +1148,7 @@ _mesa_reallocate_registers(struct gl_program *prog)
                else {
                   /* Interval 'inv' has expired */
                   const GLint regNew = registerMap[inv->Reg];
-                  ASSERT(regNew >= 0);
+                  assert(regNew >= 0);
 
                   if (dbg)
                      printf("  expire interval for reg %u\n", inv->Reg);
@@ -1188,7 +1160,7 @@ _mesa_reallocate_registers(struct gl_program *prog)
                   /* return register regNew to the free pool */
                   if (dbg)
                      printf("  free reg %d\n", regNew);
-                  ASSERT(usedRegs[regNew] == GL_TRUE);
+                  assert(usedRegs[regNew] == GL_TRUE);
                   usedRegs[regNew] = GL_FALSE;
                }
             }

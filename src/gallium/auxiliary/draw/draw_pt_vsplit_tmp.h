@@ -129,7 +129,7 @@ CONCAT(vsplit_primitive_, ELT_TYPE)(struct vsplit_frontend *vsplit,
  * When spoken is TRUE, ispoken replaces istart;  When close is TRUE, iclose is
  * appended.
  */
-static INLINE void
+static inline void
 CONCAT(vsplit_segment_cache_, ELT_TYPE)(struct vsplit_frontend *vsplit,
                                         unsigned flags,
                                         unsigned istart, unsigned icount,
@@ -248,6 +248,9 @@ vsplit_segment_loop_linear(struct vsplit_frontend *vsplit, unsigned flags,
    unsigned nr;
 
    assert(icount + !!close_loop <= vsplit->segment_size);
+
+   /* need to draw the sections of the line loop as line strips */
+   flags |= DRAW_LINE_LOOP_AS_STRIP;
 
    if (close_loop) {
       for (nr = 0; nr < icount; nr++)

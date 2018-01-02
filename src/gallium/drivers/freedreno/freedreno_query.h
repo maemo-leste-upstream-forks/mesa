@@ -37,7 +37,7 @@ struct fd_query;
 struct fd_query_funcs {
 	void (*destroy_query)(struct fd_context *ctx,
 			struct fd_query *q);
-	void (*begin_query)(struct fd_context *ctx, struct fd_query *q);
+	boolean (*begin_query)(struct fd_context *ctx, struct fd_query *q);
 	void (*end_query)(struct fd_context *ctx, struct fd_query *q);
 	boolean (*get_query_result)(struct fd_context *ctx,
 			struct fd_query *q, boolean wait,
@@ -64,5 +64,17 @@ fd_query(struct pipe_query *pq)
 
 void fd_query_screen_init(struct pipe_screen *pscreen);
 void fd_query_context_init(struct pipe_context *pctx);
+
+static inline bool
+skip_begin_query(int type)
+{
+	switch (type) {
+	case PIPE_QUERY_TIMESTAMP:
+	case PIPE_QUERY_GPU_FINISHED:
+		return true;
+	default:
+		return false;
+	}
+}
 
 #endif /* FREEDRENO_QUERY_H_ */

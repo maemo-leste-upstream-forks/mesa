@@ -62,6 +62,7 @@ struct brw_clip_prog_key {
 
    GLfloat offset_factor;
    GLfloat offset_units;
+   GLfloat offset_clamp;
 };
 
 
@@ -74,7 +75,7 @@ struct brw_clip_prog_key {
 #define PRIM_MASK  (0x1f)
 
 struct brw_clip_compile {
-   struct brw_compile func;
+   struct brw_codegen func;
    struct brw_clip_prog_key key;
    struct brw_clip_prog_data prog_data;
 

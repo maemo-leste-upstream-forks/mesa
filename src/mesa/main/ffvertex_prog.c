@@ -44,6 +44,7 @@
 #include "program/prog_parameter.h"
 #include "program/prog_print.h"
 #include "program/prog_statevars.h"
+#include "util/bitscan.h"
 
 
 /** Max of number of lights and texture coord units */
@@ -135,7 +136,7 @@ static GLboolean check_active_shininess( struct gl_context *ctx,
        (key->light_color_material_mask & (1 << attr)))
       return GL_TRUE;
 
-   if (key->varying_vp_inputs & VERT_ATTRIB_GENERIC(attr))
+   if (key->varying_vp_inputs & VERT_BIT_GENERIC(attr))
       return GL_TRUE;
 
    if (ctx->Light.Material.Attrib[attr][0] != 0.0F)
@@ -148,7 +149,7 @@ static GLboolean check_active_shininess( struct gl_context *ctx,
 static void make_state_key( struct gl_context *ctx, struct state_key *key )
 {
    const struct gl_fragment_program *fp;
-   GLuint i;
+   GLbitfield mask;
 
    memset(key, 0, sizeof(struct state_key));
    fp = ctx->FragmentProgram._Current;
@@ -183,23 +184,23 @@ static void make_state_key( struct gl_context *ctx, struct state_key *key )
 	 key->light_color_material_mask = ctx->Light._ColorMaterialBitmask;
       }
 
-      for (i = 0; i < MAX_LIGHTS; i++) {
-	 struct gl_light *light = &ctx->Light.Light[i];
+      mask = ctx->Light._EnabledLights;
+      while (mask) {
+         const int i = u_bit_scan(&mask);
+         struct gl_light *light = &ctx->Light.Light[i];
 
-	 if (light->Enabled) {
-	    key->unit[i].light_enabled = 1;
+         key->unit[i].light_enabled = 1;
 
-	    if (light->EyePosition[3] == 0.0)
-	       key->unit[i].light_eyepos3_is_zero = 1;
+         if (light->EyePosition[3] == 0.0F)
+            key->unit[i].light_eyepos3_is_zero = 1;
 
-	    if (light->SpotCutoff == 180.0)
-	       key->unit[i].light_spotcutoff_is_180 = 1;
+         if (light->SpotCutoff == 180.0F)
+            key->unit[i].light_spotcutoff_is_180 = 1;
 
-	    if (light->ConstantAttenuation != 1.0 ||
-		light->LinearAttenuation != 0.0 ||
-		light->QuadraticAttenuation != 0.0)
-	       key->unit[i].light_attenuated = 1;
-	 }
+         if (light->ConstantAttenuation != 1.0F ||
+             light->LinearAttenuation != 0.0F ||
+             light->QuadraticAttenuation != 0.0F)
+            key->unit[i].light_attenuated = 1;
       }
 
       if (check_active_shininess(ctx, key, 0)) {
@@ -236,14 +237,17 @@ static void make_state_key( struct gl_context *ctx, struct state_key *key )
        ctx->Texture._MaxEnabledTexImageUnit != -1)
       key->texture_enabled_global = 1;
 
-   for (i = 0; i < MAX_TEXTURE_COORD_UNITS; i++) {
+   mask = ctx->Texture._EnabledCoordUnits | ctx->Texture._TexGenEnabled
+      | ctx->Texture._TexMatEnabled | ctx->Point.CoordReplace;
+   while (mask) {
+      const int i = u_bit_scan(&mask);
       struct gl_texture_unit *texUnit = &ctx->Texture.Unit[i];
 
       if (texUnit->_Current)
 	 key->unit[i].texunit_really_enabled = 1;
 
       if (ctx->Point.PointSprite)
-	 if (ctx->Point.CoordReplace[i])
+	 if (ctx->Point.CoordReplace & (1u << i))
 	    key->unit[i].coord_replace = 1;
 
       if (ctx->Texture._TexMatEnabled & ENABLE_TEXMAT(i))
@@ -302,7 +306,7 @@ struct ureg {
 struct tnl_program {
    const struct state_key *state;
    struct gl_vertex_program *program;
-   GLint max_inst;  /** number of instructions allocated for program */
+   GLuint max_inst;  /** number of instructions allocated for program */
    GLboolean mvp_with_dp4;
 
    GLuint temp_in_use;
@@ -347,7 +351,6 @@ static struct ureg make_ureg(GLuint file, GLint idx)
    reg.pad = 0;
    return reg;
 }
-
 
 
 static struct ureg negate( struct ureg reg )
@@ -479,7 +482,7 @@ static struct ureg register_const4f( struct tnl_program *p,
    values[3].f = s3;
    idx = _mesa_add_unnamed_constant( p->program->Base.Parameters, values, 4,
                                      &swizzle );
-   ASSERT(swizzle == SWIZZLE_NOOP);
+   assert(swizzle == SWIZZLE_NOOP);
    return make_ureg(PROGRAM_CONSTANT, idx);
 }
 
@@ -527,10 +530,9 @@ static void emit_arg( struct prog_src_register *src,
    src->Index = reg.idx;
    src->Swizzle = reg.swz;
    src->Negate = reg.negate ? NEGATE_XYZW : NEGATE_NONE;
-   src->Abs = 0;
    src->RelAddr = 0;
    /* Check that bitfield sizes aren't exceeded */
-   ASSERT(src->Index == reg.idx);
+   assert(src->Index == reg.idx);
 }
 
 
@@ -541,10 +543,8 @@ static void emit_dst( struct prog_dst_register *dst,
    dst->Index = reg.idx;
    /* allow zero as a shorthand for xyzw */
    dst->WriteMask = mask ? mask : WRITEMASK_XYZW;
-   dst->CondMask = COND_TR;  /* always pass cond test */
-   dst->CondSwizzle = SWIZZLE_NOOP;
    /* Check that bitfield sizes aren't exceeded */
-   ASSERT(dst->Index == reg.idx);
+   assert(dst->Index == reg.idx);
 }
 
 
@@ -578,7 +578,7 @@ static void emit_op3fn(struct tnl_program *p,
    GLuint nr;
    struct prog_instruction *inst;
 
-   assert((GLint) p->program->Base.NumInstructions <= p->max_inst);
+   assert(p->program->Base.NumInstructions <= p->max_inst);
 
    if (p->program->Base.NumInstructions == p->max_inst) {
       /* need to extend the program's instruction array */
@@ -619,13 +619,13 @@ static void emit_op3fn(struct tnl_program *p,
 
 
 #define emit_op3(p, op, dst, mask, src0, src1, src2) \
-   emit_op3fn(p, op, dst, mask, src0, src1, src2, __FUNCTION__, __LINE__)
+   emit_op3fn(p, op, dst, mask, src0, src1, src2, __func__, __LINE__)
 
 #define emit_op2(p, op, dst, mask, src0, src1) \
-    emit_op3fn(p, op, dst, mask, src0, src1, undef, __FUNCTION__, __LINE__)
+    emit_op3fn(p, op, dst, mask, src0, src1, undef, __func__, __LINE__)
 
 #define emit_op1(p, op, dst, mask, src0) \
-    emit_op3fn(p, op, dst, mask, src0, undef, undef, __FUNCTION__, __LINE__)
+    emit_op3fn(p, op, dst, mask, src0, undef, undef, __func__, __LINE__)
 
 
 static struct ureg make_temp( struct tnl_program *p, struct ureg reg )
@@ -953,6 +953,7 @@ static struct ureg calculate_light_attenuation( struct tnl_program *p,
 
       emit_op2(p, OPCODE_DP3, spot, 0, negate(VPpli), spot_dir_norm);
       emit_op2(p, OPCODE_SLT, slt, 0, swizzle1(spot_dir_norm,W), spot);
+      emit_op1(p, OPCODE_ABS, spot, 0, spot);
       emit_op2(p, OPCODE_POW, spot, 0, spot, swizzle1(attenuation, W));
       emit_op2(p, OPCODE_MUL, att, 0, slt, spot);
 
@@ -1657,7 +1658,7 @@ _mesa_get_fixed_func_vertex_program(struct gl_context *ctx)
    struct gl_vertex_program *prog;
    struct state_key key;
 
-   /* Grab all the relevent state and put it in a single structure:
+   /* Grab all the relevant state and put it in a single structure:
     */
    make_state_key(ctx, &key);
 
@@ -1679,11 +1680,10 @@ _mesa_get_fixed_func_vertex_program(struct gl_context *ctx)
                           ctx->Const.ShaderCompilerOptions[MESA_SHADER_VERTEX].OptimizeForAOS,
                           ctx->Const.Program[MESA_SHADER_VERTEX].MaxTemps );
 
-#if 0
       if (ctx->Driver.ProgramStringNotify)
          ctx->Driver.ProgramStringNotify( ctx, GL_VERTEX_PROGRAM_ARB,
                                           &prog->Base );
-#endif
+
       _mesa_program_cache_insert(ctx, ctx->VertexProgram.Cache,
                                  &key, sizeof(key), &prog->Base);
    }

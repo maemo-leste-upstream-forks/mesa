@@ -1,6 +1,4 @@
 /*
- * Mesa 3-D graphics library
- *
  * Copyright (C) 2014 LunarG, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -25,27 +23,49 @@
 #ifndef GENHW_H
 #define GENHW_H
 
-#include "pipe/p_compiler.h"
-#include "util/u_debug.h"
+#include <stdbool.h>
+#include <stdint.h>
+#include <assert.h>
 
 #include "gen_regs.xml.h"
 #include "gen_mi.xml.h"
 #include "gen_blitter.xml.h"
+#include "gen_render.xml.h"
 #include "gen_render_surface.xml.h"
 #include "gen_render_dynamic.xml.h"
 #include "gen_render_3d.xml.h"
+#include "gen_render_media.xml.h"
 #include "gen_eu_isa.xml.h"
 #include "gen_eu_message.xml.h"
 
-#define GEN_MI_CMD(op) (GEN6_MI_TYPE_MI | GEN6_MI_OPCODE_ ## op)
+#define GEN_MI_CMD(gen, op) (GEN6_MI_TYPE_MI | gen ## _MI_OPCODE_ ## op)
+#define GEN6_MI_CMD(op) GEN_MI_CMD(GEN6, op)
+#define GEN7_MI_CMD(op) GEN_MI_CMD(GEN7, op)
 
-#define GEN_BLITTER_CMD(op) \
-   (GEN6_BLITTER_TYPE_BLITTER | GEN6_BLITTER_OPCODE_ ## op)
+#define GEN_BLITTER_CMD(gen, op) \
+   (GEN6_BLITTER_TYPE_BLITTER | gen ## _BLITTER_OPCODE_ ## op)
+#define GEN6_BLITTER_CMD(op) GEN_BLITTER_CMD(GEN6, op)
 
-#define GEN_RENDER_CMD(subtype, op)    \
-   (GEN6_RENDER_TYPE_RENDER |          \
-    GEN6_RENDER_SUBTYPE_ ## subtype |  \
-    GEN6_RENDER_OPCODE_ ## op)
+#define GEN_RENDER_CMD(subtype, gen, op)  \
+   (GEN6_RENDER_TYPE_RENDER |             \
+    GEN6_RENDER_SUBTYPE_ ## subtype |     \
+    gen ## _RENDER_OPCODE_ ## op)
+#define GEN6_RENDER_CMD(subtype, op) GEN_RENDER_CMD(subtype, GEN6, op)
+#define GEN7_RENDER_CMD(subtype, op) GEN_RENDER_CMD(subtype, GEN7, op)
+#define GEN75_RENDER_CMD(subtype, op) GEN_RENDER_CMD(subtype, GEN75, op)
+#define GEN8_RENDER_CMD(subtype, op) GEN_RENDER_CMD(subtype, GEN8, op)
+
+#define GEN_EXTRACT(bits, field) (((bits) & field ## __MASK) >> field ## __SHIFT)
+#define GEN_SHIFT32(bits, field) gen_shift32(bits, field ## __MASK, field ## __SHIFT)
+
+static inline uint32_t
+gen_shift32(uint32_t bits, uint32_t mask, int shift)
+{
+   bits <<= shift;
+
+   assert((bits & mask) == bits);
+   return bits & mask;
+}
 
 static inline bool
 gen_is_snb(int devid)
@@ -157,6 +177,36 @@ gen_get_hsw_gt(int devid)
 }
 
 static inline bool
+gen_is_bdw(int devid)
+{
+   return (devid == 0x1602 || /* GT1 ULT */
+           devid == 0x1606 || /* GT1 ULT */
+           devid == 0x160a || /* GT1 server */
+           devid == 0x160b || /* GT1 Iris */
+           devid == 0x160d || /* GT1 workstation */
+           devid == 0x160e || /* GT1 ULX */
+           devid == 0x1612 || /* GT2 */
+           devid == 0x1616 ||
+           devid == 0x161a ||
+           devid == 0x161b ||
+           devid == 0x161d ||
+           devid == 0x161e ||
+           devid == 0x1622 || /* GT3 */
+           devid == 0x1626 ||
+           devid == 0x162a ||
+           devid == 0x162b ||
+           devid == 0x162d ||
+           devid == 0x162e);
+}
+
+static inline int
+gen_get_bdw_gt(int devid)
+{
+   assert(gen_is_bdw(devid));
+   return ((devid & 0x30) >> 4) + 1;
+}
+
+static inline bool
 gen_is_vlv(int devid)
 {
    return (devid == 0x0f30 ||
@@ -168,9 +218,19 @@ gen_is_vlv(int devid)
 }
 
 static inline bool
+gen_is_chv(int devid)
+{
+   return (devid == 0x22b0 ||
+           devid == 0x22b1 ||
+           devid == 0x22b2 ||
+           devid == 0x22b3);
+}
+
+static inline bool
 gen_is_atom(int devid)
 {
-   return gen_is_vlv(devid);
+   return (gen_is_vlv(devid) ||
+           gen_is_chv(devid));
 }
 
 static inline bool

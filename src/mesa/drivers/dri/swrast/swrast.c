@@ -32,6 +32,7 @@
  * The back-buffer is allocated by the driver and is private.
  */
 
+#include <stdio.h>
 #include "main/api_exec.h"
 #include "main/context.h"
 #include "main/extensions.h"
@@ -54,15 +55,21 @@
 
 #include "main/teximage.h"
 #include "main/texformat.h"
+#include "main/texobj.h"
 #include "main/texstate.h"
 
 #include "swrast_priv.h"
 #include "swrast/s_context.h"
 
+#include <sys/types.h>
+#ifdef HAVE_SYS_SYSCTL_H
+# include <sys/sysctl.h>
+#endif
+
 const __DRIextension **__driDriverGetExtensions_swrast(void);
 
-const char const *swrast_vendor_string = "Mesa Project";
-const char const *swrast_renderer_string = "Software Rasterizer";
+const char * const swrast_vendor_string = "Mesa Project";
+const char * const swrast_renderer_string = "Software Rasterizer";
 
 /**
  * Screen and config-related functions
@@ -135,6 +142,16 @@ swrast_query_renderer_integer(__DRIscreen *psp, int param,
       value[0] = 0;
       return 0;
    case __DRI2_RENDERER_VIDEO_MEMORY: {
+      /* This should probably share code with os_get_total_physical_memory()
+       * from src/gallium/auxiliary/os/os_misc.c
+       */
+#if defined(CTL_HW) && defined(HW_MEMSIZE)
+        int mib[2] = { CTL_HW, HW_MEMSIZE };
+        unsigned long system_memory_bytes;
+        size_t len = sizeof(system_memory_bytes);
+        if (sysctl(mib, 2, &system_memory_bytes, &len, NULL, 0) != 0)
+            return -1;
+#elif defined(_SC_PHYS_PAGES) && defined(_SC_PAGE_SIZE)
       /* XXX: Do we want to return the full amount of system memory ? */
       const long system_memory_pages = sysconf(_SC_PHYS_PAGES);
       const long system_page_size = sysconf(_SC_PAGE_SIZE);
@@ -144,6 +161,9 @@ swrast_query_renderer_integer(__DRIscreen *psp, int param,
 
       const uint64_t system_memory_bytes = (uint64_t) system_memory_pages
          * (uint64_t) system_page_size;
+#else
+#error "Unsupported platform"
+#endif
 
       const unsigned system_memory_megabytes =
          (unsigned) (system_memory_bytes / (1024 * 1024));
@@ -253,7 +273,7 @@ swrastFillInModes(__DRIscreen *psp,
 			       depth_bits_array, stencil_bits_array,
 			       depth_buffer_factor, back_buffer_modes,
 			       back_buffer_factor, msaa_samples_array, 1,
-			       GL_TRUE);
+			       GL_TRUE, GL_FALSE);
     if (configs == NULL) {
 	fprintf(stderr, "[%s:%u] Error creating FBConfig!\n", __func__,
 		__LINE__);
@@ -324,7 +344,7 @@ choose_pixel_format(const struct gl_config *v)
 	     && v->blueMask  == 0xc0)
 	return PF_R3G3B2;
 
-    _mesa_problem( NULL, "unexpected format in %s", __FUNCTION__ );
+    _mesa_problem( NULL, "unexpected format in %s", __func__ );
     return 0;
 }
 
@@ -340,7 +360,7 @@ swrast_delete_renderbuffer(struct gl_context *ctx, struct gl_renderbuffer *rb)
 }
 
 /* see bytes_per_line in libGL */
-static INLINE int
+static inline int
 bytes_per_line(unsigned pitch_bits, unsigned mul)
 {
    unsigned mask = mul - 1;
@@ -464,14 +484,14 @@ swrast_map_renderbuffer(struct gl_context *ctx,
 
       xrb->map_mode = mode;
       xrb->map_x = x;
-      xrb->map_y = y;
+      xrb->map_y = rb->Height - y - h;
       xrb->map_w = w;
       xrb->map_h = h;
 
       stride = w * cpp;
       xrb->Base.Buffer = malloc(h * stride);
 
-      sPriv->swrast_loader->getImage(dPriv, x, rb->Height - y - h, w, h,
+      sPriv->swrast_loader->getImage(dPriv, x, xrb->map_y, w, h,
 				     (char *) xrb->Base.Buffer,
 				     dPriv->loaderPrivate);
 
@@ -480,7 +500,7 @@ swrast_map_renderbuffer(struct gl_context *ctx,
       return;
    }
 
-   ASSERT(xrb->Base.Buffer);
+   assert(xrb->Base.Buffer);
 
    if (rb->AllocStorage == swrast_alloc_back_storage) {
       map += (rb->Height - 1) * stride;
@@ -772,9 +792,6 @@ dri_create_context(gl_api api,
 
     driContextSetFlags(mesaCtx, flags);
 
-    /* do bounds checking to prevent segfaults and server crashes! */
-    mesaCtx->Const.CheckArrayBounds = GL_TRUE;
-
     /* create module contexts */
     _swrast_CreateContext( mesaCtx );
     _vbo_CreateContext( mesaCtx );
@@ -943,6 +960,7 @@ static const __DRIextension *swrast_driver_extensions[] = {
     &driCoreExtension.base,
     &driSWRastExtension.base,
     &driCopySubBufferExtension.base,
+    &dri2ConfigQueryExtension.base,
     &swrast_vtable.base,
     NULL
 };

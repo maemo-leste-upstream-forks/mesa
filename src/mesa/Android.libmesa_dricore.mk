@@ -32,8 +32,6 @@ LOCAL_PATH := $(call my-dir)
 #     MESA_FILES
 #     X86_FILES
 include $(LOCAL_PATH)/Makefile.sources
-SRCDIR :=
-BUILDDIR :=
 
 include $(CLEAR_VARS)
 
@@ -50,19 +48,25 @@ endif # x86
 endif # MESA_ENABLE_ASM
 
 ifeq ($(ARCH_X86_HAVE_SSE4_1),true)
-LOCAL_SRC_FILES += \
-	$(SRCDIR)main/streaming-load-memcpy.c
-LOCAL_CFLAGS := -msse4.1
+LOCAL_WHOLE_STATIC_LIBRARIES := \
+	libmesa_sse41
+LOCAL_CFLAGS := \
+	-msse4.1 \
+       -DUSE_SSE41
 endif
 
 LOCAL_C_INCLUDES := \
-	$(call intermediates-dir-for STATIC_LIBRARIES,libmesa_program,,) \
-	$(MESA_TOP)/src \
 	$(MESA_TOP)/src/mapi \
-	$(MESA_TOP)/src/glsl \
-	$(MESA_TOP)/src/gallium/auxiliary
+	$(MESA_TOP)/src/mesa/main \
+	$(MESA_TOP)/src/compiler/nir \
+	$(MESA_TOP)/src/gallium/include \
+	$(MESA_TOP)/src/gallium/auxiliary \
+	$(dir $(MESA_GEN_GLSL_H))
 
-LOCAL_WHOLE_STATIC_LIBRARIES := \
+LOCAL_GENERATED_SOURCES += \
+	$(MESA_GEN_GLSL_H)
+
+LOCAL_WHOLE_STATIC_LIBRARIES += \
 	libmesa_program
 
 include $(LOCAL_PATH)/Android.gen.mk

@@ -25,9 +25,10 @@
 # Authors:
 #    Ian Romanick <idr@us.ibm.com>
 
+import argparse
+
 import license
 import gl_XML, glX_XML
-import sys, getopt
 
 class PrintGenericStubs(gl_XML.gl_print_base):
 
@@ -72,15 +73,12 @@ class PrintGenericStubs(gl_XML.gl_print_base):
         print ''
         print '#define GL_OFFSET(x) CODEPTR(REGOFF(4 * x, EAX))'
         print ''
-        print '#if defined(GNU_ASSEMBLER) && !defined(__DJGPP__) && !defined(__MINGW32__) && !defined(__APPLE__)'
+        print '#if defined(GNU_ASSEMBLER) && !defined(__MINGW32__) && !defined(__APPLE__)'
         print '#define GLOBL_FN(x) GLOBL x ; .type x, @function'
         print '#else'
         print '#define GLOBL_FN(x) GLOBL x'
         print '#endif'
         print ''
-        print '#if defined(HAVE_PTHREAD) || defined(_WIN32)'
-        print '#  define THREADS'
-        print '#endif'
         print ''
         print '#ifdef GLX_USE_TLS'
         print ''
@@ -109,7 +107,7 @@ class PrintGenericStubs(gl_XML.gl_print_base):
         print '\tJMP(GL_OFFSET(off)) ;\t\t\t\t\\'
         print '1:\tCALL(_x86_get_dispatch) ;\t\t\t\\'
         print '\tJMP(GL_OFFSET(off))'
-        print '#elif defined(THREADS)'
+        print '#else'
         print '#  define GL_STUB(fn,off,fn_alt)\t\t\t\\'
         print 'ALIGNTEXT16;\t\t\t\t\t\t\\'
         print 'GLOBL_FN(GL_PREFIX(fn, fn_alt));\t\t\t\\'
@@ -119,13 +117,6 @@ class PrintGenericStubs(gl_XML.gl_print_base):
         print '\tJE(1f) ;\t\t\t\t\t\\'
         print '\tJMP(GL_OFFSET(off)) ;\t\t\t\t\\'
         print '1:\tCALL(_glapi_get_dispatch) ;\t\t\t\\'
-        print '\tJMP(GL_OFFSET(off))'
-        print '#else /* Non-threaded version. */'
-        print '#  define GL_STUB(fn,off,fn_alt)\t\t\t\\'
-        print 'ALIGNTEXT16;\t\t\t\t\t\t\\'
-        print 'GLOBL_FN(GL_PREFIX(fn, fn_alt));\t\t\t\\'
-        print 'GL_PREFIX(fn, fn_alt):\t\t\t\t\t\\'
-        print '\tMOV_L(CONTENT(GLNAME(_glapi_Dispatch)), EAX) ;\t\\'
         print '\tJMP(GL_OFFSET(off))'
         print '#endif'
         print ''
@@ -164,7 +155,7 @@ class PrintGenericStubs(gl_XML.gl_print_base):
         print '\tCALL(GLNAME(pthread_getspecific))'
         print '\tADD_L(CONST(28), ESP)'
         print '\tRET'
-        print '#elif defined(THREADS)'
+        print '#else'
         print 'EXTERN GLNAME(_glapi_get_dispatch)'
         print '#endif'
         print ''
@@ -227,30 +218,22 @@ class PrintGenericStubs(gl_XML.gl_print_base):
 
         return
 
-def show_usage():
-    print "Usage: %s [-f input_file_name] [-m output_mode]" % sys.argv[0]
-    sys.exit(1)
+def _parser():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-f',
+                        dest='filename',
+                        default='gl_API.xml',
+                        help='An XML file describing an API.')
+    return parser.parse_args()
+
+
+def main():
+    args = _parser()
+    printer = PrintGenericStubs()
+
+    api = gl_XML.parse_GL_API(args.filename, glX_XML.glx_item_factory())
+    printer.Print(api)
+
 
 if __name__ == '__main__':
-    file_name = "gl_API.xml"
-    mode = "generic"
-
-    try:
-        (args, trail) = getopt.getopt(sys.argv[1:], "m:f:")
-    except Exception,e:
-        show_usage()
-
-    for (arg,val) in args:
-        if arg == '-m':
-            mode = val
-        elif arg == "-f":
-            file_name = val
-
-    if mode == "generic":
-        printer = PrintGenericStubs()
-    else:
-        print "ERROR: Invalid mode \"%s\" specified." % mode
-        show_usage()
-
-    api = gl_XML.parse_GL_API(file_name, glX_XML.glx_item_factory())
-    printer.Print(api)
+    main()

@@ -27,10 +27,13 @@
  * \author Felix Kuehling
  */
 
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 #include <assert.h>
 #include <expat.h>
 #include <fcntl.h>
+#include <math.h>
 #include <unistd.h>
 #include <errno.h>
 #include "main/imports.h"
@@ -53,7 +56,10 @@ extern char *program_invocation_name, *program_invocation_short_name;
 #        include <stdlib.h>
 #        define GET_PROGRAM_NAME() getprogname()
 #    endif
-#elif defined(__NetBSD__) && defined(__NetBSD_Version) && (__NetBSD_Version >= 106000100)
+#elif defined(__NetBSD__) && defined(__NetBSD_Version__) && (__NetBSD_Version__ >= 106000100)
+#    include <stdlib.h>
+#    define GET_PROGRAM_NAME() getprogname()
+#elif defined(__DragonFly__)
 #    include <stdlib.h>
 #    define GET_PROGRAM_NAME() getprogname()
 #elif defined(__APPLE__)
@@ -312,8 +318,7 @@ static unsigned char parseValue (driOptionValue *v, driOptionType type,
 	v->_float = strToF (string, &tail);
 	break;
       case DRI_STRING:
-	if (v->_string)
-	    free (v->_string);
+	free (v->_string);
 	v->_string = strndup(string, STRING_CONF_MAXLEN);
 	return GL_TRUE;
     }
@@ -429,8 +434,10 @@ static void
 __driUtilMessage(const char *f, ...)
 {
     va_list args;
+    const char *libgl_debug;
 
-    if (getenv("LIBGL_DEBUG")) {
+    libgl_debug=getenv("LIBGL_DEBUG");
+    if (libgl_debug && !strstr(libgl_debug, "quiet")) {
         fprintf(stderr, "libGL: ");
         va_start(args, f);
         vfprintf(stderr, f, args);
@@ -931,9 +938,13 @@ static void parseOneConfigFile (XML_Parser p) {
 #undef BUF_SIZE
 }
 
+#ifndef SYSCONFDIR
+#define SYSCONFDIR "/etc"
+#endif
+
 void driParseConfigFiles (driOptionCache *cache, const driOptionCache *info,
 			  int screenNum, const char *driverName) {
-    char *filenames[2] = {"/etc/drirc", NULL};
+    char *filenames[2] = { SYSCONFDIR "/drirc", NULL};
     char *home;
     uint32_t i;
     struct OptConfData userData;

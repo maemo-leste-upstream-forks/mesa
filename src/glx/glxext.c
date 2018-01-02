@@ -138,13 +138,21 @@ __glXWireToEvent(Display *dpy, XEvent *event, xEvent *wire)
       if (!glxDraw)
 	 return False;
 
+      aevent->serial = _XSetLastRequestRead(dpy, (xGenericReply *) wire);
+      aevent->send_event = (awire->type & 0x80) != 0;
+      aevent->display = dpy;
       aevent->event_type = awire->event_type;
       aevent->drawable = glxDraw->xDrawable;
       aevent->ust = ((CARD64)awire->ust_hi << 32) | awire->ust_lo;
       aevent->msc = ((CARD64)awire->msc_hi << 32) | awire->msc_lo;
 
-      if (awire->sbc < glxDraw->lastEventSbc)
-	 glxDraw->eventSbcWrap += 0x100000000;
+      /* Handle 32-Bit wire sbc wraparound in both directions to cope with out
+       * of sequence 64-Bit sbc's
+       */
+      if ((int64_t) awire->sbc < ((int64_t) glxDraw->lastEventSbc - 0x40000000))
+         glxDraw->eventSbcWrap += 0x100000000;
+      if ((int64_t) awire->sbc > ((int64_t) glxDraw->lastEventSbc + 0x40000000))
+         glxDraw->eventSbcWrap -= 0x100000000;
       glxDraw->lastEventSbc = awire->sbc;
       aevent->sbc = awire->sbc + glxDraw->eventSbcWrap;
       return True;
@@ -256,6 +264,13 @@ glx_display_free(struct glx_display *priv)
       (*priv->dri3Display->destroyDisplay) (priv->dri3Display);
    priv->dri3Display = NULL;
 #endif /* GLX_USE_DRM */
+
+#if defined(GLX_USE_WINDOWSGL)
+   if (priv->windowsdriDisplay)
+      (*priv->windowsdriDisplay->destroyDisplay) (priv->windowsdriDisplay);
+   priv->windowsdriDisplay = NULL;
+#endif /* GLX_USE_WINDOWSGL */
+
 #endif /* GLX_DIRECT_RENDERING && !GLX_USE_APPLEGL */
 
    free((char *) priv);
@@ -584,7 +599,7 @@ __glXInitializeVisualConfigFromTags(struct glx_config * config, int count,
     *     GLXPbuffer drawables."
     */
    if (config->floatMode)
-      config->drawableType &= ~(GLX_WINDOW_BIT|GLX_PIXMAP_BIT);
+      config->drawableType &= GLX_PBUFFER_BIT;
 }
 
 static struct glx_config *
@@ -733,8 +748,11 @@ glx_screen_init(struct glx_screen *psc,
    psc->dpy = priv->dpy;
    psc->display = priv;
 
-   getVisualConfigs(psc, priv, screen);
-   getFBConfigs(psc, priv, screen);
+   if (!getVisualConfigs(psc, priv, screen))
+      return GL_FALSE;
+
+   if (!getFBConfigs(psc, priv, screen))
+      return GL_FALSE;
 
    return GL_TRUE;
 }
@@ -792,6 +810,12 @@ AllocAndFetchScreenConfigs(Display * dpy, struct glx_display * priv)
       if (psc == NULL && priv->driDisplay)
 	 psc = (*priv->driDisplay->createScreen) (i, priv);
 #endif /* GLX_USE_DRM */
+
+#ifdef GLX_USE_WINDOWSGL
+      if (psc == NULL && priv->windowsdriDisplay)
+	 psc = (*priv->windowsdriDisplay->createScreen) (i, priv);
+#endif
+
       if (psc == NULL && priv->driswDisplay)
 	 psc = (*priv->driswDisplay->createScreen) (i, priv);
 #endif /* GLX_DIRECT_RENDERING && !GLX_USE_APPLEGL */
@@ -899,6 +923,12 @@ __glXInitialize(Display * dpy)
       return NULL;
    }
 #endif
+
+#ifdef GLX_USE_WINDOWSGL
+   if (glx_direct && glx_accel)
+      dpyPriv->windowsdriDisplay = driwindowsCreateDisplay(dpy);
+#endif
+
    if (!AllocAndFetchScreenConfigs(dpy, dpyPriv)) {
       free(dpyPriv);
       return NULL;

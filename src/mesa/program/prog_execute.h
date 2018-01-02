@@ -63,7 +63,6 @@ struct gl_program_machine
    GLfloat Temporaries[MAX_PROGRAM_TEMPS][4];
    GLfloat Outputs[MAX_PROGRAM_OUTPUTS][4];
    GLfloat (*EnvParams)[4]; /**< Vertex or Fragment env parameters */
-   GLuint CondCodes[4];  /**< COND_* value for x/y/z/w */
    GLint AddressReg[MAX_PROGRAM_ADDRESS_REGS][4];
    GLfloat SystemValues[SYSTEM_VALUE_MAX][4];
 
@@ -77,10 +76,6 @@ struct gl_program_machine
    FetchTexelDerivFunc FetchTexelDeriv;
 };
 
-
-extern void
-_mesa_get_program_register(struct gl_context *ctx, gl_register_file file,
-                           GLuint index, GLfloat val[4]);
 
 extern GLboolean
 _mesa_execute_program(struct gl_context *ctx,

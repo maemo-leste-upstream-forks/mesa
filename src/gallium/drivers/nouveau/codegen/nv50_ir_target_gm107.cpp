@@ -55,11 +55,6 @@ bool
 TargetGM107::isOpSupported(operation op, DataType ty) const
 {
    switch (op) {
-   case OP_MAD:
-   case OP_FMA:
-      if (ty != TYPE_F32)
-         return false;
-      break;
    case OP_SAD:
    case OP_POW:
    case OP_SQRT:
@@ -85,7 +80,7 @@ TargetGM107::runLegalizePass(Program *prog, CGStage stage) const
       return pass.run(prog, false, true);
    } else
    if (stage == CG_STAGE_SSA) {
-      NVC0LegalizeSSA pass;
+      GM107LegalizeSSA pass;
       return pass.run(prog, false, true);
    }
    return false;

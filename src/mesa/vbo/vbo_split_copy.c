@@ -29,6 +29,8 @@
 /* Split indexed primitives with per-vertex copying.
  */
 
+#include <stdio.h>
+
 #include "main/glheader.h"
 #include "main/bufferobj.h"
 #include "main/imports.h"
@@ -154,12 +156,12 @@ dump_draw_info(struct gl_context *ctx,
       printf("  IB: %p\n", (void*) ib);
       for (j = 0; j < VERT_ATTRIB_MAX; j++) {
          printf("    array %d at %p:\n", j, (void*) arrays[j]);
-         printf("      enabled %d, ptr %p, size %d, type 0x%x, stride %d\n",
-		arrays[j]->Enabled, arrays[j]->Ptr,
+         printf("      ptr %p, size %d, type 0x%x, stride %d\n",
+		arrays[j]->Ptr,
 		arrays[j]->Size, arrays[j]->Type, arrays[j]->StrideB);
          if (0) {
             GLint k = prims[i].start + prims[i].count - 1;
-            GLfloat *last = (GLfloat *) (arrays[j]->Ptr + arrays[j]->Stride * k);
+            GLfloat *last = (GLfloat *) (arrays[j]->Ptr + arrays[j]->StrideB * k);
             printf("        last: %f %f %f\n",
 		   last[0], last[1], last[2]);
          }
@@ -201,7 +203,7 @@ flush( struct copy_context *copy )
 	       GL_TRUE,
 	       0,
 	       copy->dstbuf_nr - 1,
-	       NULL, NULL );
+	       NULL, 0, NULL );
 
    ctx->Array._DrawArrays = saved_arrays;
    ctx->NewDriverState |= ctx->DriverFlags.NewArray;
@@ -241,7 +243,7 @@ begin( struct copy_context *copy, GLenum mode, GLboolean begin_flag )
 static GLuint
 elt(struct copy_context *copy, GLuint elt_idx)
 {
-   GLuint elt = copy->srcelt[elt_idx];
+   GLuint elt = copy->srcelt[elt_idx] + copy->prim->basevertex;
    GLuint slot = elt & (ELT_TABLE_SIZE-1);
 
 /*    printf("elt %d\n", elt); */
@@ -525,15 +527,13 @@ replay_init( struct copy_context *copy )
       dst->Size = src->Size;
       dst->Type = src->Type;
       dst->Format = GL_RGBA;
-      dst->Stride = copy->vertex_size;
       dst->StrideB = copy->vertex_size;
       dst->Ptr = copy->dstbuf + offset;
-      dst->Enabled = GL_TRUE;
       dst->Normalized = src->Normalized; 
       dst->Integer = src->Integer;
+      dst->Doubles = src->Doubles;
       dst->BufferObj = ctx->Shared->NullBufferObj;
       dst->_ElementSize = src->_ElementSize;
-      dst->_MaxElement = copy->dstbuf_size; /* may be less! */
 
       offset += copy->varying[i].size;
    }

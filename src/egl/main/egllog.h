@@ -34,6 +34,10 @@
 #include "egltypedefs.h"
 
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define _EGL_FATAL   0   /* unrecoverable error */
 #define _EGL_WARNING 1   /* recoverable error/problem */
 #define _EGL_INFO    2   /* just useful info */
@@ -43,16 +47,20 @@
 typedef void (*_EGLLogProc)(EGLint level, const char *msg);
 
 
-PUBLIC void
+extern void
 _eglSetLogProc(_EGLLogProc logger);
 
 
-PUBLIC void
+extern void
 _eglSetLogLevel(EGLint level);
 
 
-PUBLIC void
+extern void
 _eglLog(EGLint level, const char *fmtStr, ...);
 
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* EGLLOG_INCLUDED */

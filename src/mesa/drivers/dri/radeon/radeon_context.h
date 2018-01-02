@@ -49,7 +49,6 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "radeon_drm.h"
 #include "main/macros.h"
 #include "main/mtypes.h"
-#include "main/colormac.h"
 #include "radeon_screen.h"
 
 #include "radeon_common.h"
@@ -426,7 +425,6 @@ struct r100_context {
 	struct r100_swtcl_info swtcl;
 
 	GLboolean using_hyperz;
-	GLboolean texmicrotile;
 
 	/* Performance counters
 	 */

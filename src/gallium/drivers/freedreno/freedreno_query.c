@@ -59,18 +59,19 @@ fd_destroy_query(struct pipe_context *pctx, struct pipe_query *pq)
 	q->funcs->destroy_query(fd_context(pctx), q);
 }
 
-static void
+static boolean
 fd_begin_query(struct pipe_context *pctx, struct pipe_query *pq)
 {
 	struct fd_query *q = fd_query(pq);
-	q->funcs->begin_query(fd_context(pctx), q);
+	return q->funcs->begin_query(fd_context(pctx), q);
 }
 
-static void
+static bool
 fd_end_query(struct pipe_context *pctx, struct pipe_query *pq)
 {
 	struct fd_query *q = fd_query(pq);
 	q->funcs->end_query(fd_context(pctx), q);
+	return true;
 }
 
 static boolean
@@ -81,17 +82,27 @@ fd_get_query_result(struct pipe_context *pctx, struct pipe_query *pq,
 	return q->funcs->get_query_result(fd_context(pctx), q, wait, result);
 }
 
+static void
+fd_render_condition(struct pipe_context *pctx, struct pipe_query *pq,
+					boolean condition, uint mode)
+{
+	struct fd_context *ctx = fd_context(pctx);
+	ctx->cond_query = pq;
+	ctx->cond_cond = condition;
+	ctx->cond_mode = mode;
+}
+
 static int
 fd_get_driver_query_info(struct pipe_screen *pscreen,
 		unsigned index, struct pipe_driver_query_info *info)
 {
 	struct pipe_driver_query_info list[] = {
-			{"draw-calls", FD_QUERY_DRAW_CALLS, 0},
-			{"batches", FD_QUERY_BATCH_TOTAL, 0},
-			{"batches-sysmem", FD_QUERY_BATCH_SYSMEM, 0},
-			{"batches-gmem", FD_QUERY_BATCH_GMEM, 0},
-			{"restores", FD_QUERY_BATCH_RESTORE, 0},
-			{"prims-emitted", PIPE_QUERY_PRIMITIVES_EMITTED, 0},
+			{"draw-calls", FD_QUERY_DRAW_CALLS, {0}},
+			{"batches", FD_QUERY_BATCH_TOTAL, {0}},
+			{"batches-sysmem", FD_QUERY_BATCH_SYSMEM, {0}},
+			{"batches-gmem", FD_QUERY_BATCH_GMEM, {0}},
+			{"restores", FD_QUERY_BATCH_RESTORE, {0}},
+			{"prims-emitted", PIPE_QUERY_PRIMITIVES_EMITTED, {0}},
 	};
 
 	if (!info)
@@ -102,6 +113,11 @@ fd_get_driver_query_info(struct pipe_screen *pscreen,
 
 	*info = list[index];
 	return 1;
+}
+
+static void
+fd_set_active_query_state(struct pipe_context *pipe, boolean enable)
+{
 }
 
 void
@@ -118,4 +134,6 @@ fd_query_context_init(struct pipe_context *pctx)
 	pctx->begin_query = fd_begin_query;
 	pctx->end_query = fd_end_query;
 	pctx->get_query_result = fd_get_query_result;
+	pctx->set_active_query_state = fd_set_active_query_state;
+	pctx->render_condition = fd_render_condition;
 }

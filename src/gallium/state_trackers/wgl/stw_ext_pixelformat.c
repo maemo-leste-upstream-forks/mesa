@@ -88,7 +88,12 @@ stw_query_attrib(
       return TRUE;
 
    case WGL_SWAP_METHOD_ARB:
-      *pvalue = pfi->pfd.dwFlags & PFD_SWAP_COPY ? WGL_SWAP_COPY_ARB : WGL_SWAP_UNDEFINED_ARB;
+      if (pfi->pfd.dwFlags & PFD_SWAP_COPY)
+         *pvalue = WGL_SWAP_COPY_ARB;
+      else if (pfi->pfd.dwFlags & PFD_SWAP_EXCHANGE)
+         *pvalue = WGL_SWAP_EXCHANGE_EXT;
+      else
+         *pvalue = WGL_SWAP_UNDEFINED_ARB;
       return TRUE;
 
    case WGL_SWAP_LAYER_BUFFERS_ARB:
@@ -101,6 +106,16 @@ stw_query_attrib(
 
    case WGL_NUMBER_UNDERLAYS_ARB:
       *pvalue = 0;
+      return TRUE;
+
+   case WGL_BIND_TO_TEXTURE_RGB_ARB:
+      /* WGL_ARB_render_texture */
+      *pvalue = pfi->bindToTextureRGB;
+      return TRUE;
+
+   case WGL_BIND_TO_TEXTURE_RGBA_ARB:
+      /* WGL_ARB_render_texture */
+      *pvalue = pfi->bindToTextureRGBA;
       return TRUE;
    }
 
@@ -232,7 +247,7 @@ stw_query_attrib(
       break;
 
    case WGL_SAMPLE_BUFFERS_ARB:
-      *pvalue = 1;
+      *pvalue = (pfi->stvis.samples > 1);
       break;
 
    case WGL_SAMPLES_ARB:
@@ -306,7 +321,11 @@ static const struct attrib_match_info attrib_match[] = {
 
    /* WGL_ARB_multisample */
    { WGL_SAMPLE_BUFFERS_ARB,      2, FALSE },
-   { WGL_SAMPLES_ARB,             2, FALSE }
+   { WGL_SAMPLES_ARB,             2, FALSE },
+
+   /* WGL_ARB_render_texture */
+   { WGL_BIND_TO_TEXTURE_RGB_ARB, 0, FALSE },
+   { WGL_BIND_TO_TEXTURE_RGBA_ARB, 0, FALSE },
 };
 
 struct stw_pixelformat_score

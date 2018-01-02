@@ -29,13 +29,13 @@
 #include "nvc0/nvc0_resource.h"
 
 static uint32_t
-nvc0_tex_choose_tile_dims(unsigned nx, unsigned ny, unsigned nz)
+nvc0_tex_choose_tile_dims(unsigned nx, unsigned ny, unsigned nz, bool is_3d)
 {
-   return nv50_tex_choose_tile_dims_helper(nx, ny, nz);
+   return nv50_tex_choose_tile_dims_helper(nx, ny, nz, is_3d);
 }
 
 static uint32_t
-nvc0_mt_choose_storage_type(struct nv50_miptree *mt, boolean compressed)
+nvc0_mt_choose_storage_type(struct nv50_miptree *mt, bool compressed)
 {
    const unsigned ms = util_logbase2(mt->base.base.nr_samples);
 
@@ -53,12 +53,15 @@ nvc0_mt_choose_storage_type(struct nv50_miptree *mt, boolean compressed)
       else
          tile_flags = 0x01;
       break;
+   case PIPE_FORMAT_X8Z24_UNORM:
+   case PIPE_FORMAT_S8X24_UINT:
    case PIPE_FORMAT_S8_UINT_Z24_UNORM:
       if (compressed)
          tile_flags = 0x51 + ms;
       else
          tile_flags = 0x46;
       break;
+   case PIPE_FORMAT_X24S8_UINT:
    case PIPE_FORMAT_Z24X8_UNORM:
    case PIPE_FORMAT_Z24_UNORM_S8_UINT:
       if (compressed)
@@ -72,6 +75,7 @@ nvc0_mt_choose_storage_type(struct nv50_miptree *mt, boolean compressed)
       else
          tile_flags = 0x7b;
       break;
+   case PIPE_FORMAT_X32_S8X24_UINT:
    case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
       if (compressed)
          tile_flags = 0xce + ms;
@@ -129,7 +133,7 @@ nvc0_mt_choose_storage_type(struct nv50_miptree *mt, boolean compressed)
    return tile_flags;
 }
 
-static INLINE boolean
+static inline bool
 nvc0_miptree_init_ms_mode(struct nv50_miptree *mt)
 {
    switch (mt->base.base.nr_samples) {
@@ -153,9 +157,9 @@ nvc0_miptree_init_ms_mode(struct nv50_miptree *mt)
       break;
    default:
       NOUVEAU_ERR("invalid nr_samples: %u\n", mt->base.base.nr_samples);
-      return FALSE;
+      return false;
    }
-   return TRUE;
+   return true;
 }
 
 static void
@@ -207,7 +211,7 @@ nvc0_miptree_init_layout_tiled(struct nv50_miptree *mt)
 
       lvl->offset = mt->total_size;
 
-      lvl->tile_mode = nvc0_tex_choose_tile_dims(nbx, nby, d);
+      lvl->tile_mode = nvc0_tex_choose_tile_dims(nbx, nby, d, mt->layout_3d);
 
       tsx = NVC0_TILE_SIZE_X(lvl->tile_mode); /* x is tile row pitch in bytes */
       tsy = NVC0_TILE_SIZE_Y(lvl->tile_mode);
@@ -236,7 +240,6 @@ const struct u_resource_vtbl nvc0_miptree_vtbl =
    nvc0_miptree_transfer_map,       /* transfer_map */
    u_default_transfer_flush_region, /* transfer_flush_region */
    nvc0_miptree_transfer_unmap,     /* transfer_unmap */
-   u_default_transfer_inline_write  /* transfer_inline_write */
 };
 
 struct pipe_resource *
@@ -244,9 +247,10 @@ nvc0_miptree_create(struct pipe_screen *pscreen,
                     const struct pipe_resource *templ)
 {
    struct nouveau_device *dev = nouveau_screen(pscreen)->device;
+   struct nouveau_drm *drm = nouveau_screen(pscreen)->drm;
    struct nv50_miptree *mt = CALLOC_STRUCT(nv50_miptree);
    struct pipe_resource *pt = &mt->base.base;
-   boolean compressed = dev->drm_version >= 0x01000101;
+   bool compressed = drm->version >= 0x01000101;
    int ret;
    union nouveau_bo_config bo_config;
    uint32_t bo_flags;
@@ -298,7 +302,7 @@ nvc0_miptree_create(struct pipe_screen *pscreen,
    if (!bo_config.nvc0.memtype && (pt->usage == PIPE_USAGE_STAGING || pt->bind & PIPE_BIND_SHARED))
       mt->base.domain = NOUVEAU_BO_GART;
    else
-      mt->base.domain = NOUVEAU_BO_VRAM;
+      mt->base.domain = NV_VRAM_DOMAIN(nouveau_screen(pscreen));
 
    bo_flags = mt->base.domain | NOUVEAU_BO_NOSNOOP;
 
@@ -321,7 +325,7 @@ nvc0_miptree_create(struct pipe_screen *pscreen,
 }
 
 /* Offset of zslice @z from start of level @l. */
-INLINE unsigned
+inline unsigned
 nvc0_mt_zslice_offset(const struct nv50_miptree *mt, unsigned l, unsigned z)
 {
    const struct pipe_resource *pt = &mt->base.base;

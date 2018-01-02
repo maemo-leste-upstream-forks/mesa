@@ -22,21 +22,29 @@
  */
 
 #include "util/u_math.h"
+#include "util/ralloc.h"
 #include "vc4_context.h"
 
 void
-vc4_init_cl(struct vc4_context *vc4, struct vc4_cl *cl)
+vc4_init_cl(void *mem_ctx, struct vc4_cl *cl)
 {
+        cl->base = ralloc_size(mem_ctx, 1);
+        cl->next = cl->base;
+        cl->size = 0;
 }
 
 void
-vc4_grow_cl(struct vc4_cl *cl)
+cl_ensure_space(struct vc4_cl *cl, uint32_t space)
 {
-        uint32_t size = MAX2((cl->end - cl->base) * 2, 4096);
-        uint32_t offset = cl->next -cl->base;
+        uint32_t offset = cl_offset(cl);
 
-        cl->base = realloc(cl->base, size);
-        cl->end = cl->base + size;
+        if (offset + space <= cl->size)
+                return;
+
+        uint32_t size = MAX2(cl->size + space, cl->size * 2);
+
+        cl->base = reralloc(ralloc_parent(cl->base), cl->base, uint8_t, size);
+        cl->size = size;
         cl->next = cl->base + offset;
 }
 
@@ -48,20 +56,25 @@ vc4_reset_cl(struct vc4_cl *cl)
 }
 
 uint32_t
-vc4_gem_hindex(struct vc4_context *vc4, struct vc4_bo *bo)
+vc4_gem_hindex(struct vc4_job *job, struct vc4_bo *bo)
 {
         uint32_t hindex;
-        uint32_t *current_handles = vc4->bo_handles.base;
+        uint32_t *current_handles = job->bo_handles.base;
 
-        for (hindex = 0;
-             hindex < (vc4->bo_handles.next - vc4->bo_handles.base) / 4;
-             hindex++) {
+        for (hindex = 0; hindex < cl_offset(&job->bo_handles) / 4; hindex++) {
                 if (current_handles[hindex] == bo->handle)
                         return hindex;
         }
 
-        cl_u32(&vc4->bo_handles, bo->handle);
-        cl_ptr(&vc4->bo_pointers, vc4_bo_reference(bo));
+        struct vc4_cl_out *out;
+
+        out = cl_start(&job->bo_handles);
+        cl_u32(&out, bo->handle);
+        cl_end(&job->bo_handles, out);
+
+        out = cl_start(&job->bo_pointers);
+        cl_ptr(&out, vc4_bo_reference(bo));
+        cl_end(&job->bo_pointers, out);
 
         return hindex;
 }

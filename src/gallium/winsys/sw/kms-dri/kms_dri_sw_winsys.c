@@ -47,20 +47,18 @@
 #include "util/u_format.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
-#include "util/u_double_list.h"
+#include "util/list.h"
 
 #include "state_tracker/sw_winsys.h"
 #include "state_tracker/drm_driver.h"
+#include "kms_dri_sw_winsys.h"
 
-#if 0
-#define DEBUG(msg, ...) fprintf(stderr, msg, __VA_ARGS__)
+#ifdef DEBUG
+#define DEBUG_PRINT(msg, ...) fprintf(stderr, msg, __VA_ARGS__)
 #else
-#define DEBUG(msg, ...)
+#define DEBUG_PRINT(msg, ...)
 #endif
 
-struct sw_winsys;
-
-struct sw_winsys *kms_dri_create_winsys(int fd);
 
 struct kms_sw_displaytarget
 {
@@ -85,13 +83,13 @@ struct kms_sw_winsys
    struct list_head bo_list;
 };
 
-static INLINE struct kms_sw_displaytarget *
+static inline struct kms_sw_displaytarget *
 kms_sw_displaytarget( struct sw_displaytarget *dt )
 {
    return (struct kms_sw_displaytarget *)dt;
 }
 
-static INLINE struct kms_sw_winsys *
+static inline struct kms_sw_winsys *
 kms_sw_winsys( struct sw_winsys *ws )
 {
    return (struct kms_sw_winsys *)ws;
@@ -113,6 +111,7 @@ kms_sw_displaytarget_create(struct sw_winsys *ws,
                             enum pipe_format format,
                             unsigned width, unsigned height,
                             unsigned alignment,
+                            const void *front_private,
                             unsigned *stride)
 {
    struct kms_sw_winsys *kms_sw = kms_sw_winsys(ws);
@@ -131,10 +130,10 @@ kms_sw_displaytarget_create(struct sw_winsys *ws,
    kms_sw_dt->width = width;
    kms_sw_dt->height = height;
 
+   memset(&create_req, 0, sizeof(create_req));
    create_req.bpp = 32;
    create_req.width = width;
    create_req.height = height;
-   create_req.handle = 0;
    ret = drmIoctl(kms_sw->fd, DRM_IOCTL_MODE_CREATE_DUMB, &create_req);
    if (ret)
       goto free_bo;
@@ -145,7 +144,7 @@ kms_sw_displaytarget_create(struct sw_winsys *ws,
 
    list_add(&kms_sw_dt->link, &kms_sw->bo_list);
 
-   DEBUG("KMS-DEBUG: created buffer %u (size %u)\n", kms_sw_dt->handle, kms_sw_dt->size);
+   DEBUG_PRINT("KMS-DEBUG: created buffer %u (size %u)\n", kms_sw_dt->handle, kms_sw_dt->size);
 
    *stride = kms_sw_dt->stride;
    return (struct sw_displaytarget *)kms_sw_dt;
@@ -177,7 +176,7 @@ kms_sw_displaytarget_destroy(struct sw_winsys *ws,
 
    list_del(&kms_sw_dt->link);
 
-   DEBUG("KMS-DEBUG: destroyed buffer %u\n", kms_sw_dt->handle);
+   DEBUG_PRINT("KMS-DEBUG: destroyed buffer %u\n", kms_sw_dt->handle);
 
    FREE(kms_sw_dt);
 }
@@ -205,14 +204,36 @@ kms_sw_displaytarget_map(struct sw_winsys *ws,
    if (kms_sw_dt->mapped == MAP_FAILED)
       return NULL;
 
-   DEBUG("KMS-DEBUG: mapped buffer %u (size %u) at %p\n",
+   DEBUG_PRINT("KMS-DEBUG: mapped buffer %u (size %u) at %p\n",
          kms_sw_dt->handle, kms_sw_dt->size, kms_sw_dt->mapped);
 
    return kms_sw_dt->mapped;
 }
 
 static struct kms_sw_displaytarget *
-kms_sw_displaytarget_add_from_prime(struct kms_sw_winsys *kms_sw, int fd)
+kms_sw_displaytarget_find_and_ref(struct kms_sw_winsys *kms_sw,
+                                  unsigned int kms_handle)
+{
+   struct kms_sw_displaytarget *kms_sw_dt;
+
+   LIST_FOR_EACH_ENTRY(kms_sw_dt, &kms_sw->bo_list, link) {
+      if (kms_sw_dt->handle == kms_handle) {
+         kms_sw_dt->ref_count++;
+
+         DEBUG_PRINT("KMS-DEBUG: imported buffer %u (size %u)\n",
+                     kms_sw_dt->handle, kms_sw_dt->size);
+
+         return kms_sw_dt;
+      }
+   }
+
+   return NULL;
+}
+
+static struct kms_sw_displaytarget *
+kms_sw_displaytarget_add_from_prime(struct kms_sw_winsys *kms_sw, int fd,
+                                    unsigned width, unsigned height,
+                                    unsigned stride)
 {
    uint32_t handle = -1;
    struct kms_sw_displaytarget * kms_sw_dt;
@@ -223,18 +244,25 @@ kms_sw_displaytarget_add_from_prime(struct kms_sw_winsys *kms_sw, int fd)
    if (ret)
       return NULL;
 
+   kms_sw_dt = kms_sw_displaytarget_find_and_ref(kms_sw, handle);
+   if (kms_sw_dt)
+      return kms_sw_dt;
+
    kms_sw_dt = CALLOC_STRUCT(kms_sw_displaytarget);
    if (!kms_sw_dt)
       return NULL;
 
-   kms_sw_dt->ref_count = 1;
-   kms_sw_dt->handle = handle;
-   kms_sw_dt->size = lseek(fd, 0, SEEK_END);
-
-   if (kms_sw_dt->size == (off_t)-1) {
+   off_t lseek_ret = lseek(fd, 0, SEEK_END);
+   if (lseek_ret == -1) {
       FREE(kms_sw_dt);
       return NULL;
    }
+   kms_sw_dt->size = lseek_ret;
+   kms_sw_dt->ref_count = 1;
+   kms_sw_dt->handle = handle;
+   kms_sw_dt->width = width;
+   kms_sw_dt->height = height;
+   kms_sw_dt->stride = stride;
 
    lseek(fd, 0, SEEK_SET);
 
@@ -249,7 +277,7 @@ kms_sw_displaytarget_unmap(struct sw_winsys *ws,
 {
    struct kms_sw_displaytarget *kms_sw_dt = kms_sw_displaytarget(dt);
 
-   DEBUG("KMS-DEBUG: unmapped buffer %u (was %p)\n", kms_sw_dt->handle, kms_sw_dt->mapped);
+   DEBUG_PRINT("KMS-DEBUG: unmapped buffer %u (was %p)\n", kms_sw_dt->handle, kms_sw_dt->mapped);
 
    munmap(kms_sw_dt->mapped, kms_sw_dt->size);
    kms_sw_dt->mapped = NULL;
@@ -267,27 +295,26 @@ kms_sw_displaytarget_from_handle(struct sw_winsys *ws,
    assert(whandle->type == DRM_API_HANDLE_TYPE_KMS ||
           whandle->type == DRM_API_HANDLE_TYPE_FD);
 
+   if (whandle->offset != 0) {
+      DEBUG_PRINT("KMS-DEBUG: attempt to import unsupported winsys offset %d\n",
+                  whandle->offset);
+      return NULL;
+   }
+
    switch(whandle->type) {
    case DRM_API_HANDLE_TYPE_FD:
-      kms_sw_dt = kms_sw_displaytarget_add_from_prime(kms_sw, whandle->handle);
-      if (kms_sw_dt) {
-         kms_sw_dt->ref_count++;
-         kms_sw_dt->width = templ->width0;
-         kms_sw_dt->height = templ->height0;
-         kms_sw_dt->stride = whandle->stride;
+      kms_sw_dt = kms_sw_displaytarget_add_from_prime(kms_sw, whandle->handle,
+                                                      templ->width0,
+                                                      templ->height0,
+                                                      whandle->stride);
+      if (kms_sw_dt)
          *stride = kms_sw_dt->stride;
-      }
       return (struct sw_displaytarget *)kms_sw_dt;
    case DRM_API_HANDLE_TYPE_KMS:
-      LIST_FOR_EACH_ENTRY(kms_sw_dt, &kms_sw->bo_list, link) {
-         if (kms_sw_dt->handle == whandle->handle) {
-            kms_sw_dt->ref_count++;
-
-            DEBUG("KMS-DEBUG: imported buffer %u (size %u)\n", kms_sw_dt->handle, kms_sw_dt->size);
-
-            *stride = kms_sw_dt->stride;
-            return (struct sw_displaytarget *)kms_sw_dt;
-         }
+      kms_sw_dt = kms_sw_displaytarget_find_and_ref(kms_sw, whandle->handle);
+      if (kms_sw_dt) {
+         *stride = kms_sw_dt->stride;
+         return (struct sw_displaytarget *)kms_sw_dt;
       }
       /* fallthrough */
    default:
@@ -310,17 +337,20 @@ kms_sw_displaytarget_get_handle(struct sw_winsys *winsys,
    case DRM_API_HANDLE_TYPE_KMS:
       whandle->handle = kms_sw_dt->handle;
       whandle->stride = kms_sw_dt->stride;
+      whandle->offset = 0;
       return TRUE;
    case DRM_API_HANDLE_TYPE_FD:
       if (!drmPrimeHandleToFD(kms_sw->fd, kms_sw_dt->handle,
-                             DRM_CLOEXEC, &whandle->handle)) {
+                             DRM_CLOEXEC, (int*)&whandle->handle)) {
          whandle->stride = kms_sw_dt->stride;
+         whandle->offset = 0;
          return TRUE;
       }
       /* fallthrough */
    default:
       whandle->handle = 0;
       whandle->stride = 0;
+      whandle->offset = 0;
       return FALSE;
    }
 }

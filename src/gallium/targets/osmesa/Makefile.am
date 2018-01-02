@@ -42,7 +42,6 @@ nodist_EXTRA_lib@OSMESA_LIB@_la_SOURCES = dummy.cpp
 lib@OSMESA_LIB@_la_SOURCES = target.c
 
 lib@OSMESA_LIB@_la_LDFLAGS = \
-	-module \
 	-no-undefined \
 	-version-number @OSMESA_VERSION@ \
 	$(GC_SECTIONS) \
@@ -74,6 +73,19 @@ AM_CPPFLAGS += -DGALLIUM_LLVMPIPE
 lib@OSMESA_LIB@_la_LDFLAGS += $(LLVM_LDFLAGS)
 lib@OSMESA_LIB@_la_LIBADD += $(top_builddir)/src/gallium/drivers/llvmpipe/libllvmpipe.la $(LLVM_LIBS)
 endif
+
+if HAVE_GALLIUM_SWR
+AM_CPPFLAGS += -DGALLIUM_SWR
+lib@OSMESA_LIB@_la_LDFLAGS += $(LLVM_LDFLAGS)
+lib@OSMESA_LIB@_la_LIBADD += $(top_builddir)/src/gallium/drivers/swr/libmesaswr.la $(LLVM_LIBS)
+endif
+
+EXTRA_lib@OSMESA_LIB@_la_DEPENDENCIES = osmesa.sym
+EXTRA_DIST = \
+	osmesa.sym \
+	osmesa.def \
+	osmesa.mingw.def \
+	SConscript
 
 include $(top_srcdir)/install-gallium-links.mk
 

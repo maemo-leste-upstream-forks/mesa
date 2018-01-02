@@ -35,7 +35,6 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #include "main/glheader.h"
 #include "main/imports.h"
-#include "main/colormac.h"
 #include "main/context.h"
 #include "main/macros.h"
 #include "main/teximage.h"
@@ -53,52 +52,8 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "radeon_tcl.h"
 
 
-#define RADEON_TXFORMAT_A8        RADEON_TXFORMAT_I8
-#define RADEON_TXFORMAT_L8        RADEON_TXFORMAT_I8
-#define RADEON_TXFORMAT_AL88      RADEON_TXFORMAT_AI88
-#define RADEON_TXFORMAT_YCBCR     RADEON_TXFORMAT_YVYU422
-#define RADEON_TXFORMAT_YCBCR_REV RADEON_TXFORMAT_VYUY422
-#define RADEON_TXFORMAT_RGB_DXT1  RADEON_TXFORMAT_DXT1
-#define RADEON_TXFORMAT_RGBA_DXT1 RADEON_TXFORMAT_DXT1
-#define RADEON_TXFORMAT_RGBA_DXT3 RADEON_TXFORMAT_DXT23
-#define RADEON_TXFORMAT_RGBA_DXT5 RADEON_TXFORMAT_DXT45
-
 #define VALID_FORMAT(f) ( ((f) <= MESA_FORMAT_RGBA_DXT5) \
 			     && (tx_table[f].format != 0xffffffff) )
-
-struct tx_table {
-   GLuint format, filter;
-};
-
-/* XXX verify this table against MESA_FORMAT_x values */
-static const struct tx_table tx_table[] =
-{
-   [ MESA_FORMAT_NONE ] = { 0xffffffff, 0 },
-   [ MESA_FORMAT_A8B8G8R8_UNORM ] = { RADEON_TXFORMAT_RGBA8888 | RADEON_TXFORMAT_ALPHA_IN_MAP, 0 },
-   [ MESA_FORMAT_R8G8B8A8_UNORM ] = { RADEON_TXFORMAT_RGBA8888 | RADEON_TXFORMAT_ALPHA_IN_MAP, 0 },
-   [ MESA_FORMAT_B8G8R8A8_UNORM ] = { RADEON_TXFORMAT_ARGB8888 | RADEON_TXFORMAT_ALPHA_IN_MAP, 0 },
-   [ MESA_FORMAT_A8R8G8B8_UNORM ] = { RADEON_TXFORMAT_ARGB8888 | RADEON_TXFORMAT_ALPHA_IN_MAP, 0 },
-   [ MESA_FORMAT_BGR_UNORM8 ] = { RADEON_TXFORMAT_ARGB8888, 0 },
-   [ MESA_FORMAT_B5G6R5_UNORM ] = { RADEON_TXFORMAT_RGB565, 0 },
-   [ MESA_FORMAT_R5G6B5_UNORM ] = { RADEON_TXFORMAT_RGB565, 0 },
-   [ MESA_FORMAT_B4G4R4A4_UNORM ] = { RADEON_TXFORMAT_ARGB4444 | RADEON_TXFORMAT_ALPHA_IN_MAP, 0 },
-   [ MESA_FORMAT_A4R4G4B4_UNORM ] = { RADEON_TXFORMAT_ARGB4444 | RADEON_TXFORMAT_ALPHA_IN_MAP, 0 },
-   [ MESA_FORMAT_B5G5R5A1_UNORM ] = { RADEON_TXFORMAT_ARGB1555 | RADEON_TXFORMAT_ALPHA_IN_MAP, 0 },
-   [ MESA_FORMAT_A1R5G5B5_UNORM ] = { RADEON_TXFORMAT_ARGB1555 | RADEON_TXFORMAT_ALPHA_IN_MAP, 0 },
-   [ MESA_FORMAT_L8A8_UNORM ] = { RADEON_TXFORMAT_AL88 | RADEON_TXFORMAT_ALPHA_IN_MAP, 0 },
-   [ MESA_FORMAT_A8L8_UNORM ] = { RADEON_TXFORMAT_AL88 | RADEON_TXFORMAT_ALPHA_IN_MAP, 0 },
-   [ MESA_FORMAT_A_UNORM8 ] = { RADEON_TXFORMAT_A8 | RADEON_TXFORMAT_ALPHA_IN_MAP, 0 },
-   [ MESA_FORMAT_L_UNORM8 ] = { RADEON_TXFORMAT_L8, 0 },
-   [ MESA_FORMAT_I_UNORM8 ] = { RADEON_TXFORMAT_I8 | RADEON_TXFORMAT_ALPHA_IN_MAP, 0 },
-   [ MESA_FORMAT_YCBCR ] = { RADEON_TXFORMAT_YCBCR, RADEON_YUV_TO_RGB },
-   [ MESA_FORMAT_YCBCR_REV ] = { RADEON_TXFORMAT_YCBCR_REV, RADEON_YUV_TO_RGB },
-   [ MESA_FORMAT_RGB_FXT1 ] = { 0xffffffff, 0 },
-   [ MESA_FORMAT_RGBA_FXT1 ] = { 0xffffffff, 0 },
-   [ MESA_FORMAT_RGB_DXT1 ] = { RADEON_TXFORMAT_RGB_DXT1, 0 },
-   [ MESA_FORMAT_RGBA_DXT1 ] = { RADEON_TXFORMAT_RGBA_DXT1 | RADEON_TXFORMAT_ALPHA_IN_MAP, 0 },
-   [ MESA_FORMAT_RGBA_DXT3 ] = { RADEON_TXFORMAT_RGBA_DXT3 | RADEON_TXFORMAT_ALPHA_IN_MAP, 0 },
-   [ MESA_FORMAT_RGBA_DXT5 ] = { RADEON_TXFORMAT_RGBA_DXT5 | RADEON_TXFORMAT_ALPHA_IN_MAP, 0 },
-};
 
 /* ================================================================
  * Texture combine functions
@@ -258,7 +213,7 @@ static GLboolean radeonUpdateTextureEnv( struct gl_context *ctx, int unit )
 
 
    if ( RADEON_DEBUG & RADEON_TEXTURE ) {
-      fprintf( stderr, "%s( %p, %d )\n", __FUNCTION__, (void *)ctx, unit );
+      fprintf( stderr, "%s( %p, %d )\n", __func__, (void *)ctx, unit );
    }
 
    /* Set the texture environment state.  Isn't this nice and clean?
@@ -976,7 +931,7 @@ static GLboolean setup_hardware_state(r100ContextPtr rmesa, radeonTexObj *t, int
 	 t->pp_txfilter |= table[ firstImage->TexFormat ].filter;
       } else {
 	 _mesa_problem(NULL, "unexpected texture format in %s",
-		       __FUNCTION__);
+		       __func__);
 	 return GL_FALSE;
       }
    }
@@ -995,7 +950,7 @@ static GLboolean setup_hardware_state(r100ContextPtr rmesa, radeonTexObj *t, int
    t->tile_bits = 0;
 
    if (t->base.Target == GL_TEXTURE_CUBE_MAP) {
-      ASSERT(log2Width == log2Height);
+      assert(log2Width == log2Height);
       t->pp_txformat |= ((log2Width << RADEON_TXFORMAT_F5_WIDTH_SHIFT) |
 			 (log2Height << RADEON_TXFORMAT_F5_HEIGHT_SHIFT) |
 			 /* don't think we need this bit, if it exists at all - fglrx does not set it */

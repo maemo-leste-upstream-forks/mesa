@@ -403,7 +403,8 @@ bool expr_handler::fold_alu_op1(alu_node& n) {
 		if ((n.bc.op == ALU_OP1_MOV || n.bc.op == ALU_OP1_MOVA_INT ||
 				n.bc.op == ALU_OP1_MOVA_GPR_INT)
 				&& n.bc.clamp == 0 && n.bc.omod == 0
-				&& n.bc.src[0].abs == 0 && n.bc.src[0].neg == 0) {
+				&& n.bc.src[0].abs == 0 && n.bc.src[0].neg == 0 &&
+				n.src.size() == 1 /* RIM/SIM can be appended as additional values */) {
 			assign_source(n.dst[0], v0);
 			return true;
 		}
@@ -597,9 +598,13 @@ bool expr_handler::fold_assoc(alu_node *n) {
 
 	unsigned op = n->bc.op;
 	bool allow_neg = false, cur_neg = false;
+	bool distribute_neg = false;
 
 	switch(op) {
 	case ALU_OP2_ADD:
+		distribute_neg = true;
+		allow_neg = true;
+		break;
 	case ALU_OP2_MUL:
 	case ALU_OP2_MUL_IEEE:
 		allow_neg = true;
@@ -631,7 +636,7 @@ bool expr_handler::fold_assoc(alu_node *n) {
 		if (v1->is_const()) {
 			literal arg = v1->get_const_value();
 			apply_alu_src_mod(a->bc, 1, arg);
-			if (cur_neg)
+			if (cur_neg && distribute_neg)
 				arg.f = -arg.f;
 
 			if (a == n)
@@ -645,6 +650,7 @@ bool expr_handler::fold_assoc(alu_node *n) {
 						(op == ALU_OP2_MUL_IEEE &&
 								d0->is_alu_op(ALU_OP2_MUL))) &&
 						!d0->bc.omod && !d0->bc.clamp &&
+						!a->bc.src[0].abs &&
 						(!a->bc.src[0].neg || allow_neg)) {
 					cur_neg ^= a->bc.src[0].neg;
 					a = d0;
@@ -658,7 +664,7 @@ bool expr_handler::fold_assoc(alu_node *n) {
 		if (v0->is_const()) {
 			literal arg = v0->get_const_value();
 			apply_alu_src_mod(a->bc, 0, arg);
-			if (cur_neg)
+			if (cur_neg && distribute_neg)
 				arg.f = -arg.f;
 
 			if (last_arg == 0) {
@@ -678,6 +684,7 @@ bool expr_handler::fold_assoc(alu_node *n) {
 						(op == ALU_OP2_MUL_IEEE &&
 								d1->is_alu_op(ALU_OP2_MUL))) &&
 						!d1->bc.omod && !d1->bc.clamp &&
+						!a->bc.src[1].abs &&
 						(!a->bc.src[1].neg || allow_neg)) {
 					cur_neg ^= a->bc.src[1].neg;
 					a = d1;

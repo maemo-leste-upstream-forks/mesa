@@ -61,10 +61,11 @@ static void init( void )
       exit(1);
    }
    
-   ctx = screen->context_create(screen, NULL);
+   ctx = screen->context_create(screen, NULL, 0);
    if (ctx == NULL)
       exit(3);
 
+   memset(&templat, 0, sizeof(templat));
    templat.target = PIPE_TEXTURE_2D;
    templat.format = formats[i];
    templat.width0 = WIDTH;

@@ -27,10 +27,8 @@
 #ifndef SB_BC_H_
 #define SB_BC_H_
 
-extern "C" {
 #include <stdint.h>
 #include "r600_isa.h"
-}
 
 #include <cstdio>
 #include <string>
@@ -50,6 +48,7 @@ class fetch_node;
 class alu_group_node;
 class region_node;
 class shader;
+class value;
 
 class sb_ostream {
 public:
@@ -175,6 +174,8 @@ enum shader_target
 	TARGET_GS_COPY,
 	TARGET_COMPUTE,
 	TARGET_FETCH,
+	TARGET_HS,
+	TARGET_LS,
 
 	TARGET_NUM
 };
@@ -479,7 +480,9 @@ struct bc_cf {
 
 	bool is_alu_extended() {
 		assert(op_ptr->flags & CF_ALU);
-		return kc[2].mode != KC_LOCK_NONE || kc[3].mode != KC_LOCK_NONE;
+		return kc[2].mode != KC_LOCK_NONE || kc[3].mode != KC_LOCK_NONE ||
+			kc[0].index_mode != KC_INDEX_NONE || kc[1].index_mode != KC_INDEX_NONE ||
+			kc[2].index_mode != KC_INDEX_NONE || kc[3].index_mode != KC_INDEX_NONE;
 	}
 
 };
@@ -517,6 +520,8 @@ struct bc_alu {
 
 	unsigned slot:3;
 
+	unsigned lds_idx_offset:6;
+
 	alu_op_flags slot_flags;
 
 	void set_op(unsigned op) {
@@ -535,10 +540,12 @@ struct bc_fetch {
 
 	unsigned src_gpr:7;
 	unsigned src_rel:1;
+	unsigned src_rel_global:1; /* for GDS ops */
 	unsigned src_sel[4];
 
 	unsigned dst_gpr:7;
 	unsigned dst_rel:1;
+	unsigned dst_rel_global:1; /* for GDS ops */
 	unsigned dst_sel[4];
 
 	unsigned alt_const:1;
@@ -572,6 +579,7 @@ struct bc_fetch {
 	unsigned endian_swap:2;
 	unsigned mega_fetch:1;
 
+	unsigned src2_gpr:7; /* for GDS */
 	void set_op(unsigned op) { this->op = op; op_ptr = r600_isa_fetch(op); }
 };
 
@@ -615,6 +623,8 @@ public:
 	unsigned vtx_src_num;
 	unsigned num_slots;
 	bool uses_mova_gpr;
+
+	bool r6xx_gpr_index_workaround;
 
 	bool stack_workaround_8xx;
 	bool stack_workaround_9xx;
@@ -736,6 +746,7 @@ private:
 	int decode_cf_mem(unsigned &i, bc_cf &bc);
 
 	int decode_fetch_vtx(unsigned &i, bc_fetch &bc);
+	int decode_fetch_gds(unsigned &i, bc_fetch &bc);
 };
 
 // bytecode format definition
@@ -782,7 +793,6 @@ public: \
 
 // CLAMP macro defined elsewhere interferes with bytecode field name
 #undef CLAMP
-
 #include "sb_bc_fmt_def.inc"
 
 #undef BC_FORMAT_BEGIN
@@ -818,13 +828,16 @@ class bc_parser {
 
 	bool gpr_reladdr;
 
+	// Note: currently relies on input emitting SET_CF in same basic block as uses
+	value *cf_index_value[2];
+	alu_node *mova;
 public:
 
 	bc_parser(sb_context &sctx, r600_bytecode *bc, r600_shader* pshader) :
 		ctx(sctx), dec(), bc(bc), pshader(pshader),
 		dw(), bc_ndw(), max_cf(),
 		sh(), error(), slots(), cgroup(),
-		cf_map(), loop_stack(), gpr_reladdr() { }
+		cf_map(), loop_stack(), gpr_reladdr(), cf_index_value(), mova() { }
 
 	int decode();
 	int prepare();
@@ -852,6 +865,10 @@ private:
 	int prepare_loop(cf_node *c);
 	int prepare_if(cf_node *c);
 
+	void save_set_cf_index(value *val, unsigned idx);
+	value *get_cf_index_value(unsigned idx);
+	void save_mova(alu_node *mova);
+	alu_node *get_mova();
 };
 
 

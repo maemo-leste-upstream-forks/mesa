@@ -35,6 +35,10 @@
 #include <stdbool.h>
 #include "main/glheader.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct gl_client_array;
 struct gl_context;
 struct gl_transform_feedback_object;
@@ -54,6 +58,7 @@ struct _mesa_prim {
    GLint basevertex;
    GLuint num_instances;
    GLuint base_instance;
+   GLuint draw_id;
 
    GLsizeiptr indirect_offset;
 };
@@ -73,7 +78,7 @@ struct _mesa_index_buffer {
 
 GLboolean _vbo_CreateContext( struct gl_context *ctx );
 void _vbo_DestroyContext( struct gl_context *ctx );
-void _vbo_InvalidateState( struct gl_context *ctx, GLuint new_state );
+void _vbo_InvalidateState( struct gl_context *ctx, GLbitfield new_state );
 
 
 void
@@ -84,6 +89,14 @@ void
 vbo_initialize_save_dispatch(const struct gl_context *ctx,
                              struct _glapi_table *exec);
 
+void vbo_exec_FlushVertices(struct gl_context *ctx, GLuint flags);
+void vbo_save_SaveFlushVertices(struct gl_context *ctx);
+GLboolean vbo_save_NotifyBegin(struct gl_context *ctx, GLenum mode);
+void vbo_save_NewList(struct gl_context *ctx, GLuint list, GLenum mode);
+void vbo_save_EndList(struct gl_context *ctx);
+void vbo_save_BeginCallList(struct gl_context *ctx, struct gl_display_list *list);
+void vbo_save_EndCallList(struct gl_context *ctx);
+
 
 typedef void (*vbo_draw_func)( struct gl_context *ctx,
 			       const struct _mesa_prim *prims,
@@ -93,7 +106,20 @@ typedef void (*vbo_draw_func)( struct gl_context *ctx,
 			       GLuint min_index,
 			       GLuint max_index,
 			       struct gl_transform_feedback_object *tfb_vertcount,
-			       struct gl_buffer_object *indirect );
+                               unsigned stream,
+			       struct gl_buffer_object *indirect);
+
+
+typedef void (*vbo_indirect_draw_func)(
+   struct gl_context *ctx,
+   GLuint mode,
+   struct gl_buffer_object *indirect_data,
+   GLsizeiptr indirect_offset,
+   unsigned draw_count,
+   unsigned stride,
+   struct gl_buffer_object *indirect_params,
+   GLsizeiptr indirect_params_offset,
+   const struct _mesa_index_buffer *ib);
 
 
 
@@ -155,6 +181,9 @@ vbo_sizeof_ib_type(GLenum type)
 }
 
 void
+vbo_delete_minmax_cache(struct gl_buffer_object *bufferObj);
+
+void
 vbo_get_minmax_indices(struct gl_context *ctx, const struct _mesa_prim *prim,
                        const struct _mesa_index_buffer *ib,
                        GLuint *min_index, GLuint *max_index, GLuint nr_prims);
@@ -165,7 +194,8 @@ void vbo_always_unmap_buffers(struct gl_context *ctx);
 
 void vbo_set_draw_func(struct gl_context *ctx, vbo_draw_func func);
 
-void vbo_check_buffers_are_unmapped(struct gl_context *ctx);
+void vbo_set_indirect_draw_func(struct gl_context *ctx,
+                                vbo_indirect_draw_func func);
 
 void vbo_bind_arrays(struct gl_context *ctx);
 
@@ -227,5 +257,9 @@ _es_VertexAttrib3fv(GLuint indx, const GLfloat* values);
 
 void GLAPIENTRY
 _es_VertexAttrib4fv(GLuint indx, const GLfloat* values);
+
+#ifdef __cplusplus
+} // extern "C"
+#endif
 
 #endif

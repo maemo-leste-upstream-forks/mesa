@@ -80,7 +80,7 @@ unsigned cso_construct_key(void *item, int item_size)
    return hash_key((item), item_size);
 }
 
-static INLINE struct cso_hash *_cso_hash_for_type(struct cso_cache *sc, enum cso_cache_type type)
+static inline struct cso_hash *_cso_hash_for_type(struct cso_cache *sc, enum cso_cache_type type)
 {
    struct cso_hash *hash;
    hash = sc->hashes[type];
@@ -127,7 +127,7 @@ static void delete_velements(void *state, void *data)
    FREE(state);
 }
 
-static INLINE void delete_cso(void *state, enum cso_cache_type type)
+static inline void delete_cso(void *state, enum cso_cache_type type)
 {
    switch (type) {
    case CSO_BLEND:
@@ -152,7 +152,7 @@ static INLINE void delete_cso(void *state, enum cso_cache_type type)
 }
 
 
-static INLINE void sanitize_hash(struct cso_cache *sc,
+static inline void sanitize_hash(struct cso_cache *sc,
                                  struct cso_hash *hash,
                                  enum cso_cache_type type,
                                  int max_size)
@@ -162,7 +162,7 @@ static INLINE void sanitize_hash(struct cso_cache *sc,
 }
 
 
-static INLINE void sanitize_cb(struct cso_hash *hash, enum cso_cache_type type,
+static inline void sanitize_cb(struct cso_hash *hash, enum cso_cache_type type,
                                int max_size, void *user_data)
 {
    /* if we're approach the maximum size, remove fourth of the entries
@@ -188,7 +188,9 @@ cso_insert_state(struct cso_cache *sc,
                  void *state)
 {
    struct cso_hash *hash = _cso_hash_for_type(sc, type);
-   sanitize_hash(sc, hash, type, sc->max_size);
+
+   if (type != CSO_SAMPLER)
+      sanitize_hash(sc, hash, type, sc->max_size);
 
    return cso_hash_insert(hash, hash_key, state);
 }
@@ -247,7 +249,7 @@ struct cso_cache *cso_cache_create(void)
 {
    struct cso_cache *sc = MALLOC_STRUCT(cso_cache);
    int i;
-   if (sc == NULL)
+   if (!sc)
       return NULL;
 
    sc->max_size           = 4096;

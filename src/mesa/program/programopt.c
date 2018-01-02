@@ -305,7 +305,7 @@ _mesa_append_fog_code(struct gl_context *ctx,
          /* change the instruction to write to colorTemp w/ clamping */
          inst->DstReg.File = PROGRAM_TEMPORARY;
          inst->DstReg.Index = colorTemp;
-         inst->SaturateMode = saturate;
+         inst->Saturate = saturate;
          /* don't break (may be several writes to result.color) */
       }
       inst++;
@@ -331,11 +331,11 @@ _mesa_append_fog_code(struct gl_context *ctx,
       inst->SrcReg[2].File = PROGRAM_STATE_VAR;
       inst->SrcReg[2].Index = fogPRefOpt;
       inst->SrcReg[2].Swizzle = SWIZZLE_YYYY;
-      inst->SaturateMode = SATURATE_ZERO_ONE;
+      inst->Saturate = GL_TRUE;
       inst++;
    }
    else {
-      ASSERT(fog_mode == GL_EXP || fog_mode == GL_EXP2);
+      assert(fog_mode == GL_EXP || fog_mode == GL_EXP2);
       /* fogPRefOpt.z = d/ln(2), fogPRefOpt.w = d/sqrt(ln(2) */
       /* EXP: MUL fogFactorTemp.x, fogPRefOpt.z, fragment.fogcoord.x; */
       /* EXP2: MUL fogFactorTemp.x, fogPRefOpt.w, fragment.fogcoord.x; */
@@ -374,7 +374,7 @@ _mesa_append_fog_code(struct gl_context *ctx,
       inst->SrcReg[0].Index = fogFactorTemp;
       inst->SrcReg[0].Negate = NEGATE_XYZW;
       inst->SrcReg[0].Swizzle = SWIZZLE_XXXX;
-      inst->SaturateMode = SATURATE_ZERO_ONE;
+      inst->Saturate = GL_TRUE;
       inst++;
    }
    /* LRP result.color.xyz, fogFactorTemp.xxxx, colorTemp, fogColorRef; */
@@ -426,7 +426,6 @@ is_texture_instruction(const struct prog_instruction *inst)
    case OPCODE_TXD:
    case OPCODE_TXL:
    case OPCODE_TXP:
-   case OPCODE_TXP_NV:
       return GL_TRUE;
    default:
       return GL_FALSE;
@@ -590,93 +589,29 @@ _mesa_remove_output_reads(struct gl_program *prog, gl_register_file type)
    }
 }
 
-
-/**
- * Make the given fragment program into a "no-op" shader.
- * Actually, just copy the incoming fragment color (or texcoord)
- * to the output color.
- * This is for debug/test purposes.
- */
 void
-_mesa_nop_fragment_program(struct gl_context *ctx, struct gl_fragment_program *prog)
+_mesa_program_fragment_position_to_sysval(struct gl_program *prog)
 {
-   struct prog_instruction *inst;
-   GLuint inputAttr;
+   GLuint i;
 
-   inst = _mesa_alloc_instructions(2);
-   if (!inst) {
-      _mesa_error(ctx, GL_OUT_OF_MEMORY, "_mesa_nop_fragment_program");
+   if (prog->Target != GL_FRAGMENT_PROGRAM_ARB ||
+       !(prog->InputsRead & BITFIELD64_BIT(VARYING_SLOT_POS)))
       return;
+
+   prog->InputsRead &= ~BITFIELD64_BIT(VARYING_SLOT_POS);
+   prog->SystemValuesRead |= 1 << SYSTEM_VALUE_FRAG_COORD;
+
+   for (i = 0; i < prog->NumInstructions; i++) {
+      struct prog_instruction *inst = prog->Instructions + i;
+      const GLuint numSrc = _mesa_num_inst_src_regs(inst->Opcode);
+      GLuint j;
+
+      for (j = 0; j < numSrc; j++) {
+         if (inst->SrcReg[j].File == PROGRAM_INPUT &&
+             inst->SrcReg[j].Index == VARYING_SLOT_POS) {
+            inst->SrcReg[j].File = PROGRAM_SYSTEM_VALUE;
+            inst->SrcReg[j].Index = SYSTEM_VALUE_FRAG_COORD;
+         }
+      }
    }
-
-   _mesa_init_instructions(inst, 2);
-
-   inst[0].Opcode = OPCODE_MOV;
-   inst[0].DstReg.File = PROGRAM_OUTPUT;
-   inst[0].DstReg.Index = FRAG_RESULT_COLOR;
-   inst[0].SrcReg[0].File = PROGRAM_INPUT;
-   if (prog->Base.InputsRead & VARYING_BIT_COL0)
-      inputAttr = VARYING_SLOT_COL0;
-   else
-      inputAttr = VARYING_SLOT_TEX0;
-   inst[0].SrcReg[0].Index = inputAttr;
-
-   inst[1].Opcode = OPCODE_END;
-
-   _mesa_free_instructions(prog->Base.Instructions,
-                           prog->Base.NumInstructions);
-
-   prog->Base.Instructions = inst;
-   prog->Base.NumInstructions = 2;
-   prog->Base.InputsRead = BITFIELD64_BIT(inputAttr);
-   prog->Base.OutputsWritten = BITFIELD64_BIT(FRAG_RESULT_COLOR);
-}
-
-
-/**
- * \sa _mesa_nop_fragment_program
- * Replace the given vertex program with a "no-op" program that just
- * transforms vertex position and emits color.
- */
-void
-_mesa_nop_vertex_program(struct gl_context *ctx, struct gl_vertex_program *prog)
-{
-   struct prog_instruction *inst;
-   GLuint inputAttr;
-
-   /*
-    * Start with a simple vertex program that emits color.
-    */
-   inst = _mesa_alloc_instructions(2);
-   if (!inst) {
-      _mesa_error(ctx, GL_OUT_OF_MEMORY, "_mesa_nop_vertex_program");
-      return;
-   }
-
-   _mesa_init_instructions(inst, 2);
-
-   inst[0].Opcode = OPCODE_MOV;
-   inst[0].DstReg.File = PROGRAM_OUTPUT;
-   inst[0].DstReg.Index = VARYING_SLOT_COL0;
-   inst[0].SrcReg[0].File = PROGRAM_INPUT;
-   if (prog->Base.InputsRead & VERT_BIT_COLOR0)
-      inputAttr = VERT_ATTRIB_COLOR0;
-   else
-      inputAttr = VERT_ATTRIB_TEX0;
-   inst[0].SrcReg[0].Index = inputAttr;
-
-   inst[1].Opcode = OPCODE_END;
-
-   _mesa_free_instructions(prog->Base.Instructions,
-                           prog->Base.NumInstructions);
-
-   prog->Base.Instructions = inst;
-   prog->Base.NumInstructions = 2;
-   prog->Base.InputsRead = BITFIELD64_BIT(inputAttr);
-   prog->Base.OutputsWritten = BITFIELD64_BIT(VARYING_SLOT_COL0);
-
-   /*
-    * Now insert code to do standard modelview/projection transformation.
-    */
-   _mesa_insert_mvp_code(ctx, prog);
 }

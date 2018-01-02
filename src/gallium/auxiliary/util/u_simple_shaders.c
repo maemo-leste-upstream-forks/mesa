@@ -59,11 +59,13 @@ void *
 util_make_vertex_passthrough_shader(struct pipe_context *pipe,
                                     uint num_attribs,
                                     const uint *semantic_names,
-                                    const uint *semantic_indexes)
+                                    const uint *semantic_indexes,
+                                    bool window_space)
 {
    return util_make_vertex_passthrough_shader_with_so(pipe, num_attribs,
                                                       semantic_names,
-                                                      semantic_indexes, NULL);
+                                                      semantic_indexes,
+                                                      window_space, NULL);
 }
 
 void *
@@ -71,14 +73,18 @@ util_make_vertex_passthrough_shader_with_so(struct pipe_context *pipe,
                                     uint num_attribs,
                                     const uint *semantic_names,
                                     const uint *semantic_indexes,
+                                    bool window_space,
 				    const struct pipe_stream_output_info *so)
 {
    struct ureg_program *ureg;
    uint i;
 
-   ureg = ureg_create( TGSI_PROCESSOR_VERTEX );
-   if (ureg == NULL)
+   ureg = ureg_create( PIPE_SHADER_VERTEX );
+   if (!ureg)
       return NULL;
+
+   if (window_space)
+      ureg_property(ureg, TGSI_PROPERTY_VS_WINDOW_SPACE_POSITION, TRUE);
 
    for (i = 0; i < num_attribs; i++) {
       struct ureg_src src;
@@ -115,15 +121,88 @@ void *util_make_layered_clear_vertex_shader(struct pipe_context *pipe)
          "MOV OUT[2], SV[0]\n"
          "END\n";
    struct tgsi_token tokens[1000];
-   struct pipe_shader_state state = {tokens};
+   struct pipe_shader_state state;
 
-   if (!tgsi_text_translate(text, tokens, Elements(tokens))) {
+   if (!tgsi_text_translate(text, tokens, ARRAY_SIZE(tokens))) {
       assert(0);
       return NULL;
    }
+   pipe_shader_state_from_tgsi(&state, tokens);
    return pipe->create_vs_state(pipe, &state);
 }
 
+/**
+ * Takes position and color, and outputs position, color, and instance id.
+ */
+void *util_make_layered_clear_helper_vertex_shader(struct pipe_context *pipe)
+{
+   static const char text[] =
+         "VERT\n"
+         "DCL IN[0]\n"
+         "DCL IN[1]\n"
+         "DCL SV[0], INSTANCEID\n"
+         "DCL OUT[0], POSITION\n"
+         "DCL OUT[1], GENERIC[0]\n"
+         "DCL OUT[2], GENERIC[1]\n"
+
+         "MOV OUT[0], IN[0]\n"
+         "MOV OUT[1], IN[1]\n"
+         "MOV OUT[2].x, SV[0].xxxx\n"
+         "END\n";
+   struct tgsi_token tokens[1000];
+   struct pipe_shader_state state;
+
+   if (!tgsi_text_translate(text, tokens, ARRAY_SIZE(tokens))) {
+      assert(0);
+      return NULL;
+   }
+   pipe_shader_state_from_tgsi(&state, tokens);
+   return pipe->create_vs_state(pipe, &state);
+}
+
+/**
+ * Takes position, color, and target layer, and emits vertices on that target
+ * layer, with the specified color.
+ */
+void *util_make_layered_clear_geometry_shader(struct pipe_context *pipe)
+{
+   static const char text[] =
+      "GEOM\n"
+      "PROPERTY GS_INPUT_PRIMITIVE TRIANGLES\n"
+      "PROPERTY GS_OUTPUT_PRIMITIVE TRIANGLE_STRIP\n"
+      "PROPERTY GS_MAX_OUTPUT_VERTICES 3\n"
+      "PROPERTY GS_INVOCATIONS 1\n"
+      "DCL IN[][0], POSITION\n" /* position */
+      "DCL IN[][1], GENERIC[0]\n" /* color */
+      "DCL IN[][2], GENERIC[1]\n" /* vs invocation */
+      "DCL OUT[0], POSITION\n"
+      "DCL OUT[1], GENERIC[0]\n"
+      "DCL OUT[2], LAYER\n"
+      "IMM[0] INT32 {0, 0, 0, 0}\n"
+
+      "MOV OUT[0], IN[0][0]\n"
+      "MOV OUT[1], IN[0][1]\n"
+      "MOV OUT[2].x, IN[0][2].xxxx\n"
+      "EMIT IMM[0].xxxx\n"
+      "MOV OUT[0], IN[1][0]\n"
+      "MOV OUT[1], IN[1][1]\n"
+      "MOV OUT[2].x, IN[1][2].xxxx\n"
+      "EMIT IMM[0].xxxx\n"
+      "MOV OUT[0], IN[2][0]\n"
+      "MOV OUT[1], IN[2][1]\n"
+      "MOV OUT[2].x, IN[2][2].xxxx\n"
+      "EMIT IMM[0].xxxx\n"
+      "END\n";
+   struct tgsi_token tokens[1000];
+   struct pipe_shader_state state;
+
+   if (!tgsi_text_translate(text, tokens, ARRAY_SIZE(tokens))) {
+      assert(0);
+      return NULL;
+   }
+   pipe_shader_state_from_tgsi(&state, tokens);
+   return pipe->create_gs_state(pipe, &state);
+}
 
 /**
  * Make simple fragment texture shader:
@@ -140,7 +219,8 @@ void *
 util_make_fragment_tex_shader_writemask(struct pipe_context *pipe,
                                         unsigned tex_target,
                                         unsigned interp_mode,
-                                        unsigned writemask )
+                                        unsigned writemask,
+                                        enum tgsi_return_type stype)
 {
    struct ureg_program *ureg;
    struct ureg_src sampler;
@@ -150,11 +230,13 @@ util_make_fragment_tex_shader_writemask(struct pipe_context *pipe,
    assert(interp_mode == TGSI_INTERPOLATE_LINEAR ||
           interp_mode == TGSI_INTERPOLATE_PERSPECTIVE);
 
-   ureg = ureg_create( TGSI_PROCESSOR_FRAGMENT );
-   if (ureg == NULL)
+   ureg = ureg_create( PIPE_SHADER_FRAGMENT );
+   if (!ureg)
       return NULL;
    
    sampler = ureg_DECL_sampler( ureg, 0 );
+
+   ureg_DECL_sampler_view(ureg, 0, tex_target, stype, stype, stype, stype);
 
    tex = ureg_DECL_fs_input( ureg, 
                              TGSI_SEMANTIC_GENERIC, 0, 
@@ -170,9 +252,15 @@ util_make_fragment_tex_shader_writemask(struct pipe_context *pipe,
       ureg_MOV( ureg, out, imm );
    }
 
-   ureg_TEX( ureg, 
-             ureg_writemask(out, writemask),
-             tex_target, tex, sampler );
+   if (tex_target == TGSI_TEXTURE_BUFFER)
+      ureg_TXF(ureg,
+               ureg_writemask(out, writemask),
+               tex_target, tex, sampler);
+   else
+      ureg_TEX(ureg,
+               ureg_writemask(out, writemask),
+               tex_target, tex, sampler);
+
    ureg_END( ureg );
 
    return ureg_create_shader_and_destroy( ureg, pipe );
@@ -186,12 +274,14 @@ util_make_fragment_tex_shader_writemask(struct pipe_context *pipe,
  */
 void *
 util_make_fragment_tex_shader(struct pipe_context *pipe, unsigned tex_target,
-                              unsigned interp_mode)
+                              unsigned interp_mode,
+                              enum tgsi_return_type stype)
 {
    return util_make_fragment_tex_shader_writemask( pipe,
                                                    tex_target,
                                                    interp_mode,
-                                                   TGSI_WRITEMASK_XYZW );
+                                                   TGSI_WRITEMASK_XYZW,
+                                                   stype );
 }
 
 
@@ -210,11 +300,17 @@ util_make_fragment_tex_shader_writedepth(struct pipe_context *pipe,
    struct ureg_dst out, depth;
    struct ureg_src imm;
 
-   ureg = ureg_create( TGSI_PROCESSOR_FRAGMENT );
-   if (ureg == NULL)
+   ureg = ureg_create( PIPE_SHADER_FRAGMENT );
+   if (!ureg)
       return NULL;
 
    sampler = ureg_DECL_sampler( ureg, 0 );
+
+   ureg_DECL_sampler_view(ureg, 0, tex_target,
+                          TGSI_RETURN_TYPE_FLOAT,
+                          TGSI_RETURN_TYPE_FLOAT,
+                          TGSI_RETURN_TYPE_FLOAT,
+                          TGSI_RETURN_TYPE_FLOAT);
 
    tex = ureg_DECL_fs_input( ureg,
                              TGSI_SEMANTIC_GENERIC, 0,
@@ -256,12 +352,22 @@ util_make_fragment_tex_shader_writedepthstencil(struct pipe_context *pipe,
    struct ureg_dst out, depth, stencil;
    struct ureg_src imm;
 
-   ureg = ureg_create( TGSI_PROCESSOR_FRAGMENT );
-   if (ureg == NULL)
+   ureg = ureg_create( PIPE_SHADER_FRAGMENT );
+   if (!ureg)
       return NULL;
 
    depth_sampler = ureg_DECL_sampler( ureg, 0 );
+   ureg_DECL_sampler_view(ureg, 0, tex_target,
+                          TGSI_RETURN_TYPE_FLOAT,
+                          TGSI_RETURN_TYPE_FLOAT,
+                          TGSI_RETURN_TYPE_FLOAT,
+                          TGSI_RETURN_TYPE_FLOAT);
    stencil_sampler = ureg_DECL_sampler( ureg, 1 );
+   ureg_DECL_sampler_view(ureg, 0, tex_target,
+                          TGSI_RETURN_TYPE_UINT,
+                          TGSI_RETURN_TYPE_UINT,
+                          TGSI_RETURN_TYPE_UINT,
+                          TGSI_RETURN_TYPE_UINT);
 
    tex = ureg_DECL_fs_input( ureg,
                              TGSI_SEMANTIC_GENERIC, 0,
@@ -310,11 +416,17 @@ util_make_fragment_tex_shader_writestencil(struct pipe_context *pipe,
    struct ureg_dst out, stencil;
    struct ureg_src imm;
 
-   ureg = ureg_create( TGSI_PROCESSOR_FRAGMENT );
-   if (ureg == NULL)
+   ureg = ureg_create( PIPE_SHADER_FRAGMENT );
+   if (!ureg)
       return NULL;
 
    stencil_sampler = ureg_DECL_sampler( ureg, 0 );
+
+   ureg_DECL_sampler_view(ureg, 0, tex_target,
+                          TGSI_RETURN_TYPE_UINT,
+                          TGSI_RETURN_TYPE_UINT,
+                          TGSI_RETURN_TYPE_UINT,
+                          TGSI_RETURN_TYPE_UINT);
 
    tex = ureg_DECL_fs_input( ureg,
                              TGSI_SEMANTIC_GENERIC, 0,
@@ -362,17 +474,18 @@ util_make_fragment_passthrough_shader(struct pipe_context *pipe,
 
    char text[sizeof(shader_templ)+100];
    struct tgsi_token tokens[1000];
-   struct pipe_shader_state state = {tokens};
+   struct pipe_shader_state state;
 
    sprintf(text, shader_templ,
            write_all_cbufs ? "PROPERTY FS_COLOR0_WRITES_ALL_CBUFS 1\n" : "",
            tgsi_semantic_names[input_semantic],
            tgsi_interpolate_names[input_interpolate]);
 
-   if (!tgsi_text_translate(text, tokens, Elements(tokens))) {
+   if (!tgsi_text_translate(text, tokens, ARRAY_SIZE(tokens))) {
       assert(0);
       return NULL;
    }
+   pipe_shader_state_from_tgsi(&state, tokens);
 #if 0
    tgsi_dump(state.tokens, 0);
 #endif
@@ -384,8 +497,8 @@ util_make_fragment_passthrough_shader(struct pipe_context *pipe,
 void *
 util_make_empty_fragment_shader(struct pipe_context *pipe)
 {
-   struct ureg_program *ureg = ureg_create(TGSI_PROCESSOR_FRAGMENT);
-   if (ureg == NULL)
+   struct ureg_program *ureg = ureg_create(PIPE_SHADER_FRAGMENT);
+   if (!ureg)
       return NULL;
 
    ureg_END(ureg);
@@ -408,8 +521,8 @@ util_make_fragment_cloneinput_shader(struct pipe_context *pipe, int num_cbufs,
 
    assert(num_cbufs <= PIPE_MAX_COLOR_BUFS);
 
-   ureg = ureg_create( TGSI_PROCESSOR_FRAGMENT );
-   if (ureg == NULL)
+   ureg = ureg_create( PIPE_SHADER_FRAGMENT );
+   if (!ureg)
       return NULL;
 
    src = ureg_DECL_fs_input( ureg, input_semantic, 0,
@@ -430,6 +543,7 @@ util_make_fragment_cloneinput_shader(struct pipe_context *pipe, int num_cbufs,
 static void *
 util_make_fs_blit_msaa_gen(struct pipe_context *pipe,
                            unsigned tgsi_tex,
+                           const char *samp_type,
                            const char *output_semantic,
                            const char *output_mask)
 {
@@ -437,6 +551,7 @@ util_make_fs_blit_msaa_gen(struct pipe_context *pipe,
          "FRAG\n"
          "DCL IN[0], GENERIC[0], LINEAR\n"
          "DCL SAMP[0]\n"
+         "DCL SVIEW[0], %s, %s\n"
          "DCL OUT[0], %s\n"
          "DCL TEMP[0]\n"
 
@@ -447,18 +562,20 @@ util_make_fs_blit_msaa_gen(struct pipe_context *pipe,
    const char *type = tgsi_texture_names[tgsi_tex];
    char text[sizeof(shader_templ)+100];
    struct tgsi_token tokens[1000];
-   struct pipe_shader_state state = {tokens};
+   struct pipe_shader_state state;
 
    assert(tgsi_tex == TGSI_TEXTURE_2D_MSAA ||
           tgsi_tex == TGSI_TEXTURE_2D_ARRAY_MSAA);
 
-   sprintf(text, shader_templ, output_semantic, output_mask, type);
+   sprintf(text, shader_templ, type, samp_type,
+           output_semantic, output_mask, type);
 
-   if (!tgsi_text_translate(text, tokens, Elements(tokens))) {
+   if (!tgsi_text_translate(text, tokens, ARRAY_SIZE(tokens))) {
       puts(text);
       assert(0);
       return NULL;
    }
+   pipe_shader_state_from_tgsi(&state, tokens);
 #if 0
    tgsi_dump(state.tokens, 0);
 #endif
@@ -474,9 +591,19 @@ util_make_fs_blit_msaa_gen(struct pipe_context *pipe,
  */
 void *
 util_make_fs_blit_msaa_color(struct pipe_context *pipe,
-                             unsigned tgsi_tex)
+                             unsigned tgsi_tex,
+                             enum tgsi_return_type stype)
 {
-   return util_make_fs_blit_msaa_gen(pipe, tgsi_tex,
+   const char *samp_type;
+
+   if (stype == TGSI_RETURN_TYPE_UINT)
+      samp_type = "UINT";
+   else if (stype == TGSI_RETURN_TYPE_SINT)
+      samp_type = "SINT";
+   else
+      samp_type = "FLOAT";
+
+   return util_make_fs_blit_msaa_gen(pipe, tgsi_tex, samp_type,
                                      "COLOR[0]", "");
 }
 
@@ -490,7 +617,7 @@ void *
 util_make_fs_blit_msaa_depth(struct pipe_context *pipe,
                              unsigned tgsi_tex)
 {
-   return util_make_fs_blit_msaa_gen(pipe, tgsi_tex,
+   return util_make_fs_blit_msaa_gen(pipe, tgsi_tex, "FLOAT",
                                      "POSITION", ".z");
 }
 
@@ -504,7 +631,7 @@ void *
 util_make_fs_blit_msaa_stencil(struct pipe_context *pipe,
                                unsigned tgsi_tex)
 {
-   return util_make_fs_blit_msaa_gen(pipe, tgsi_tex,
+   return util_make_fs_blit_msaa_gen(pipe, tgsi_tex, "UINT",
                                      "STENCIL", ".y");
 }
 
@@ -524,6 +651,7 @@ util_make_fs_blit_msaa_depthstencil(struct pipe_context *pipe,
          "FRAG\n"
          "DCL IN[0], GENERIC[0], LINEAR\n"
          "DCL SAMP[0..1]\n"
+         "DCL SVIEW[0..1], %s, FLOAT\n"
          "DCL OUT[0], POSITION\n"
          "DCL OUT[1], STENCIL\n"
          "DCL TEMP[0]\n"
@@ -536,17 +664,18 @@ util_make_fs_blit_msaa_depthstencil(struct pipe_context *pipe,
    const char *type = tgsi_texture_names[tgsi_tex];
    char text[sizeof(shader_templ)+100];
    struct tgsi_token tokens[1000];
-   struct pipe_shader_state state = {tokens};
+   struct pipe_shader_state state;
 
    assert(tgsi_tex == TGSI_TEXTURE_2D_MSAA ||
           tgsi_tex == TGSI_TEXTURE_2D_ARRAY_MSAA);
 
-   sprintf(text, shader_templ, type, type);
+   sprintf(text, shader_templ, type, type, type);
 
-   if (!tgsi_text_translate(text, tokens, Elements(tokens))) {
+   if (!tgsi_text_translate(text, tokens, ARRAY_SIZE(tokens))) {
       assert(0);
       return NULL;
    }
+   pipe_shader_state_from_tgsi(&state, tokens);
 #if 0
    tgsi_dump(state.tokens, 0);
 #endif
@@ -558,19 +687,20 @@ util_make_fs_blit_msaa_depthstencil(struct pipe_context *pipe,
 void *
 util_make_fs_msaa_resolve(struct pipe_context *pipe,
                           unsigned tgsi_tex, unsigned nr_samples,
-                          boolean is_uint, boolean is_sint)
+                          enum tgsi_return_type stype)
 {
    struct ureg_program *ureg;
    struct ureg_src sampler, coord;
    struct ureg_dst out, tmp_sum, tmp_coord, tmp;
-   int i;
+   unsigned i;
 
-   ureg = ureg_create(TGSI_PROCESSOR_FRAGMENT);
+   ureg = ureg_create(PIPE_SHADER_FRAGMENT);
    if (!ureg)
       return NULL;
 
    /* Declarations. */
    sampler = ureg_DECL_sampler(ureg, 0);
+   ureg_DECL_sampler_view(ureg, 0, tgsi_tex, stype, stype, stype, stype);
    coord = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
                               TGSI_INTERPOLATE_LINEAR);
    out = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
@@ -588,9 +718,9 @@ util_make_fs_msaa_resolve(struct pipe_context *pipe,
                ureg_imm1u(ureg, i));
       ureg_TXF(ureg, tmp, tgsi_tex, ureg_src(tmp_coord), sampler);
 
-      if (is_uint)
+      if (stype == TGSI_RETURN_TYPE_UINT)
          ureg_U2F(ureg, tmp, ureg_src(tmp));
-      else if (is_sint)
+      else if (stype == TGSI_RETURN_TYPE_SINT)
          ureg_I2F(ureg, tmp, ureg_src(tmp));
 
       /* Add it to the sum.*/
@@ -601,9 +731,9 @@ util_make_fs_msaa_resolve(struct pipe_context *pipe,
    ureg_MUL(ureg, tmp_sum, ureg_src(tmp_sum),
             ureg_imm1f(ureg, 1.0 / nr_samples));
 
-   if (is_uint)
+   if (stype == TGSI_RETURN_TYPE_UINT)
       ureg_F2U(ureg, out, ureg_src(tmp_sum));
-   else if (is_sint)
+   else if (stype == TGSI_RETURN_TYPE_SINT)
       ureg_F2I(ureg, out, ureg_src(tmp_sum));
    else
       ureg_MOV(ureg, out, ureg_src(tmp_sum));
@@ -617,20 +747,21 @@ util_make_fs_msaa_resolve(struct pipe_context *pipe,
 void *
 util_make_fs_msaa_resolve_bilinear(struct pipe_context *pipe,
                                    unsigned tgsi_tex, unsigned nr_samples,
-                                   boolean is_uint, boolean is_sint)
+                                   enum tgsi_return_type stype)
 {
    struct ureg_program *ureg;
    struct ureg_src sampler, coord;
    struct ureg_dst out, tmp, top, bottom;
    struct ureg_dst tmp_coord[4], tmp_sum[4];
-   int i, c;
+   unsigned i, c;
 
-   ureg = ureg_create(TGSI_PROCESSOR_FRAGMENT);
+   ureg = ureg_create(PIPE_SHADER_FRAGMENT);
    if (!ureg)
       return NULL;
 
    /* Declarations. */
    sampler = ureg_DECL_sampler(ureg, 0);
+   ureg_DECL_sampler_view(ureg, 0, tgsi_tex, stype, stype, stype, stype);
    coord = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
                               TGSI_INTERPOLATE_LINEAR);
    out = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
@@ -662,9 +793,9 @@ util_make_fs_msaa_resolve_bilinear(struct pipe_context *pipe,
                   ureg_imm1u(ureg, i));
          ureg_TXF(ureg, tmp, tgsi_tex, ureg_src(tmp_coord[c]), sampler);
 
-         if (is_uint)
+         if (stype == TGSI_RETURN_TYPE_UINT)
             ureg_U2F(ureg, tmp, ureg_src(tmp));
-         else if (is_sint)
+         else if (stype == TGSI_RETURN_TYPE_SINT)
             ureg_I2F(ureg, tmp, ureg_src(tmp));
 
          /* Add it to the sum.*/
@@ -696,9 +827,9 @@ util_make_fs_msaa_resolve_bilinear(struct pipe_context *pipe,
             ureg_src(top));
 
    /* Convert to the texture format and return. */
-   if (is_uint)
+   if (stype == TGSI_RETURN_TYPE_UINT)
       ureg_F2U(ureg, out, ureg_src(tmp));
-   else if (is_sint)
+   else if (stype == TGSI_RETURN_TYPE_SINT)
       ureg_F2I(ureg, out, ureg_src(tmp));
    else
       ureg_MOV(ureg, out, ureg_src(tmp));
@@ -707,3 +838,54 @@ util_make_fs_msaa_resolve_bilinear(struct pipe_context *pipe,
 
    return ureg_create_shader_and_destroy(ureg, pipe);
 }
+
+void *
+util_make_geometry_passthrough_shader(struct pipe_context *pipe,
+                                      uint num_attribs,
+                                      const ubyte *semantic_names,
+                                      const ubyte *semantic_indexes)
+{
+   static const unsigned zero[4] = {0, 0, 0, 0};
+
+   struct ureg_program *ureg;
+   struct ureg_dst dst[PIPE_MAX_SHADER_OUTPUTS];
+   struct ureg_src src[PIPE_MAX_SHADER_INPUTS];
+   struct ureg_src imm;
+
+   unsigned i;
+
+   ureg = ureg_create(PIPE_SHADER_GEOMETRY);
+   if (!ureg)
+      return NULL;
+
+   ureg_property(ureg, TGSI_PROPERTY_GS_INPUT_PRIM, PIPE_PRIM_POINTS);
+   ureg_property(ureg, TGSI_PROPERTY_GS_OUTPUT_PRIM, PIPE_PRIM_POINTS);
+   ureg_property(ureg, TGSI_PROPERTY_GS_MAX_OUTPUT_VERTICES, 1);
+   ureg_property(ureg, TGSI_PROPERTY_GS_INVOCATIONS, 1);
+   imm = ureg_DECL_immediate_uint(ureg, zero, 4);
+
+   /**
+    * Loop over all the attribs and declare the corresponding
+    * declarations in the geometry shader
+    */
+   for (i = 0; i < num_attribs; i++) {
+      src[i] = ureg_DECL_input(ureg, semantic_names[i],
+                               semantic_indexes[i], 0, 1);
+      src[i] = ureg_src_dimension(src[i], 0);
+      dst[i] = ureg_DECL_output(ureg, semantic_names[i], semantic_indexes[i]);
+   }
+
+   /* MOV dst[i] src[i] */
+   for (i = 0; i < num_attribs; i++) {
+      ureg_MOV(ureg, dst[i], src[i]);
+   }
+
+   /* EMIT IMM[0] */
+   ureg_insn(ureg, TGSI_OPCODE_EMIT, NULL, 0, &imm, 1);
+
+   /* END */
+   ureg_END(ureg);
+
+   return ureg_create_shader_and_destroy(ureg, pipe);
+}
+

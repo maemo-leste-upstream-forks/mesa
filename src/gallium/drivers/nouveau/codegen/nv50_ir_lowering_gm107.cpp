@@ -41,6 +41,39 @@ namespace nv50_ir {
    ((QOP_##q << 6) | (QOP_##r << 4) |           \
     (QOP_##s << 2) | (QOP_##t << 0))
 
+void
+GM107LegalizeSSA::handlePFETCH(Instruction *i)
+{
+   Value *src0;
+
+   if (i->src(0).getFile() == FILE_GPR && !i->srcExists(1))
+      return;
+
+   bld.setPosition(i, false);
+   src0 = bld.getSSA();
+
+   if (i->srcExists(1))
+      bld.mkOp2(OP_ADD , TYPE_U32, src0, i->getSrc(0), i->getSrc(1));
+   else
+      bld.mkOp1(OP_MOV , TYPE_U32, src0, i->getSrc(0));
+
+   i->setSrc(0, src0);
+   i->setSrc(1, NULL);
+}
+
+bool
+GM107LegalizeSSA::visit(Instruction *i)
+{
+   switch (i->op) {
+   case OP_PFETCH:
+      handlePFETCH(i);
+      break;
+   default:
+      break;
+   }
+   return true;
+}
+
 bool
 GM107LoweringPass::handleManualTXD(TexInstruction *i)
 {
@@ -57,7 +90,7 @@ GM107LoweringPass::handleManualTXD(TexInstruction *i)
    Instruction *tex, *add;
    Value *zero = bld.loadImm(bld.getSSA(), 0);
    int l, c;
-   const int dim = i->tex.target.getDim();
+   const int dim = i->tex.target.getDim() + i->tex.target.isCube();
    const int array = i->tex.target.isArray();
 
    i->op = OP_TEX; // no need to clone dPdx/dPdy later
@@ -67,6 +100,7 @@ GM107LoweringPass::handleManualTXD(TexInstruction *i)
    tmp = bld.getScratch();
 
    for (l = 0; l < 4; ++l) {
+      Value *src[3], *val;
       // mov coordinates from lane l to all lanes
       bld.mkOp(OP_QUADON, TYPE_NONE, NULL);
       for (c = 0; c < dim; ++c) {
@@ -92,10 +126,25 @@ GM107LoweringPass::handleManualTXD(TexInstruction *i)
          add->lanes = 1; /* abused for .ndv */
       }
 
+      // normalize cube coordinates if necessary
+      if (i->tex.target.isCube()) {
+         for (c = 0; c < 3; ++c)
+            src[c] = bld.mkOp1v(OP_ABS, TYPE_F32, bld.getSSA(), crd[c]);
+         val = bld.getScratch();
+         bld.mkOp2(OP_MAX, TYPE_F32, val, src[0], src[1]);
+         bld.mkOp2(OP_MAX, TYPE_F32, val, src[2], val);
+         bld.mkOp1(OP_RCP, TYPE_F32, val, val);
+         for (c = 0; c < 3; ++c)
+            src[c] = bld.mkOp2v(OP_MUL, TYPE_F32, bld.getSSA(), crd[c], val);
+      } else {
+         for (c = 0; c < dim; ++c)
+            src[c] = crd[c];
+      }
+
       // texture
       bld.insert(tex = cloneForward(func, i));
       for (c = 0; c < dim; ++c)
-         tex->setSrc(c + array, crd[c]);
+         tex->setSrc(c + array, src[c]);
       bld.mkOp(OP_QUADPOP, TYPE_NONE, NULL);
 
       // save results
@@ -176,7 +225,7 @@ GM107LoweringPass::handlePOPCNT(Instruction *i)
                            i->getSrc(0), i->getSrc(1));
    i->setSrc(0, tmp);
    i->setSrc(1, NULL);
-   return TRUE;
+   return true;
 }
 
 //
@@ -193,99 +242,16 @@ GM107LoweringPass::visit(Instruction *i)
       checkPredicate(i);
 
    switch (i->op) {
-   case OP_TEX:
-   case OP_TXB:
-   case OP_TXL:
-   case OP_TXF:
-   case OP_TXG:
-      return handleTEX(i->asTex());
-   case OP_TXD:
-      return handleTXD(i->asTex());
-   case OP_TXLQ:
-      return handleTXLQ(i->asTex());
-   case OP_TXQ:
-      return handleTXQ(i->asTex());
-   case OP_EX2:
-      bld.mkOp1(OP_PREEX2, TYPE_F32, i->getDef(0), i->getSrc(0));
-      i->setSrc(0, i->getDef(0));
-      break;
-   case OP_POW:
-      return handlePOW(i);
-   case OP_DIV:
-      return handleDIV(i);
-   case OP_MOD:
-      return handleMOD(i);
-   case OP_SQRT:
-      return handleSQRT(i);
-   case OP_EXPORT:
-      return handleEXPORT(i);
    case OP_PFETCH:
       return handlePFETCH(i);
-   case OP_EMIT:
-   case OP_RESTART:
-      return handleOUT(i);
-   case OP_RDSV:
-      return handleRDSV(i);
-   case OP_WRSV:
-      return handleWRSV(i);
-   case OP_LOAD:
-      if (i->src(0).getFile() == FILE_SHADER_INPUT) {
-         if (prog->getType() == Program::TYPE_COMPUTE) {
-            i->getSrc(0)->reg.file = FILE_MEMORY_CONST;
-            i->getSrc(0)->reg.fileIndex = 0;
-         } else
-         if (prog->getType() == Program::TYPE_GEOMETRY &&
-             i->src(0).isIndirect(0)) {
-            // XXX: this assumes vec4 units
-            Value *ptr = bld.mkOp2v(OP_SHL, TYPE_U32, bld.getSSA(),
-                                    i->getIndirect(0, 0), bld.mkImm(4));
-            i->setIndirect(0, 0, ptr);
-         } else {
-            i->op = OP_VFETCH;
-            assert(prog->getType() != Program::TYPE_FRAGMENT); // INTERP
-         }
-      } else if (i->src(0).getFile() == FILE_MEMORY_CONST) {
-         if (i->src(0).isIndirect(1)) {
-            Value *ptr;
-            if (i->src(0).isIndirect(0))
-               ptr = bld.mkOp3v(OP_INSBF, TYPE_U32, bld.getSSA(),
-                                i->getIndirect(0, 1), bld.mkImm(0x1010),
-                                i->getIndirect(0, 0));
-            else
-               ptr = bld.mkOp2v(OP_SHL, TYPE_U32, bld.getSSA(),
-                                i->getIndirect(0, 1), bld.mkImm(16));
-            i->setIndirect(0, 1, NULL);
-            i->setIndirect(0, 0, ptr);
-            i->subOp = NV50_IR_SUBOP_LDC_IS;
-         }
-      }
-      break;
-   case OP_ATOM:
-   {
-      const bool cctl = i->src(0).getFile() == FILE_MEMORY_GLOBAL;
-      handleATOM(i);
-      handleCasExch(i, cctl);
-   }
-      break;
-   case OP_SULDB:
-   case OP_SULDP:
-   case OP_SUSTB:
-   case OP_SUSTP:
-   case OP_SUREDB:
-   case OP_SUREDP:
-      handleSurfaceOpNVE4(i->asTex());
-      break;
    case OP_DFDX:
    case OP_DFDY:
-      handleDFDX(i);
-      break;
+      return handleDFDX(i);
    case OP_POPCNT:
-      handlePOPCNT(i);
-      break;
+      return handlePOPCNT(i);
    default:
-      break;
+      return NVC0LoweringPass::visit(i);
    }
-   return true;
 }
 
 } // namespace nv50_ir

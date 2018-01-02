@@ -32,11 +32,13 @@
 #include "tgsi_strings.h"
 
 
-const char *tgsi_processor_type_names[4] =
+const char *tgsi_processor_type_names[6] =
 {
-   "FRAG",
    "VERT",
+   "FRAG",
    "GEOM",
+   "TESS_CTRL",
+   "TESS_EVAL",
    "COMP"
 };
 
@@ -52,8 +54,10 @@ static const char *tgsi_file_names[] =
    "IMM",
    "PRED",
    "SV",
-   "RES",
-   "SVIEW"
+   "IMAGE",
+   "SVIEW",
+   "BUFFER",
+   "MEMORY",
 };
 
 const char *tgsi_semantic_names[TGSI_SEMANTIC_COUNT] =
@@ -81,11 +85,21 @@ const char *tgsi_semantic_names[TGSI_SEMANTIC_COUNT] =
    "PCOORD",
    "VIEWPORT_INDEX",
    "LAYER",
-   "CULLDIST",
    "SAMPLEID",
    "SAMPLEPOS",
    "SAMPLEMASK",
    "INVOCATIONID",
+   "VERTEXID_NOBASE",
+   "BASEVERTEX",
+   "PATCH",
+   "TESSCOORD",
+   "TESSOUTER",
+   "TESSINNER",
+   "VERTICESIN",
+   "HELPER_INVOCATION",
+   "BASEINSTANCE",
+   "DRAWID",
+   "WORK_DIM",
 };
 
 const char *tgsi_texture_names[TGSI_TEXTURE_COUNT] =
@@ -122,10 +136,22 @@ const char *tgsi_property_names[TGSI_PROPERTY_COUNT] =
    "FS_DEPTH_LAYOUT",
    "VS_PROHIBIT_UCPS",
    "GS_INVOCATIONS",
-   "VS_POSITION_WINDOW_SPACE"
+   "VS_WINDOW_SPACE_POSITION",
+   "TCS_VERTICES_OUT",
+   "TES_PRIM_MODE",
+   "TES_SPACING",
+   "TES_VERTEX_ORDER_CW",
+   "TES_POINT_MODE",
+   "NUM_CLIPDIST_ENABLED",
+   "NUM_CULLDIST_ENABLED",
+   "FS_EARLY_DEPTH_STENCIL",
+   "NEXT_SHADER",
+   "CS_FIXED_BLOCK_WIDTH",
+   "CS_FIXED_BLOCK_HEIGHT",
+   "CS_FIXED_BLOCK_DEPTH"
 };
 
-const char *tgsi_type_names[5] =
+const char *tgsi_return_type_names[TGSI_RETURN_TYPE_COUNT] =
 {
    "UNORM",
    "SNORM",
@@ -164,7 +190,8 @@ const char *tgsi_primitive_names[PIPE_PRIM_MAX] =
    "LINES_ADJACENCY",
    "LINE_STRIP_ADJACENCY",
    "TRIANGLES_ADJACENCY",
-   "TRIANGLE_STRIP_ADJACENCY"
+   "TRIANGLE_STRIP_ADJACENCY",
+   "PATCHES",
 };
 
 const char *tgsi_fs_coord_origin_names[2] =
@@ -179,24 +206,33 @@ const char *tgsi_fs_coord_pixel_center_names[2] =
    "INTEGER"
 };
 
-const char *tgsi_immediate_type_names[3] =
+const char *tgsi_immediate_type_names[4] =
 {
    "FLT32",
    "UINT32",
-   "INT32"
+   "INT32",
+   "FLT64"
+};
+
+const char *tgsi_memory_names[3] =
+{
+   "COHERENT",
+   "RESTRICT",
+   "VOLATILE",
 };
 
 
-static INLINE void
+static inline void
 tgsi_strings_check(void)
 {
-   STATIC_ASSERT(Elements(tgsi_semantic_names) == TGSI_SEMANTIC_COUNT);
-   STATIC_ASSERT(Elements(tgsi_texture_names) == TGSI_TEXTURE_COUNT);
-   STATIC_ASSERT(Elements(tgsi_property_names) == TGSI_PROPERTY_COUNT);
-   STATIC_ASSERT(Elements(tgsi_primitive_names) == PIPE_PRIM_MAX);
-   STATIC_ASSERT(Elements(tgsi_interpolate_names) == TGSI_INTERPOLATE_COUNT);
+   STATIC_ASSERT(ARRAY_SIZE(tgsi_semantic_names) == TGSI_SEMANTIC_COUNT);
+   STATIC_ASSERT(ARRAY_SIZE(tgsi_texture_names) == TGSI_TEXTURE_COUNT);
+   STATIC_ASSERT(ARRAY_SIZE(tgsi_property_names) == TGSI_PROPERTY_COUNT);
+   STATIC_ASSERT(ARRAY_SIZE(tgsi_primitive_names) == PIPE_PRIM_MAX);
+   STATIC_ASSERT(ARRAY_SIZE(tgsi_interpolate_names) == TGSI_INTERPOLATE_COUNT);
+   STATIC_ASSERT(ARRAY_SIZE(tgsi_return_type_names) == TGSI_RETURN_TYPE_COUNT);
    (void) tgsi_processor_type_names;
-   (void) tgsi_type_names;
+   (void) tgsi_return_type_names;
    (void) tgsi_immediate_type_names;
    (void) tgsi_fs_coord_origin_names;
    (void) tgsi_fs_coord_pixel_center_names;
@@ -206,8 +242,8 @@ tgsi_strings_check(void)
 const char *
 tgsi_file_name(unsigned file)
 {
-   STATIC_ASSERT(Elements(tgsi_file_names) == TGSI_FILE_COUNT);
-   if (file < Elements(tgsi_file_names))
+   STATIC_ASSERT(ARRAY_SIZE(tgsi_file_names) == TGSI_FILE_COUNT);
+   if (file < ARRAY_SIZE(tgsi_file_names))
       return tgsi_file_names[file];
    else
       return "invalid file";

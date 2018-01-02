@@ -29,8 +29,7 @@
   *   Keith Whitwell <keithw@vmware.com>
   */
 
-
-#include "main/glheader.h"
+#include "compiler/nir/nir.h"
 #include "main/macros.h"
 #include "main/mtypes.h"
 #include "main/enums.h"
@@ -60,7 +59,7 @@ static void compile_sf_prog( struct brw_context *brw,
    mem_ctx = ralloc_context(NULL);
    /* Begin the compilation:
     */
-   brw_init_compile(brw, &c.func, mem_ctx);
+   brw_init_codegen(&brw->screen->devinfo, &c.func, mem_ctx);
 
    c.key = *key;
    c.vue_map = brw->vue_map_geom_out;
@@ -108,7 +107,10 @@ static void compile_sf_prog( struct brw_context *brw,
       unreachable("not reached");
    }
 
-   brw_compact_instructions(&c.func, 0, 0, NULL);
+   /* FINISHME: SF programs use calculated jumps (i.e., JMPI with a register
+    * source). Compacting would be difficult.
+    */
+   /* brw_compact_instructions(&c.func, 0, 0, NULL); */
 
    /* get the program
     */
@@ -116,11 +118,12 @@ static void compile_sf_prog( struct brw_context *brw,
 
    if (unlikely(INTEL_DEBUG & DEBUG_SF)) {
       fprintf(stderr, "sf:\n");
-      brw_disassemble(brw, c.func.store, 0, program_size, stderr);
+      brw_disassemble(&brw->screen->devinfo,
+                      c.func.store, 0, program_size, stderr);
       fprintf(stderr, "\n");
    }
 
-   brw_upload_cache(&brw->cache, BRW_SF_PROG,
+   brw_upload_cache(&brw->cache, BRW_CACHE_SF_PROG,
 		    &c.key, sizeof(c.key),
 		    program, program_size,
 		    &c.prog_data, sizeof(c.prog_data),
@@ -130,11 +133,26 @@ static void compile_sf_prog( struct brw_context *brw,
 
 /* Calculate interpolants for triangle and line rasterization.
  */
-static void
+void
 brw_upload_sf_prog(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
    struct brw_sf_prog_key key;
+
+   if (!brw_state_dirty(brw,
+                        _NEW_BUFFERS |
+                        _NEW_HINT |
+                        _NEW_LIGHT |
+                        _NEW_POINT |
+                        _NEW_POLYGON |
+                        _NEW_PROGRAM |
+                        _NEW_TRANSFORM,
+                        BRW_NEW_BLORP |
+                        BRW_NEW_INTERPOLATION_MAP |
+                        BRW_NEW_REDUCED_PRIMITIVE |
+                        BRW_NEW_VUE_MAP_GEOM_OUT))
+      return;
+
    /* _NEW_BUFFERS */
    bool render_to_fbo = _mesa_is_user_fbo(ctx->DrawBuffer);
 
@@ -172,15 +190,13 @@ brw_upload_sf_prog(struct brw_context *brw)
    /* _NEW_POINT */
    key.do_point_sprite = ctx->Point.PointSprite;
    if (key.do_point_sprite) {
-      int i;
-
-      for (i = 0; i < 8; i++) {
-	 if (ctx->Point.CoordReplace[i])
-	    key.point_sprite_coord_replace |= (1 << i);
-      }
+      key.point_sprite_coord_replace = ctx->Point.CoordReplace & 0xff;
    }
-   if (brw->fragment_program->Base.InputsRead & BITFIELD64_BIT(VARYING_SLOT_PNTC))
+   if (brw->fragment_program->Base.nir->info.inputs_read &
+       BITFIELD64_BIT(VARYING_SLOT_PNTC)) {
       key.do_point_coord = 1;
+   }
+
    /*
     * Window coordinates in a FBO are inverted, which means point
     * sprite origin must be inverted, too.
@@ -201,25 +217,12 @@ brw_upload_sf_prog(struct brw_context *brw)
        * face orientation, just as we invert the viewport in
        * sf_unit_create_from_key().
        */
-      key.frontface_ccw = (ctx->Polygon.FrontFace == GL_CCW) != render_to_fbo;
+      key.frontface_ccw = ctx->Polygon._FrontBit == render_to_fbo;
    }
 
-   if (!brw_search_cache(&brw->cache, BRW_SF_PROG,
+   if (!brw_search_cache(&brw->cache, BRW_CACHE_SF_PROG,
 			 &key, sizeof(key),
 			 &brw->sf.prog_offset, &brw->sf.prog_data)) {
       compile_sf_prog( brw, &key );
    }
 }
-
-
-const struct brw_tracked_state brw_sf_prog = {
-   .dirty = {
-      .mesa  = (_NEW_HINT | _NEW_LIGHT | _NEW_POLYGON | _NEW_POINT |
-                _NEW_TRANSFORM | _NEW_BUFFERS | _NEW_PROGRAM),
-      .brw   = (BRW_NEW_REDUCED_PRIMITIVE |
-                BRW_NEW_VUE_MAP_GEOM_OUT |
-                BRW_NEW_INTERPOLATION_MAP)
-   },
-   .emit = brw_upload_sf_prog
-};
-

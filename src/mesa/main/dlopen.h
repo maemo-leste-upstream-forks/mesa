@@ -47,12 +47,10 @@ typedef void (*GenericFunc)(void);
 static inline void *
 _mesa_dlopen(const char *libname, int flags)
 {
-#if defined(__blrts)
-   return NULL;
-#elif defined(HAVE_DLOPEN)
+#if defined(HAVE_DLOPEN)
    flags = RTLD_LAZY | RTLD_GLOBAL; /* Overriding flags at this time */
    return dlopen(libname, flags);
-#elif defined(__MINGW32__)
+#elif defined(_WIN32)
    return LoadLibraryA(libname);
 #else
    return NULL;
@@ -71,18 +69,9 @@ _mesa_dlsym(void *handle, const char *fname)
       void *v;
       GenericFunc f;
    } u;
-#if defined(__blrts)
-   u.v = NULL;
-#elif defined(__DJGPP__)
-   /* need '_' prefix on symbol names */
-   char fname2[1000];
-   fname2[0] = '_';
-   strncpy(fname2 + 1, fname, 998);
-   fname2[999] = 0;
-   u.v = dlsym(handle, fname2);
-#elif defined(HAVE_DLOPEN)
+#if defined(HAVE_DLOPEN)
    u.v = dlsym(handle, fname);
-#elif defined(__MINGW32__)
+#elif defined(_WIN32)
    u.v = (void *) GetProcAddress(handle, fname);
 #else
    u.v = NULL;
@@ -96,11 +85,9 @@ _mesa_dlsym(void *handle, const char *fname)
 static inline void
 _mesa_dlclose(void *handle)
 {
-#if defined(__blrts)
-   (void) handle;
-#elif defined(HAVE_DLOPEN)
+#if defined(HAVE_DLOPEN)
    dlclose(handle);
-#elif defined(__MINGW32__)
+#elif defined(_WIN32)
    FreeLibrary(handle);
 #else
    (void) handle;

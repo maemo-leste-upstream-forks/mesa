@@ -111,7 +111,7 @@ static const float cos_constants[4] = { 1.0,
 /**
  * component-wise negation of ureg
  */
-static INLINE int
+static inline int
 negate(int reg, int x, int y, int z, int w)
 {
    /* Another neat thing about the UREG representation */
@@ -134,8 +134,8 @@ i915_use_passthrough_shader(struct i915_fragment_shader *fs)
    if (fs->program) {
       memcpy(fs->program, passthrough_program, sizeof(passthrough_program));
       memcpy(fs->decl, passthrough_decl, sizeof(passthrough_decl));
-      fs->program_len = Elements(passthrough_program);
-      fs->decl_len = Elements(passthrough_decl);
+      fs->program_len = ARRAY_SIZE(passthrough_program);
+      fs->decl_len = ARRAY_SIZE(passthrough_decl);
    }
    fs->num_constants = 0;
 }
@@ -329,7 +329,7 @@ get_result_flags(const struct i915_full_instruction *inst)
       = inst->Dst[0].Register.WriteMask;
    uint flags = 0x0;
 
-   if (inst->Instruction.Saturate == TGSI_SAT_ZERO_ONE)
+   if (inst->Instruction.Saturate)
       flags |= A0_DEST_SATURATE;
 
    if (writeMask & TGSI_WRITEMASK_X)
@@ -585,7 +585,7 @@ i915_translate_instruction(struct i915_fp_compile *p,
   case TGSI_OPCODE_DDX:
   case TGSI_OPCODE_DDY:
       /* XXX We just output 0 here */
-      debug_printf("Punting DDX/DDX\n");
+      debug_printf("Punting DDX/DDY\n");
       src0 = get_result_vector(p, &inst->Dst[0]);
       i915_emit_arith(p,
                       A0_MOV,
@@ -764,21 +764,7 @@ i915_translate_instruction(struct i915_fp_compile *p,
       break;
 
    case TGSI_OPCODE_MIN:
-      src0 = src_vector(p, &inst->Src[0], fs);
-      src1 = src_vector(p, &inst->Src[1], fs);
-      tmp = i915_get_utemp(p);
-      flags = get_result_flags(inst);
-
-      i915_emit_arith(p,
-                      A0_MAX,
-                      tmp, flags & A0_DEST_CHANNEL_ALL, 0,
-                      negate(src0, 1, 1, 1, 1),
-                      negate(src1, 1, 1, 1, 1), 0);
-
-      i915_emit_arith(p,
-                      A0_MOV,
-                      get_result_vector(p, &inst->Dst[0]),
-                      flags, 0, negate(tmp, 1, 1, 1, 1), 0, 0);
+      emit_simple_arith(p, inst, A0_MIN, 2, fs);
       break;
 
    case TGSI_OPCODE_MOV:
@@ -1128,7 +1114,7 @@ static void i915_translate_token(struct i915_fp_compile *p,
                == TGSI_FILE_CONSTANT) {
          uint i;
          for (i = token->FullDeclaration.Range.First;
-              i <= token->FullDeclaration.Range.Last;
+              i <= MIN2(token->FullDeclaration.Range.Last, I915_MAX_CONSTANT - 1);
               i++) {
             assert(ifs->constant_flags[i] == 0x0);
             ifs->constant_flags[i] = I915_CONSTFLAG_USER;

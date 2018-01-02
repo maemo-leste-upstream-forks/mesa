@@ -31,7 +31,6 @@
 #include "main/mtypes.h"
 #include "main/imports.h"
 #include "main/macros.h"
-#include "main/colormac.h"
 #include "main/renderbuffer.h"
 #include "main/framebuffer.h"
 
@@ -206,12 +205,12 @@ i915_emit_invarient_state(struct intel_context *intel)
    OUT_BATCH(_3DSTATE_LOAD_STATE_IMMEDIATE_1 | I1_LOAD_S(3) | (0));
    OUT_BATCH(0);
 
-   /* XXX: Use this */
-   OUT_BATCH(_3DSTATE_SCISSOR_ENABLE_CMD | DISABLE_SCISSOR_RECT);
-
    OUT_BATCH(_3DSTATE_SCISSOR_RECT_0_CMD);
    OUT_BATCH(0);
    OUT_BATCH(0);
+
+   /* XXX: Use this */
+   OUT_BATCH(_3DSTATE_SCISSOR_ENABLE_CMD | DISABLE_SCISSOR_RECT);
 
    OUT_BATCH(_3DSTATE_DEPTH_SUBRECT_DISABLE);
 
@@ -356,7 +355,7 @@ i915_emit_state(struct intel_context *intel)
    assert(get_dirty(state) == 0);
 
    if (INTEL_DEBUG & DEBUG_STATE)
-      fprintf(stderr, "%s dirty: %x\n", __FUNCTION__, dirty);
+      fprintf(stderr, "%s dirty: %x\n", __func__, dirty);
 
    if (dirty & I915_UPLOAD_INVARIENT) {
       if (INTEL_DEBUG & DEBUG_STATE)
@@ -415,10 +414,10 @@ i915_emit_state(struct intel_context *intel)
 
       OUT_BATCH(state->Buffer[I915_DESTREG_DV0]);
       OUT_BATCH(state->Buffer[I915_DESTREG_DV1]);
-      OUT_BATCH(state->Buffer[I915_DESTREG_SENABLE]);
       OUT_BATCH(state->Buffer[I915_DESTREG_SR0]);
       OUT_BATCH(state->Buffer[I915_DESTREG_SR1]);
       OUT_BATCH(state->Buffer[I915_DESTREG_SR2]);
+      OUT_BATCH(state->Buffer[I915_DESTREG_SENABLE]);
 
       if (state->Buffer[I915_DESTREG_DRAWRECT0] != MI_NOOP)
          OUT_BATCH(state->Buffer[I915_DESTREG_DRAWRECT0]);
@@ -732,9 +731,9 @@ i915_update_draw_buffer(struct intel_context *intel)
     */
    if (ctx->NewState & _NEW_BUFFERS) {
       /* this updates the DrawBuffer->_NumColorDrawBuffers fields, etc */
-      _mesa_update_framebuffer(ctx);
+      _mesa_update_framebuffer(ctx, ctx->ReadBuffer, ctx->DrawBuffer);
       /* this updates the DrawBuffer's Width/Height if it's a FBO */
-      _mesa_update_draw_buffer_bounds(ctx);
+      _mesa_update_draw_buffer_bounds(ctx, ctx->DrawBuffer);
    }
 
    if (fb->_Status != GL_FRAMEBUFFER_COMPLETE_EXT) {

@@ -30,6 +30,7 @@
 #include "texcompress.h"
 #include "texcompress_bptc.h"
 #include "util/format_srgb.h"
+#include "util/half_float.h"
 #include "texstore.h"
 #include "macros.h"
 #include "image.h"
@@ -1276,7 +1277,6 @@ _mesa_texstore_bptc_rgba_unorm(TEXSTORE_PARAMS)
 {
    const GLubyte *pixels;
    const GLubyte *tempImage = NULL;
-   GLenum baseFormat;
    int rowstride;
 
    if (srcFormat != GL_RGBA ||
@@ -1284,15 +1284,20 @@ _mesa_texstore_bptc_rgba_unorm(TEXSTORE_PARAMS)
        ctx->_ImageTransferState ||
        srcPacking->SwapBytes) {
       /* convert image to RGBA/ubyte */
-      baseFormat = _mesa_get_format_base_format(dstFormat);
-      tempImage = _mesa_make_temp_ubyte_image(ctx, dims,
-                                              baseInternalFormat,
-                                              baseFormat,
-                                              srcWidth, srcHeight, srcDepth,
-                                              srcFormat, srcType, srcAddr,
-                                              srcPacking);
+      GLubyte *tempImageSlices[1];
+      int rgbaRowStride = 4 * srcWidth * sizeof(GLubyte);
+      tempImage = malloc(srcWidth * srcHeight * 4 * sizeof(GLubyte));
       if (!tempImage)
          return GL_FALSE; /* out of memory */
+      tempImageSlices[0] = (GLubyte *) tempImage;
+      _mesa_texstore(ctx, dims,
+                     baseInternalFormat,
+                     _mesa_little_endian() ? MESA_FORMAT_R8G8B8A8_UNORM
+                                           : MESA_FORMAT_A8B8G8R8_UNORM,
+                     rgbaRowStride, tempImageSlices,
+                     srcWidth, srcHeight, srcDepth,
+                     srcFormat, srcType, srcAddr,
+                     srcPacking);
 
       pixels = tempImage;
       rowstride = srcWidth * 4;
@@ -1584,7 +1589,6 @@ texstore_bptc_rgb_float(TEXSTORE_PARAMS,
 {
    const float *pixels;
    const float *tempImage = NULL;
-   GLenum baseFormat;
    int rowstride;
 
    if (srcFormat != GL_RGB ||
@@ -1592,16 +1596,19 @@ texstore_bptc_rgb_float(TEXSTORE_PARAMS,
        ctx->_ImageTransferState ||
        srcPacking->SwapBytes) {
       /* convert image to RGB/float */
-      baseFormat = _mesa_get_format_base_format(dstFormat);
-      tempImage = _mesa_make_temp_float_image(ctx, dims,
-                                              baseInternalFormat,
-                                              baseFormat,
-                                              srcWidth, srcHeight, srcDepth,
-                                              srcFormat, srcType, srcAddr,
-                                              srcPacking,
-                                              ctx->_ImageTransferState);
+      GLfloat *tempImageSlices[1];
+      int rgbRowStride = 3 * srcWidth * sizeof(GLfloat);
+      tempImage = malloc(srcWidth * srcHeight * 3 * sizeof(GLfloat));
       if (!tempImage)
          return GL_FALSE; /* out of memory */
+      tempImageSlices[0] = (GLfloat *) tempImage;
+      _mesa_texstore(ctx, dims,
+                     baseInternalFormat,
+                     MESA_FORMAT_RGB_FLOAT32,
+                     rgbRowStride, (GLubyte **)tempImageSlices,
+                     srcWidth, srcHeight, srcDepth,
+                     srcFormat, srcType, srcAddr,
+                     srcPacking);
 
       pixels = tempImage;
       rowstride = srcWidth * sizeof(float) * 3;
@@ -1625,7 +1632,7 @@ texstore_bptc_rgb_float(TEXSTORE_PARAMS,
 GLboolean
 _mesa_texstore_bptc_rgb_signed_float(TEXSTORE_PARAMS)
 {
-   ASSERT(dstFormat == MESA_FORMAT_BPTC_RGB_SIGNED_FLOAT);
+   assert(dstFormat == MESA_FORMAT_BPTC_RGB_SIGNED_FLOAT);
 
    return texstore_bptc_rgb_float(ctx, dims, baseInternalFormat,
                                   dstFormat, dstRowStride, dstSlices,
@@ -1638,7 +1645,7 @@ _mesa_texstore_bptc_rgb_signed_float(TEXSTORE_PARAMS)
 GLboolean
 _mesa_texstore_bptc_rgb_unsigned_float(TEXSTORE_PARAMS)
 {
-   ASSERT(dstFormat == MESA_FORMAT_BPTC_RGB_UNSIGNED_FLOAT);
+   assert(dstFormat == MESA_FORMAT_BPTC_RGB_UNSIGNED_FLOAT);
 
    return texstore_bptc_rgb_float(ctx, dims, baseInternalFormat,
                                   dstFormat, dstRowStride, dstSlices,

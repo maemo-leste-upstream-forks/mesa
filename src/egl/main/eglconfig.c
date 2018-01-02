@@ -36,13 +36,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include "c99_compat.h"
+
+#include "eglcompiler.h"
 #include "eglconfig.h"
 #include "egldisplay.h"
 #include "eglcurrent.h"
 #include "egllog.h"
 
 
-#define MIN2(A, B)  (((A) < (B)) ? (A) : (B))
 
 
 /**
@@ -75,13 +77,14 @@ _eglInitConfig(_EGLConfig *conf, _EGLDisplay *dpy, EGLint id)
  *
  * Note that we just save the ptr to the config (we don't copy the config).
  */
-PUBLIC EGLConfig
+EGLConfig
 _eglLinkConfig(_EGLConfig *conf)
 {
    _EGLDisplay *dpy = conf->Display;
 
    /* sanity check */
-   assert(dpy && conf->ConfigID > 0);
+   assert(dpy);
+   assert(conf->ConfigID > 0);
 
    if (!dpy->Configs) {
       dpy->Configs = _eglCreateArray("Config", 16);
@@ -243,7 +246,13 @@ static const struct {
    /* extensions */
    { EGL_Y_INVERTED_NOK,            ATTRIB_TYPE_BOOLEAN,
                                     ATTRIB_CRITERION_EXACT,
-                                    EGL_DONT_CARE }
+                                    EGL_DONT_CARE },
+   { EGL_FRAMEBUFFER_TARGET_ANDROID, ATTRIB_TYPE_BOOLEAN,
+                                    ATTRIB_CRITERION_EXACT,
+                                    EGL_DONT_CARE },
+   { EGL_RECORDABLE_ANDROID,        ATTRIB_TYPE_BOOLEAN,
+                                    ATTRIB_CRITERION_EXACT,
+                                    EGL_DONT_CARE },
 };
 
 
@@ -321,10 +330,6 @@ _eglValidateConfig(const _EGLConfig *conf, EGLBoolean for_matching)
                    EGL_VG_ALPHA_FORMAT_PRE_BIT |
                    EGL_MULTISAMPLE_RESOLVE_BOX_BIT |
                    EGL_SWAP_BEHAVIOR_PRESERVED_BIT;
-#ifdef EGL_MESA_screen_surface
-            if (conf->Display->Extensions.MESA_screen_surface)
-               mask |= EGL_SCREEN_BIT_MESA;
-#endif
             break;
          case EGL_RENDERABLE_TYPE:
          case EGL_CONFORMANT:
@@ -481,7 +486,7 @@ _eglMatchConfig(const _EGLConfig *conf, const _EGLConfig *criteria)
    return matched;
 }
 
-static INLINE EGLBoolean
+static inline EGLBoolean
 _eglIsConfigAttribValid(_EGLConfig *conf, EGLint attr)
 {
    if (_eglOffsetOfConfig(attr) < 0)
@@ -490,6 +495,10 @@ _eglIsConfigAttribValid(_EGLConfig *conf, EGLint attr)
    switch (attr) {
    case EGL_Y_INVERTED_NOK:
       return conf->Display->Extensions.NOK_texture_from_pixmap;
+   case EGL_FRAMEBUFFER_TARGET_ANDROID:
+      return conf->Display->Extensions.ANDROID_framebuffer_target;
+   case EGL_RECORDABLE_ANDROID:
+      return conf->Display->Extensions.ANDROID_recordable;
    default:
       break;
    }
@@ -590,14 +599,14 @@ _eglCompareConfigs(const _EGLConfig *conf1, const _EGLConfig *conf2,
       return 0;
 
    /* the enum values have the desired ordering */
-   assert(EGL_NONE < EGL_SLOW_CONFIG);
-   assert(EGL_SLOW_CONFIG < EGL_NON_CONFORMANT_CONFIG);
+   STATIC_ASSERT(EGL_NONE < EGL_SLOW_CONFIG);
+   STATIC_ASSERT(EGL_SLOW_CONFIG < EGL_NON_CONFORMANT_CONFIG);
    val1 = conf1->ConfigCaveat - conf2->ConfigCaveat;
    if (val1)
       return val1;
 
    /* the enum values have the desired ordering */
-   assert(EGL_RGB_BUFFER < EGL_LUMINANCE_BUFFER);
+   STATIC_ASSERT(EGL_RGB_BUFFER < EGL_LUMINANCE_BUFFER);
    val1 = conf1->ColorBufferType - conf2->ColorBufferType;
    if (val1)
       return val1;
@@ -651,7 +660,7 @@ _eglCompareConfigs(const _EGLConfig *conf1, const _EGLConfig *conf2,
 }
 
 
-static INLINE
+static inline
 void _eglSwapConfigs(const _EGLConfig **conf1, const _EGLConfig **conf2)
 {
    const _EGLConfig *tmp = *conf1;

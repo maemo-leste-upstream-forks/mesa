@@ -65,7 +65,7 @@ struct blit_state
    struct pipe_vertex_element velem[2];
 
    void *vs;
-   void *fs[PIPE_MAX_TEXTURE_TYPES][TGSI_WRITEMASK_XYZW + 1];
+   void *fs[PIPE_MAX_TEXTURE_TYPES][TGSI_WRITEMASK_XYZW + 1][3];
 
    struct pipe_resource *vbuf;  /**< quad vertices */
    unsigned vbuf_slot;
@@ -135,15 +135,17 @@ void
 util_destroy_blit(struct blit_state *ctx)
 {
    struct pipe_context *pipe = ctx->pipe;
-   unsigned i, j;
+   unsigned i, j, k;
 
    if (ctx->vs)
       pipe->delete_vs_state(pipe, ctx->vs);
 
-   for (i = 0; i < Elements(ctx->fs); i++) {
-      for (j = 0; j < Elements(ctx->fs[i]); j++) {
-         if (ctx->fs[i][j])
-            pipe->delete_fs_state(pipe, ctx->fs[i][j]);
+   for (i = 0; i < ARRAY_SIZE(ctx->fs); i++) {
+      for (j = 0; j < ARRAY_SIZE(ctx->fs[i]); j++) {
+         for (k = 0; k < ARRAY_SIZE(ctx->fs[i][j]); k++) {
+            if (ctx->fs[i][j][k])
+               pipe->delete_fs_state(pipe, ctx->fs[i][j][k]);
+         }
       }
    }
 
@@ -156,27 +158,43 @@ util_destroy_blit(struct blit_state *ctx)
 /**
  * Helper function to set the fragment shaders.
  */
-static INLINE void
+static inline void
 set_fragment_shader(struct blit_state *ctx, uint writemask,
+                    enum pipe_format format,
                     enum pipe_texture_target pipe_tex)
 {
-   if (!ctx->fs[pipe_tex][writemask]) {
-      unsigned tgsi_tex = util_pipe_tex_to_tgsi_tex(pipe_tex, 0);
+   enum tgsi_return_type stype;
+   unsigned idx;
 
-      ctx->fs[pipe_tex][writemask] =
-         util_make_fragment_tex_shader_writemask(ctx->pipe, tgsi_tex,
-                                                 TGSI_INTERPOLATE_LINEAR,
-                                                 writemask);
+   if (util_format_is_pure_uint(format)) {
+      stype = TGSI_RETURN_TYPE_UINT;
+      idx = 0;
+   } else if (util_format_is_pure_sint(format)) {
+      stype = TGSI_RETURN_TYPE_SINT;
+      idx = 1;
+   } else {
+      stype = TGSI_RETURN_TYPE_FLOAT;
+      idx = 2;
    }
 
-   cso_set_fragment_shader_handle(ctx->cso, ctx->fs[pipe_tex][writemask]);
+   if (!ctx->fs[pipe_tex][writemask][idx]) {
+      unsigned tgsi_tex = util_pipe_tex_to_tgsi_tex(pipe_tex, 0);
+
+      ctx->fs[pipe_tex][writemask][idx] =
+         util_make_fragment_tex_shader_writemask(ctx->pipe, tgsi_tex,
+                                                 TGSI_INTERPOLATE_LINEAR,
+                                                 writemask,
+                                                 stype);
+   }
+
+   cso_set_fragment_shader_handle(ctx->cso, ctx->fs[pipe_tex][writemask][idx]);
 }
 
 
 /**
  * Helper function to set the vertex shader.
  */
-static INLINE void
+static inline void
 set_vertex_shader(struct blit_state *ctx)
 {
    /* vertex shader - still required to provide the linkage between
@@ -188,7 +206,7 @@ set_vertex_shader(struct blit_state *ctx)
       const uint semantic_indexes[] = { 0, 0 };
       ctx->vs = util_make_vertex_passthrough_shader(ctx->pipe, 2,
                                                     semantic_names,
-                                                    semantic_indexes);
+                                                    semantic_indexes, FALSE);
    }
 
    cso_set_vertex_shader_handle(ctx->cso, ctx->vs);
@@ -296,16 +314,16 @@ regions_overlap(int srcX0, int srcY0,
                 int dstX0, int dstY0,
                 int dstX1, int dstY1)
 {
-   if (MAX2(srcX0, srcX1) < MIN2(dstX0, dstX1))
+   if (MAX2(srcX0, srcX1) <= MIN2(dstX0, dstX1))
       return FALSE; /* src completely left of dst */
 
-   if (MAX2(dstX0, dstX1) < MIN2(srcX0, srcX1))
+   if (MAX2(dstX0, dstX1) <= MIN2(srcX0, srcX1))
       return FALSE; /* dst completely left of src */
 
-   if (MAX2(srcY0, srcY1) < MIN2(dstY0, dstY1))
+   if (MAX2(srcY0, srcY1) <= MIN2(dstY0, dstY1))
       return FALSE; /* src completely above dst */
 
-   if (MAX2(dstY0, dstY1) < MIN2(srcY0, srcY1))
+   if (MAX2(dstY0, dstY1) <= MIN2(srcY0, srcY1))
       return FALSE; /* dst completely above src */
 
    return TRUE; /* some overlap */
@@ -336,10 +354,10 @@ formats_compatible(enum pipe_format src_format,
  * Copy pixel block from src surface to dst surface.
  * Overlapping regions are acceptable.
  * Flipping and stretching are supported.
- * \param filter  one of PIPE_TEX_MIPFILTER_NEAREST/LINEAR
- * \param writemask  controls which channels in the dest surface are sourced
- *                   from the src surface.  Disabled channels are sourced
- *                   from (0,0,0,1).
+ * \param filter  one of PIPE_TEX_FILTER_NEAREST/LINEAR
+ * \param writemask  bitmask of PIPE_MASK_[RGBAZS].  Controls which channels
+ *                   in the dest surface are sourced from the src surface.
+ *                   Disabled color channels are sourced from (0,0,0,1).
  */
 void
 util_blit_pixels(struct blit_state *ctx,
@@ -352,7 +370,7 @@ util_blit_pixels(struct blit_state *ctx,
                  int dstX0, int dstY0,
                  int dstX1, int dstY1,
                  float z, uint filter,
-                 uint writemask, uint zs_writemask)
+                 uint writemask)
 {
    struct pipe_context *pipe = ctx->pipe;
    enum pipe_format src_format, dst_format;
@@ -364,8 +382,8 @@ util_blit_pixels(struct blit_state *ctx,
          util_format_description(src_tex->format);
    struct pipe_blit_info info;
 
-   assert(filter == PIPE_TEX_MIPFILTER_NEAREST ||
-          filter == PIPE_TEX_MIPFILTER_LINEAR);
+   assert(filter == PIPE_TEX_FILTER_NEAREST ||
+          filter == PIPE_TEX_FILTER_LINEAR);
 
    assert(src_level <= src_tex->last_level);
 
@@ -383,11 +401,18 @@ util_blit_pixels(struct blit_state *ctx,
    is_depth = util_format_has_depth(src_desc);
    is_stencil = util_format_has_stencil(src_desc);
 
-   blit_depth = is_depth && (zs_writemask & BLIT_WRITEMASK_Z);
-   blit_stencil = is_stencil && (zs_writemask & BLIT_WRITEMASK_STENCIL);
+   blit_depth = is_depth && (writemask & PIPE_MASK_Z);
+   blit_stencil = is_stencil && (writemask & PIPE_MASK_S);
 
-   assert((writemask && !zs_writemask && !is_depth && !is_stencil) ||
-          (!writemask && (blit_depth || blit_stencil)));
+   if (is_depth || is_stencil) {
+      assert((writemask & PIPE_MASK_RGBA) == 0);
+      assert(blit_depth || blit_stencil);
+   }
+   else {
+      assert((writemask & PIPE_MASK_ZS) == 0);
+      assert(!blit_depth);
+      assert(!blit_stencil);
+   }
 
    /*
     * XXX: z parameter is deprecated. dst->u.tex.first_layer
@@ -437,7 +462,7 @@ util_blit_pixels(struct blit_state *ctx,
    assert(info.dst.box.width >= 0);
    assert(info.dst.box.height >= 0);
    info.dst.box.depth = 1;
-   info.dst.format = dst->texture->format;
+   info.dst.format = dst_format;
    info.src.resource = src_tex;
    info.src.level = src_level;
    info.src.box.x = srcX0;
@@ -446,8 +471,8 @@ util_blit_pixels(struct blit_state *ctx,
    info.src.box.width = srcX1 - srcX0;
    info.src.box.height = srcY1 - srcY0;
    info.src.box.depth = 1;
-   info.src.format = src_tex->format;
-   info.mask = writemask | (zs_writemask << 4);
+   info.src.format = src_format;
+   info.mask = writemask;
    info.filter = filter;
    info.scissor_enable = 0;
 
@@ -486,8 +511,8 @@ util_blit_pixels_tex(struct blit_state *ctx,
    unsigned offset;
    struct pipe_resource *tex = src_sampler_view->texture;
 
-   assert(filter == PIPE_TEX_MIPFILTER_NEAREST ||
-          filter == PIPE_TEX_MIPFILTER_LINEAR);
+   assert(filter == PIPE_TEX_FILTER_NEAREST ||
+          filter == PIPE_TEX_FILTER_LINEAR);
 
    assert(tex);
    assert(tex->width0 != 0);
@@ -516,21 +541,24 @@ util_blit_pixels_tex(struct blit_state *ctx,
                                                  PIPE_BIND_RENDER_TARGET));
 
    /* save state (restored below) */
-   cso_save_blend(ctx->cso);
-   cso_save_depth_stencil_alpha(ctx->cso);
-   cso_save_rasterizer(ctx->cso);
-   cso_save_sample_mask(ctx->cso);
-   cso_save_min_samples(ctx->cso);
-   cso_save_samplers(ctx->cso, PIPE_SHADER_FRAGMENT);
-   cso_save_sampler_views(ctx->cso, PIPE_SHADER_FRAGMENT);
-   cso_save_stream_outputs(ctx->cso);
-   cso_save_viewport(ctx->cso);
-   cso_save_framebuffer(ctx->cso);
-   cso_save_fragment_shader(ctx->cso);
-   cso_save_vertex_shader(ctx->cso);
-   cso_save_geometry_shader(ctx->cso);
-   cso_save_vertex_elements(ctx->cso);
-   cso_save_aux_vertex_buffer_slot(ctx->cso);
+   cso_save_state(ctx->cso, (CSO_BIT_BLEND |
+                             CSO_BIT_DEPTH_STENCIL_ALPHA |
+                             CSO_BIT_RASTERIZER |
+                             CSO_BIT_SAMPLE_MASK |
+                             CSO_BIT_MIN_SAMPLES |
+                             CSO_BIT_FRAGMENT_SAMPLERS |
+                             CSO_BIT_FRAGMENT_SAMPLER_VIEWS |
+                             CSO_BIT_STREAM_OUTPUTS |
+                             CSO_BIT_VIEWPORT |
+                             CSO_BIT_FRAMEBUFFER |
+                             CSO_BIT_PAUSE_QUERIES |
+                             CSO_BIT_FRAGMENT_SHADER |
+                             CSO_BIT_VERTEX_SHADER |
+                             CSO_BIT_TESSCTRL_SHADER |
+                             CSO_BIT_TESSEVAL_SHADER |
+                             CSO_BIT_GEOMETRY_SHADER |
+                             CSO_BIT_VERTEX_ELEMENTS |
+                             CSO_BIT_AUX_VERTEX_BUFFER_SLOT));
 
    /* set misc state we care about */
    cso_set_blend(ctx->cso, &ctx->blend_write_color);
@@ -545,18 +573,18 @@ util_blit_pixels_tex(struct blit_state *ctx,
    ctx->sampler.normalized_coords = normalized;
    ctx->sampler.min_img_filter = filter;
    ctx->sampler.mag_img_filter = filter;
-   cso_single_sampler(ctx->cso, PIPE_SHADER_FRAGMENT, 0, &ctx->sampler);
-   cso_single_sampler_done(ctx->cso, PIPE_SHADER_FRAGMENT);
+   {
+      const struct pipe_sampler_state *samplers[] = {&ctx->sampler};
+      cso_set_samplers(ctx->cso, PIPE_SHADER_FRAGMENT, 1, samplers);
+   }
 
    /* viewport */
    ctx->viewport.scale[0] = 0.5f * dst->width;
    ctx->viewport.scale[1] = 0.5f * dst->height;
    ctx->viewport.scale[2] = 0.5f;
-   ctx->viewport.scale[3] = 1.0f;
    ctx->viewport.translate[0] = 0.5f * dst->width;
    ctx->viewport.translate[1] = 0.5f * dst->height;
    ctx->viewport.translate[2] = 0.5f;
-   ctx->viewport.translate[3] = 0.0f;
    cso_set_viewport(ctx->cso, &ctx->viewport);
 
    /* texture */
@@ -564,8 +592,11 @@ util_blit_pixels_tex(struct blit_state *ctx,
 
    /* shaders */
    set_fragment_shader(ctx, TGSI_WRITEMASK_XYZW,
+                       src_sampler_view->format,
                        src_sampler_view->texture->target);
    set_vertex_shader(ctx);
+   cso_set_tessctrl_shader_handle(ctx->cso, NULL);
+   cso_set_tesseval_shader_handle(ctx->cso, NULL);
    cso_set_geometry_shader_handle(ctx->cso, NULL);
 
    /* drawing dest */
@@ -595,19 +626,5 @@ util_blit_pixels_tex(struct blit_state *ctx,
                            2); /* attribs/vert */
 
    /* restore state we changed */
-   cso_restore_blend(ctx->cso);
-   cso_restore_depth_stencil_alpha(ctx->cso);
-   cso_restore_rasterizer(ctx->cso);
-   cso_restore_sample_mask(ctx->cso);
-   cso_restore_min_samples(ctx->cso);
-   cso_restore_samplers(ctx->cso, PIPE_SHADER_FRAGMENT);
-   cso_restore_sampler_views(ctx->cso, PIPE_SHADER_FRAGMENT);
-   cso_restore_viewport(ctx->cso);
-   cso_restore_framebuffer(ctx->cso);
-   cso_restore_fragment_shader(ctx->cso);
-   cso_restore_vertex_shader(ctx->cso);
-   cso_restore_geometry_shader(ctx->cso);
-   cso_restore_vertex_elements(ctx->cso);
-   cso_restore_aux_vertex_buffer_slot(ctx->cso);
-   cso_restore_stream_outputs(ctx->cso);
+   cso_restore_state(ctx->cso);
 }

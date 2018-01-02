@@ -28,14 +28,14 @@
 extern "C" {
 #endif
 
-struct bblock_t;
-struct brw_context;
-struct gl_program;
 struct backend_instruction;
 struct cfg_t;
 
 struct annotation {
    int offset;
+
+   size_t error_length;
+   char *error;
 
    /* Pointers to the basic block in the CFG if the instruction group starts
     * or ends a basic block.
@@ -60,14 +60,18 @@ struct annotation_info {
 
 void
 dump_assembly(void *assembly, int num_annotations, struct annotation *annotation,
-              struct brw_context *brw, const struct gl_program *prog);
+              const struct gen_device_info *devinfo);
 
 void
-annotate(struct brw_context *brw,
+annotate(const struct gen_device_info *devinfo,
          struct annotation_info *annotation, const struct cfg_t *cfg,
          struct backend_instruction *inst, unsigned offset);
 void
 annotation_finalize(struct annotation_info *annotation, unsigned offset);
+
+void
+annotation_insert_error(struct annotation_info *annotation, unsigned offset,
+                        const char *error);
 
 #ifdef __cplusplus
 } /* extern "C" */

@@ -82,18 +82,10 @@ getDbgHelpProcAddress(LPCSTR lpProcName)
          hModule = LoadLibraryA("mgwhelp.dll");
          if (!hModule) {
             _debug_printf("warning: mgwhelp.dll not found: symbol names will not be resolved\n"
-                          "warning: download it from http://code.google.com/p/jrfonseca/wiki/DrMingw#MgwHelp\n");
+                          "warning: download it from https://github.com/jrfonseca/drmingw/#mgwhelp\n");
          }
       }
-
-      /*
-       * bfdhelp.dll was the predecessor of mgwhelp.dll.  It is available from
-       * http://people.freedesktop.org/~jrfonseca/bfdhelp/ for now.
-       */
-      if (!hModule) {
-         hModule = LoadLibraryA("bfdhelp.dll");
-      }
-   #endif
+#endif
 
       /*
        * Fallback to the real DbgHelp.
@@ -154,7 +146,7 @@ DBGHELP_DISPATCH(SymGetLineFromAddr64,
 #undef DBGHELP_DISPATCH
 
 
-static INLINE boolean
+static inline boolean
 debug_symbol_name_dbghelp(const void *addr, char* buf, unsigned size)
 {
    DWORD64 dwAddr = (DWORD64)(uintptr_t)addr;
@@ -235,7 +227,7 @@ debug_symbol_name_dbghelp(const void *addr, char* buf, unsigned size)
  *
  * To fix this, post-process the output with tools/addr2line.sh
  */
-static INLINE boolean
+static inline boolean
 debug_symbol_name_glibc(const void *addr, char* buf, unsigned size)
 {
    char** syms = backtrace_symbols((void**)&addr, 1);

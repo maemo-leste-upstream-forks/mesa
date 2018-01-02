@@ -67,7 +67,7 @@ extern "C" {
 /**
  * Duplicate a block of memory.
  */
-static INLINE void *
+static inline void *
 mem_dup(const void *src, uint size)
 {
    void *dup = MALLOC(size);
@@ -75,14 +75,6 @@ mem_dup(const void *src, uint size)
       memcpy(dup, src, size);
    return dup;
 }
-
-
-/**
- * Number of elements in an array.
- */
-#ifndef Elements
-#define Elements(x) (sizeof(x)/sizeof((x)[0]))
-#endif
 
 
 /**

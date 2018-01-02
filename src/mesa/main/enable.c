@@ -31,15 +31,14 @@
 #include "glheader.h"
 #include "clip.h"
 #include "context.h"
+#include "debug_output.h"
 #include "enable.h"
 #include "errors.h"
 #include "light.h"
-#include "simple_list.h"
 #include "mtypes.h"
 #include "enums.h"
 #include "api_arrayelt.h"
 #include "texstate.h"
-#include "drivers/common/meta.h"
 
 
 
@@ -105,6 +104,8 @@ client_state(struct gl_context *ctx, GLenum cap, GLboolean state)
       case GL_POINT_SIZE_ARRAY_OES:
          var = &vao->VertexAttrib[VERT_ATTRIB_POINT_SIZE].Enabled;
          flag = VERT_BIT_POINT_SIZE;
+         FLUSH_VERTICES(ctx, _NEW_PROGRAM);
+         ctx->VertexProgram.PointSizeEnabled = state;
          break;
 
       /* GL_NV_primitive_restart */
@@ -146,7 +147,7 @@ client_state(struct gl_context *ctx, GLenum cap, GLboolean state)
 
 invalid_enum_error:
    _mesa_error(ctx, GL_INVALID_ENUM, "gl%sClientState(%s)",
-               state ? "Enable" : "Disable", _mesa_lookup_enum_by_nr(cap));
+               state ? "Enable" : "Disable", _mesa_enum_to_string(cap));
 }
 
 
@@ -283,7 +284,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
    if (MESA_VERBOSE & VERBOSE_API)
       _mesa_debug(ctx, "%s %s (newstate is %x)\n",
                   state ? "glEnable" : "glDisable",
-                  _mesa_lookup_enum_by_nr(cap),
+                  _mesa_enum_to_string(cap),
                   ctx->NewState);
 
    switch (cap) {
@@ -369,10 +370,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          break;
       case GL_DEBUG_OUTPUT:
       case GL_DEBUG_OUTPUT_SYNCHRONOUS_ARB:
-         if (!_mesa_is_desktop_gl(ctx))
-            goto invalid_enum_error;
-         else
-            _mesa_set_debug_state_int(ctx, cap, state);
+         _mesa_set_debug_state_int(ctx, cap, state);
          break;
       case GL_DITHER:
          if (ctx->Color.DitherFlag == state)
@@ -403,11 +401,10 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          FLUSH_VERTICES(ctx, _NEW_LIGHT);
          ctx->Light.Light[cap-GL_LIGHT0].Enabled = state;
          if (state) {
-            insert_at_tail(&ctx->Light.EnabledList,
-                           &ctx->Light.Light[cap-GL_LIGHT0]);
+            ctx->Light._EnabledLights |= 1u << (cap - GL_LIGHT0);
          }
          else {
-            remove_from_list(&ctx->Light.Light[cap-GL_LIGHT0]);
+            ctx->Light._EnabledLights &= ~(1u << (cap - GL_LIGHT0));
          }
          break;
       case GL_LIGHTING:
@@ -742,17 +739,27 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
       case GL_VERTEX_ARRAY:
       case GL_NORMAL_ARRAY:
       case GL_COLOR_ARRAY:
-      case GL_INDEX_ARRAY:
       case GL_TEXTURE_COORD_ARRAY:
+         if (ctx->API != API_OPENGL_COMPAT && ctx->API != API_OPENGLES)
+            goto invalid_enum_error;
+         client_state( ctx, cap, state );
+         return;
+      case GL_INDEX_ARRAY:
       case GL_EDGE_FLAG_ARRAY:
       case GL_FOG_COORDINATE_ARRAY_EXT:
       case GL_SECONDARY_COLOR_ARRAY_EXT:
+         if (ctx->API != API_OPENGL_COMPAT)
+            goto invalid_enum_error;
+         client_state( ctx, cap, state );
+         return;
       case GL_POINT_SIZE_ARRAY_OES:
+         if (ctx->API != API_OPENGLES)
+            goto invalid_enum_error;
          client_state( ctx, cap, state );
          return;
 
       /* GL_ARB_texture_cube_map */
-      case GL_TEXTURE_CUBE_MAP_ARB:
+      case GL_TEXTURE_CUBE_MAP:
          if (ctx->API != API_OPENGL_COMPAT && ctx->API != API_OPENGLES)
             goto invalid_enum_error;
          CHECK_EXTENSION(ARB_texture_cube_map, cap);
@@ -808,7 +815,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
 
       /* GL_ARB_sample_shading */
       case GL_SAMPLE_SHADING:
-         if (!_mesa_is_desktop_gl(ctx))
+         if (!_mesa_is_desktop_gl(ctx) && !_mesa_is_gles3(ctx))
             goto invalid_enum_error;
          CHECK_EXTENSION(ARB_sample_shading, cap);
          if (ctx->Multisample.SampleShading == state)
@@ -1001,13 +1008,21 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
 
       /* ARB_texture_multisample */
       case GL_SAMPLE_MASK:
-         if (!_mesa_is_desktop_gl(ctx))
+         if (!_mesa_is_desktop_gl(ctx) && !_mesa_is_gles31(ctx))
             goto invalid_enum_error;
          CHECK_EXTENSION(ARB_texture_multisample, cap);
          if (ctx->Multisample.SampleMask == state)
             return;
          FLUSH_VERTICES(ctx, _NEW_MULTISAMPLE);
          ctx->Multisample.SampleMask = state;
+         break;
+
+      case GL_BLEND_ADVANCED_COHERENT_KHR:
+         CHECK_EXTENSION(KHR_blend_equation_advanced_coherent, cap);
+         if (ctx->Color.BlendCoherent == state)
+            return;
+         FLUSH_VERTICES(ctx, _NEW_COLOR);
+         ctx->Color.BlendCoherent = state;
          break;
 
       default:
@@ -1022,7 +1037,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
 
 invalid_enum_error:
    _mesa_error(ctx, GL_INVALID_ENUM, "gl%s(%s)",
-               state ? "Enable" : "Disable", _mesa_lookup_enum_by_nr(cap));
+               state ? "Enable" : "Disable", _mesa_enum_to_string(cap));
 }
 
 
@@ -1060,7 +1075,7 @@ void
 _mesa_set_enablei(struct gl_context *ctx, GLenum cap,
                   GLuint index, GLboolean state)
 {
-   ASSERT(state == 0 || state == 1);
+   assert(state == 0 || state == 1);
    switch (cap) {
    case GL_BLEND:
       if (!ctx->Extensions.EXT_draw_buffers2) {
@@ -1101,7 +1116,7 @@ _mesa_set_enablei(struct gl_context *ctx, GLenum cap,
 invalid_enum_error:
     _mesa_error(ctx, GL_INVALID_ENUM, "%s(cap=%s)",
                 state ? "glEnablei" : "glDisablei",
-                _mesa_lookup_enum_by_nr(cap));
+                _mesa_enum_to_string(cap));
 }
 
 
@@ -1143,7 +1158,7 @@ _mesa_IsEnabledi( GLenum cap, GLuint index )
       return (ctx->Scissor.EnableFlags >> index) & 1;
    default:
       _mesa_error(ctx, GL_INVALID_ENUM, "glIsEnabledIndexed(cap=%s)",
-                  _mesa_lookup_enum_by_nr(cap));
+                  _mesa_enum_to_string(cap));
       return GL_FALSE;
    }
 }
@@ -1225,10 +1240,7 @@ _mesa_IsEnabled( GLenum cap )
          return ctx->Polygon.CullFlag;
       case GL_DEBUG_OUTPUT:
       case GL_DEBUG_OUTPUT_SYNCHRONOUS_ARB:
-         if (!_mesa_is_desktop_gl(ctx))
-            goto invalid_enum_error;
-         else
-            return (GLboolean) _mesa_get_debug_state_int(ctx, cap);
+         return (GLboolean) _mesa_get_debug_state_int(ctx, cap);
       case GL_DEPTH_TEST:
          return ctx->Depth.Test;
       case GL_DITHER:
@@ -1456,7 +1468,7 @@ _mesa_IsEnabled( GLenum cap )
          return ctx->Array.VAO->VertexAttrib[VERT_ATTRIB_POINT_SIZE].Enabled;
 
       /* GL_ARB_texture_cube_map */
-      case GL_TEXTURE_CUBE_MAP_ARB:
+      case GL_TEXTURE_CUBE_MAP:
          CHECK_EXTENSION(ARB_texture_cube_map);
          return is_texture_enabled(ctx, TEXTURE_CUBE_BIT);
 
@@ -1603,17 +1615,21 @@ _mesa_IsEnabled( GLenum cap )
 
       /* ARB_texture_multisample */
       case GL_SAMPLE_MASK:
-         if (!_mesa_is_desktop_gl(ctx))
+         if (!_mesa_is_desktop_gl(ctx) && !_mesa_is_gles31(ctx))
             goto invalid_enum_error;
          CHECK_EXTENSION(ARB_texture_multisample);
          return ctx->Multisample.SampleMask;
 
       /* ARB_sample_shading */
       case GL_SAMPLE_SHADING:
-         if (!_mesa_is_desktop_gl(ctx))
+         if (!_mesa_is_desktop_gl(ctx) && !_mesa_is_gles3(ctx))
             goto invalid_enum_error;
          CHECK_EXTENSION(ARB_sample_shading);
          return ctx->Multisample.SampleShading;
+
+      case GL_BLEND_ADVANCED_COHERENT_KHR:
+         CHECK_EXTENSION(KHR_blend_equation_advanced_coherent);
+         return ctx->Color.BlendCoherent;
 
       default:
          goto invalid_enum_error;
@@ -1623,6 +1639,6 @@ _mesa_IsEnabled( GLenum cap )
 
 invalid_enum_error:
    _mesa_error(ctx, GL_INVALID_ENUM, "glIsEnabled(%s)",
-               _mesa_lookup_enum_by_nr(cap));
+               _mesa_enum_to_string(cap));
    return GL_FALSE;
 }

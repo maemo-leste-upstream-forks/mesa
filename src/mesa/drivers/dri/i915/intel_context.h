@@ -40,16 +40,15 @@ extern "C" {
 	#define virtual virt
 #endif
 
-#include "drm.h"
-#include "intel_bufmgr.h"
-
-#include "intel_screen.h"
-#include "intel_tex_obj.h"
-#include "i915_drm.h"
-
+#include <drm.h>
+#include <intel_bufmgr.h>
+#include <i915_drm.h>
 #ifdef __cplusplus
 	#undef virtual
 #endif
+
+#include "intel_screen.h"
+#include "intel_tex_obj.h"
 
 #include "tnl/t_vertex.h"
 
@@ -104,13 +103,6 @@ extern void intelFallback(struct intel_context *intel, GLbitfield bit,
 #define unlikely(expr) (expr)
 #endif
 #endif
-
-struct intel_sync_object {
-   struct gl_sync_object Base;
-
-   /** Batch associated with this sync object */
-   drm_intel_bo *bo;
-};
 
 struct intel_batchbuffer {
    /** Current batchbuffer being queued up. */
@@ -226,7 +218,6 @@ struct intel_context
 
    GLfloat polygon_offset_scale;        /* dependent on depth_scale, bpp */
 
-   bool hw_stencil;
    bool hw_stipple;
    bool no_rast;
    bool always_flush_batch;
@@ -249,32 +240,14 @@ struct intel_context
    intel_tri_func draw_tri;
 
    /**
-    * Set if rendering has occured to the drawable's front buffer.
+    * Set if rendering has occurred to the drawable's front buffer.
     *
     * This is used in the DRI2 case to detect that glFlush should also copy
     * the contents of the fake front buffer to the real front buffer.
     */
    bool front_buffer_dirty;
 
-   /**
-    * Track whether front-buffer rendering is currently enabled
-    *
-    * A separate flag is used to track this in order to support MRT more
-    * easily.
-    */
-   bool is_front_buffer_rendering;
-   /**
-    * Track whether front-buffer is the current read target.
-    *
-    * This is closely associated with is_front_buffer_rendering, but may
-    * be set separately.  The DRI2 fake front buffer must be referenced
-    * either way.
-    */
-   bool is_front_buffer_reading;
-
    bool use_early_z;
-
-   int driFd;
 
    __DRIcontext *driContext;
    struct intel_screen *intelScreen;
@@ -296,34 +269,6 @@ do {						\
    if ((intel)->prim.flush)			\
       (intel)->prim.flush(intel);		\
 } while (0)
-
-/* ================================================================
- * From linux kernel i386 header files, copes with odd sizes better
- * than COPY_DWORDS would:
- * XXX Put this in src/mesa/main/imports.h ???
- */
-#if defined(i386) || defined(__i386__)
-static INLINE void * __memcpy(void * to, const void * from, size_t n)
-{
-   int d0, d1, d2;
-   __asm__ __volatile__(
-      "rep ; movsl\n\t"
-      "testb $2,%b4\n\t"
-      "je 1f\n\t"
-      "movsw\n"
-      "1:\ttestb $1,%b4\n\t"
-      "je 2f\n\t"
-      "movsb\n"
-      "2:"
-      : "=&c" (d0), "=&D" (d1), "=&S" (d2)
-      :"0" (n/4), "q" (n),"1" ((long) to),"2" ((long) from)
-      : "memory");
-   return (to);
-}
-#else
-#define __memcpy(a,b,c) memcpy(a,b,c)
-#endif
-
 
 /* ================================================================
  * Debugging:
@@ -368,6 +313,7 @@ extern int INTEL_DEBUG;
       dbg_printf(__VA_ARGS__);                                  \
    if (intel->perf_debug)                                       \
       _mesa_gl_debug(&intel->ctx, &msg_id,                      \
+                     MESA_DEBUG_SOURCE_API,                     \
                      MESA_DEBUG_TYPE_PERFORMANCE,               \
                      MESA_DEBUG_SEVERITY_MEDIUM,                \
                      __VA_ARGS__);                              \
@@ -383,6 +329,7 @@ extern int INTEL_DEBUG;
          _warned = true;                                        \
                                                                 \
          _mesa_gl_debug(ctx, &msg_id,                           \
+                        MESA_DEBUG_SOURCE_API,                  \
                         MESA_DEBUG_TYPE_OTHER,                  \
                         MESA_DEBUG_SEVERITY_HIGH, fmt);         \
       }                                                         \
@@ -498,7 +445,7 @@ void intel_init_texture_formats(struct gl_context *ctx);
  * Inline conversion functions.  
  * These are better-typed than the macros used previously:
  */
-static INLINE struct intel_context *
+static inline struct intel_context *
 intel_context(struct gl_context * ctx)
 {
    return (struct intel_context *) ctx;

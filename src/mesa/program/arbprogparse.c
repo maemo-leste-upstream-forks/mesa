@@ -73,7 +73,7 @@ _mesa_parse_arb_fragment_program(struct gl_context* ctx, GLenum target,
    struct asm_parser_state state;
    GLuint i;
 
-   ASSERT(target == GL_FRAGMENT_PROGRAM_ARB);
+   assert(target == GL_FRAGMENT_PROGRAM_ARB);
 
    memset(&prog, 0, sizeof(prog));
    memset(&state, 0, sizeof(state));
@@ -84,9 +84,6 @@ _mesa_parse_arb_fragment_program(struct gl_context* ctx, GLenum target,
       /* Error in the program. Just return. */
       return;
    }
-
-   if ((ctx->_Shader->Flags & GLSL_NO_OPT) == 0)
-      _mesa_optimize_program(ctx, &prog);
 
    free(program->Base.String);
 
@@ -123,7 +120,6 @@ _mesa_parse_arb_fragment_program(struct gl_context* ctx, GLenum target,
    program->PixelCenterInteger = state.option.PixelCenterInteger;
 
    program->UsesKill            = state.fragment.UsesKill;
-   program->UsesDFdy            = state.fragment.UsesDFdy;
 
    free(program->Base.Instructions);
    program->Base.Instructions = prog.Instructions;
@@ -169,7 +165,7 @@ _mesa_parse_arb_vertex_program(struct gl_context *ctx, GLenum target,
    struct gl_program prog;
    struct asm_parser_state state;
 
-   ASSERT(target == GL_VERTEX_PROGRAM_ARB);
+   assert(target == GL_VERTEX_PROGRAM_ARB);
 
    memset(&prog, 0, sizeof(prog));
    memset(&state, 0, sizeof(state));

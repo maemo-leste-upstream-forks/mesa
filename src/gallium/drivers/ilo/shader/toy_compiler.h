@@ -29,7 +29,7 @@
 #define TOY_COMPILER_H
 
 #include "genhw/genhw.h"
-#include "util/u_slab.h"
+#include "util/slab.h"
 
 #include "ilo_common.h"
 #include "toy_compiler_reg.h"
@@ -136,14 +136,24 @@ struct toy_inst {
    struct list_head list;
 };
 
+struct toy_compaction_table {
+   uint32_t control[32];
+   uint32_t datatype[32];
+   uint32_t subreg[32];
+   uint32_t src[32];
+
+   uint32_t control_3src[4];
+   uint64_t source_3src[4];
+};
+
 /**
  * Toy compiler.
  */
 struct toy_compiler {
-   const struct ilo_dev_info *dev;
+   const struct ilo_dev *dev;
 
    struct toy_inst templ;
-   struct util_slab_mempool mempool;
+   struct slab_mempool mempool;
    struct list_head instructions;
    struct list_head *iter, *iter_next;
 
@@ -199,7 +209,7 @@ tc_duplicate_inst(struct toy_compiler *tc, const struct toy_inst *inst)
 {
    struct toy_inst *new_inst;
 
-   new_inst = util_slab_alloc(&tc->mempool);
+   new_inst = slab_alloc_st(&tc->mempool);
    if (!new_inst)
       return NULL;
 
@@ -226,7 +236,7 @@ static inline void
 tc_discard_inst(struct toy_compiler *tc, struct toy_inst *inst)
 {
    list_del(&inst->list);
-   util_slab_free(&tc->mempool, inst);
+   slab_free_st(&tc->mempool, inst);
 }
 
 /**
@@ -458,7 +468,7 @@ tc_fail(struct toy_compiler *tc, const char *reason)
 }
 
 void
-toy_compiler_init(struct toy_compiler *tc, const struct ilo_dev_info *dev);
+toy_compiler_init(struct toy_compiler *tc, const struct ilo_dev *dev);
 
 void
 toy_compiler_cleanup(struct toy_compiler *tc);
@@ -469,7 +479,12 @@ toy_compiler_dump(struct toy_compiler *tc);
 void *
 toy_compiler_assemble(struct toy_compiler *tc, int *size);
 
+const struct toy_compaction_table *
+toy_compiler_get_compaction_table(const struct ilo_dev *dev);
+
 void
-toy_compiler_disassemble(struct toy_compiler *tc, const void *kernel, int size);
+toy_compiler_disassemble(const struct ilo_dev *dev,
+                         const void *kernel, int size,
+                         bool dump_hex);
 
 #endif /* TOY_COMPILER_H */

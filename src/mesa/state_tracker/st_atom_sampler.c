@@ -36,6 +36,7 @@
 #include "main/mtypes.h"
 #include "main/glformats.h"
 #include "main/samplerobj.h"
+#include "main/teximage.h"
 #include "main/texobj.h"
 
 #include "st_context.h"
@@ -132,19 +133,18 @@ convert_sampler(struct st_context *st,
 {
    const struct gl_texture_object *texobj;
    struct gl_context *ctx = st->ctx;
-   struct gl_sampler_object *msamp;
-   const struct gl_texture_image *teximg;
+   const struct gl_sampler_object *msamp;
    GLenum texBaseFormat;
 
    texobj = ctx->Texture.Unit[texUnit]._Current;
    if (!texobj) {
       texobj = _mesa_get_fallback_texture(ctx, TEXTURE_2D_INDEX);
+      msamp = &texobj->Sampler;
+   } else {
+      msamp = _mesa_get_samplerobj(ctx, texUnit);
    }
 
-   teximg = texobj->Image[0][texobj->BaseLevel];
-   texBaseFormat = teximg ? teximg->_BaseFormat : GL_RGBA;
-
-   msamp = _mesa_get_samplerobj(ctx, texUnit);
+   texBaseFormat = _mesa_texture_base_format(texobj);
 
    memset(sampler, 0, sizeof(*sampler));
    sampler->wrap_s = gl_wrap_xlate(msamp->WrapS);
@@ -220,7 +220,7 @@ convert_sampler(struct st_context *st,
 
    /* If sampling a depth texture and using shadow comparison */
    if ((texBaseFormat == GL_DEPTH_COMPONENT ||
-        texBaseFormat == GL_DEPTH_STENCIL) &&
+        (texBaseFormat == GL_DEPTH_STENCIL && !texobj->StencilSampling)) &&
        msamp->CompareMode == GL_COMPARE_R_TO_TEXTURE) {
       sampler->compare_mode = PIPE_TEX_COMPARE_R_TO_TEXTURE;
       sampler->compare_func = st_compare_func_to_pipe(msamp->CompareFunc);
@@ -237,20 +237,21 @@ convert_sampler(struct st_context *st,
  */
 static void
 update_shader_samplers(struct st_context *st,
-                       unsigned shader_stage,
+                       enum pipe_shader_type shader_stage,
                        const struct gl_program *prog,
                        unsigned max_units,
                        struct pipe_sampler_state *samplers,
                        unsigned *num_samplers)
 {
+   GLbitfield samplers_used = prog->SamplersUsed;
+   GLbitfield free_slots = ~prog->SamplersUsed;
+   GLbitfield external_samplers_used = prog->ExternalSamplersUsed;
    GLuint unit;
-   GLbitfield samplers_used;
    const GLuint old_max = *num_samplers;
-
-   samplers_used = prog->SamplersUsed;
+   const struct pipe_sampler_state *states[PIPE_MAX_SAMPLERS];
 
    if (*num_samplers == 0 && samplers_used == 0x0)
-       return;
+      return;
 
    *num_samplers = 0;
 
@@ -262,13 +263,11 @@ update_shader_samplers(struct st_context *st,
          const GLuint texUnit = prog->SamplerUnits[unit];
 
          convert_sampler(st, sampler, texUnit);
-
+         states[unit] = sampler;
          *num_samplers = unit + 1;
-
-         cso_single_sampler(st->cso_context, shader_stage, unit, sampler);
       }
       else if (samplers_used != 0 || unit < old_max) {
-         cso_single_sampler(st->cso_context, shader_stage, unit, NULL);
+         states[unit] = NULL;
       }
       else {
          /* if we've reset all the old samplers and we have no more new ones */
@@ -276,7 +275,42 @@ update_shader_samplers(struct st_context *st,
       }
    }
 
-   cso_single_sampler_done(st->cso_context, shader_stage);
+   /* For any external samplers with multiplaner YUV, stuff the additional
+    * sampler states we need at the end.
+    *
+    * Just re-use the existing sampler-state from the primary slot.
+    */
+   while (unlikely(external_samplers_used)) {
+      GLuint unit = u_bit_scan(&external_samplers_used);
+      GLuint extra = 0;
+      struct st_texture_object *stObj =
+            st_get_texture_object(st->ctx, prog, unit);
+      struct pipe_sampler_state *sampler = samplers + unit;
+
+      if (!stObj)
+         continue;
+
+      switch (st_get_view_format(stObj)) {
+      case PIPE_FORMAT_NV12:
+         /* we need one additional sampler: */
+         extra = u_bit_scan(&free_slots);
+         states[extra] = sampler;
+         break;
+      case PIPE_FORMAT_IYUV:
+         /* we need two additional samplers: */
+         extra = u_bit_scan(&free_slots);
+         states[extra] = sampler;
+         extra = u_bit_scan(&free_slots);
+         states[extra] = sampler;
+         break;
+      default:
+         break;
+      }
+
+      *num_samplers = MAX2(*num_samplers, extra + 1);
+   }
+
+   cso_set_samplers(st->cso_context, shader_stage, *num_samplers, states);
 }
 
 
@@ -307,14 +341,33 @@ update_samplers(struct st_context *st)
                              st->state.samplers[PIPE_SHADER_GEOMETRY],
                              &st->state.num_samplers[PIPE_SHADER_GEOMETRY]);
    }
+   if (ctx->TessCtrlProgram._Current) {
+      update_shader_samplers(st,
+                             PIPE_SHADER_TESS_CTRL,
+                             &ctx->TessCtrlProgram._Current->Base,
+                             ctx->Const.Program[MESA_SHADER_TESS_CTRL].MaxTextureImageUnits,
+                             st->state.samplers[PIPE_SHADER_TESS_CTRL],
+                             &st->state.num_samplers[PIPE_SHADER_TESS_CTRL]);
+   }
+   if (ctx->TessEvalProgram._Current) {
+      update_shader_samplers(st,
+                             PIPE_SHADER_TESS_EVAL,
+                             &ctx->TessEvalProgram._Current->Base,
+                             ctx->Const.Program[MESA_SHADER_TESS_EVAL].MaxTextureImageUnits,
+                             st->state.samplers[PIPE_SHADER_TESS_EVAL],
+                             &st->state.num_samplers[PIPE_SHADER_TESS_EVAL]);
+   }
+   if (ctx->ComputeProgram._Current) {
+      update_shader_samplers(st,
+                             PIPE_SHADER_COMPUTE,
+                             &ctx->ComputeProgram._Current->Base,
+                             ctx->Const.Program[MESA_SHADER_COMPUTE].MaxTextureImageUnits,
+                             st->state.samplers[PIPE_SHADER_COMPUTE],
+                             &st->state.num_samplers[PIPE_SHADER_COMPUTE]);
+   }
 }
 
 
 const struct st_tracked_state st_update_sampler = {
-   "st_update_sampler",					/* name */
-   {							/* dirty */
-      _NEW_TEXTURE,					/* mesa */
-      0,						/* st */
-   },
    update_samplers					/* update */
 };

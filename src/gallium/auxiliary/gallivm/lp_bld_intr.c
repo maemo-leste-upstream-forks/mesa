@@ -45,11 +45,55 @@
 
 
 #include "util/u_debug.h"
+#include "util/u_string.h"
 
 #include "lp_bld_const.h"
 #include "lp_bld_intr.h"
 #include "lp_bld_type.h"
 #include "lp_bld_pack.h"
+#include "lp_bld_debug.h"
+
+
+void
+lp_format_intrinsic(char *name,
+                    size_t size,
+                    const char *name_root,
+                    LLVMTypeRef type)
+{
+   unsigned length = 0;
+   unsigned width;
+   char c;
+
+   LLVMTypeKind kind = LLVMGetTypeKind(type);
+   if (kind == LLVMVectorTypeKind) {
+      length = LLVMGetVectorSize(type);
+      type = LLVMGetElementType(type);
+      kind = LLVMGetTypeKind(type);
+   }
+
+   switch (kind) {
+   case LLVMIntegerTypeKind:
+      c = 'i';
+      width = LLVMGetIntTypeWidth(type);
+      break;
+   case LLVMFloatTypeKind:
+      c = 'f';
+      width = 32;
+      break;
+   case LLVMDoubleTypeKind:
+      c = 'f';
+      width = 64;
+      break;
+   default:
+      unreachable("unexpected LLVMTypeKind");
+   }
+
+   if (length) {
+      util_snprintf(name, size, "%s.v%u%c%u", name_root, length, c, width);
+   } else {
+      util_snprintf(name, size, "%s.%c%u", name_root, c, width);
+   }
+}
 
 
 LLVMValueRef
@@ -81,7 +125,8 @@ lp_build_intrinsic(LLVMBuilderRef builder,
                    const char *name,
                    LLVMTypeRef ret_type,
                    LLVMValueRef *args,
-                   unsigned num_args)
+                   unsigned num_args,
+                   LLVMAttribute attr)
 {
    LLVMModuleRef module = LLVMGetGlobalParent(LLVMGetBasicBlockParent(LLVMGetInsertBlock(builder)));
    LLVMValueRef function;
@@ -99,6 +144,15 @@ lp_build_intrinsic(LLVMBuilderRef builder,
       }
 
       function = lp_declare_intrinsic(module, name, ret_type, arg_types, num_args);
+
+      /* NoUnwind indicates that the intrinsic never raises a C++ exception.
+       * Set it for all intrinsics.
+       */
+      LLVMAddFunctionAttr(function, attr | LLVMNoUnwindAttribute);
+
+      if (gallivm_debug & GALLIVM_DEBUG_IR) {
+         lp_debug_dump_value(function);
+      }
    }
 
    return LLVMBuildCall(builder, function, args, num_args, "");
@@ -111,7 +165,7 @@ lp_build_intrinsic_unary(LLVMBuilderRef builder,
                          LLVMTypeRef ret_type,
                          LLVMValueRef a)
 {
-   return lp_build_intrinsic(builder, name, ret_type, &a, 1);
+   return lp_build_intrinsic(builder, name, ret_type, &a, 1, 0);
 }
 
 
@@ -127,7 +181,7 @@ lp_build_intrinsic_binary(LLVMBuilderRef builder,
    args[0] = a;
    args[1] = b;
 
-   return lp_build_intrinsic(builder, name, ret_type, args, 2);
+   return lp_build_intrinsic(builder, name, ret_type, args, 2, 0);
 }
 
 
@@ -242,7 +296,7 @@ lp_build_intrinsic_map(struct gallivm_state *gallivm,
       LLVMValueRef res_elem;
       for(j = 0; j < num_args; ++j)
          arg_elems[j] = LLVMBuildExtractElement(builder, args[j], index, "");
-      res_elem = lp_build_intrinsic(builder, name, ret_elem_type, arg_elems, num_args);
+      res_elem = lp_build_intrinsic(builder, name, ret_elem_type, arg_elems, num_args, 0);
       res = LLVMBuildInsertElement(builder, res, res_elem, index, "");
    }
 

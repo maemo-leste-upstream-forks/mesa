@@ -1,5 +1,5 @@
 /**********************************************************
- * Copyright 2009-2012 VMware, Inc.  All rights reserved.
+ * Copyright 2009-2015 VMware, Inc.  All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person
  * obtaining a copy of this software and associated documentation
@@ -47,14 +47,14 @@ struct vmw_svga_winsys_shader
    uint32_t shid;
 };
 
-static INLINE struct svga_winsys_gb_shader *
+static inline struct svga_winsys_gb_shader *
 svga_winsys_shader(struct vmw_svga_winsys_shader *shader)
 {
    assert(!shader || shader->shid != SVGA3D_INVALID_ID);
    return (struct svga_winsys_gb_shader *)shader;
 }
 
-static INLINE struct vmw_svga_winsys_shader *
+static inline struct vmw_svga_winsys_shader *
 vmw_svga_winsys_shader(struct svga_winsys_gb_shader *shader)
 {
    return (struct vmw_svga_winsys_shader *)shader;

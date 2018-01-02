@@ -24,7 +24,6 @@
 
 
 #include "glheader.h"
-#include "colormac.h"
 #include "context.h"
 #include "fog.h"
 #include "macros.h"
@@ -116,7 +115,7 @@ _mesa_Fogfv( GLenum pname, const GLfloat *params )
 	 ctx->Fog.Mode = m;
 	 break;
       case GL_FOG_DENSITY:
-	 if (*params<0.0) {
+	 if (*params<0.0F) {
 	    _mesa_error( ctx, GL_INVALID_VALUE, "glFog" );
             return;
 	 }
@@ -191,7 +190,7 @@ _mesa_Fogfv( GLenum pname, const GLfloat *params )
    }
 
    if (ctx->Driver.Fogfv) {
-      (*ctx->Driver.Fogfv)( ctx, pname, params );
+      ctx->Driver.Fogfv( ctx, pname, params );
    }
 
    return;

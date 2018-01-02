@@ -45,6 +45,9 @@ _mesa_init_pipeline(struct gl_context *ctx);
 extern void
 _mesa_free_pipeline_data(struct gl_context *ctx);
 
+extern struct gl_pipeline_object *
+_mesa_lookup_pipeline_object(struct gl_context *ctx, GLuint id);
+
 extern void
 _mesa_reference_pipeline_object_(struct gl_context *ctx,
                                  struct gl_pipeline_object **ptr,
@@ -64,7 +67,8 @@ _mesa_bind_pipeline(struct gl_context *ctx,
                     struct gl_pipeline_object *pipe);
 
 extern GLboolean
-_mesa_validate_program_pipeline(struct gl_context * ctx, struct gl_pipeline_object *pipe, GLboolean IsBound);
+_mesa_validate_program_pipeline(struct gl_context * ctx,
+                                struct gl_pipeline_object *pipe);
 
 
 extern void GLAPIENTRY
@@ -81,6 +85,9 @@ _mesa_DeleteProgramPipelines(GLsizei n, const GLuint *pipelines);
 
 extern void GLAPIENTRY
 _mesa_GenProgramPipelines(GLsizei n, GLuint *pipelines);
+
+void GLAPIENTRY
+_mesa_CreateProgramPipelines(GLsizei n, GLuint *pipelines);
 
 extern GLboolean GLAPIENTRY
 _mesa_IsProgramPipeline(GLuint pipeline);

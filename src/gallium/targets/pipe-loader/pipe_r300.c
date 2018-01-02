@@ -1,7 +1,7 @@
 #include "target-helpers/inline_debug_helper.h"
 #include "state_tracker/drm_driver.h"
 #include "radeon/drm/radeon_drm_public.h"
-#include "radeon/drm/radeon_winsys.h"
+#include "radeon/radeon_winsys.h"
 #include "r300/r300_public.h"
 
 static struct pipe_screen *
@@ -37,4 +37,4 @@ static const struct drm_conf_ret *drm_configuration(enum drm_conf conf)
 }
 
 PUBLIC
-DRM_DRIVER_DESCRIPTOR("r300", "radeon", create_screen, drm_configuration)
+DRM_DRIVER_DESCRIPTOR("r300", create_screen, drm_configuration)

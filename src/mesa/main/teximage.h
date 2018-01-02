@@ -43,11 +43,64 @@ extern "C" {
 static inline GLboolean
 _mesa_is_cube_face(GLenum target)
 {
-   return (target >= GL_TEXTURE_CUBE_MAP_POSITIVE_X_ARB &&
-           target <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z_ARB);
+   return (target >= GL_TEXTURE_CUBE_MAP_POSITIVE_X &&
+           target <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z);
 }
 
-/** Is any of the dimensions of given texture equal to zero? */
+
+/**
+ * Return number of faces for a texture target.  This will be 6 for
+ * cube maps and 1 otherwise.
+ * NOTE: this function is not used for cube map arrays which operate
+ * more like 2D arrays than cube maps.
+ */
+static inline GLuint
+_mesa_num_tex_faces(GLenum target)
+{
+   switch (target) {
+   case GL_TEXTURE_CUBE_MAP:
+   case GL_PROXY_TEXTURE_CUBE_MAP:
+      return 6;
+   default:
+      return 1;
+   }
+}
+
+
+/**
+ * If the target is GL_TEXTURE_CUBE_MAP, return one of the
+ * GL_TEXTURE_CUBE_MAP_POSITIVE/NEGATIVE_X/Y/Z targets corresponding to
+ * the face parameter.
+ * Else, return target as-is.
+ */
+static inline GLenum
+_mesa_cube_face_target(GLenum target, unsigned face)
+{
+   if (target == GL_TEXTURE_CUBE_MAP) {
+      assert(face < 6);
+      return GL_TEXTURE_CUBE_MAP_POSITIVE_X + face;
+   }
+   else {
+      return target;
+   }
+}
+
+
+/**
+ * For cube map faces, return a face index in [0,5].
+ * For other targets return 0;
+ */
+static inline GLuint
+_mesa_tex_target_to_face(GLenum target)
+{
+   if (_mesa_is_cube_face(target))
+      return (GLuint) target - (GLuint) GL_TEXTURE_CUBE_MAP_POSITIVE_X;
+   else
+      return 0;
+}
+
+
+/** Are any of the dimensions of given texture equal to zero? */
 static inline GLboolean
 _mesa_is_zero_size_texture(const struct gl_texture_image *texImage)
 {
@@ -59,12 +112,11 @@ _mesa_is_zero_size_texture(const struct gl_texture_image *texImage)
 /** \name Internal functions */
 /*@{*/
 
-extern GLint
-_mesa_base_tex_format( struct gl_context *ctx, GLint internalFormat );
-
-
 extern GLboolean
 _mesa_is_proxy_texture(GLenum target);
+
+extern bool
+_mesa_is_array_texture(GLenum target);
 
 extern struct gl_texture_image *
 _mesa_new_texture_image( struct gl_context *ctx );
@@ -99,13 +151,8 @@ _mesa_clear_texture_image(struct gl_context *ctx,
                           struct gl_texture_image *texImage);
 
 
-extern struct gl_texture_object *
-_mesa_get_current_tex_object(struct gl_context *ctx, GLenum target);
-
-
 extern struct gl_texture_image *
-_mesa_select_tex_image(struct gl_context *ctx,
-                       const struct gl_texture_object *texObj,
+_mesa_select_tex_image(const struct gl_texture_object *texObj,
                        GLenum target, GLint level);
 
 
@@ -114,21 +161,29 @@ _mesa_get_tex_image(struct gl_context *ctx, struct gl_texture_object *texObj,
                     GLenum target, GLint level);
 
 
+/**
+ * Return the base-level texture image for the given texture object.
+ */
+static inline const struct gl_texture_image *
+_mesa_base_tex_image(const struct gl_texture_object *texObj)
+{
+   return texObj->Image[0][texObj->BaseLevel];
+}
+
+
 extern GLint
 _mesa_max_texture_levels(struct gl_context *ctx, GLenum target);
 
 
 extern GLboolean
-_mesa_test_proxy_teximage(struct gl_context *ctx, GLenum target, GLint level,
-                          mesa_format format,
-                          GLint width, GLint height, GLint depth, GLint border);
+_mesa_test_proxy_teximage(struct gl_context *ctx, GLenum target,
+                          GLuint numLevels, GLint level,
+                          mesa_format format, GLuint numSamples,
+                          GLint width, GLint height, GLint depth);
 
 extern GLboolean
 _mesa_target_can_be_compressed(const struct gl_context *ctx, GLenum target,
-                               GLenum intFormat);
-
-extern GLuint
-_mesa_tex_target_to_face(GLenum target);
+                               GLenum intFormat, GLenum *error);
 
 extern GLint
 _mesa_get_texture_dimensions(GLenum target);
@@ -156,27 +211,47 @@ _mesa_validate_texbuffer_format(const struct gl_context *ctx,
 bool
 _mesa_legal_texture_base_format_for_target(struct gl_context *ctx,
                                            GLenum target,
-                                           GLenum internalFormat,
-                                           unsigned dimensions,
-                                           const char *caller);
+                                           GLenum internalFormat);
 
-/**
- * Lock a texture for updating.  See also _mesa_lock_context_textures().
- */
-static inline void
-_mesa_lock_texture(struct gl_context *ctx, struct gl_texture_object *texObj)
-{
-   mtx_lock(&ctx->Shared->TexMutex);
-   ctx->Shared->TextureStateStamp++;
-   (void) texObj;
-}
+bool
+_mesa_format_no_online_compression(const struct gl_context *ctx, GLenum format);
 
-static inline void
-_mesa_unlock_texture(struct gl_context *ctx, struct gl_texture_object *texObj)
-{
-   (void) texObj;
-   mtx_unlock(&ctx->Shared->TexMutex);
-}
+GLboolean
+_mesa_is_renderable_texture_format(struct gl_context *ctx, GLenum internalformat);
+
+extern void
+_mesa_texture_sub_image(struct gl_context *ctx, GLuint dims,
+                        struct gl_texture_object *texObj,
+                        struct gl_texture_image *texImage,
+                        GLenum target, GLint level,
+                        GLint xoffset, GLint yoffset, GLint zoffset,
+                        GLsizei width, GLsizei height, GLsizei depth,
+                        GLenum format, GLenum type, const GLvoid *pixels,
+                        bool dsa);
+
+extern void
+_mesa_compressed_texture_sub_image(struct gl_context *ctx, GLuint dims, 
+                                   struct gl_texture_object *texObj, 
+                                   struct gl_texture_image *texImage,
+                                   GLenum target, GLint level,
+                                   GLint xoffset, GLint yoffset,
+                                   GLint zoffset,
+                                   GLsizei width, GLsizei height,
+                                   GLsizei depth,
+                                   GLenum format, GLsizei imageSize,
+                                   const GLvoid *data);
+
+extern void
+_mesa_copy_texture_sub_image(struct gl_context *ctx, GLuint dims,
+                             struct gl_texture_object *texObj,
+                             GLenum target, GLint level,
+                             GLint xoffset, GLint yoffset, GLint zoffset,
+                             GLint x, GLint y,
+                             GLsizei width, GLsizei height,
+                             const char *caller);
+
+bool
+_mesa_is_cube_map_texture(GLenum target);
 
 /*@}*/
 
@@ -233,10 +308,31 @@ _mesa_TexSubImage3D( GLenum target, GLint level,
                      GLenum format, GLenum type,
                      const GLvoid *pixels );
 
+extern void GLAPIENTRY
+_mesa_TextureSubImage1D(GLuint texture, GLint level, GLint xoffset,
+                        GLsizei width,
+                        GLenum format, GLenum type,
+                        const GLvoid *pixels);
+
 
 extern void GLAPIENTRY
-_mesa_CopyTexImage1D( GLenum target, GLint level, GLenum internalformat,
-                      GLint x, GLint y, GLsizei width, GLint border );
+_mesa_TextureSubImage2D(GLuint texture, GLint level,
+                        GLint xoffset, GLint yoffset,
+                        GLsizei width, GLsizei height,
+                        GLenum format, GLenum type,
+                        const GLvoid *pixels);
+
+extern void GLAPIENTRY
+_mesa_TextureSubImage3D(GLuint texture, GLint level,
+                        GLint xoffset, GLint yoffset, GLint zoffset,
+                        GLsizei width, GLsizei height, GLsizei depth,
+                        GLenum format, GLenum type,
+                        const GLvoid *pixels);
+
+
+extern void GLAPIENTRY
+_mesa_CopyTexImage1D(GLenum target, GLint level, GLenum internalformat,
+                     GLint x, GLint y, GLsizei width, GLint border);
 
 
 extern void GLAPIENTRY
@@ -261,7 +357,21 @@ _mesa_CopyTexSubImage3D( GLenum target, GLint level,
                          GLint xoffset, GLint yoffset, GLint zoffset,
                          GLint x, GLint y, GLsizei width, GLsizei height );
 
+extern void GLAPIENTRY
+_mesa_CopyTextureSubImage1D(GLuint texture, GLint level,
+                            GLint xoffset, GLint x, GLint y, GLsizei width);
 
+extern void GLAPIENTRY
+_mesa_CopyTextureSubImage2D(GLuint texture, GLint level,
+                            GLint xoffset, GLint yoffset,
+                            GLint x, GLint y,
+                            GLsizei width, GLsizei height);
+
+extern void GLAPIENTRY
+_mesa_CopyTextureSubImage3D(GLuint texture, GLint level,
+                            GLint xoffset, GLint yoffset, GLint zoffset,
+                            GLint x, GLint y,
+                            GLsizei width, GLsizei height);
 
 extern void GLAPIENTRY
 _mesa_ClearTexSubImage( GLuint texture, GLint level,
@@ -297,10 +407,22 @@ _mesa_CompressedTexSubImage1D(GLenum target, GLint level, GLint xoffset,
                                  GLsizei imageSize, const GLvoid *data);
 
 extern void GLAPIENTRY
+_mesa_CompressedTextureSubImage1D(GLuint texture, GLint level, GLint xoffset,
+                                  GLsizei width, GLenum format,
+                                  GLsizei imageSize, const GLvoid *data);
+
+extern void GLAPIENTRY
 _mesa_CompressedTexSubImage2D(GLenum target, GLint level, GLint xoffset,
                                  GLint yoffset, GLsizei width, GLsizei height,
                                  GLenum format, GLsizei imageSize,
                                  const GLvoid *data);
+
+extern void GLAPIENTRY
+_mesa_CompressedTextureSubImage2D(GLuint texture, GLint level, GLint xoffset,
+                                  GLint yoffset,
+                                  GLsizei width, GLsizei height,
+                                  GLenum format, GLsizei imageSize,
+                                  const GLvoid *data);
 
 extern void GLAPIENTRY
 _mesa_CompressedTexSubImage3D(GLenum target, GLint level, GLint xoffset,
@@ -308,6 +430,13 @@ _mesa_CompressedTexSubImage3D(GLenum target, GLint level, GLint xoffset,
                                  GLsizei height, GLsizei depth, GLenum format,
                                  GLsizei imageSize, const GLvoid *data);
 
+extern void GLAPIENTRY
+_mesa_CompressedTextureSubImage3D(GLuint texture, GLint level, GLint xoffset,
+                                  GLint yoffset, GLint zoffset,
+                                  GLsizei width, GLsizei height,
+                                  GLsizei depth,
+                                  GLenum format, GLsizei imageSize,
+                                  const GLvoid *data);
 
 extern void GLAPIENTRY
 _mesa_TexBuffer(GLenum target, GLenum internalFormat, GLuint buffer);
@@ -315,6 +444,13 @@ _mesa_TexBuffer(GLenum target, GLenum internalFormat, GLuint buffer);
 extern void GLAPIENTRY
 _mesa_TexBufferRange(GLenum target, GLenum internalFormat, GLuint buffer,
                      GLintptr offset, GLsizeiptr size);
+
+extern void GLAPIENTRY
+_mesa_TextureBuffer(GLuint texture, GLenum internalFormat, GLuint buffer);
+
+extern void GLAPIENTRY
+_mesa_TextureBufferRange(GLuint texture, GLenum internalFormat, GLuint buffer,
+                         GLintptr offset, GLsizeiptr size);
 
 
 extern void GLAPIENTRY
@@ -339,6 +475,17 @@ _mesa_TexStorage3DMultisample(GLenum target, GLsizei samples,
                               GLsizei height, GLsizei depth,
                               GLboolean fixedsamplelocations);
 
+void GLAPIENTRY
+_mesa_TextureStorage2DMultisample(GLuint texture, GLsizei samples,
+                                  GLenum internalformat, GLsizei width,
+                                  GLsizei height,
+                                  GLboolean fixedsamplelocations);
+
+void GLAPIENTRY
+_mesa_TextureStorage3DMultisample(GLuint texture, GLsizei samples,
+                                  GLenum internalformat, GLsizei width,
+                                  GLsizei height, GLsizei depth,
+                                  GLboolean fixedsamplelocations);
 /*@}*/
 
 #ifdef __cplusplus

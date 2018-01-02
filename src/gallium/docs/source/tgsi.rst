@@ -48,13 +48,13 @@ used.
 
 .. math::
 
-  dst.x = \lfloor src.x\rfloor
+  dst.x = (int) \lfloor src.x\rfloor
 
-  dst.y = \lfloor src.y\rfloor
+  dst.y = (int) \lfloor src.y\rfloor
 
-  dst.z = \lfloor src.z\rfloor
+  dst.z = (int) \lfloor src.z\rfloor
 
-  dst.w = \lfloor src.w\rfloor
+  dst.w = (int) \lfloor src.w\rfloor
 
 
 .. opcode:: MOV - Move
@@ -272,17 +272,19 @@ This instruction replicates its result.
   dst.w = src0.w \times src1.w + (1 - src0.w) \times src2.w
 
 
-.. opcode:: CND - Condition
+.. opcode:: FMA - Fused Multiply-Add
+
+Perform a * b + c with no intermediate rounding step.
 
 .. math::
 
-  dst.x = (src2.x > 0.5) ? src0.x : src1.x
+  dst.x = src0.x \times src1.x + src2.x
 
-  dst.y = (src2.y > 0.5) ? src0.y : src1.y
+  dst.y = src0.y \times src1.y + src2.y
 
-  dst.z = (src2.z > 0.5) ? src0.z : src1.z
+  dst.z = src0.z \times src1.z + src2.z
 
-  dst.w = (src2.w > 0.5) ? src0.w : src1.w
+  dst.w = src0.w \times src1.w + src2.w
 
 
 .. opcode:: DP2A - 2-component Dot Product And Add
@@ -325,8 +327,6 @@ This instruction replicates its result.
 
 
 .. opcode:: FLR - Floor
-
-This is identical to :opcode:`ARL`.
 
 .. math::
 
@@ -404,17 +404,6 @@ This instruction replicates its result.
   dst.w = |src.w|
 
 
-.. opcode:: RCC - Reciprocal Clamped
-
-This instruction replicates its result.
-
-XXX cleanup on aisle three
-
-.. math::
-
-  dst = (1 / src.x) > 0 ? clamp(1 / src.x, 5.42101e-020, 1.84467e+019) : clamp(1 / src.x, -1.84467e+019, -5.42101e-020)
-
-
 .. opcode:: DPH - Homogeneous Dot Product
 
 This instruction replicates its result.
@@ -469,7 +458,11 @@ while DDY is allowed to be the same for the entire 2x2 quad.
 
 .. opcode:: PK2H - Pack Two 16-bit Floats
 
-  TBD
+This instruction replicates its result.
+
+.. math::
+
+  dst = f32\_to\_f16(src.x) | f32\_to\_f16(src.y) << 16
 
 
 .. opcode:: PK2US - Pack Two Unsigned 16-bit Scalars
@@ -487,23 +480,6 @@ while DDY is allowed to be the same for the entire 2x2 quad.
   TBD
 
 
-.. opcode:: RFL - Reflection Vector
-
-.. math::
-
-  dst.x = 2 \times (src0.x \times src1.x + src0.y \times src1.y + src0.z \times src1.z) / (src0.x \times src0.x + src0.y \times src0.y + src0.z \times src0.z) \times src0.x - src1.x
-
-  dst.y = 2 \times (src0.x \times src1.x + src0.y \times src1.y + src0.z \times src1.z) / (src0.x \times src0.x + src0.y \times src0.y + src0.z \times src0.z) \times src0.y - src1.y
-
-  dst.z = 2 \times (src0.x \times src1.x + src0.y \times src1.y + src0.z \times src1.z) / (src0.x \times src0.x + src0.y \times src0.y + src0.z \times src0.z) \times src0.z - src1.z
-
-  dst.w = 1
-
-.. note::
-
-   Considered for removal.
-
-
 .. opcode:: SEQ - Set On Equal
 
 .. math::
@@ -515,19 +491,6 @@ while DDY is allowed to be the same for the entire 2x2 quad.
   dst.z = (src0.z == src1.z) ? 1.0F : 0.0F
 
   dst.w = (src0.w == src1.w) ? 1.0F : 0.0F
-
-
-.. opcode:: SFL - Set On False
-
-This instruction replicates its result.
-
-.. math::
-
-  dst = 0.0F
-
-.. note::
-
-   Considered for removal.
 
 
 .. opcode:: SGT - Set On Greater Than
@@ -576,15 +539,6 @@ This instruction replicates its result.
   dst.z = (src0.z != src1.z) ? 1.0F : 0.0F
 
   dst.w = (src0.w != src1.w) ? 1.0F : 0.0F
-
-
-.. opcode:: STR - Set On True
-
-This instruction replicates its result.
-
-.. math::
-
-  dst = 1.0F
 
 
 .. opcode:: TEX - Texture Lookup
@@ -665,7 +619,15 @@ This instruction replicates its result.
 
 .. opcode:: UP2H - Unpack Two 16-Bit Floats
 
-  TBD
+.. math::
+
+  dst.x = f16\_to\_f32(src0.x \& 0xffff)
+
+  dst.y = f16\_to\_f32(src0.x >> 16)
+
+  dst.z = f16\_to\_f32(src0.x \& 0xffff)
+
+  dst.w = f16\_to\_f32(src0.x >> 16)
 
 .. note::
 
@@ -695,42 +657,18 @@ This instruction replicates its result.
 
    Considered for removal.
 
-.. opcode:: X2D - 2D Coordinate Transformation
-
-.. math::
-
-  dst.x = src0.x + src1.x \times src2.x + src1.y \times src2.y
-
-  dst.y = src0.y + src1.x \times src2.z + src1.y \times src2.w
-
-  dst.z = src0.x + src1.x \times src2.x + src1.y \times src2.y
-
-  dst.w = src0.y + src1.x \times src2.z + src1.y \times src2.w
-
-.. note::
-
-   Considered for removal.
-
-
-.. opcode:: ARA - Address Register Add
-
-  TBD
-
-.. note::
-
-   Considered for removal.
 
 .. opcode:: ARR - Address Register Load With Round
 
 .. math::
 
-  dst.x = round(src.x)
+  dst.x = (int) round(src.x)
 
-  dst.y = round(src.y)
+  dst.y = (int) round(src.y)
 
-  dst.z = round(src.z)
+  dst.z = (int) round(src.z)
 
-  dst.w = round(src.w)
+  dst.w = (int) round(src.w)
 
 
 .. opcode:: SSG - Set Sign
@@ -834,19 +772,6 @@ This instruction replicates its result.
   dst = texture\_sample(unit, coord, bias)
 
 
-.. opcode:: NRM - 3-component Vector Normalise
-
-.. math::
-
-  dst.x = src.x / (src.x \times src.x + src.y \times src.y + src.z \times src.z)
-
-  dst.y = src.y / (src.x \times src.x + src.y \times src.y + src.z \times src.z)
-
-  dst.z = src.z / (src.x \times src.x + src.y \times src.y + src.z \times src.z)
-
-  dst.w = 1
-
-
 .. opcode:: DIV - Divide
 
 .. math::
@@ -940,15 +865,6 @@ This instruction replicates its result.
 .. note::
 
    Considered for cleanup.
-
-.. note::
-
-   Considered for removal.
-
-
-.. opcode:: BRA - Branch
-
-  pc = target
 
 .. note::
 
@@ -1056,7 +972,6 @@ XXX doesn't look like most of the opcodes really belong here.
   For components which don't return a resource dimension, their value
   is undefined.
 
-
 .. math::
 
   lod = src0.x
@@ -1068,6 +983,17 @@ XXX doesn't look like most of the opcodes really belong here.
   dst.z = texture\_depth(unit, lod)
 
   dst.w = texture\_levels(unit)
+
+
+.. opcode:: TXQS - Texture Samples Query
+
+  This retrieves the number of samples in the texture, and stores it
+  into the x component. The other components are undefined.
+
+.. math::
+
+  dst.x = texture\_samples(unit)
+
 
 .. opcode:: TG4 - Texture Gather
 
@@ -1888,15 +1814,6 @@ Some require glsl version 1.30 (UIF/BREAKC/SWITCH/CASE/DEFAULT/ENDSWITCH).
    Ends a switch expression.
 
 
-.. opcode:: NRM4 - 4-component Vector Normalise
-
-This instruction replicates its result.
-
-.. math::
-
-  dst = \frac{src.x}{src.x \times src.x + src.y \times src.y + src.z \times src.z + src.w \times src.w}
-
-
 Interpolation ISA
 ^^^^^^^^^^^^^^^^^
 
@@ -1928,7 +1845,10 @@ Double ISA
 The double-precision opcodes reinterpret four-component vectors into
 two-component vectors with doubled precision in each component.
 
-Support for these opcodes is XXX undecided. :T
+.. opcode:: DABS - Absolute
+
+  dst.xy = |src0.xy|
+  dst.zw = |src0.zw|
 
 .. opcode:: DADD - Add
 
@@ -1938,30 +1858,37 @@ Support for these opcodes is XXX undecided. :T
 
   dst.zw = src0.zw + src1.zw
 
-
-.. opcode:: DDIV - Divide
-
-.. math::
-
-  dst.xy = src0.xy / src1.xy
-
-  dst.zw = src0.zw / src1.zw
-
 .. opcode:: DSEQ - Set on Equal
 
 .. math::
 
-  dst.xy = src0.xy == src1.xy ? 1.0F : 0.0F
+  dst.x = src0.xy == src1.xy ? \sim 0 : 0
 
-  dst.zw = src0.zw == src1.zw ? 1.0F : 0.0F
+  dst.z = src0.zw == src1.zw ? \sim 0 : 0
+
+.. opcode:: DSNE - Set on Equal
+
+.. math::
+
+  dst.x = src0.xy != src1.xy ? \sim 0 : 0
+
+  dst.z = src0.zw != src1.zw ? \sim 0 : 0
 
 .. opcode:: DSLT - Set on Less than
 
 .. math::
 
-  dst.xy = src0.xy < src1.xy ? 1.0F : 0.0F
+  dst.x = src0.xy < src1.xy ? \sim 0 : 0
 
-  dst.zw = src0.zw < src1.zw ? 1.0F : 0.0F
+  dst.z = src0.zw < src1.zw ? \sim 0 : 0
+
+.. opcode:: DSGE - Set on Greater equal
+
+.. math::
+
+  dst.x = src0.xy >= src1.xy ? \sim 0 : 0
+
+  dst.z = src0.zw >= src1.zw ? \sim 0 : 0
 
 .. opcode:: DFRAC - Fraction
 
@@ -1971,6 +1898,45 @@ Support for these opcodes is XXX undecided. :T
 
   dst.zw = src.zw - \lfloor src.zw\rfloor
 
+.. opcode:: DTRUNC - Truncate
+
+.. math::
+
+  dst.xy = trunc(src.xy)
+
+  dst.zw = trunc(src.zw)
+
+.. opcode:: DCEIL - Ceiling
+
+.. math::
+
+  dst.xy = \lceil src.xy\rceil
+
+  dst.zw = \lceil src.zw\rceil
+
+.. opcode:: DFLR - Floor
+
+.. math::
+
+  dst.xy = \lfloor src.xy\rfloor
+
+  dst.zw = \lfloor src.zw\rfloor
+
+.. opcode:: DROUND - Fraction
+
+.. math::
+
+  dst.xy = round(src.xy)
+
+  dst.zw = round(src.zw)
+
+.. opcode:: DSSG - Set Sign
+
+.. math::
+
+  dst.xy = (src.xy > 0) ? 1.0 : (src.xy < 0) ? -1.0 : 0.0
+
+  dst.zw = (src.zw > 0) ? 1.0 : (src.zw < 0) ? -1.0 : 0.0
 
 .. opcode:: DFRACEXP - Convert Number to Fractional and Integral Components
 
@@ -1990,13 +1956,14 @@ exponent of its source to ``dst0``, and the significand to ``dst1``, such that
 
 .. opcode:: DLDEXP - Multiply Number by Integral Power of 2
 
-This opcode is the inverse of :opcode:`DFRACEXP`.
+This opcode is the inverse of :opcode:`DFRACEXP`. The second
+source is an integer.
 
 .. math::
 
-  dst.xy = src0.xy \times 2^{src1.xy}
+  dst.xy = src0.xy \times 2^{src1.x}
 
-  dst.zw = src0.zw \times 2^{src1.zw}
+  dst.zw = src0.zw \times 2^{src1.y}
 
 .. opcode:: DMIN - Minimum
 
@@ -2032,6 +1999,17 @@ This opcode is the inverse of :opcode:`DFRACEXP`.
   dst.zw = src0.zw \times src1.zw + src2.zw
 
 
+.. opcode:: DFMA - Fused Multiply-Add
+
+Perform a * b + c with no intermediate rounding step.
+
+.. math::
+
+  dst.xy = src0.xy \times src1.xy + src2.xy
+
+  dst.zw = src0.zw \times src1.zw + src2.zw
+
+
 .. opcode:: DRCP - Reciprocal
 
 .. math::
@@ -2048,6 +2026,301 @@ This opcode is the inverse of :opcode:`DFRACEXP`.
 
    dst.zw = \sqrt{src.zw}
 
+.. opcode:: DRSQ - Reciprocal Square Root
+
+.. math::
+
+   dst.xy = \frac{1}{\sqrt{src.xy}}
+
+   dst.zw = \frac{1}{\sqrt{src.zw}}
+
+.. opcode:: F2D - Float to Double
+
+.. math::
+
+   dst.xy = double(src0.x)
+
+   dst.zw = double(src0.y)
+
+.. opcode:: D2F - Double to Float
+
+.. math::
+
+   dst.x = float(src0.xy)
+
+   dst.y = float(src0.zw)
+
+.. opcode:: I2D - Int to Double
+
+.. math::
+
+   dst.xy = double(src0.x)
+
+   dst.zw = double(src0.y)
+
+.. opcode:: D2I - Double to Int
+
+.. math::
+
+   dst.x = int(src0.xy)
+
+   dst.y = int(src0.zw)
+
+.. opcode:: U2D - Unsigned Int to Double
+
+.. math::
+
+   dst.xy = double(src0.x)
+
+   dst.zw = double(src0.y)
+
+.. opcode:: D2U - Double to Unsigned Int
+
+.. math::
+
+   dst.x = unsigned(src0.xy)
+
+   dst.y = unsigned(src0.zw)
+
+64-bit Integer ISA
+^^^^^^^^^^^^^^^^^^
+
+The 64-bit integer opcodes reinterpret four-component vectors into
+two-component vectors with 64-bits in each component.
+
+.. opcode:: I64ABS - 64-bit Integer Absolute Value
+
+  dst.xy = |src0.xy|
+  dst.zw = |src0.zw|
+
+.. opcode:: I64NEG - 64-bit Integer Negate
+
+  Two's complement.
+
+.. math::
+
+  dst.xy = -src.xy
+  dst.zw = -src.zw
+
+.. opcode:: I64SSG - 64-bit Integer Set Sign
+
+.. math::
+
+  dst.xy = (src0.xy < 0) ? -1 : (src0.xy > 0) ? 1 : 0
+  dst.zw = (src0.zw < 0) ? -1 : (src0.zw > 0) ? 1 : 0
+
+.. opcode:: U64ADD - 64-bit Integer Add
+
+.. math::
+
+  dst.xy = src0.xy + src1.xy
+  dst.zw = src0.zw + src1.zw
+
+.. opcode:: U64MUL - 64-bit Integer Multiply
+
+.. math::
+
+  dst.xy = src0.xy * src1.xy
+  dst.zw = src0.zw * src1.zw
+
+.. opcode:: U64SEQ - 64-bit Integer Set on Equal
+
+.. math::
+
+  dst.x = src0.xy == src1.xy ? \sim 0 : 0
+  dst.z = src0.zw == src1.zw ? \sim 0 : 0
+
+.. opcode:: U64SNE - 64-bit Integer Set on Not Equal
+
+.. math::
+
+  dst.x = src0.xy != src1.xy ? \sim 0 : 0
+  dst.z = src0.zw != src1.zw ? \sim 0 : 0
+
+.. opcode:: U64SLT - 64-bit Unsigned Integer Set on Less Than
+
+.. math::
+
+  dst.x = src0.xy < src1.xy ? \sim 0 : 0
+  dst.z = src0.zw < src1.zw ? \sim 0 : 0
+
+.. opcode:: U64SGE - 64-bit Unsigned Integer Set on Greater Equal
+
+.. math::
+
+  dst.x = src0.xy >= src1.xy ? \sim 0 : 0
+  dst.z = src0.zw >= src1.zw ? \sim 0 : 0
+
+.. opcode:: I64SLT - 64-bit Signed Integer Set on Less Than
+
+.. math::
+
+  dst.x = src0.xy < src1.xy ? \sim 0 : 0
+  dst.z = src0.zw < src1.zw ? \sim 0 : 0
+
+.. opcode:: I64SGE - 64-bit Signed Integer Set on Greater Equal
+
+.. math::
+
+  dst.x = src0.xy >= src1.xy ? \sim 0 : 0
+  dst.z = src0.zw >= src1.zw ? \sim 0 : 0
+
+.. opcode:: I64MIN - Minimum of 64-bit Signed Integers
+
+.. math::
+
+  dst.xy = min(src0.xy, src1.xy)
+  dst.zw = min(src0.zw, src1.zw)
+
+.. opcode:: U64MIN - Minimum of 64-bit Unsigned Integers
+
+.. math::
+
+  dst.xy = min(src0.xy, src1.xy)
+  dst.zw = min(src0.zw, src1.zw)
+
+.. opcode:: I64MAX - Maximum of 64-bit Signed Integers
+
+.. math::
+
+  dst.xy = max(src0.xy, src1.xy)
+  dst.zw = max(src0.zw, src1.zw)
+
+.. opcode:: U64MAX - Maximum of 64-bit Unsigned Integers
+
+.. math::
+
+  dst.xy = max(src0.xy, src1.xy)
+  dst.zw = max(src0.zw, src1.zw)
+
+.. opcode:: U64SHL - Shift Left 64-bit Unsigned Integer
+
+   The shift count is masked with 0x3f before the shift is applied.
+
+.. math::
+
+  dst.xy = src0.xy << (0x3f \& src1.x)
+  dst.zw = src0.zw << (0x3f \& src1.y)
+
+.. opcode:: I64SHR - Arithmetic Shift Right (of 64-bit Signed Integer)
+
+   The shift count is masked with 0x3f before the shift is applied.
+
+.. math::
+
+  dst.xy = src0.xy >> (0x3f \& src1.x)
+  dst.zw = src0.zw >> (0x3f \& src1.y)
+
+.. opcode:: U64SHR - Logical Shift Right (of 64-bit Unsigned Integer)
+
+   The shift count is masked with 0x3f before the shift is applied.
+
+.. math::
+
+  dst.xy = src0.xy >> (unsigned) (0x3f \& src1.x)
+  dst.zw = src0.zw >> (unsigned) (0x3f \& src1.y)
+
+.. opcode:: I64DIV - 64-bit Signed Integer Division
+
+.. math::
+
+  dst.xy = src0.xy \ src1.xy
+  dst.zw = src0.zw \ src1.zw
+
+.. opcode:: U64DIV - 64-bit Unsigned Integer Division
+
+.. math::
+
+  dst.xy = src0.xy \ src1.xy
+  dst.zw = src0.zw \ src1.zw
+
+.. opcode:: U64MOD - 64-bit Unsigned Integer Remainder
+
+.. math::
+
+  dst.xy = src0.xy \bmod src1.xy
+  dst.zw = src0.zw \bmod src1.zw
+
+.. opcode:: I64MOD - 64-bit Signed Integer Remainder
+
+.. math::
+
+  dst.xy = src0.xy \bmod src1.xy
+  dst.zw = src0.zw \bmod src1.zw
+
+.. opcode:: F2U64 - Float to 64-bit Unsigned Int
+
+.. math::
+
+   dst.xy = (uint64_t) src0.x
+   dst.zw = (uint64_t) src0.y
+
+.. opcode:: F2I64 - Float to 64-bit Int
+
+.. math::
+
+   dst.xy = (int64_t) src0.x
+   dst.zw = (int64_t) src0.y
+
+.. opcode:: U2I64 - Unsigned Integer to 64-bit Integer
+
+   This is a zero extension.
+
+.. math::
+
+   dst.xy = (uint64_t) src0.x
+   dst.zw = (uint64_t) src0.y
+
+.. opcode:: I2I64 - Signed Integer to 64-bit Integer
+
+   This is a sign extension.
+
+.. math::
+
+   dst.xy = (int64_t) src0.x
+   dst.zw = (int64_t) src0.y
+
+.. opcode:: D2U64 - Double to 64-bit Unsigned Int
+
+.. math::
+
+   dst.xy = (uint64_t) src0.xy
+   dst.zw = (uint64_t) src0.zw
+
+.. opcode:: D2I64 - Double to 64-bit Int
+
+.. math::
+
+   dst.xy = (int64_t) src0.xy
+   dst.zw = (int64_t) src0.zw
+
+.. opcode:: U642F - 64-bit unsigned integer to float
+
+.. math::
+
+   dst.x = (float) src0.xy
+   dst.y = (float) src0.zw
+
+.. opcode:: I642F - 64-bit Int to Float
+
+.. math::
+
+   dst.x = (float) src0.xy
+   dst.y = (float) src0.zw
+
+.. opcode:: U642D - 64-bit unsigned integer to double
+
+.. math::
+
+   dst.xy = (double) src0.xy
+   dst.zw = (double) src0.zw
+
+.. opcode:: I642D - 64-bit Int to double
+
+.. math::
+
+   dst.xy = (double) src0.xy
+   dst.zw = (double) src0.zw
 
 .. _samplingopcodes:
 
@@ -2062,7 +2335,7 @@ after lookup.
 .. opcode:: SAMPLE
 
   Using provided address, sample data from the specified texture using the
-  filtering mode identified by the gven sampler. The source data may come from
+  filtering mode identified by the given sampler. The source data may come from
   any resource type other than buffers.
 
   Syntax: ``SAMPLE dst, address, sampler_view, sampler``
@@ -2231,11 +2504,11 @@ after lookup.
 Resource Access Opcodes
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-.. opcode:: LOAD - Fetch data from a shader resource
+.. opcode:: LOAD - Fetch data from a shader buffer or image
 
                Syntax: ``LOAD dst, resource, address``
 
-               Example: ``LOAD TEMP[0], RES[0], TEMP[1]``
+               Example: ``LOAD TEMP[0], BUFFER[0], TEMP[1]``
 
                Using the provided integer address, LOAD fetches data
                from the specified buffer or texture without any
@@ -2255,11 +2528,14 @@ Resource Access Opcodes
                texture arrays and 2D textures.  address.w is always
                ignored.
 
+               A swizzle suffix may be added to the resource argument
+               this will cause the resource data to be swizzled accordingly.
+
 .. opcode:: STORE - Write data to a shader resource
 
                Syntax: ``STORE resource, address, src``
 
-               Example: ``STORE RES[0], TEMP[0], TEMP[1]``
+               Example: ``STORE BUFFER[0], TEMP[0], TEMP[1]``
 
                Using the provided integer address, STORE writes data
                to the specified buffer or texture.
@@ -2277,6 +2553,18 @@ Resource Access Opcodes
                buffers and 1D textures.  address.z is ignored for 1D
                texture arrays and 2D textures.  address.w is always
                ignored.
+
+.. opcode:: RESQ - Query information about a resource
+
+  Syntax: ``RESQ dst, resource``
+
+  Example: ``RESQ TEMP[0], BUFFER[0]``
+
+  Returns information about the buffer or image resource. For buffer
+  resources, the size (in bytes) is returned in the x component. For
+  image resources, .xyz will contain the width/height/layers of the
+  image, while .w will contain the number of samples for multi-sampled
+  images.
 
 
 .. _threadsyncopcodes:
@@ -2327,6 +2615,23 @@ programs.
   the program.  Results are unspecified if any of the remaining
   threads terminates or never reaches an executed BARRIER instruction.
 
+.. opcode:: MEMBAR - Memory barrier
+
+  ``MEMBAR type``
+
+  This opcode waits for the completion of all memory accesses based on
+  the type passed in. The type is an immediate bitfield with the following
+  meaning:
+
+  Bit 0: Shader storage buffers
+  Bit 1: Atomic buffers
+  Bit 2: Images
+  Bit 3: Shared memory
+  Bit 4: Thread group
+
+  These may be passed in in any combination. An implementation is free to not
+  distinguish between these as it sees fit. However these map to all the
+  possibilities made available by GLSL.
 
 .. _atomopcodes:
 
@@ -2337,159 +2642,177 @@ These opcodes provide atomic variants of some common arithmetic and
 logical operations.  In this context atomicity means that another
 concurrent memory access operation that affects the same memory
 location is guaranteed to be performed strictly before or after the
-entire execution of the atomic operation.
-
-For the moment they're only valid in compute programs.
+entire execution of the atomic operation. The resource may be a buffer
+or an image. In the case of an image, the offset works the same as for
+``LOAD`` and ``STORE``, specified above. These atomic operations may
+only be used with 32-bit integer image formats.
 
 .. opcode:: ATOMUADD - Atomic integer addition
 
   Syntax: ``ATOMUADD dst, resource, offset, src``
 
-  Example: ``ATOMUADD TEMP[0], RES[0], TEMP[1], TEMP[2]``
+  Example: ``ATOMUADD TEMP[0], BUFFER[0], TEMP[1], TEMP[2]``
 
-  The following operation is performed atomically on each component:
+  The following operation is performed atomically:
 
 .. math::
 
-  dst_i = resource[offset]_i
+  dst_x = resource[offset]
 
-  resource[offset]_i = dst_i + src_i
+  resource[offset] = dst_x + src_x
 
 
 .. opcode:: ATOMXCHG - Atomic exchange
 
   Syntax: ``ATOMXCHG dst, resource, offset, src``
 
-  Example: ``ATOMXCHG TEMP[0], RES[0], TEMP[1], TEMP[2]``
+  Example: ``ATOMXCHG TEMP[0], BUFFER[0], TEMP[1], TEMP[2]``
 
-  The following operation is performed atomically on each component:
+  The following operation is performed atomically:
 
 .. math::
 
-  dst_i = resource[offset]_i
+  dst_x = resource[offset]
 
-  resource[offset]_i = src_i
+  resource[offset] = src_x
 
 
 .. opcode:: ATOMCAS - Atomic compare-and-exchange
 
   Syntax: ``ATOMCAS dst, resource, offset, cmp, src``
 
-  Example: ``ATOMCAS TEMP[0], RES[0], TEMP[1], TEMP[2], TEMP[3]``
+  Example: ``ATOMCAS TEMP[0], BUFFER[0], TEMP[1], TEMP[2], TEMP[3]``
 
-  The following operation is performed atomically on each component:
+  The following operation is performed atomically:
 
 .. math::
 
-  dst_i = resource[offset]_i
+  dst_x = resource[offset]
 
-  resource[offset]_i = (dst_i == cmp_i ? src_i : dst_i)
+  resource[offset] = (dst_x == cmp_x ? src_x : dst_x)
 
 
 .. opcode:: ATOMAND - Atomic bitwise And
 
   Syntax: ``ATOMAND dst, resource, offset, src``
 
-  Example: ``ATOMAND TEMP[0], RES[0], TEMP[1], TEMP[2]``
+  Example: ``ATOMAND TEMP[0], BUFFER[0], TEMP[1], TEMP[2]``
 
-  The following operation is performed atomically on each component:
+  The following operation is performed atomically:
 
 .. math::
 
-  dst_i = resource[offset]_i
+  dst_x = resource[offset]
 
-  resource[offset]_i = dst_i \& src_i
+  resource[offset] = dst_x \& src_x
 
 
 .. opcode:: ATOMOR - Atomic bitwise Or
 
   Syntax: ``ATOMOR dst, resource, offset, src``
 
-  Example: ``ATOMOR TEMP[0], RES[0], TEMP[1], TEMP[2]``
+  Example: ``ATOMOR TEMP[0], BUFFER[0], TEMP[1], TEMP[2]``
 
-  The following operation is performed atomically on each component:
+  The following operation is performed atomically:
 
 .. math::
 
-  dst_i = resource[offset]_i
+  dst_x = resource[offset]
 
-  resource[offset]_i = dst_i | src_i
+  resource[offset] = dst_x | src_x
 
 
 .. opcode:: ATOMXOR - Atomic bitwise Xor
 
   Syntax: ``ATOMXOR dst, resource, offset, src``
 
-  Example: ``ATOMXOR TEMP[0], RES[0], TEMP[1], TEMP[2]``
+  Example: ``ATOMXOR TEMP[0], BUFFER[0], TEMP[1], TEMP[2]``
 
-  The following operation is performed atomically on each component:
+  The following operation is performed atomically:
 
 .. math::
 
-  dst_i = resource[offset]_i
+  dst_x = resource[offset]
 
-  resource[offset]_i = dst_i \oplus src_i
+  resource[offset] = dst_x \oplus src_x
 
 
 .. opcode:: ATOMUMIN - Atomic unsigned minimum
 
   Syntax: ``ATOMUMIN dst, resource, offset, src``
 
-  Example: ``ATOMUMIN TEMP[0], RES[0], TEMP[1], TEMP[2]``
+  Example: ``ATOMUMIN TEMP[0], BUFFER[0], TEMP[1], TEMP[2]``
 
-  The following operation is performed atomically on each component:
+  The following operation is performed atomically:
 
 .. math::
 
-  dst_i = resource[offset]_i
+  dst_x = resource[offset]
 
-  resource[offset]_i = (dst_i < src_i ? dst_i : src_i)
+  resource[offset] = (dst_x < src_x ? dst_x : src_x)
 
 
 .. opcode:: ATOMUMAX - Atomic unsigned maximum
 
   Syntax: ``ATOMUMAX dst, resource, offset, src``
 
-  Example: ``ATOMUMAX TEMP[0], RES[0], TEMP[1], TEMP[2]``
+  Example: ``ATOMUMAX TEMP[0], BUFFER[0], TEMP[1], TEMP[2]``
 
-  The following operation is performed atomically on each component:
+  The following operation is performed atomically:
 
 .. math::
 
-  dst_i = resource[offset]_i
+  dst_x = resource[offset]
 
-  resource[offset]_i = (dst_i > src_i ? dst_i : src_i)
+  resource[offset] = (dst_x > src_x ? dst_x : src_x)
 
 
 .. opcode:: ATOMIMIN - Atomic signed minimum
 
   Syntax: ``ATOMIMIN dst, resource, offset, src``
 
-  Example: ``ATOMIMIN TEMP[0], RES[0], TEMP[1], TEMP[2]``
+  Example: ``ATOMIMIN TEMP[0], BUFFER[0], TEMP[1], TEMP[2]``
 
-  The following operation is performed atomically on each component:
+  The following operation is performed atomically:
 
 .. math::
 
-  dst_i = resource[offset]_i
+  dst_x = resource[offset]
 
-  resource[offset]_i = (dst_i < src_i ? dst_i : src_i)
+  resource[offset] = (dst_x < src_x ? dst_x : src_x)
 
 
 .. opcode:: ATOMIMAX - Atomic signed maximum
 
   Syntax: ``ATOMIMAX dst, resource, offset, src``
 
-  Example: ``ATOMIMAX TEMP[0], RES[0], TEMP[1], TEMP[2]``
+  Example: ``ATOMIMAX TEMP[0], BUFFER[0], TEMP[1], TEMP[2]``
 
-  The following operation is performed atomically on each component:
+  The following operation is performed atomically:
 
 .. math::
 
-  dst_i = resource[offset]_i
+  dst_x = resource[offset]
 
-  resource[offset]_i = (dst_i > src_i ? dst_i : src_i)
+  resource[offset] = (dst_x > src_x ? dst_x : src_x)
 
+
+.. _voteopcodes:
+
+Vote opcodes
+^^^^^^^^^^^^
+
+These opcodes compare the given value across the shader invocations
+running in the current SIMD group. The details of exactly which
+invocations get compared are implementation-defined, and it would be a
+correct implementation to only ever consider the current thread's
+value. (i.e. SIMD group of 1). The argument is treated as a boolean.
+
+.. opcode:: VOTE_ANY - Value is set in any of the current invocations
+
+.. opcode:: VOTE_ALL - Value is set in all of the current invocations
+
+.. opcode:: VOTE_EQ - Value is the same in all of the current invocations
 
 
 Explanation of symbols used
@@ -2580,7 +2903,7 @@ Array Declaration
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
 Declarations can optional have an ArrayID attribute which can be referred by
-indirect addressing operands. An ArrayID of zero is reserved and treaded as
+indirect addressing operands. An ArrayID of zero is reserved and treated as
 if no ArrayID is specified.
 
 If an indirect addressing operand refers to a specific declaration by using
@@ -2592,6 +2915,7 @@ not relative to the specified declaration
 If no ArrayID is specified with an indirect addressing operand the whole
 register file might be accessed by this operand. This is strongly discouraged
 and will prevent packing of scalar/vec2 arrays and effective alias analysis.
+This is only legal for TEMP and CONST register files.
 
 Declaration Semantic
 ^^^^^^^^^^^^^^^^^^^^^^^^
@@ -2624,14 +2948,17 @@ space coordinate system.  After clipping, the X, Y and Z components of the
 vertex will be divided by the W value to get normalized device coordinates.
 
 For fragment shaders, TGSI_SEMANTIC_POSITION is used to indicate that
-fragment shader input contains the fragment's window position.  The X
+fragment shader input (or system value, depending on which one is
+supported by the driver) contains the fragment's window position.  The X
 component starts at zero and always increases from left to right.
 The Y component starts at zero and always increases but Y=0 may either
 indicate the top of the window or the bottom depending on the fragment
 coordinate origin convention (see TGSI_PROPERTY_FS_COORD_ORIGIN).
 The Z coordinate ranges from 0 to 1 to represent depth from the front
-to the back of the Z buffer.  The W component contains the reciprocol
-of the interpolated vertex position W component.
+to the back of the Z buffer.  The W component contains the interpolated
+reciprocal of the vertex position W component (corresponding to gl_Fragcoord,
+but unlike d3d10 which interpolates the same 1/w but then gives back
+the reciprocal of the interpolated value).
 
 Fragment shaders may also declare an output register with
 TGSI_SEMANTIC_POSITION.  Only the Z component is writable.  This allows
@@ -2643,7 +2970,7 @@ TGSI_SEMANTIC_COLOR
 """""""""""""""""""
 
 For vertex shader outputs or fragment shader inputs/outputs, this
-label indicates that the resister contains an R,G,B,A color.
+label indicates that the register contains an R,G,B,A color.
 
 Several shader inputs/outputs may contain colors so the semantic index
 is used to distinguish them.  For example, color[0] may be the diffuse
@@ -2734,11 +3061,17 @@ typically only used for legacy graphics APIs.
 TGSI_SEMANTIC_FACE
 """"""""""""""""""
 
-This label applies to fragment shader inputs only and indicates that
-the register contains front/back-face information of the form (F, 0,
-0, 1).  The first component will be positive when the fragment belongs
-to a front-facing polygon, and negative when the fragment belongs to a
-back-facing polygon.
+This label applies to fragment shader inputs (or system values,
+depending on which one is supported by the driver) and indicates that
+the register contains front/back-face information.
+
+If it is an input, it will be a floating-point vector in the form (F, 0, 0, 1),
+where F will be positive when the fragment belongs to a front-facing polygon,
+and negative when the fragment belongs to a back-facing polygon.
+
+If it is a system value, it will be an integer vector in the form (F, 0, 0, 1),
+where F is 0xffffffff when the fragment belongs to a front-facing polygon and
+0 when the fragment belongs to a back-facing polygon.
 
 
 TGSI_SEMANTIC_EDGEFLAG
@@ -2767,7 +3100,7 @@ TGSI_SEMANTIC_VIEWPORT_INDEX
 
 For geometry shaders, this semantic label indicates that an output
 contains the index of the viewport (and scissor) to use.
-Only the X value is used.
+This is an integer value, and only the X component is used.
 
 
 TGSI_SEMANTIC_LAYER
@@ -2775,7 +3108,8 @@ TGSI_SEMANTIC_LAYER
 
 For geometry shaders, this semantic label indicates that an output
 contains the layer value to use for the color and depth/stencil surfaces.
-Only the X value is used. (Also known as rendertarget array index.)
+This is an integer value, and only the X component is used.
+(Also known as rendertarget array index.)
 
 
 TGSI_SEMANTIC_CULLDIST
@@ -2799,24 +3133,39 @@ annotated with those semantics.
 TGSI_SEMANTIC_CLIPDIST
 """"""""""""""""""""""
 
+Note this covers clipping and culling distances.
+
 When components of vertex elements are identified this way, these
 values are each assumed to be a float32 signed distance to a plane.
+
+For clip distances:
 Primitive setup only invokes rasterization on pixels for which
-the interpolated plane distances are >= 0. Multiple clip planes
-can be implemented simultaneously, by annotating multiple
-components of one or more vertex elements with the above specified
-semantic. The limits on both clip and cull distances are bound
+the interpolated plane distances are >= 0.
+
+For cull distances:
+Primitives will be completely discarded if the plane distance
+for all of the vertices in the primitive are < 0.
+If a vertex has a cull distance of NaN, that vertex counts as "out"
+(as if its < 0);
+
+Multiple clip/cull planes can be implemented simultaneously, by
+annotating multiple components of one or more vertex elements with
+the above specified semantic.
+The limits on both clip and cull distances are bound
 by the PIPE_MAX_CLIP_OR_CULL_DISTANCE_COUNT define which defines
 the maximum number of components that can be used to hold the
 distances and by the PIPE_MAX_CLIP_OR_CULL_DISTANCE_ELEMENT_COUNT
 which specifies the maximum number of registers which can be
 annotated with those semantics.
+The properties NUM_CLIPDIST_ENABLED and NUM_CULLDIST_ENABLED
+are used to divide up the 2 x vec4 space between clipping and culling.
 
 TGSI_SEMANTIC_SAMPLEID
 """"""""""""""""""""""
 
 For fragment shaders, this semantic label indicates that a system value
-contains the current sample id (i.e. gl_SampleID). Only the X value is used.
+contains the current sample id (i.e. gl_SampleID).
+This is an integer value, and only the X component is used.
 
 TGSI_SEMANTIC_SAMPLEPOS
 """""""""""""""""""""""
@@ -2836,8 +3185,142 @@ TGSI_SEMANTIC_INVOCATIONID
 """"""""""""""""""""""""""
 
 For geometry shaders, this semantic label indicates that a system value
-contains the current invocation id (i.e. gl_InvocationID). Only the X value is
-used.
+contains the current invocation id (i.e. gl_InvocationID).
+This is an integer value, and only the X component is used.
+
+TGSI_SEMANTIC_INSTANCEID
+""""""""""""""""""""""""
+
+For vertex shaders, this semantic label indicates that a system value contains
+the current instance id (i.e. gl_InstanceID). It does not include the base
+instance. This is an integer value, and only the X component is used.
+
+TGSI_SEMANTIC_VERTEXID
+""""""""""""""""""""""
+
+For vertex shaders, this semantic label indicates that a system value contains
+the current vertex id (i.e. gl_VertexID). It does (unlike in d3d10) include the
+base vertex. This is an integer value, and only the X component is used.
+
+TGSI_SEMANTIC_VERTEXID_NOBASE
+"""""""""""""""""""""""""""""""
+
+For vertex shaders, this semantic label indicates that a system value contains
+the current vertex id without including the base vertex (this corresponds to
+d3d10 vertex id, so TGSI_SEMANTIC_VERTEXID_NOBASE + TGSI_SEMANTIC_BASEVERTEX
+== TGSI_SEMANTIC_VERTEXID). This is an integer value, and only the X component
+is used.
+
+TGSI_SEMANTIC_BASEVERTEX
+""""""""""""""""""""""""
+
+For vertex shaders, this semantic label indicates that a system value contains
+the base vertex (i.e. gl_BaseVertex). Note that for non-indexed draw calls,
+this contains the first (or start) value instead.
+This is an integer value, and only the X component is used.
+
+TGSI_SEMANTIC_PRIMID
+""""""""""""""""""""
+
+For geometry and fragment shaders, this semantic label indicates the value
+contains the primitive id (i.e. gl_PrimitiveID). This is an integer value,
+and only the X component is used.
+FIXME: This right now can be either a ordinary input or a system value...
+
+
+TGSI_SEMANTIC_PATCH
+"""""""""""""""""""
+
+For tessellation evaluation/control shaders, this semantic label indicates a
+generic per-patch attribute. Such semantics will not implicitly be per-vertex
+arrays.
+
+TGSI_SEMANTIC_TESSCOORD
+"""""""""""""""""""""""
+
+For tessellation evaluation shaders, this semantic label indicates the
+coordinates of the vertex being processed. This is available in XYZ; W is
+undefined.
+
+TGSI_SEMANTIC_TESSOUTER
+"""""""""""""""""""""""
+
+For tessellation evaluation/control shaders, this semantic label indicates the
+outer tessellation levels of the patch. Isoline tessellation will only have XY
+defined, triangle will have XYZ and quads will have XYZW defined. This
+corresponds to gl_TessLevelOuter.
+
+TGSI_SEMANTIC_TESSINNER
+"""""""""""""""""""""""
+
+For tessellation evaluation/control shaders, this semantic label indicates the
+inner tessellation levels of the patch. The X value is only defined for
+triangle tessellation, while quads will have XY defined. This is entirely
+undefined for isoline tessellation.
+
+TGSI_SEMANTIC_VERTICESIN
+""""""""""""""""""""""""
+
+For tessellation evaluation/control shaders, this semantic label indicates the
+number of vertices provided in the input patch. Only the X value is defined.
+
+TGSI_SEMANTIC_HELPER_INVOCATION
+"""""""""""""""""""""""""""""""
+
+For fragment shaders, this semantic indicates whether the current
+invocation is covered or not. Helper invocations are created in order
+to properly compute derivatives, however it may be desirable to skip
+some of the logic in those cases. See ``gl_HelperInvocation`` documentation.
+
+TGSI_SEMANTIC_BASEINSTANCE
+""""""""""""""""""""""""""
+
+For vertex shaders, the base instance argument supplied for this
+draw. This is an integer value, and only the X component is used.
+
+TGSI_SEMANTIC_DRAWID
+""""""""""""""""""""
+
+For vertex shaders, the zero-based index of the current draw in a
+``glMultiDraw*`` invocation. This is an integer value, and only the X
+component is used.
+
+
+TGSI_SEMANTIC_WORK_DIM
+""""""""""""""""""""""
+
+For compute shaders started via opencl this retrieves the work_dim
+parameter to the clEnqueueNDRangeKernel call with which the shader
+was started.
+
+
+TGSI_SEMANTIC_GRID_SIZE
+"""""""""""""""""""""""
+
+For compute shaders, this semantic indicates the maximum (x, y, z) dimensions
+of a grid of thread blocks.
+
+
+TGSI_SEMANTIC_BLOCK_ID
+""""""""""""""""""""""
+
+For compute shaders, this semantic indicates the (x, y, z) coordinates of the
+current block inside of the grid.
+
+
+TGSI_SEMANTIC_BLOCK_SIZE
+""""""""""""""""""""""""
+
+For compute shaders, this semantic indicates the maximum (x, y, z) dimensions
+of a block in threads.
+
+
+TGSI_SEMANTIC_THREAD_ID
+"""""""""""""""""""""""
+
+For compute shaders, this semantic indicates the (x, y, z) coordinates of the
+current thread inside of the block.
+
 
 Declaration Interpolate
 ^^^^^^^^^^^^^^^^^^^^^^^
@@ -2873,6 +3356,18 @@ resource can be one of BUFFER, 1D, 2D, 3D, 1DArray and 2DArray.
 type must be 1 or 4 entries (if specifying on a per-component
 level) out of UNORM, SNORM, SINT, UINT and FLOAT.
 
+For TEX\* style texture sample opcodes (as opposed to SAMPLE\* opcodes
+which take an explicit SVIEW[#] source register), there may be optionally
+SVIEW[#] declarations.  In this case, the SVIEW index is implied by the
+SAMP index, and there must be a corresponding SVIEW[#] declaration for
+each SAMP[#] declaration.  Drivers are free to ignore this if they wish.
+But note in particular that some drivers need to know the sampler type
+(float/int/unsigned) in order to generate the correct code, so cases
+where integer textures are sampled, SVIEW[#] declarations should be
+used.
+
+NOTE: It is NOT legal to mix SAMPLE\* style opcodes and TEX\* opcodes
+in the same shader.
 
 Declaration Resource
 ^^^^^^^^^^^^^^^^^^^^
@@ -2978,6 +3473,69 @@ directly taken from the 4-th component of the shader output.
 Naturally, clipping is not performed on window coordinates either.
 The effect of this property is undefined if a geometry or tessellation shader
 are in use.
+
+TCS_VERTICES_OUT
+""""""""""""""""
+
+The number of vertices written by the tessellation control shader. This
+effectively defines the patch input size of the tessellation evaluation shader
+as well.
+
+TES_PRIM_MODE
+"""""""""""""
+
+This sets the tessellation primitive mode, one of ``PIPE_PRIM_TRIANGLES``,
+``PIPE_PRIM_QUADS``, or ``PIPE_PRIM_LINES``. (Unlike in GL, there is no
+separate isolines settings, the regular lines is assumed to mean isolines.)
+
+TES_SPACING
+"""""""""""
+
+This sets the spacing mode of the tessellation generator, one of
+``PIPE_TESS_SPACING_*``.
+
+TES_VERTEX_ORDER_CW
+"""""""""""""""""""
+
+This sets the vertex order to be clockwise if the value is 1, or
+counter-clockwise if set to 0.
+
+TES_POINT_MODE
+""""""""""""""
+
+If set to a non-zero value, this turns on point mode for the tessellator,
+which means that points will be generated instead of primitives.
+
+NUM_CLIPDIST_ENABLED
+""""""""""""""""
+
+How many clip distance scalar outputs are enabled.
+
+NUM_CULLDIST_ENABLED
+""""""""""""""""
+
+How many cull distance scalar outputs are enabled.
+
+FS_EARLY_DEPTH_STENCIL
+""""""""""""""""""""""
+
+Whether depth test, stencil test, and occlusion query should run before
+the fragment shader (regardless of fragment shader side effects). Corresponds
+to GLSL early_fragment_tests.
+
+NEXT_SHADER
+"""""""""""
+
+Which shader stage will MOST LIKELY follow after this shader when the shader
+is bound. This is only a hint to the driver and doesn't have to be precise.
+Only set for VS and TES.
+
+TGSI_PROPERTY_CS_FIXED_BLOCK_WIDTH / HEIGHT / DEPTH
+"""""""""""""""""""""""""""""""""""""""""""""""""""
+
+Threads per block in each dimension, if known at compile time. If the block size
+is known all three should be at least 1. If it is unknown they should all be set
+to 0 or not set.
 
 Texture Sampling and Texture Formats
 ------------------------------------

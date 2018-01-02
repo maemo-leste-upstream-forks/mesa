@@ -26,17 +26,24 @@
  *    Rob Clark <robclark@freedesktop.org>
  */
 
-#ifndef FD3_COMPILER_H_
-#define FD3_COMPILER_H_
+#ifndef IR3_COMPILER_H_
+#define IR3_COMPILER_H_
 
 #include "ir3_shader.h"
 
+struct ir3_ra_reg_set;
 
-int ir3_compile_shader(struct ir3_shader_variant *so,
-		const struct tgsi_token *tokens,
-		struct ir3_shader_key key);
-int ir3_compile_shader_old(struct ir3_shader_variant *so,
-		const struct tgsi_token *tokens,
-		struct ir3_shader_key key);
+struct ir3_compiler {
+	struct fd_device *dev;
+	uint32_t gpu_id;
+	struct ir3_ra_reg_set *set;
+	uint32_t shader_count;
+};
 
-#endif /* FD3_COMPILER_H_ */
+struct ir3_compiler * ir3_compiler_create(struct fd_device *dev, uint32_t gpu_id);
+void ir3_compiler_destroy(struct ir3_compiler *compiler);
+
+int ir3_compile_shader_nir(struct ir3_compiler *compiler,
+		struct ir3_shader_variant *so);
+
+#endif /* IR3_COMPILER_H_ */

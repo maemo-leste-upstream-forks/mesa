@@ -1,47 +1,48 @@
-AUTOMAKE_OPTIONS = subdir-objects
+include Makefile.sources
+include $(top_srcdir)/src/gallium/Automake.inc
 
-AM_CPPFLAGS = $(DEFINES) \
-	$(VISIBILITY_CFLAGS) \
-	-I$(top_srcdir)/include \
+# XXX: check if we need the gallium/winsys include
+AM_CFLAGS = \
 	-I$(top_srcdir)/src/loader \
-	-I$(top_srcdir)/src/gallium/include \
-	-I$(top_srcdir)/src/gallium/auxiliary \
-	-I$(top_srcdir)/src/gallium/winsys
+	-I$(top_srcdir)/src/gallium/winsys \
+	$(GALLIUM_PIPE_LOADER_DEFINES) \
+	$(GALLIUM_CFLAGS) \
+	$(VISIBILITY_CFLAGS)
 
-noinst_LTLIBRARIES =
+noinst_LTLIBRARIES = \
+	libpipe_loader_static.la \
+	libpipe_loader_dynamic.la
 
-if HAVE_LOADER_GALLIUM
-noinst_LTLIBRARIES += libpipe_loader.la
-noinst_LTLIBRARIES += libpipe_loader_client.la
+libpipe_loader_static_la_CFLAGS = \
+	$(AM_CFLAGS) \
+	-DGALLIUM_STATIC_TARGETS=1
 
-COMMON_SOURCES = \
-	pipe_loader.h \
-	pipe_loader_priv.h \
-	pipe_loader.c \
-	pipe_loader_sw.c
+libpipe_loader_dynamic_la_CFLAGS = \
+	$(AM_CFLAGS) \
+	-DPIPE_SEARCH_DIR=\"$(libdir)/gallium-pipe\"
 
-if HAVE_DRM_LOADER_GALLIUM
-AM_CFLAGS = $(LIBDRM_CFLAGS)
+libpipe_loader_static_la_SOURCES = \
+	$(COMMON_SOURCES)
 
-COMMON_SOURCES += pipe_loader_drm.c
+libpipe_loader_dynamic_la_SOURCES = \
+	$(COMMON_SOURCES)
 
-COMMON_LIBADD = \
+if HAVE_LIBDRM
+AM_CFLAGS += \
+	$(LIBDRM_CFLAGS)
+
+libpipe_loader_static_la_SOURCES += \
+	$(DRM_SOURCES)
+
+libpipe_loader_dynamic_la_SOURCES += \
+	$(DRM_SOURCES)
+
+endif
+
+libpipe_loader_static_la_LIBADD = \
 	$(top_builddir)/src/loader/libloader.la
 
-endif
+libpipe_loader_dynamic_la_LIBADD = \
+	$(top_builddir)/src/loader/libloader.la
 
-libpipe_loader_la_CFLAGS  = \
-	$(GALLIUM_PIPE_LOADER_DEFINES) \
-	$(AM_CFLAGS) $(AM_CPPFLAGS)
-libpipe_loader_la_SOURCES = $(COMMON_SOURCES)
-libpipe_loader_la_LIBADD  = $(COMMON_LIBADD) \
-	$(GALLIUM_PIPE_LOADER_LIBS)
-
-libpipe_loader_client_la_CFLAGS  = \
-	$(GALLIUM_PIPE_LOADER_CLIENT_DEFINES) \
-	$(AM_CFLAGS) $(AM_CPPFLAGS)
-libpipe_loader_client_la_SOURCES = $(COMMON_SOURCES)
-libpipe_loader_client_la_LIBADD  = $(COMMON_LIBADD) \
-	$(GALLIUM_PIPE_LOADER_CLIENT_LIBS)
-
-endif
+EXTRA_DIST = SConscript

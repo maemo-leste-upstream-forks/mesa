@@ -51,7 +51,7 @@ gen6_upload_blend_state(struct brw_context *brw)
     * with render target 0, which will reference BLEND_STATE[0] for
     * alpha test enable.
     */
-   if (nr_draw_buffers == 0 && ctx->Color.AlphaEnabled)
+   if (nr_draw_buffers == 0)
       nr_draw_buffers = 1;
 
    size = sizeof(*blend) * nr_draw_buffers;
@@ -97,14 +97,15 @@ gen6_upload_blend_state(struct brw_context *brw)
                    rb_type != GL_UNSIGNED_NORMALIZED &&
                    rb_type != GL_FLOAT, "Ignoring %s logic op on %s "
                    "renderbuffer\n",
-                   _mesa_lookup_enum_by_nr(ctx->Color.LogicOp),
-                   _mesa_lookup_enum_by_nr(rb_type));
+                   _mesa_enum_to_string(ctx->Color.LogicOp),
+                   _mesa_enum_to_string(rb_type));
 	 if (rb_type == GL_UNSIGNED_NORMALIZED) {
 	    blend[b].blend1.logic_op_enable = 1;
 	    blend[b].blend1.logic_op_func =
 	       intel_translate_logic_op(ctx->Color.LogicOp);
 	 }
-      } else if (ctx->Color.BlendEnabled & (1 << b) && !integer) {
+      } else if (ctx->Color.BlendEnabled & (1 << b) && !integer &&
+                 !ctx->Color._AdvancedBlendMode) {
 	 GLenum eqRGB = ctx->Color.Blend[b].EquationRGB;
 	 GLenum eqA = ctx->Color.Blend[b].EquationA;
 	 GLenum srcRGB = ctx->Color.Blend[b].SrcRGB;
@@ -198,14 +199,14 @@ gen6_upload_blend_state(struct brw_context *brw)
       if(!is_buffer_zero_integer_format) {
          /* _NEW_MULTISAMPLE */
          blend[b].blend1.alpha_to_coverage =
-            ctx->Multisample._Enabled && ctx->Multisample.SampleAlphaToCoverage;
+            _mesa_is_multisample_enabled(ctx) && ctx->Multisample.SampleAlphaToCoverage;
 
 	/* From SandyBridge PRM, volume 2 Part 1, section 8.2.3, BLEND_STATE:
 	 * DWord 1, Bit 30 (AlphaToOne Enable):
 	 * "If Dual Source Blending is enabled, this bit must be disabled"
 	 */
          WARN_ONCE(ctx->Color.Blend[b]._UsesDualSrc &&
-                   ctx->Multisample._Enabled &&
+                   _mesa_is_multisample_enabled(ctx) &&
                    ctx->Multisample.SampleAlphaToOne,
                    "HW workaround: disabling alpha to one with dual src "
                    "blending\n");
@@ -213,7 +214,7 @@ gen6_upload_blend_state(struct brw_context *brw)
             blend[b].blend1.alpha_to_one = false;
 	 else
 	    blend[b].blend1.alpha_to_one =
-	       ctx->Multisample._Enabled && ctx->Multisample.SampleAlphaToOne;
+	       _mesa_is_multisample_enabled(ctx) && ctx->Multisample.SampleAlphaToOne;
 
          blend[b].blend1.alpha_to_coverage_dither = (brw->gen >= 7);
       }
@@ -241,11 +242,12 @@ gen6_upload_blend_state(struct brw_context *brw)
 
 const struct brw_tracked_state gen6_blend_state = {
    .dirty = {
-      .mesa = (_NEW_COLOR |
-               _NEW_BUFFERS |
-               _NEW_MULTISAMPLE),
-      .brw = BRW_NEW_BATCH | BRW_NEW_STATE_BASE_ADDRESS,
-      .cache = 0,
+      .mesa = _NEW_BUFFERS |
+              _NEW_COLOR |
+              _NEW_MULTISAMPLE,
+      .brw = BRW_NEW_BATCH |
+             BRW_NEW_BLORP |
+             BRW_NEW_STATE_BASE_ADDRESS,
    },
    .emit = gen6_upload_blend_state,
 };
@@ -264,9 +266,12 @@ gen6_upload_color_calc_state(struct brw_context *brw)
    cc->cc0.alpha_test_format = BRW_ALPHATEST_FORMAT_UNORM8;
    UNCLAMPED_FLOAT_TO_UBYTE(cc->cc1.alpha_ref_fi.ui, ctx->Color.AlphaRef);
 
-   /* _NEW_STENCIL */
-   cc->cc0.stencil_ref = _mesa_get_stencil_ref(ctx, 0);
-   cc->cc0.bf_stencil_ref = _mesa_get_stencil_ref(ctx, ctx->Stencil._BackFace);
+   if (brw->gen < 9) {
+      /* _NEW_STENCIL */
+      cc->cc0.stencil_ref = _mesa_get_stencil_ref(ctx, 0);
+      cc->cc0.bf_stencil_ref =
+         _mesa_get_stencil_ref(ctx, ctx->Stencil._BackFace);
+   }
 
    /* _NEW_COLOR */
    cc->constant_r = ctx->Color.BlendColorUnclamped[0];
@@ -292,9 +297,12 @@ gen6_upload_color_calc_state(struct brw_context *brw)
 
 const struct brw_tracked_state gen6_color_calc_state = {
    .dirty = {
-      .mesa = _NEW_COLOR | _NEW_STENCIL,
-      .brw = BRW_NEW_BATCH | BRW_NEW_STATE_BASE_ADDRESS,
-      .cache = 0,
+      .mesa = _NEW_COLOR |
+              _NEW_STENCIL,
+      .brw = BRW_NEW_BATCH |
+             BRW_NEW_BLORP |
+             BRW_NEW_CC_STATE |
+             BRW_NEW_STATE_BASE_ADDRESS,
    },
    .emit = gen6_upload_color_calc_state,
 };

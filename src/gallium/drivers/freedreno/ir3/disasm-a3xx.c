@@ -103,7 +103,7 @@ static void print_reg(reg_t reg, bool full, bool r, bool c, bool im,
 	} else if ((reg.num == REG_P0) && !c) {
 		printf("p0.%c", component[reg.comp]);
 	} else {
-		printf("%s%c%d.%c", full ? "" : "h", type, reg.num, component[reg.comp]);
+		printf("%s%c%d.%c", full ? "" : "h", type, reg.num & 0x3f, component[reg.comp]);
 	}
 }
 
@@ -122,6 +122,32 @@ static void print_reg_src(reg_t reg, bool full, bool r, bool c, bool im,
 	print_reg(reg, full, r, c, im, neg, abs, addr_rel);
 }
 
+/* TODO switch to using reginfo struct everywhere, since more readable
+ * than passing a bunch of bools to print_reg_src
+ */
+
+struct reginfo {
+	reg_t reg;
+	bool full;
+	bool r;
+	bool c;
+	bool im;
+	bool neg;
+	bool abs;
+	bool addr_rel;
+};
+
+static void print_src(struct reginfo *info)
+{
+	print_reg_src(info->reg, info->full, info->r, info->c, info->im,
+			info->neg, info->abs, info->addr_rel);
+}
+
+//static void print_dst(struct reginfo *info)
+//{
+//	print_reg_dst(info->reg, info->full, info->addr_rel);
+//}
+
 static void print_instr_cat0(instr_t *instr)
 {
 	instr_cat0_t *cat0 = &instr->cat0;
@@ -133,16 +159,16 @@ static void print_instr_cat0(instr_t *instr)
 		break;
 	case OPC_BR:
 		printf(" %sp0.%c, #%d", cat0->inv ? "!" : "",
-				component[cat0->comp], cat0->immed);
+				component[cat0->comp], cat0->a3xx.immed);
 		break;
 	case OPC_JUMP:
 	case OPC_CALL:
-		printf(" #%d", cat0->immed);
+		printf(" #%d", cat0->a3xx.immed);
 		break;
 	}
 
-	if ((debug & PRINT_VERBOSE) && (cat0->dummy1|cat0->dummy2|cat0->dummy3|cat0->dummy4))
-		printf("\t{0: %x,%x,%x,%x}", cat0->dummy1, cat0->dummy2, cat0->dummy3, cat0->dummy4);
+	if ((debug & PRINT_VERBOSE) && (cat0->a3xx.dummy1|cat0->dummy2|cat0->dummy3|cat0->dummy4))
+		printf("\t{0: %x,%x,%x,%x}", cat0->a3xx.dummy1, cat0->dummy2, cat0->dummy3, cat0->dummy4);
 }
 
 static void print_instr_cat1(instr_t *instr)
@@ -180,6 +206,8 @@ static void print_instr_cat1(instr_t *instr)
 	if (cat1->src_im) {
 		if (type_float(cat1->src_type))
 			printf("(%f)", cat1->fim_val);
+		else if (type_uint(cat1->src_type))
+			printf("0x%08x", cat1->uim_val);
 		else
 			printf("%d", cat1->iim_val);
 	} else if (cat1->src_rel && !cat1->src_c) {
@@ -192,7 +220,7 @@ static void print_instr_cat1(instr_t *instr)
 		else if (cat1->off > 0)
 			printf("%c<a0.x + %d>", type, cat1->off);
 		else
-			printf("c<a0.x>");
+			printf("%c<a0.x>", type);
 	} else {
 		print_reg_src((reg_t)(cat1->src), type_size(cat1->src_type) == 32,
 				cat1->src_r, cat1->src_c, cat1->src_im, false, false, false);
@@ -215,7 +243,7 @@ static void print_instr_cat2(instr_t *instr)
 			"?6?",
 	};
 
-	switch (cat2->opc) {
+	switch (_OPC(2, cat2->opc)) {
 	case OPC_CMPS_F:
 	case OPC_CMPS_U:
 	case OPC_CMPS_S:
@@ -246,7 +274,7 @@ static void print_instr_cat2(instr_t *instr)
 				cat2->src1_abs, false);
 	}
 
-	switch (cat2->opc) {
+	switch (_OPC(2, cat2->opc)) {
 	case OPC_ABSNEG_F:
 	case OPC_ABSNEG_S:
 	case OPC_CLZ_B:
@@ -354,34 +382,34 @@ static void print_instr_cat5(instr_t *instr)
 	static const struct {
 		bool src1, src2, samp, tex;
 	} info[0x1f] = {
-			[OPC_ISAM]     = { true,  false, true,  true,  },
-			[OPC_ISAML]    = { true,  true,  true,  true,  },
-			[OPC_ISAMM]    = { true,  false, true,  true,  },
-			[OPC_SAM]      = { true,  false, true,  true,  },
-			[OPC_SAMB]     = { true,  true,  true,  true,  },
-			[OPC_SAML]     = { true,  true,  true,  true,  },
-			[OPC_SAMGQ]    = { true,  false, true,  true,  },
-			[OPC_GETLOD]   = { true,  false, true,  true,  },
-			[OPC_CONV]     = { true,  true,  true,  true,  },
-			[OPC_CONVM]    = { true,  true,  true,  true,  },
-			[OPC_GETSIZE]  = { true,  false, false, true,  },
-			[OPC_GETBUF]   = { false, false, false, true,  },
-			[OPC_GETPOS]   = { true,  false, false, true,  },
-			[OPC_GETINFO]  = { false, false, false, true,  },
-			[OPC_DSX]      = { true,  false, false, false, },
-			[OPC_DSY]      = { true,  false, false, false, },
-			[OPC_GATHER4R] = { true,  false, true,  true,  },
-			[OPC_GATHER4G] = { true,  false, true,  true,  },
-			[OPC_GATHER4B] = { true,  false, true,  true,  },
-			[OPC_GATHER4A] = { true,  false, true,  true,  },
-			[OPC_SAMGP0]   = { true,  false, true,  true,  },
-			[OPC_SAMGP1]   = { true,  false, true,  true,  },
-			[OPC_SAMGP2]   = { true,  false, true,  true,  },
-			[OPC_SAMGP3]   = { true,  false, true,  true,  },
-			[OPC_DSXPP_1]  = { true,  false, false, false, },
-			[OPC_DSYPP_1]  = { true,  false, false, false, },
-			[OPC_RGETPOS]  = { false, false, false, false, },
-			[OPC_RGETINFO] = { false, false, false, false, },
+			[opc_op(OPC_ISAM)]     = { true,  false, true,  true,  },
+			[opc_op(OPC_ISAML)]    = { true,  true,  true,  true,  },
+			[opc_op(OPC_ISAMM)]    = { true,  false, true,  true,  },
+			[opc_op(OPC_SAM)]      = { true,  false, true,  true,  },
+			[opc_op(OPC_SAMB)]     = { true,  true,  true,  true,  },
+			[opc_op(OPC_SAML)]     = { true,  true,  true,  true,  },
+			[opc_op(OPC_SAMGQ)]    = { true,  false, true,  true,  },
+			[opc_op(OPC_GETLOD)]   = { true,  false, true,  true,  },
+			[opc_op(OPC_CONV)]     = { true,  true,  true,  true,  },
+			[opc_op(OPC_CONVM)]    = { true,  true,  true,  true,  },
+			[opc_op(OPC_GETSIZE)]  = { true,  false, false, true,  },
+			[opc_op(OPC_GETBUF)]   = { false, false, false, true,  },
+			[opc_op(OPC_GETPOS)]   = { true,  false, false, true,  },
+			[opc_op(OPC_GETINFO)]  = { false, false, false, true,  },
+			[opc_op(OPC_DSX)]      = { true,  false, false, false, },
+			[opc_op(OPC_DSY)]      = { true,  false, false, false, },
+			[opc_op(OPC_GATHER4R)] = { true,  false, true,  true,  },
+			[opc_op(OPC_GATHER4G)] = { true,  false, true,  true,  },
+			[opc_op(OPC_GATHER4B)] = { true,  false, true,  true,  },
+			[opc_op(OPC_GATHER4A)] = { true,  false, true,  true,  },
+			[opc_op(OPC_SAMGP0)]   = { true,  false, true,  true,  },
+			[opc_op(OPC_SAMGP1)]   = { true,  false, true,  true,  },
+			[opc_op(OPC_SAMGP2)]   = { true,  false, true,  true,  },
+			[opc_op(OPC_SAMGP3)]   = { true,  false, true,  true,  },
+			[opc_op(OPC_DSXPP_1)]  = { true,  false, false, false, },
+			[opc_op(OPC_DSYPP_1)]  = { true,  false, false, false, },
+			[opc_op(OPC_RGETPOS)]  = { false, false, false, false, },
+			[opc_op(OPC_RGETINFO)] = { false, false, false, false, },
 	};
 	instr_cat5_t *cat5 = &instr->cat5;
 	int i;
@@ -395,7 +423,7 @@ static void print_instr_cat5(instr_t *instr)
 
 	printf(" ");
 
-	switch (cat5->opc) {
+	switch (_OPC(5, cat5->opc)) {
 	case OPC_DSXPP_1:
 	case OPC_DSYPP_1:
 		break;
@@ -448,132 +476,187 @@ static void print_instr_cat5(instr_t *instr)
 	}
 }
 
-static int32_t u2i(uint32_t val, int nbits)
-{
-	return ((val >> (nbits-1)) * ~((1 << nbits) - 1)) | val;
-}
-
 static void print_instr_cat6(instr_t *instr)
 {
 	instr_cat6_t *cat6 = &instr->cat6;
+	char sd = 0, ss = 0;  /* dst/src address space */
+	bool nodst = false;
+	struct reginfo dst, src1, src2;
+	int src1off = 0, dstoff = 0;
 
-	printf(".%s ", type[cat6->type]);
+	memset(&dst, 0, sizeof(dst));
+	memset(&src1, 0, sizeof(src1));
+	memset(&src2, 0, sizeof(src2));
 
-	switch (cat6->opc) {
-	case OPC_LDG:
-	case OPC_LDP:
-	case OPC_LDL:
-	case OPC_LDLW:
-	case OPC_LDLV:
-		/* load instructions: */
-		print_reg_dst((reg_t)(cat6->a.dst), type_size(cat6->type) == 32, false);
-		printf(",");
-		switch (cat6->opc) {
-		case OPC_LDG:
-			printf("g");
-			break;
-		case OPC_LDP:
-			printf("p");
-			break;
-		case OPC_LDL:
-		case OPC_LDLW:
-		case OPC_LDLV:
-			printf("l");
-			break;
-		}
-		printf("[");
-		print_reg_src((reg_t)(cat6->a.src), true,
-				false, false, false, false, false, false);
-		if (cat6->a.off)
-			printf("%+d", cat6->a.off);
-		printf("]");
+	switch (_OPC(6, cat6->opc)) {
+	case OPC_RESINFO:
+	case OPC_RESFMT:
+		dst.full  = type_size(cat6->type) == 32;
+		src1.full = type_size(cat6->type) == 32;
+		src2.full = type_size(cat6->type) == 32;
 		break;
-	case OPC_PREFETCH:
-		/* similar to load instructions: */
-		printf("g[");
-		print_reg_src((reg_t)(cat6->a.src), true,
-				false, false, false, false, false, false);
-		if (cat6->a.off)
-			printf("%+d", cat6->a.off);
-		printf("]");
+	case OPC_L2G:
+	case OPC_G2L:
+		dst.full = true;
+		src1.full = true;
+		src2.full = true;
 		break;
 	case OPC_STG:
-	case OPC_STP:
 	case OPC_STL:
-	case OPC_STLW:
-		/* store instructions: */
-		switch (cat6->opc) {
-		case OPC_STG:
-			printf("g");
-			break;
-		case OPC_STP:
-			printf("p");
-			break;
-		case OPC_STL:
-		case OPC_STLW:
-			printf("l");
-			break;
-		}
-		printf("[");
-		print_reg_dst((reg_t)(cat6->b.dst), true, false);
-		if (cat6->b.off || cat6->b.off_hi)
-			printf("%+d", u2i((cat6->b.off_hi << 8) | cat6->b.off, 13));
-		printf("]");
-		printf(",");
-		print_reg_src((reg_t)(cat6->b.src), type_size(cat6->type) == 32,
-				false, false, false, false, false, false);
-
-		break;
+	case OPC_STP:
 	case OPC_STI:
-		/* sti has same encoding as other store instructions, but
-		 * slightly different syntax:
-		 */
-		print_reg_dst((reg_t)(cat6->b.dst), false /* XXX is it always half? */, false);
-		if (cat6->b.off || cat6->b.off_hi)
-			printf("%+d", u2i((cat6->b.off_hi << 8) | cat6->b.off, 13));
-		printf(",");
-		print_reg_src((reg_t)(cat6->b.src), type_size(cat6->type) == 32,
-				false, false, false, false, false, false);
+	case OPC_STLW:
+	case OPC_STGB_4D_4:
+	case OPC_STIB:
+		dst.full  = true;
+		src1.full = type_size(cat6->type) == 32;
+		src2.full = type_size(cat6->type) == 32;
+		break;
+	default:
+		dst.full  = type_size(cat6->type) == 32;
+		src1.full = true;
+		src2.full = true;
 		break;
 	}
 
-	printf(", %d", cat6->iim_val);
+	switch (_OPC(6, cat6->opc)) {
+	case OPC_PREFETCH:
+	case OPC_RESINFO:
+		break;
+	case OPC_ATOMIC_ADD:
+	case OPC_ATOMIC_SUB:
+	case OPC_ATOMIC_XCHG:
+	case OPC_ATOMIC_INC:
+	case OPC_ATOMIC_DEC:
+	case OPC_ATOMIC_CMPXCHG:
+	case OPC_ATOMIC_MIN:
+	case OPC_ATOMIC_MAX:
+	case OPC_ATOMIC_AND:
+	case OPC_ATOMIC_OR:
+	case OPC_ATOMIC_XOR:
+		ss = cat6->g ? 'g' : 'l';
+		printf(".%c", ss);
+		printf(".%s", type[cat6->type]);
+		break;
+	default:
+		dst.im = cat6->g && !cat6->dst_off;
+		printf(".%s", type[cat6->type]);
+		break;
+	}
+	printf(" ");
 
-	if (debug & PRINT_VERBOSE) {
-		switch (cat6->opc) {
-		case OPC_LDG:
-		case OPC_LDP:
-			/* load instructions: */
-			if (cat6->a.dummy1|cat6->a.dummy2|cat6->a.dummy3)
-				printf("\t{6: %x,%x,%x}", cat6->a.dummy1, cat6->a.dummy2, cat6->a.dummy3);
-			if ((cat6->a.must_be_one1 != 1) || (cat6->a.must_be_one2 != 1))
-				printf("{?? %d,%d ??}", cat6->a.must_be_one1, cat6->a.must_be_one2);
-			break;
-		case OPC_STG:
-		case OPC_STP:
-		case OPC_STI:
-			/* store instructions: */
-			if (cat6->b.dummy1|cat6->b.dummy2)
-				printf("\t{6: %x,%x}", cat6->b.dummy1, cat6->b.dummy2);
-			if ((cat6->b.must_be_one1 != 1) || (cat6->b.must_be_one2 != 1) ||
-					(cat6->b.must_be_zero1 != 0))
-				printf("{?? %d,%d,%d ??}", cat6->b.must_be_one1, cat6->b.must_be_one2,
-						cat6->b.must_be_zero1);
-			break;
-		}
+	switch (_OPC(6, cat6->opc)) {
+	case OPC_STG:
+		sd = 'g';
+		break;
+	case OPC_STP:
+		sd = 'p';
+		break;
+	case OPC_STL:
+	case OPC_STLW:
+		sd = 'l';
+		break;
+
+	case OPC_LDG:
+		ss = 'g';
+		break;
+	case OPC_LDP:
+		ss = 'p';
+		break;
+	case OPC_LDL:
+	case OPC_LDLW:
+	case OPC_LDLV:
+		ss = 'l';
+		break;
+
+	case OPC_L2G:
+		ss = 'l';
+		sd = 'g';
+		break;
+
+	case OPC_G2L:
+		ss = 'g';
+		sd = 'l';
+		break;
+
+	case OPC_PREFETCH:
+		ss = 'g';
+		nodst = true;
+		break;
+
+	case OPC_STI:
+		dst.full = false;  // XXX or inverts??
+		break;
+	}
+
+	if (cat6->dst_off) {
+		dst.reg = (reg_t)(cat6->c.dst);
+		dstoff  = cat6->c.off;
+	} else {
+		dst.reg = (reg_t)(cat6->d.dst);
+	}
+
+	if (cat6->src_off) {
+		src1.reg = (reg_t)(cat6->a.src1);
+		src1.im  = cat6->a.src1_im;
+		src2.reg = (reg_t)(cat6->a.src2);
+		src2.im  = cat6->a.src2_im;
+		src1off  = cat6->a.off;
+	} else {
+		src1.reg = (reg_t)(cat6->b.src1);
+		src1.im  = cat6->b.src1_im;
+		src2.reg = (reg_t)(cat6->b.src2);
+		src2.im  = cat6->b.src2_im;
+	}
+
+	if (!nodst) {
+		if (sd)
+			printf("%c[", sd);
+		/* note: dst might actually be a src (ie. address to store to) */
+		print_src(&dst);
+		if (dstoff)
+			printf("%+d", dstoff);
+		if (sd)
+			printf("]");
+		printf(", ");
+	}
+
+	if (ss)
+		printf("%c[", ss);
+
+	/* can have a larger than normal immed, so hack: */
+	if (src1.im) {
+		printf("%u", src1.reg.dummy13);
+	} else {
+		print_src(&src1);
+	}
+
+	if (src1off)
+		printf("%+d", src1off);
+	if (ss)
+		printf("]");
+
+	switch (_OPC(6, cat6->opc)) {
+	case OPC_RESINFO:
+	case OPC_RESFMT:
+		break;
+	default:
+		printf(", ");
+		print_src(&src2);
+		break;
 	}
 }
 
 /* size of largest OPC field of all the instruction categories: */
 #define NOPC_BITS 6
 
-struct opc_info {
+static const struct opc_info {
 	uint16_t cat;
 	uint16_t opc;
 	const char *name;
 	void (*print)(instr_t *instr);
 } opcs[1 << (3+NOPC_BITS)] = {
-#define OPC(cat, opc, name) [((cat) << NOPC_BITS) | (opc)] = { (cat), (opc), #name, print_instr_cat##cat }
+#define OPC(cat, opc, name) [(opc)] = { (cat), (opc), #name, print_instr_cat##cat }
 	/* category 0: */
 	OPC(0, OPC_NOP,          nop),
 	OPC(0, OPC_BR,           br),
@@ -589,7 +672,7 @@ struct opc_info {
 	OPC(0, OPC_FLOW_REV,     flow_rev),
 
 	/* category 1: */
-	OPC(1, 0, ),
+	OPC(1, OPC_MOV, ),
 
 	/* category 2: */
 	OPC(2, OPC_ADD_F,        add.f),
@@ -711,19 +794,19 @@ struct opc_info {
 	OPC(6, OPC_LDLW,         ldlw),
 	OPC(6, OPC_STLW,         stlw),
 	OPC(6, OPC_RESFMT,       resfmt),
-	OPC(6, OPC_RESINFO,      resinf),
-	OPC(6, OPC_ATOMIC_ADD_L,     atomic.add.l),
-	OPC(6, OPC_ATOMIC_SUB_L,     atomic.sub.l),
-	OPC(6, OPC_ATOMIC_XCHG_L,    atomic.xchg.l),
-	OPC(6, OPC_ATOMIC_INC_L,     atomic.inc.l),
-	OPC(6, OPC_ATOMIC_DEC_L,     atomic.dec.l),
-	OPC(6, OPC_ATOMIC_CMPXCHG_L, atomic.cmpxchg.l),
-	OPC(6, OPC_ATOMIC_MIN_L,     atomic.min.l),
-	OPC(6, OPC_ATOMIC_MAX_L,     atomic.max.l),
-	OPC(6, OPC_ATOMIC_AND_L,     atomic.and.l),
-	OPC(6, OPC_ATOMIC_OR_L,      atomic.or.l),
-	OPC(6, OPC_ATOMIC_XOR_L,     atomic.xor.l),
-	OPC(6, OPC_LDGB_TYPED_4D,    ldgb.typed.4d),
+	OPC(6, OPC_RESINFO,      resinfo),
+	OPC(6, OPC_ATOMIC_ADD,     atomic.add),
+	OPC(6, OPC_ATOMIC_SUB,     atomic.sub),
+	OPC(6, OPC_ATOMIC_XCHG,    atomic.xchg),
+	OPC(6, OPC_ATOMIC_INC,     atomic.inc),
+	OPC(6, OPC_ATOMIC_DEC,     atomic.dec),
+	OPC(6, OPC_ATOMIC_CMPXCHG, atomic.cmpxchg),
+	OPC(6, OPC_ATOMIC_MIN,     atomic.min),
+	OPC(6, OPC_ATOMIC_MAX,     atomic.max),
+	OPC(6, OPC_ATOMIC_AND,     atomic.and),
+	OPC(6, OPC_ATOMIC_OR,      atomic.or),
+	OPC(6, OPC_ATOMIC_XOR,     atomic.xor),
+	OPC(6, OPC_LDGB_TYPED_4D,    ldgb.typed.3d),
 	OPC(6, OPC_STGB_4D_4,    stgb.4d.4),
 	OPC(6, OPC_STIB,         stib),
 	OPC(6, OPC_LDC_4,        ldc.4),
@@ -739,8 +822,8 @@ struct opc_info {
 #include "ir3.h"
 const char *ir3_instr_name(struct ir3_instruction *instr)
 {
-	if (instr->category == -1) return "??meta??";
-	return opcs[(instr->category << NOPC_BITS) | instr->opc].name;
+	if (opc_cat(instr->opc) == -1) return "??meta??";
+	return opcs[instr->opc].name;
 }
 
 static void print_instr(uint32_t *dwords, int level, int n)
@@ -749,16 +832,8 @@ static void print_instr(uint32_t *dwords, int level, int n)
 	uint32_t opc = instr_opc(instr);
 	const char *name;
 
-	printf("%s%04d[%08xx_%08xx] ", levels[level], n, dwords[1], dwords[0]);
-
-#if 0
-	/* print unknown bits: */
-	if (debug & PRINT_RAW)
-		printf("[%08xx_%08xx] ", dwords[1] & 0x001ff800, dwords[0] & 0x00000000);
-
 	if (debug & PRINT_VERBOSE)
-		printf("%d,%02d ", instr->opc_cat, opc);
-#endif
+		printf("%s%04d[%08xx_%08xx] ", levels[level], n, dwords[1], dwords[0]);
 
 	/* NOTE: order flags are printed is a bit fugly.. but for now I
 	 * try to match the order in llvm-a3xx disassembler for easy

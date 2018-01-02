@@ -32,7 +32,6 @@
 
 
 #include "main/glheader.h"
-#include "main/colormac.h"
 #include "main/macros.h"
 #include "main/imports.h"
 #include "main/samplerobj.h"
@@ -41,6 +40,7 @@
 #include "program/prog_statevars.h"
 #include "program/prog_execute.h"
 #include "swrast/s_context.h"
+#include "util/bitscan.h"
 
 #include "tnl/tnl.h"
 #include "tnl/t_context.h"
@@ -85,40 +85,38 @@ userclip( struct gl_context *ctx,
           GLubyte *clipormask,
           GLubyte *clipandmask )
 {
-   GLuint p;
+   GLbitfield mask = ctx->Transform.ClipPlanesEnabled;
+   while (mask) {
+      const int p = u_bit_scan(&mask);
+      GLuint nr, i;
+      const GLfloat a = ctx->Transform._ClipUserPlane[p][0];
+      const GLfloat b = ctx->Transform._ClipUserPlane[p][1];
+      const GLfloat c = ctx->Transform._ClipUserPlane[p][2];
+      const GLfloat d = ctx->Transform._ClipUserPlane[p][3];
+      GLfloat *coord = (GLfloat *)clip->data;
+      GLuint stride = clip->stride;
+      GLuint count = clip->count;
 
-   for (p = 0; p < ctx->Const.MaxClipPlanes; p++) {
-      if (ctx->Transform.ClipPlanesEnabled & (1 << p)) {
-	 GLuint nr, i;
-	 const GLfloat a = ctx->Transform._ClipUserPlane[p][0];
-	 const GLfloat b = ctx->Transform._ClipUserPlane[p][1];
-	 const GLfloat c = ctx->Transform._ClipUserPlane[p][2];
-	 const GLfloat d = ctx->Transform._ClipUserPlane[p][3];
-         GLfloat *coord = (GLfloat *)clip->data;
-         GLuint stride = clip->stride;
-         GLuint count = clip->count;
+      for (nr = 0, i = 0 ; i < count ; i++) {
+         GLfloat dp = (coord[0] * a +
+                       coord[1] * b +
+                       coord[2] * c +
+                       coord[3] * d);
 
-	 for (nr = 0, i = 0 ; i < count ; i++) {
-	    GLfloat dp = (coord[0] * a + 
-			  coord[1] * b +
-			  coord[2] * c +
-			  coord[3] * d);
+         if (dp < 0) {
+            nr++;
+            clipmask[i] |= CLIP_USER_BIT;
+         }
 
-	    if (dp < 0) {
-	       nr++;
-	       clipmask[i] |= CLIP_USER_BIT;
-	    }
+         STRIDE_F(coord, stride);
+      }
 
-	    STRIDE_F(coord, stride);
-	 }
-
-	 if (nr > 0) {
-	    *clipormask |= CLIP_USER_BIT;
-	    if (nr == count) {
-	       *clipandmask |= CLIP_USER_BIT;
-	       return;
-	    }
-	 }
+      if (nr > 0) {
+         *clipormask |= CLIP_USER_BIT;
+         if (nr == count) {
+            *clipandmask |= CLIP_USER_BIT;
+            return;
+         }
       }
    }
 }
@@ -232,12 +230,6 @@ init_machine(struct gl_context *ctx, struct gl_program_machine *machine,
           MAX_VERTEX_GENERIC_ATTRIBS * 4 * sizeof(GLfloat));
 
    machine->NumDeriv = 0;
-
-   /* init condition codes */
-   machine->CondCodes[0] = COND_EQ;
-   machine->CondCodes[1] = COND_EQ;
-   machine->CondCodes[2] = COND_EQ;
-   machine->CondCodes[3] = COND_EQ;
 
    /* init call stack */
    machine->StackDepth = 0;
@@ -392,7 +384,7 @@ run_vp( struct gl_context *ctx, struct tnl_pipeline_stage *stage )
          store->results[VARYING_SLOT_FOGC].data[i][3] = 1.0;
       }
 #ifdef NAN_CHECK
-      ASSERT(machine->Outputs[0][3] != 0.0F);
+      assert(machine->Outputs[0][3] != 0.0F);
 #endif
 #if 0
       printf("HPOS: %f %f %f %f\n",

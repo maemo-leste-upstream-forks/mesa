@@ -5,14 +5,14 @@ SUBDIRS =
 ##
 
 SUBDIRS += auxiliary
+SUBDIRS += auxiliary/pipe-loader
 
 ##
 ## Gallium pipe drivers and their respective winsys'
 ##
 
 SUBDIRS += \
-	drivers/galahad \
-	drivers/identity \
+	drivers/ddebug \
 	drivers/noop \
 	drivers/trace \
 	drivers/rbug
@@ -60,6 +60,7 @@ endif
 ## radeonsi
 if HAVE_GALLIUM_RADEONSI
 SUBDIRS += drivers/radeonsi
+SUBDIRS += winsys/amdgpu/drm
 endif
 
 ## the radeon winsys - linked in by r300, r600 and radeonsi
@@ -68,18 +69,27 @@ SUBDIRS += winsys/radeon/drm
 endif
 
 ## swrast/softpipe
-if NEED_GALLIUM_SOFTPIPE_DRIVER
+if HAVE_GALLIUM_SOFTPIPE
 SUBDIRS += drivers/softpipe
 
 ## swrast/llvmpipe
-if NEED_GALLIUM_LLVMPIPE_DRIVER
+if HAVE_GALLIUM_LLVMPIPE
 SUBDIRS += drivers/llvmpipe
 endif
+endif
+
+if HAVE_GALLIUM_SWR
+SUBDIRS += drivers/swr
 endif
 
 ## vc4/rpi
 if HAVE_GALLIUM_VC4
 SUBDIRS += drivers/vc4 winsys/vc4/drm
+endif
+
+## virgl
+if HAVE_GALLIUM_VIRGL
+SUBDIRS += drivers/virgl winsys/virgl/drm winsys/virgl/vtest
 endif
 
 ## the sw winsys'
@@ -93,28 +103,30 @@ if HAVE_DRISW
 SUBDIRS += winsys/sw/dri
 endif
 
-if HAVE_DRI2
+if HAVE_DRISW_KMS
 SUBDIRS += winsys/sw/kms-dri
 endif
 
-if HAVE_EGL_PLATFORM_FBDEV
-SUBDIRS += winsys/sw/fbdev
-endif
-
-if HAVE_EGL_PLATFORM_WAYLAND
-SUBDIRS += winsys/sw/wayland
-endif
-
-if NEED_WINSYS_WRAPPER
 SUBDIRS += winsys/sw/wrapper
-endif
+
+##
+## Don't forget to bundle the remaining (non autotools) winsys'
+##
+
+EXTRA_DIST = \
+	docs \
+	README.portability \
+	SConscript \
+	winsys/sw/gdi \
+	winsys/sw/hgl
 
 
 ##
 ## Gallium state trackers and their users (targets)
 ##
 
-if NEED_GALLIUM_LOADER
+## XXX: Rename the conditional once we have a config switch for static/dynamic pipe-drivers
+if HAVE_CLOVER
 SUBDIRS += targets/pipe-loader
 endif
 
@@ -126,20 +138,7 @@ if HAVE_DRICOMMON
 SUBDIRS += state_trackers/dri targets/dri
 endif
 
-## the egl target depends on vega
-if HAVE_OPENVG
-SUBDIRS += state_trackers/vega
-endif
-
-if HAVE_GALLIUM_EGL
-SUBDIRS += state_trackers/egl targets/egl-static
-endif
-
-if HAVE_GALLIUM_GBM
-SUBDIRS += state_trackers/gbm targets/gbm
-endif
-
-if HAVE_X11_DRIVER
+if HAVE_GALLIUM_XLIB_GLX
 SUBDIRS += state_trackers/glx/xlib targets/libgl-xlib
 endif
 
@@ -149,6 +148,10 @@ endif
 
 if HAVE_GALLIUM_OSMESA
 SUBDIRS += state_trackers/osmesa targets/osmesa
+endif
+
+if HAVE_ST_VA
+SUBDIRS += state_trackers/va targets/va
 endif
 
 if HAVE_ST_VDPAU
@@ -163,6 +166,23 @@ if HAVE_ST_XVMC
 SUBDIRS += state_trackers/xvmc targets/xvmc
 endif
 
+if HAVE_ST_NINE
+SUBDIRS += state_trackers/nine targets/d3dadapter9
+endif
+
+##
+## Don't forget to bundle the remaining (non autotools) state-trackers/targets
+##
+
+EXTRA_DIST += \
+	include \
+	state_trackers/README \
+	state_trackers/wgl targets/libgl-gdi \
+	targets/graw-gdi targets/graw-null  targets/graw-xlib \
+	state_trackers/hgl targets/haiku-softpipe \
+	tools
+
+
 ##
 ## Gallium tests
 ##
@@ -172,3 +192,7 @@ SUBDIRS += \
 	tests/trivial \
 	tests/unit
 endif
+
+EXTRA_DIST += \
+	tests/graw \
+	tests/python

@@ -32,70 +32,36 @@
 
 #include "brw_vec4.h"
 
-
-struct brw_gs_prog_key
-{
-   struct brw_vec4_prog_key base;
-
-   GLbitfield64 input_varyings;
-};
-
-
-/**
- * Scratch data used when compiling a GLSL geometry shader.
- */
-struct brw_gs_compile
-{
-   struct brw_vec4_compile base;
-   struct brw_gs_prog_key key;
-   struct brw_gs_prog_data prog_data;
-   struct brw_vue_map input_vue_map;
-
-   struct brw_geometry_program *gp;
-
-   unsigned control_data_bits_per_vertex;
-   unsigned control_data_header_size_bits;
-};
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-const unsigned *brw_gs_emit(struct brw_context *brw,
-                            struct gl_shader_program *prog,
-                            struct brw_gs_compile *c,
-                            void *mem_ctx,
-                            unsigned *final_assembly_size);
-
-#ifdef __cplusplus
-} /* extern "C" */
-#endif
-
 #ifdef __cplusplus
 namespace brw {
 
 class vec4_gs_visitor : public vec4_visitor
 {
 public:
-   vec4_gs_visitor(struct brw_context *brw,
+   vec4_gs_visitor(const struct brw_compiler *compiler,
+                   void *log_data,
                    struct brw_gs_compile *c,
-                   struct gl_shader_program *prog,
+                   struct brw_gs_prog_data *prog_data,
+                   const nir_shader *shader,
                    void *mem_ctx,
-                   bool no_spills);
+                   bool no_spills,
+                   int shader_time_index);
+
+   virtual void nir_setup_inputs();
+   virtual void nir_setup_system_value_intrinsic(nir_intrinsic_instr *instr);
 
 protected:
-   virtual dst_reg *make_reg_for_system_value(ir_variable *ir);
+   virtual dst_reg *make_reg_for_system_value(int location);
    virtual void setup_payload();
    virtual void emit_prolog();
-   virtual void emit_program_code();
    virtual void emit_thread_end();
    virtual void emit_urb_write_header(int mrf);
    virtual vec4_instruction *emit_urb_write_opcode(bool complete);
-   virtual int compute_array_stride(ir_dereference_array *ir);
-   virtual void visit(ir_emit_vertex *);
-   virtual void visit(ir_end_primitive *);
+   virtual void gs_emit_vertex(int stream_id);
+   virtual void gs_end_primitive();
+   virtual void nir_emit_intrinsic(nir_intrinsic_instr *instr);
 
-private:
+protected:
    int setup_varying_inputs(int payload_reg, int *attribute_map,
                             int attributes_per_reg);
    void emit_control_data_bits();
@@ -104,6 +70,7 @@ private:
    src_reg vertex_count;
    src_reg control_data_bits;
    const struct brw_gs_compile * const c;
+   struct brw_gs_prog_data * const gs_prog_data;
 };
 
 } /* namespace brw */

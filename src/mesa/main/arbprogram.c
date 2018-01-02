@@ -36,10 +36,10 @@
 #include "main/macros.h"
 #include "main/mtypes.h"
 #include "main/arbprogram.h"
+#include "main/shaderapi.h"
 #include "program/arbprogparse.h"
 #include "program/program.h"
 #include "program/prog_print.h"
-
 
 /**
  * Bind a program (make it current)
@@ -118,8 +118,8 @@ _mesa_BindProgramARB(GLenum target, GLuint id)
    }
 
    /* Never null pointers */
-   ASSERT(ctx->VertexProgram.Current);
-   ASSERT(ctx->FragmentProgram.Current);
+   assert(ctx->VertexProgram.Current);
+   assert(ctx->FragmentProgram.Current);
 
    if (ctx->Driver.BindProgram)
       ctx->Driver.BindProgram(ctx, target, newProg);
@@ -200,12 +200,17 @@ _mesa_GenProgramsARB(GLsizei n, GLuint *ids)
    if (!ids)
       return;
 
+   _mesa_HashLockMutex(ctx->Shared->Programs);
+
    first = _mesa_HashFindFreeKeyBlock(ctx->Shared->Programs, n);
 
    /* Insert pointer to dummy program as placeholder */
    for (i = 0; i < (GLuint) n; i++) {
-      _mesa_HashInsert(ctx->Shared->Programs, first + i, &_mesa_DummyProgram);
+      _mesa_HashInsertLocked(ctx->Shared->Programs, first + i,
+                             &_mesa_DummyProgram);
    }
+
+   _mesa_HashUnlockMutex(ctx->Shared->Programs);
 
    /* Return the program names */
    for (i = 0; i < (GLuint) n; i++) {
@@ -373,6 +378,28 @@ _mesa_ProgramStringARB(GLenum target, GLenum format, GLsizei len,
       }
       fflush(stderr);
    }
+
+   /* Capture vp-*.shader_test/fp-*.shader_test files. */
+   const char *capture_path = _mesa_get_shader_capture_path();
+   if (capture_path != NULL) {
+      FILE *file;
+      const char *shader_type =
+         target == GL_FRAGMENT_PROGRAM_ARB ? "fragment" : "vertex";
+      char *filename =
+         ralloc_asprintf(NULL, "%s/%cp-%u.shader_test",
+                         capture_path, shader_type[0], base->Id);
+
+      file = fopen(filename, "w");
+      if (file) {
+         fprintf(file,
+                 "[require]\nGL_ARB_%s_program\n\n[%s program]\n%s\n",
+                 shader_type, shader_type, (const char *) string);
+         fclose(file);
+      } else {
+         _mesa_warning(ctx, "Failed to open %s", filename);
+      }
+      ralloc_free(filename);
+   }
 }
 
 
@@ -524,7 +551,7 @@ _mesa_ProgramLocalParameter4fARB(GLenum target, GLuint index,
 
    if (get_local_param_pointer(ctx, "glProgramLocalParameterARB",
 			       target, index, &param)) {
-      ASSERT(index < MAX_PROGRAM_LOCAL_PARAMS);
+      assert(index < MAX_PROGRAM_LOCAL_PARAMS);
       ASSIGN_4V(param, x, y, z, w);
    }
 }
@@ -639,8 +666,8 @@ _mesa_GetProgramivARB(GLenum target, GLenum pname, GLint *params)
       return;
    }
 
-   ASSERT(prog);
-   ASSERT(limits);
+   assert(prog);
+   assert(limits);
 
    /* Queries supported for both vertex and fragment programs */
    switch (pname) {
@@ -817,7 +844,7 @@ _mesa_GetProgramStringARB(GLenum target, GLenum pname, GLvoid *string)
       return;
    }
 
-   ASSERT(prog);
+   assert(prog);
 
    if (pname != GL_PROGRAM_STRING_ARB) {
       _mesa_error(ctx, GL_INVALID_ENUM, "glGetProgramStringARB(pname)");

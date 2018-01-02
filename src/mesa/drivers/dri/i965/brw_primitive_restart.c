@@ -28,6 +28,7 @@
 #include "main/imports.h"
 #include "main/bufferobj.h"
 #include "main/varray.h"
+#include "vbo/vbo.h"
 
 #include "brw_context.h"
 #include "brw_defines.h"
@@ -91,7 +92,7 @@ can_cut_index_handle_prims(struct gl_context *ctx,
       return false;
    }
 
-   for (int i = 0; i < nr_prims; i++) {
+   for (unsigned i = 0; i < nr_prims; i++) {
       switch (prim[i].mode) {
       case GL_POINTS:
       case GL_LINES:
@@ -138,14 +139,6 @@ brw_handle_primitive_restart(struct gl_context *ctx,
       return GL_FALSE;
    }
 
-   /* If the driver has requested software handling of primitive restarts,
-    * then the VBO module has already taken care of things, and we can
-    * just draw as normal.
-    */
-   if (ctx->Const.PrimitiveRestartInSoftware) {
-      return GL_FALSE;
-   }
-
    /* If we have set the in_progress flag, then we are in the middle
     * of handling the primitive restart draw.
     */
@@ -169,7 +162,8 @@ brw_handle_primitive_restart(struct gl_context *ctx,
       /* Cut index should work for primitive restart, so use it
        */
       brw->prim_restart.enable_cut_index = true;
-      brw_draw_prims(ctx, prims, nr_prims, ib, GL_FALSE, -1, -1, NULL, indirect);
+      brw_draw_prims(ctx, prims, nr_prims, ib, GL_FALSE, -1, -1, NULL, 0,
+                     indirect);
       brw->prim_restart.enable_cut_index = false;
    } else {
       /* Not all the primitive draw modes are supported by the cut index,
@@ -218,8 +212,8 @@ haswell_upload_cut_index(struct brw_context *brw)
 const struct brw_tracked_state haswell_cut_index = {
    .dirty = {
       .mesa  = _NEW_TRANSFORM,
-      .brw   = BRW_NEW_INDEX_BUFFER,
-      .cache = 0,
+      .brw   = BRW_NEW_BLORP |
+               BRW_NEW_INDEX_BUFFER,
    },
    .emit = haswell_upload_cut_index,
 };

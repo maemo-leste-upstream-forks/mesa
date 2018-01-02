@@ -41,6 +41,7 @@
  */
 
 #include "brw_fs.h"
+#include "brw_cfg.h"
 #include "brw_fs_live_variables.h"
 
 static bool
@@ -49,10 +50,12 @@ is_nop_mov(const fs_inst *inst)
    if (inst->opcode == SHADER_OPCODE_LOAD_PAYLOAD) {
       fs_reg dst = inst->dst;
       for (int i = 0; i < inst->sources; i++) {
-         dst.reg_offset = i;
          if (!dst.equals(inst->src[i])) {
             return false;
          }
+         dst.offset += (i < inst->header_size ? REG_SIZE :
+                        inst->exec_size * dst.stride *
+                        type_sz(inst->src[i].type));
       }
       return true;
    } else if (inst->opcode == BRW_OPCODE_MOV) {
@@ -63,46 +66,27 @@ is_nop_mov(const fs_inst *inst)
 }
 
 static bool
-is_copy_payload(const fs_inst *inst, int src_size)
-{
-   if (src_size != inst->sources)
-      return false;
-
-   const int reg = inst->src[0].reg;
-   if (inst->src[0].reg_offset != 0)
-      return false;
-
-   for (int i = 1; i < inst->sources; i++) {
-      if (inst->src[i].reg != reg ||
-          inst->src[i].reg_offset != i) {
-         return false;
-      }
-   }
-   return true;
-}
-
-static bool
-is_coalesce_candidate(const fs_inst *inst, const int *virtual_grf_sizes)
+is_coalesce_candidate(const fs_visitor *v, const fs_inst *inst)
 {
    if ((inst->opcode != BRW_OPCODE_MOV &&
         inst->opcode != SHADER_OPCODE_LOAD_PAYLOAD) ||
        inst->is_partial_write() ||
        inst->saturate ||
-       inst->src[0].file != GRF ||
+       inst->src[0].file != VGRF ||
        inst->src[0].negate ||
        inst->src[0].abs ||
        !inst->src[0].is_contiguous() ||
-       inst->dst.file != GRF ||
+       inst->dst.file != VGRF ||
        inst->dst.type != inst->src[0].type) {
       return false;
    }
 
-   if (virtual_grf_sizes[inst->src[0].reg] >
-       virtual_grf_sizes[inst->dst.reg])
+   if (v->alloc.sizes[inst->src[0].nr] >
+       v->alloc.sizes[inst->dst.nr])
       return false;
 
    if (inst->opcode == SHADER_OPCODE_LOAD_PAYLOAD) {
-      if (!is_copy_payload(inst, virtual_grf_sizes[inst->src[0].reg])) {
+      if (!inst->is_copy_payload(v->alloc)) {
          return false;
       }
    }
@@ -112,43 +96,54 @@ is_coalesce_candidate(const fs_inst *inst, const int *virtual_grf_sizes)
 
 static bool
 can_coalesce_vars(brw::fs_live_variables *live_intervals,
-                  const exec_list *instructions, const fs_inst *inst,
-                  int var_to, int var_from)
+                  const cfg_t *cfg, const fs_inst *inst,
+                  int dst_var, int src_var)
 {
-   if (!live_intervals->vars_interfere(var_from, var_to))
+   if (!live_intervals->vars_interfere(src_var, dst_var))
       return true;
 
-   int start_to = live_intervals->start[var_to];
-   int end_to = live_intervals->end[var_to];
-   int start_from = live_intervals->start[var_from];
-   int end_from = live_intervals->end[var_from];
+   int dst_start = live_intervals->start[dst_var];
+   int dst_end = live_intervals->end[dst_var];
+   int src_start = live_intervals->start[src_var];
+   int src_end = live_intervals->end[src_var];
 
    /* Variables interfere and one line range isn't a subset of the other. */
-   if ((end_to > end_from && start_from < start_to) ||
-       (end_from > end_to && start_to < start_from))
+   if ((dst_end > src_end && src_start < dst_start) ||
+       (src_end > dst_end && dst_start < src_start))
       return false;
 
-   int start_ip = MIN2(start_to, start_from);
-   int scan_ip = -1;
+   /* Check for a write to either register in the intersection of their live
+    * ranges.
+    */
+   int start_ip = MAX2(dst_start, src_start);
+   int end_ip = MIN2(dst_end, src_end);
 
-   foreach_in_list(fs_inst, scan_inst, instructions) {
-      scan_ip++;
-
-      if (scan_ip < start_ip)
+   foreach_block(block, cfg) {
+      if (block->end_ip < start_ip)
          continue;
 
-      if (scan_inst->is_control_flow())
-         return false;
+      int scan_ip = block->start_ip - 1;
 
-      if (scan_ip <= live_intervals->start[var_to])
-         continue;
+      foreach_inst_in_block(fs_inst, scan_inst, block) {
+         scan_ip++;
 
-      if (scan_ip > live_intervals->end[var_to])
-         break;
+         /* Ignore anything before the intersection of the live ranges */
+         if (scan_ip < start_ip)
+            continue;
 
-      if (scan_inst->dst.equals(inst->dst) ||
-          scan_inst->dst.equals(inst->src[0]))
-         return false;
+         /* Ignore the copying instruction itself */
+         if (scan_inst == inst)
+            continue;
+
+         if (scan_ip > end_ip)
+            return true; /* registers do not interfere */
+
+         if (regions_overlap(scan_inst->dst, scan_inst->size_written,
+                             inst->dst, inst->size_written) ||
+             regions_overlap(scan_inst->dst, scan_inst->size_written,
+                             inst->src[0], inst->size_read(0)))
+            return false; /* registers interfere */
+      }
    }
 
    return true;
@@ -163,14 +158,14 @@ fs_visitor::register_coalesce()
 
    int src_size = 0;
    int channels_remaining = 0;
-   int reg_from = -1, reg_to = -1;
-   int reg_to_offset[MAX_SAMPLER_MESSAGE_SIZE];
-   fs_inst *mov[MAX_SAMPLER_MESSAGE_SIZE];
-   int var_to[MAX_SAMPLER_MESSAGE_SIZE];
-   int var_from[MAX_SAMPLER_MESSAGE_SIZE];
+   int src_reg = -1, dst_reg = -1;
+   int dst_reg_offset[MAX_VGRF_SIZE];
+   fs_inst *mov[MAX_VGRF_SIZE];
+   int dst_var[MAX_VGRF_SIZE];
+   int src_var[MAX_VGRF_SIZE];
 
-   foreach_in_list(fs_inst, inst, &instructions) {
-      if (!is_coalesce_candidate(inst, virtual_grf_sizes))
+   foreach_block_and_inst(block, fs_inst, inst, cfg) {
+      if (!is_coalesce_candidate(this, inst))
          continue;
 
       if (is_nop_mov(inst)) {
@@ -179,32 +174,43 @@ fs_visitor::register_coalesce()
          continue;
       }
 
-      if (reg_from != inst->src[0].reg) {
-         reg_from = inst->src[0].reg;
+      if (src_reg != inst->src[0].nr) {
+         src_reg = inst->src[0].nr;
 
-         src_size = virtual_grf_sizes[inst->src[0].reg];
-         assert(src_size <= MAX_SAMPLER_MESSAGE_SIZE);
+         src_size = alloc.sizes[inst->src[0].nr];
+         assert(src_size <= MAX_VGRF_SIZE);
 
          channels_remaining = src_size;
          memset(mov, 0, sizeof(mov));
 
-         reg_to = inst->dst.reg;
+         dst_reg = inst->dst.nr;
       }
 
-      if (reg_to != inst->dst.reg)
+      if (dst_reg != inst->dst.nr)
          continue;
 
       if (inst->opcode == SHADER_OPCODE_LOAD_PAYLOAD) {
          for (int i = 0; i < src_size; i++) {
-            reg_to_offset[i] = i;
+            dst_reg_offset[i] = i;
          }
          mov[0] = inst;
-         channels_remaining -= inst->sources;
+         channels_remaining -= regs_written(inst);
       } else {
-         const int offset = inst->src[0].reg_offset;
-         reg_to_offset[offset] = inst->dst.reg_offset;
+         const int offset = inst->src[0].offset / REG_SIZE;
+         if (mov[offset]) {
+            /* This is the second time that this offset in the register has
+             * been set.  This means, in particular, that inst->dst was
+             * live before this instruction and that the live ranges of
+             * inst->dst and inst->src[0] overlap and we can't coalesce the
+             * two variables.  Let's ensure that doesn't happen.
+             */
+            channels_remaining = -1;
+            continue;
+         }
+         for (unsigned i = 0; i < MAX2(inst->size_written / REG_SIZE, 1); i++)
+            dst_reg_offset[offset + i] = inst->dst.offset / REG_SIZE + i;
          mov[offset] = inst;
-         channels_remaining--;
+         channels_remaining -= regs_written(inst);
       }
 
       if (channels_remaining)
@@ -212,13 +218,20 @@ fs_visitor::register_coalesce()
 
       bool can_coalesce = true;
       for (int i = 0; i < src_size; i++) {
-         var_to[i] = live_intervals->var_from_vgrf[reg_to] + reg_to_offset[i];
-         var_from[i] = live_intervals->var_from_vgrf[reg_from] + i;
-
-         if (!can_coalesce_vars(live_intervals, &instructions, inst,
-                                var_to[i], var_from[i])) {
+         if (dst_reg_offset[i] != dst_reg_offset[0] + i) {
+            /* Registers are out-of-order. */
             can_coalesce = false;
-            reg_from = -1;
+            src_reg = -1;
+            break;
+         }
+
+         dst_var[i] = live_intervals->var_from_vgrf[dst_reg] + dst_reg_offset[i];
+         src_var[i] = live_intervals->var_from_vgrf[src_reg] + i;
+
+         if (!can_coalesce_vars(live_intervals, cfg, inst,
+                                dst_var[i], src_var[i])) {
+            can_coalesce = false;
+            src_reg = -1;
             break;
          }
       }
@@ -227,7 +240,6 @@ fs_visitor::register_coalesce()
          continue;
 
       progress = true;
-      bool was_load_payload = inst->opcode == SHADER_OPCODE_LOAD_PAYLOAD;
 
       for (int i = 0; i < src_size; i++) {
          if (mov[i]) {
@@ -240,42 +252,39 @@ fs_visitor::register_coalesce()
          }
       }
 
-      foreach_in_list(fs_inst, scan_inst, &instructions) {
-         for (int i = 0; i < src_size; i++) {
-            if (mov[i] || was_load_payload) {
-               if (scan_inst->dst.file == GRF &&
-                   scan_inst->dst.reg == reg_from &&
-                   scan_inst->dst.reg_offset == i) {
-                  scan_inst->dst.reg = reg_to;
-                  scan_inst->dst.reg_offset = reg_to_offset[i];
-               }
-               for (int j = 0; j < scan_inst->sources; j++) {
-                  if (scan_inst->src[j].file == GRF &&
-                      scan_inst->src[j].reg == reg_from &&
-                      scan_inst->src[j].reg_offset == i) {
-                     scan_inst->src[j].reg = reg_to;
-                     scan_inst->src[j].reg_offset = reg_to_offset[i];
-                  }
-               }
+      foreach_block_and_inst(block, fs_inst, scan_inst, cfg) {
+         if (scan_inst->dst.file == VGRF &&
+             scan_inst->dst.nr == src_reg) {
+            scan_inst->dst.nr = dst_reg;
+            scan_inst->dst.offset = scan_inst->dst.offset % REG_SIZE +
+               dst_reg_offset[scan_inst->dst.offset / REG_SIZE] * REG_SIZE;
+         }
+
+         for (int j = 0; j < scan_inst->sources; j++) {
+            if (scan_inst->src[j].file == VGRF &&
+                scan_inst->src[j].nr == src_reg) {
+               scan_inst->src[j].nr = dst_reg;
+               scan_inst->src[j].offset = scan_inst->src[j].offset % REG_SIZE +
+                  dst_reg_offset[scan_inst->src[j].offset / REG_SIZE] * REG_SIZE;
             }
          }
       }
 
       for (int i = 0; i < src_size; i++) {
-         live_intervals->start[var_to[i]] =
-            MIN2(live_intervals->start[var_to[i]],
-                 live_intervals->start[var_from[i]]);
-         live_intervals->end[var_to[i]] =
-            MAX2(live_intervals->end[var_to[i]],
-                 live_intervals->end[var_from[i]]);
+         live_intervals->start[dst_var[i]] =
+            MIN2(live_intervals->start[dst_var[i]],
+                 live_intervals->start[src_var[i]]);
+         live_intervals->end[dst_var[i]] =
+            MAX2(live_intervals->end[dst_var[i]],
+                 live_intervals->end[src_var[i]]);
       }
-      reg_from = -1;
+      src_reg = -1;
    }
 
    if (progress) {
-      foreach_in_list_safe(fs_inst, inst, &instructions) {
+      foreach_block_and_inst_safe (block, backend_instruction, inst, cfg) {
          if (inst->opcode == BRW_OPCODE_NOP) {
-            inst->remove();
+            inst->remove(block);
          }
       }
 

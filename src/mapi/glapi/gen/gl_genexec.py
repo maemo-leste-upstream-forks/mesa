@@ -25,10 +25,12 @@
 # _mesa_initialize_exec_table().  It is responsible for populating all
 # entries in the "exec" dispatch table that aren't dynamic.
 
+import argparse
 import collections
 import license
 import gl_XML
-import sys, getopt
+import sys
+import apiexec
 
 
 exec_flavor_map = {
@@ -54,6 +56,7 @@ header = """/**
 #include "main/blit.h"
 #include "main/bufferobj.h"
 #include "main/arrayobj.h"
+#include "main/bbox.h"
 #include "main/buffers.h"
 #include "main/clear.h"
 #include "main/clip.h"
@@ -64,6 +67,7 @@ header = """/**
 #include "main/convolve.h"
 #include "main/copyimage.h"
 #include "main/depth.h"
+#include "main/debug_output.h"
 #include "main/dlist.h"
 #include "main/drawpix.h"
 #include "main/drawtex.h"
@@ -86,12 +90,14 @@ header = """/**
 #include "main/matrix.h"
 #include "main/multisample.h"
 #include "main/objectlabel.h"
+#include "main/objectpurge.h"
 #include "main/performance_monitor.h"
 #include "main/pipelineobj.h"
 #include "main/pixel.h"
 #include "main/pixelstore.h"
 #include "main/points.h"
 #include "main/polygon.h"
+#include "main/program_resource.h"
 #include "main/querymatrix.h"
 #include "main/queryobj.h"
 #include "main/readpix.h"
@@ -106,7 +112,7 @@ header = """/**
 #include "main/texparam.h"
 #include "main/texstate.h"
 #include "main/texstorage.h"
-#include "main/texturebarrier.h"
+#include "main/barrier.h"
 #include "main/textureview.h"
 #include "main/transformfeedback.h"
 #include "main/mtypes.h"
@@ -174,18 +180,49 @@ class PrintCode(gl_XML.gl_print_base):
                 raise Exception(
                     'Unrecognized exec flavor {0!r}'.format(f.exec_flavor))
             condition_parts = []
-            if f.desktop:
-                if f.deprecated:
+            if f.name in apiexec.functions:
+                ex = apiexec.functions[f.name]
+                unconditional_count = 0
+
+                if ex.compatibility is not None:
                     condition_parts.append('ctx->API == API_OPENGL_COMPAT')
-                else:
-                    condition_parts.append('_mesa_is_desktop_gl(ctx)')
-            if 'es1' in f.api_map:
-                condition_parts.append('ctx->API == API_OPENGLES')
-            if 'es2' in f.api_map:
-                if f.api_map['es2'] == 3:
-                    condition_parts.append('_mesa_is_gles3(ctx)')
-                else:
-                    condition_parts.append('ctx->API == API_OPENGLES2')
+                    unconditional_count += 1
+
+                if ex.core is not None:
+                    condition_parts.append('ctx->API == API_OPENGL_CORE')
+                    unconditional_count += 1
+
+                if ex.es1 is not None:
+                    condition_parts.append('ctx->API == API_OPENGLES')
+                    unconditional_count += 1
+
+                if ex.es2 is not None:
+                    if ex.es2 > 20:
+                        condition_parts.append('(ctx->API == API_OPENGLES2 && ctx->Version >= {0})'.format(ex.es2))
+                    else:
+                        condition_parts.append('ctx->API == API_OPENGLES2')
+                        unconditional_count += 1
+
+                # If the function is unconditionally available in all four
+                # APIs, then it is always available.  Replace the complex
+                # tautology condition with "true" and let GCC do the right
+                # thing.
+                if unconditional_count == 4:
+                    condition_parts = ['true']
+            else:
+                if f.desktop:
+                    if f.deprecated:
+                        condition_parts.append('ctx->API == API_OPENGL_COMPAT')
+                    else:
+                        condition_parts.append('_mesa_is_desktop_gl(ctx)')
+                if 'es1' in f.api_map:
+                    condition_parts.append('ctx->API == API_OPENGLES')
+                if 'es2' in f.api_map:
+                    if f.api_map['es2'] > 2.0:
+                        condition_parts.append('(ctx->API == API_OPENGLES2 && ctx->Version >= {0})'.format(int(f.api_map['es2'] * 10)))
+                    else:
+                        condition_parts.append('ctx->API == API_OPENGLES2')
+
             if not condition_parts:
                 # This function does not exist in any API.
                 continue
@@ -206,24 +243,23 @@ class PrintCode(gl_XML.gl_print_base):
             print '   }'
 
 
-def show_usage():
-    print "Usage: %s [-f input_file_name]" % sys.argv[0]
-    sys.exit(1)
+def _parser():
+    """Parse arguments and return namespace."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-f',
+                        dest='filename',
+                        default='gl_and_es_API.xml',
+                        help='an xml file describing an API')
+    return parser.parse_args()
+
+
+def main():
+    """Main function."""
+    args = _parser()
+    printer = PrintCode()
+    api = gl_XML.parse_GL_API(args.filename)
+    printer.Print(api)
 
 
 if __name__ == '__main__':
-    file_name = "gl_and_es_API.xml"
-
-    try:
-        (args, trail) = getopt.getopt(sys.argv[1:], "m:f:")
-    except Exception,e:
-        show_usage()
-
-    for (arg,val) in args:
-        if arg == "-f":
-            file_name = val
-
-    printer = PrintCode()
-
-    api = gl_XML.parse_GL_API(file_name)
-    printer.Print(api)
+    main()

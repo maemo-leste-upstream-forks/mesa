@@ -40,14 +40,7 @@
 #ifndef DRI_INTERFACE_H
 #define DRI_INTERFACE_H
 
-/* For archs with no drm.h */
-#if defined(__APPLE__) || defined(__CYGWIN__) || defined(__GNU__)
-#ifndef __NOT_HAVE_DRM_H
-#define __NOT_HAVE_DRM_H
-#endif
-#endif
-
-#ifndef __NOT_HAVE_DRM_H
+#ifdef HAVE_LIBDRM
 #include <drm.h>
 #else
 typedef unsigned int drm_context_t;
@@ -85,6 +78,8 @@ typedef struct __DRIdri2ExtensionRec		__DRIdri2Extension;
 typedef struct __DRIdri2LoaderExtensionRec	__DRIdri2LoaderExtension;
 typedef struct __DRI2flushExtensionRec	__DRI2flushExtension;
 typedef struct __DRI2throttleExtensionRec	__DRI2throttleExtension;
+typedef struct __DRI2fenceExtensionRec          __DRI2fenceExtension;
+typedef struct __DRI2interopExtensionRec	__DRI2interopExtension;
 
 
 typedef struct __DRIimageLoaderExtensionRec     __DRIimageLoaderExtension;
@@ -279,6 +274,7 @@ struct __DRItexBufferExtensionRec {
 
 #define __DRI2_FLUSH_DRAWABLE (1 << 0) /* the drawable should be flushed. */
 #define __DRI2_FLUSH_CONTEXT  (1 << 1) /* glFlush should be called */
+#define __DRI2_FLUSH_INVALIDATE_ANCILLARY (1 << 2)
 
 enum __DRI2throttleReason {
    __DRI2_THROTTLE_SWAPBUFFER,
@@ -336,6 +332,90 @@ struct __DRI2throttleExtensionRec {
    void (*throttle)(__DRIcontext *ctx,
 		    __DRIdrawable *drawable,
 		    enum __DRI2throttleReason reason);
+};
+
+
+/**
+ * Extension for fences / synchronization objects.
+ */
+
+#define __DRI2_FENCE "DRI2_Fence"
+#define __DRI2_FENCE_VERSION 1
+
+#define __DRI2_FENCE_TIMEOUT_INFINITE     0xffffffffffffffffllu
+
+#define __DRI2_FENCE_FLAG_FLUSH_COMMANDS  (1 << 0)
+
+struct __DRI2fenceExtensionRec {
+   __DRIextension base;
+
+   /**
+    * Create and insert a fence into the command stream of the context.
+    */
+   void *(*create_fence)(__DRIcontext *ctx);
+
+   /**
+    * Get a fence associated with the OpenCL event object.
+    * This can be NULL, meaning that OpenCL interoperability is not supported.
+    */
+   void *(*get_fence_from_cl_event)(__DRIscreen *screen, intptr_t cl_event);
+
+   /**
+    * Destroy a fence.
+    */
+   void (*destroy_fence)(__DRIscreen *screen, void *fence);
+
+   /**
+    * This function waits and doesn't return until the fence is signalled
+    * or the timeout expires. It returns true if the fence has been signaled.
+    *
+    * \param ctx     the context where commands are flushed
+    * \param fence   the fence
+    * \param flags   a combination of __DRI2_FENCE_FLAG_xxx flags
+    * \param timeout the timeout in ns or __DRI2_FENCE_TIMEOUT_INFINITE
+    */
+   GLboolean (*client_wait_sync)(__DRIcontext *ctx, void *fence,
+                                 unsigned flags, uint64_t timeout);
+
+   /**
+    * This function enqueues a wait command into the command stream of
+    * the context and then returns. When the execution reaches the wait
+    * command, no further execution will be done in the context until
+    * the fence is signaled. This is a no-op if the device doesn't support
+    * parallel execution of contexts.
+    *
+    * \param ctx     the context where the waiting is done
+    * \param fence   the fence
+    * \param flags   a combination of __DRI2_FENCE_FLAG_xxx flags that make
+    *                sense with this function (right now there are none)
+    */
+   void (*server_wait_sync)(__DRIcontext *ctx, void *fence, unsigned flags);
+};
+
+
+/**
+ * Extension for API interop.
+ * See GL/mesa_glinterop.h.
+ */
+
+#define __DRI2_INTEROP "DRI2_Interop"
+#define __DRI2_INTEROP_VERSION 1
+
+struct mesa_glinterop_device_info;
+struct mesa_glinterop_export_in;
+struct mesa_glinterop_export_out;
+
+struct __DRI2interopExtensionRec {
+   __DRIextension base;
+
+   /** Same as MesaGLInterop*QueryDeviceInfo. */
+   int (*query_device_info)(__DRIcontext *ctx,
+                            struct mesa_glinterop_device_info *out);
+
+   /** Same as MesaGLInterop*ExportObject. */
+   int (*export_object)(__DRIcontext *ctx,
+                        struct mesa_glinterop_export_in *in,
+                        struct mesa_glinterop_export_out *out);
 };
 
 /*@}*/
@@ -441,7 +521,7 @@ struct __DRIdamageExtensionRec {
  * SWRast Loader extension.
  */
 #define __DRI_SWRAST_LOADER "DRI_SWRastLoader"
-#define __DRI_SWRAST_LOADER_VERSION 2
+#define __DRI_SWRAST_LOADER_VERSION 3
 struct __DRIswrastLoaderExtensionRec {
     __DRIextension base;
 
@@ -474,6 +554,15 @@ struct __DRIswrastLoaderExtensionRec {
     void (*putImage2)(__DRIdrawable *drawable, int op,
                       int x, int y, int width, int height, int stride,
                       char *data, void *loaderPrivate);
+
+   /**
+     * Put image to drawable
+     *
+     * \since 3
+     */
+   void (*getImage2)(__DRIdrawable *readable,
+		     int x, int y, int width, int height, int stride,
+		     char *data, void *loaderPrivate);
 };
 
 /**
@@ -1005,7 +1094,7 @@ struct __DRIdri2ExtensionRec {
  * extensions.
  */
 #define __DRI_IMAGE "DRI_IMAGE"
-#define __DRI_IMAGE_VERSION 10
+#define __DRI_IMAGE_VERSION 13
 
 /**
  * These formats correspond to the similarly named MESA_FORMAT_*
@@ -1032,20 +1121,35 @@ struct __DRIdri2ExtensionRec {
 #define __DRI_IMAGE_FORMAT_XRGB2101010  0x1009
 #define __DRI_IMAGE_FORMAT_ARGB2101010  0x100a
 #define __DRI_IMAGE_FORMAT_SARGB8       0x100b
+#define __DRI_IMAGE_FORMAT_ARGB1555     0x100c
 
 #define __DRI_IMAGE_USE_SHARE		0x0001
 #define __DRI_IMAGE_USE_SCANOUT		0x0002
 #define __DRI_IMAGE_USE_CURSOR		0x0004 /* Depricated */
 #define __DRI_IMAGE_USE_LINEAR		0x0008
+/* The buffer will only be read by an external process after SwapBuffers,
+ * in contrary to gbm buffers, front buffers and fake front buffers, which
+ * could be read after a flush."
+ */
+#define __DRI_IMAGE_USE_BACKBUFFER      0x0010
 
+
+#define __DRI_IMAGE_TRANSFER_READ            0x1
+#define __DRI_IMAGE_TRANSFER_WRITE           0x2
+#define __DRI_IMAGE_TRANSFER_READ_WRITE      \
+        (__DRI_IMAGE_TRANSFER_READ | __DRI_IMAGE_TRANSFER_WRITE)
 
 /**
- * Four CC formats that matches with WL_DRM_FORMAT_* from wayland_drm.h
- * and GBM_FORMAT_* from gbm.h, used with createImageFromNames.
+ * Four CC formats that matches with WL_DRM_FORMAT_* from wayland_drm.h,
+ * GBM_FORMAT_* from gbm.h, and DRM_FORMAT_* from drm_fourcc.h. Used with
+ * createImageFromNames.
  *
  * \since 5
  */
 
+#define __DRI_IMAGE_FOURCC_R8		0x20203852
+#define __DRI_IMAGE_FOURCC_GR88		0x38385247
+#define __DRI_IMAGE_FOURCC_ARGB1555	0x35315241
 #define __DRI_IMAGE_FOURCC_RGB565	0x36314752
 #define __DRI_IMAGE_FOURCC_ARGB8888	0x34325241
 #define __DRI_IMAGE_FOURCC_XRGB8888	0x34325258
@@ -1061,6 +1165,11 @@ struct __DRIdri2ExtensionRec {
 #define __DRI_IMAGE_FOURCC_NV16		0x3631564e
 #define __DRI_IMAGE_FOURCC_YUYV		0x56595559
 
+#define __DRI_IMAGE_FOURCC_YVU410	0x39555659
+#define __DRI_IMAGE_FOURCC_YVU411	0x31315659
+#define __DRI_IMAGE_FOURCC_YVU420	0x32315659
+#define __DRI_IMAGE_FOURCC_YVU422	0x36315659
+#define __DRI_IMAGE_FOURCC_YVU444	0x34325659
 
 /**
  * Queryable on images created by createImageFromNames.
@@ -1080,6 +1189,8 @@ struct __DRIdri2ExtensionRec {
 #define __DRI_IMAGE_COMPONENTS_Y_U_V	0x3003
 #define __DRI_IMAGE_COMPONENTS_Y_UV	0x3004
 #define __DRI_IMAGE_COMPONENTS_Y_XUXV	0x3005
+#define __DRI_IMAGE_COMPONENTS_R	0x3006
+#define __DRI_IMAGE_COMPONENTS_RG	0x3007
 
 
 /**
@@ -1096,6 +1207,10 @@ struct __DRIdri2ExtensionRec {
 #define __DRI_IMAGE_ATTRIB_FD           0x2007 /* available in versions
                                                 * 7+. Each query will return a
                                                 * new fd. */
+#define __DRI_IMAGE_ATTRIB_FOURCC       0x2008 /* available in versions 11 */
+#define __DRI_IMAGE_ATTRIB_NUM_PLANES   0x2009 /* available in versions 11 */
+
+#define __DRI_IMAGE_ATTRIB_OFFSET 0x200A /* available in versions 13 */
 
 enum __DRIYUVColorSpace {
    __DRI_YUV_COLOR_SPACE_UNDEFINED = 0,
@@ -1117,7 +1232,8 @@ enum __DRIChromaSiting {
 };
 
 /**
- * \name Reasons that __DRIimageExtensionRec::createImageFromTexture might fail
+ * \name Reasons that __DRIimageExtensionRec::createImageFromTexture or
+ * __DRIimageExtensionRec::createImageFromDmaBufs might fail
  */
 /*@{*/
 /** Success! */
@@ -1126,11 +1242,14 @@ enum __DRIChromaSiting {
 /** Memory allocation failure */
 #define __DRI_IMAGE_ERROR_BAD_ALLOC     1
 
-/** Client requested an invalid attribute for a texture object  */
+/** Client requested an invalid attribute */
 #define __DRI_IMAGE_ERROR_BAD_MATCH     2
 
 /** Client requested an invalid texture object */
 #define __DRI_IMAGE_ERROR_BAD_PARAMETER 3
+
+/** Client requested an invalid pitch and/or offset */
+#define __DRI_IMAGE_ERROR_BAD_ACCESS    4
 /*@}*/
 
 /**
@@ -1276,6 +1395,33 @@ struct __DRIimageExtensionRec {
     * \since 10
     */
    int (*getCapabilities)(__DRIscreen *screen);
+
+   /**
+    * Returns a map of the specified region of a __DRIimage for the specified usage.
+    *
+    * flags may include __DRI_IMAGE_TRANSFER_READ, which will populate the
+    * mapping with the current buffer content. If __DRI_IMAGE_TRANSFER_READ
+    * is not included in the flags, the buffer content at map time is
+    * undefined. Users wanting to modify the mapping must include
+    * __DRI_IMAGE_TRANSFER_WRITE; if __DRI_IMAGE_TRANSFER_WRITE is not
+    * included, behaviour when writing the mapping is undefined.
+    *
+    * Returns the byte stride in *stride, and an opaque pointer to data
+    * tracking the mapping in **data, which must be passed to unmapImage().
+    *
+    * \since 12
+    */
+   void *(*mapImage)(__DRIcontext *context, __DRIimage *image,
+                     int x0, int y0, int width, int height,
+                     unsigned int flags, int *stride, void **data);
+
+   /**
+    * Unmap a previously mapped __DRIimage
+    *
+    * \since 12
+    */
+   void (*unmapImage)(__DRIcontext *context, __DRIimage *image, void *data);
+
 };
 
 
@@ -1381,6 +1527,11 @@ typedef struct __DRIDriverVtableExtensionRec {
 #define __DRI2_RENDERER_OPENGL_COMPATIBILITY_PROFILE_VERSION  0x0008
 #define __DRI2_RENDERER_OPENGL_ES_PROFILE_VERSION             0x0009
 #define __DRI2_RENDERER_OPENGL_ES2_PROFILE_VERSION            0x000a
+#define __DRI2_RENDERER_HAS_TEXTURE_3D                        0x000b
+/* Whether there is an sRGB format support for every supported 32-bit UNORM
+ * color format.
+ */
+#define __DRI2_RENDERER_HAS_FRAMEBUFFER_SRGB                  0x000c
 
 typedef struct __DRI2rendererQueryExtensionRec __DRI2rendererQueryExtension;
 struct __DRI2rendererQueryExtensionRec {

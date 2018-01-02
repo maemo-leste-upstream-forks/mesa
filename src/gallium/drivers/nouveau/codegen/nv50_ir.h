@@ -29,8 +29,8 @@
 #include <deque>
 #include <list>
 #include <vector>
-#include <tr1/unordered_set>
 
+#include "codegen/unordered_set.h"
 #include "codegen/nv50_ir_util.h"
 #include "codegen/nv50_ir_graph.h"
 
@@ -57,6 +57,7 @@ enum operation
    OP_MAD,
    OP_FMA,
    OP_SAD, // abs(src0 - src1) + src2
+   OP_SHLADD,
    OP_ABS,
    OP_NEG,
    OP_NOT,
@@ -106,6 +107,7 @@ enum operation
    OP_MEMBAR, // memory barrier (mfence, lfence, sfence)
    OP_VFETCH, // indirection 0 in attribute space, indirection 1 is vertex base
    OP_PFETCH, // fetch base address of vertex src0 (immediate) [+ src1]
+   OP_AFETCH, // fetch base address of shader input (a[%r1+0x10])
    OP_EXPORT,
    OP_LINTERP,
    OP_PINTERP,
@@ -131,6 +133,7 @@ enum operation
    OP_SUBFM,   // surface bitfield manipulation
    OP_SUCLAMP, // clamp surface coordinates
    OP_SUEAU,   // surface effective address
+   OP_SUQ,     // surface query
    OP_MADSP,   // special integer multiply-add
    OP_TEXBAR, // texture dependency barrier
    OP_DFDX,
@@ -159,6 +162,8 @@ enum operation
    OP_VSEL,
    OP_CCTL, // cache control
    OP_SHFL, // warp shuffle
+   OP_VOTE,
+   OP_BUFQ, // buffer query
    OP_LAST
 };
 
@@ -175,6 +180,7 @@ enum operation
 #define NV50_IR_SUBOP_MOV_FINAL    1
 #define NV50_IR_SUBOP_EXTBF_REV    1
 #define NV50_IR_SUBOP_BFIND_SAMT   1
+#define NV50_IR_SUBOP_RCPRSQ_64H   1
 #define NV50_IR_SUBOP_PERMT_F4E    1
 #define NV50_IR_SUBOP_PERMT_B4E    2
 #define NV50_IR_SUBOP_PERMT_RC8    3
@@ -229,6 +235,8 @@ enum operation
 #define NV50_IR_SUBOP_SHFL_UP   1
 #define NV50_IR_SUBOP_SHFL_DOWN 2
 #define NV50_IR_SUBOP_SHFL_BFLY 3
+#define NV50_IR_SUBOP_LOAD_LOCKED    1
+#define NV50_IR_SUBOP_STORE_UNLOCKED 2
 #define NV50_IR_SUBOP_MADSP_SD     0xffff
 // Yes, we could represent those with DataType.
 // Or put the type into operation and have a couple 1000 values in that enum.
@@ -239,6 +247,9 @@ enum operation
 #define NV50_IR_SUBOP_V2(d,a,b)    (((d) << 10) | ((b) << 5) | (a) | 0x4000)
 #define NV50_IR_SUBOP_V4(d,a,b)    (((d) << 10) | ((b) << 5) | (a) | 0x8000)
 #define NV50_IR_SUBOP_Vn(n)        ((n) >> 14)
+#define NV50_IR_SUBOP_VOTE_ALL 0
+#define NV50_IR_SUBOP_VOTE_ANY 1
+#define NV50_IR_SUBOP_VOTE_UNI 2
 
 enum DataType
 {
@@ -323,6 +334,7 @@ enum DataFile
    FILE_MEMORY_CONST,
    FILE_SHADER_INPUT,
    FILE_SHADER_OUTPUT,
+   FILE_MEMORY_BUFFER,
    FILE_MEMORY_GLOBAL,
    FILE_MEMORY_SHARED,
    FILE_MEMORY_LOCAL,
@@ -353,6 +365,67 @@ enum TexTarget
    TEX_TARGET_COUNT
 };
 
+enum ImgFormat
+{
+   FMT_NONE,
+
+   FMT_RGBA32F,
+   FMT_RGBA16F,
+   FMT_RG32F,
+   FMT_RG16F,
+   FMT_R11G11B10F,
+   FMT_R32F,
+   FMT_R16F,
+
+   FMT_RGBA32UI,
+   FMT_RGBA16UI,
+   FMT_RGB10A2UI,
+   FMT_RGBA8UI,
+   FMT_RG32UI,
+   FMT_RG16UI,
+   FMT_RG8UI,
+   FMT_R32UI,
+   FMT_R16UI,
+   FMT_R8UI,
+
+   FMT_RGBA32I,
+   FMT_RGBA16I,
+   FMT_RGBA8I,
+   FMT_RG32I,
+   FMT_RG16I,
+   FMT_RG8I,
+   FMT_R32I,
+   FMT_R16I,
+   FMT_R8I,
+
+   FMT_RGBA16,
+   FMT_RGB10A2,
+   FMT_RGBA8,
+   FMT_RG16,
+   FMT_RG8,
+   FMT_R16,
+   FMT_R8,
+
+   FMT_RGBA16_SNORM,
+   FMT_RGBA8_SNORM,
+   FMT_RG16_SNORM,
+   FMT_RG8_SNORM,
+   FMT_R16_SNORM,
+   FMT_R8_SNORM,
+
+   FMT_BGRA8,
+
+   IMG_FORMAT_COUNT,
+};
+
+enum ImgType {
+   UINT,
+   SINT,
+   UNORM,
+   SNORM,
+   FLOAT,
+};
+
 enum SVSemantic
 {
    SV_POSITION, // WPOS
@@ -371,7 +444,8 @@ enum SVSemantic
    SV_SAMPLE_INDEX,
    SV_SAMPLE_POS,
    SV_SAMPLE_MASK,
-   SV_TESS_FACTOR,
+   SV_TESS_OUTER,
+   SV_TESS_INNER,
    SV_TESS_COORD,
    SV_TID,
    SV_CTAID,
@@ -386,6 +460,11 @@ enum SVSemantic
    SV_SBASE,
    SV_VERTEX_STRIDE,
    SV_INVOCATION_INFO,
+   SV_THREAD_KILL,
+   SV_BASEVERTEX,
+   SV_BASEINSTANCE,
+   SV_DRAWID,
+   SV_WORK_DIM,
    SV_UNDEFINED,
    SV_LAST
 };
@@ -582,10 +661,10 @@ public:
 
    static inline Value *get(Iterator&);
 
-   std::tr1::unordered_set<ValueRef *> uses;
+   unordered_set<ValueRef *> uses;
    std::list<ValueDef *> defs;
-   typedef std::tr1::unordered_set<ValueRef *>::iterator UseIterator;
-   typedef std::tr1::unordered_set<ValueRef *>::const_iterator UseCIterator;
+   typedef unordered_set<ValueRef *>::iterator UseIterator;
+   typedef unordered_set<ValueRef *>::const_iterator UseCIterator;
    typedef std::list<ValueDef *>::iterator DefIterator;
    typedef std::list<ValueDef *>::const_iterator DefCIterator;
 
@@ -756,6 +835,10 @@ public:
    bool isActionEqual(const Instruction *) const;
    bool isResultEqual(const Instruction *) const;
 
+   // check whether the defs interfere with srcs and defs of another instruction
+   bool canCommuteDefDef(const Instruction *) const;
+   bool canCommuteDefSrc(const Instruction *) const;
+
    void print() const;
 
    inline CmpInstruction *asCmp();
@@ -821,8 +904,8 @@ private:
 
 enum TexQuery
 {
-   TXQ_DIMS,
-   TXQ_TYPE,
+   TXQ_DIMS, /* x, y, z, levels */
+   TXQ_TYPE, /* ?, ?, samples, ? */
    TXQ_SAMPLE_POSITION,
    TXQ_FILTER,
    TXQ_LOD,
@@ -885,6 +968,18 @@ public:
    };
 
 public:
+   struct ImgFormatDesc
+   {
+      char name[19];
+      uint8_t components;
+      uint8_t bits[4];
+      ImgType type;
+      bool bgra;
+   };
+
+   static const struct ImgFormatDesc formatTable[IMG_FORMAT_COUNT];
+
+public:
    TexInstruction(Function *, operation);
    virtual ~TexInstruction();
 
@@ -923,6 +1018,7 @@ public:
       int8_t offset[3]; // only used on nv50
 
       enum TexQuery query;
+      const struct ImgFormatDesc *format;
    } tex;
 
    ValueRef dPdx[3];

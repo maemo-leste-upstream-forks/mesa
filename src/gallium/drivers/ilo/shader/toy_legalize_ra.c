@@ -70,7 +70,7 @@ struct linear_scan {
 static void
 linear_scan_free_regs(struct linear_scan *ls, int reg, int count)
 {
-   int i;
+   unsigned i;
 
    for (i = 0; i < count; i++)
       ls->free_regs[ls->num_free_regs++] = reg + count - 1 - i;
@@ -221,7 +221,7 @@ linear_scan_spill(struct linear_scan *ls,
 static void
 linear_scan_spill_range(struct linear_scan *ls, int first, int count)
 {
-   int i;
+   unsigned i;
 
    for (i = 0; i < count; i++) {
       struct linear_scan_live_interval *interval = &ls->intervals[first + i];
@@ -407,7 +407,7 @@ linear_scan_init_live_intervals(struct linear_scan *ls,
          }
       }
 
-      for (i = 0; i < Elements(inst->src); i++) {
+      for (i = 0; i < ARRAY_SIZE(inst->src); i++) {
          if (inst->src[i].file != TOY_FILE_VRF)
             continue;
 
@@ -539,7 +539,7 @@ linear_scan_allocation(struct toy_compiler *tc,
          inst->dst.val32 = reg * TOY_REG_WIDTH + subreg;
       }
 
-      for (i = 0; i < Elements(inst->src); i++) {
+      for (i = 0; i < ARRAY_SIZE(inst->src); i++) {
          const uint32_t val32 = inst->src[i].val32;
          int reg, subreg;
 
@@ -589,7 +589,7 @@ trivial_allocation(struct toy_compiler *tc,
             max_grf = reg;
       }
 
-      for (i = 0; i < Elements(inst->src); i++) {
+      for (i = 0; i < ARRAY_SIZE(inst->src); i++) {
          const uint32_t val32 = inst->src[i].val32;
          int reg, subreg;
 

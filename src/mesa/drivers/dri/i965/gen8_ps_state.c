@@ -25,57 +25,83 @@
 #include "program/program.h"
 #include "brw_state.h"
 #include "brw_defines.h"
+#include "brw_wm.h"
 #include "intel_batchbuffer.h"
 
-static void
-upload_ps_extra(struct brw_context *brw)
+void
+gen8_upload_ps_extra(struct brw_context *brw,
+                     const struct brw_wm_prog_data *prog_data)
 {
-   struct gl_context *ctx = &brw->ctx;
-   /* BRW_NEW_FRAGMENT_PROGRAM */
-   const struct brw_fragment_program *fp =
-      brw_fragment_program_const(brw->fragment_program);
    uint32_t dw1 = 0;
 
    dw1 |= GEN8_PSX_PIXEL_SHADER_VALID;
+   dw1 |= prog_data->computed_depth_mode << GEN8_PSX_COMPUTED_DEPTH_MODE_SHIFT;
 
-   if (fp->program.UsesKill)
+   if (prog_data->uses_kill)
       dw1 |= GEN8_PSX_KILL_ENABLE;
 
-   /* BRW_NEW_FRAGMENT_PROGRAM */
-   if (brw->wm.prog_data->num_varying_inputs != 0)
+   if (prog_data->num_varying_inputs != 0)
       dw1 |= GEN8_PSX_ATTRIBUTE_ENABLE;
 
-   if (fp->program.Base.OutputsWritten & BITFIELD64_BIT(FRAG_RESULT_DEPTH)) {
-      switch (fp->program.FragDepthLayout) {
-         case FRAG_DEPTH_LAYOUT_NONE:
-         case FRAG_DEPTH_LAYOUT_ANY:
-            dw1 |= GEN8_PSX_PSCDEPTH_ON;
-            break;
-         case FRAG_DEPTH_LAYOUT_GREATER:
-            dw1 |= GEN8_PSX_PSCDEPTH_ON_GE;
-            break;
-         case FRAG_DEPTH_LAYOUT_LESS:
-            dw1 |= GEN8_PSX_PSCDEPTH_ON_LE;
-            break;
-         case FRAG_DEPTH_LAYOUT_UNCHANGED:
-            break;
-      }
-   }
+   if (prog_data->uses_src_depth)
+      dw1 |= GEN8_PSX_USES_SOURCE_DEPTH;
 
-   if (fp->program.Base.InputsRead & VARYING_BIT_POS)
-      dw1 |= GEN8_PSX_USES_SOURCE_DEPTH | GEN8_PSX_USES_SOURCE_W;
+   if (prog_data->uses_src_w)
+      dw1 |= GEN8_PSX_USES_SOURCE_W;
 
-   /* BRW_NEW_NUM_SAMPLES | _NEW_MULTISAMPLE */
-   bool multisampled_fbo = brw->num_samples > 1;
-   if (multisampled_fbo &&
-       _mesa_get_min_invocations_per_fragment(ctx, &fp->program, false) > 1)
+   if (prog_data->persample_dispatch)
       dw1 |= GEN8_PSX_SHADER_IS_PER_SAMPLE;
 
-   if (fp->program.Base.SystemValuesRead & SYSTEM_BIT_SAMPLE_MASK_IN)
-      dw1 |= GEN8_PSX_SHADER_USES_INPUT_COVERAGE_MASK;
+   if (prog_data->uses_sample_mask) {
+      if (brw->gen >= 9)
+         dw1 |= BRW_PSICMS_INNER << GEN9_PSX_SHADER_NORMAL_COVERAGE_MASK_SHIFT;
+      else
+         dw1 |= GEN8_PSX_SHADER_USES_INPUT_COVERAGE_MASK;
+   }
 
-   if (brw->wm.prog_data->uses_omask)
+   if (prog_data->uses_omask)
       dw1 |= GEN8_PSX_OMASK_TO_RENDER_TARGET;
+
+   if (brw->gen >= 9 && prog_data->pulls_bary)
+      dw1 |= GEN9_PSX_SHADER_PULLS_BARY;
+
+   /* The stricter cross-primitive coherency guarantees that the hardware
+    * gives us with the "Accesses UAV" bit set for at least one shader stage
+    * and the "UAV coherency required" bit set on the 3DPRIMITIVE command are
+    * redundant within the current image, atomic counter and SSBO GL APIs,
+    * which all have very loose ordering and coherency requirements and
+    * generally rely on the application to insert explicit barriers when a
+    * shader invocation is expected to see the memory writes performed by the
+    * invocations of some previous primitive.  Regardless of the value of "UAV
+    * coherency required", the "Accesses UAV" bits will implicitly cause an in
+    * most cases useless DC flush when the lowermost stage with the bit set
+    * finishes execution.
+    *
+    * It would be nice to disable it, but in some cases we can't because on
+    * Gen8+ it also has an influence on rasterization via the PS UAV-only
+    * signal (which could be set independently from the coherency mechanism in
+    * the 3DSTATE_WM command on Gen7), and because in some cases it will
+    * determine whether the hardware skips execution of the fragment shader or
+    * not via the ThreadDispatchEnable signal.  However if we know that
+    * GEN8_PS_BLEND_HAS_WRITEABLE_RT is going to be set and
+    * GEN8_PSX_PIXEL_SHADER_NO_RT_WRITE is not set it shouldn't make any
+    * difference so we may just disable it here.
+    *
+    * Gen8 hardware tries to compute ThreadDispatchEnable for us but doesn't
+    * take into account KillPixels when no depth or stencil writes are enabled.
+    * In order for occlusion queries to work correctly with no attachments, we
+    * need to force-enable here.
+    *
+    * BRW_NEW_FS_PROG_DATA | BRW_NEW_FRAGMENT_PROGRAM | _NEW_BUFFERS | _NEW_COLOR
+    */
+   if ((prog_data->has_side_effects || prog_data->uses_kill) &&
+       !brw_color_buffer_write_enabled(brw))
+      dw1 |= GEN8_PSX_SHADER_HAS_UAV;
+
+   if (prog_data->computed_stencil) {
+      assert(brw->gen >= 9);
+      dw1 |= GEN9_PSX_SHADER_COMPUTES_STENCIL;
+   }
 
    BEGIN_BATCH(2);
    OUT_BATCH(_3DSTATE_PS_EXTRA << 16 | (2 - 2));
@@ -83,11 +109,20 @@ upload_ps_extra(struct brw_context *brw)
    ADVANCE_BATCH();
 }
 
+static void
+upload_ps_extra(struct brw_context *brw)
+{
+   /* BRW_NEW_FS_PROG_DATA */
+   gen8_upload_ps_extra(brw, brw_wm_prog_data(brw->wm.base.prog_data));
+}
+
 const struct brw_tracked_state gen8_ps_extra = {
    .dirty = {
-      .mesa  = _NEW_MULTISAMPLE,
-      .brw   = BRW_NEW_CONTEXT | BRW_NEW_FRAGMENT_PROGRAM | BRW_NEW_NUM_SAMPLES,
-      .cache = 0,
+      .mesa  = _NEW_BUFFERS | _NEW_COLOR,
+      .brw   = BRW_NEW_BLORP |
+               BRW_NEW_CONTEXT |
+               BRW_NEW_FRAGMENT_PROGRAM |
+               BRW_NEW_FS_PROG_DATA,
    },
    .emit = upload_ps_extra,
 };
@@ -97,6 +132,10 @@ upload_wm_state(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
    uint32_t dw1 = 0;
+
+   /* BRW_NEW_FS_PROG_DATA */
+   const struct brw_wm_prog_data *wm_prog_data =
+      brw_wm_prog_data(brw->wm.base.prog_data);
 
    dw1 |= GEN7_WM_STATISTICS_ENABLE;
    dw1 |= GEN7_WM_LINE_AA_WIDTH_1_0;
@@ -111,9 +150,14 @@ upload_wm_state(struct brw_context *brw)
    if (ctx->Polygon.StippleFlag)
       dw1 |= GEN7_WM_POLYGON_STIPPLE_ENABLE;
 
-   /* CACHE_NEW_WM_PROG */
-   dw1 |= brw->wm.prog_data->barycentric_interp_modes <<
+   dw1 |= wm_prog_data->barycentric_interp_modes <<
       GEN7_WM_BARYCENTRIC_INTERPOLATION_MODE_SHIFT;
+
+   /* BRW_NEW_FS_PROG_DATA */
+   if (wm_prog_data->early_fragment_tests)
+      dw1 |= GEN7_WM_EARLY_DS_CONTROL_PREPS;
+   else if (wm_prog_data->has_side_effects)
+      dw1 |= GEN7_WM_EARLY_DS_CONTROL_PSEXEC;
 
    BEGIN_BATCH(2);
    OUT_BATCH(_3DSTATE_WM << 16 | (2 - 2));
@@ -123,17 +167,21 @@ upload_wm_state(struct brw_context *brw)
 
 const struct brw_tracked_state gen8_wm_state = {
    .dirty = {
-      .mesa  = _NEW_LINE | _NEW_POLYGON,
-      .brw   = BRW_NEW_CONTEXT,
-      .cache = CACHE_NEW_WM_PROG,
+      .mesa  = _NEW_LINE |
+               _NEW_POLYGON,
+      .brw   = BRW_NEW_BLORP |
+               BRW_NEW_CONTEXT |
+               BRW_NEW_FS_PROG_DATA,
    },
    .emit = upload_wm_state,
 };
 
-static void
-upload_ps_state(struct brw_context *brw)
+void
+gen8_upload_ps_state(struct brw_context *brw,
+                     const struct brw_stage_state *stage_state,
+                     const struct brw_wm_prog_data *prog_data,
+                     uint32_t fast_clear_op)
 {
-   struct gl_context *ctx = &brw->ctx;
    uint32_t dw3 = 0, dw6 = 0, dw7 = 0, ksp0, ksp2 = 0;
 
    /* Initialize the execution mask with VMask.  Otherwise, derivatives are
@@ -142,29 +190,29 @@ upload_ps_state(struct brw_context *brw)
     */
    dw3 |= GEN7_PS_VECTOR_MASK_ENABLE;
 
-   dw3 |=
-      (ALIGN(brw->wm.base.sampler_count, 4) / 4) << GEN7_PS_SAMPLER_COUNT_SHIFT;
+   const unsigned sampler_count =
+      DIV_ROUND_UP(CLAMP(stage_state->sampler_count, 0, 16), 4);
+   dw3 |= SET_FIELD(sampler_count, GEN7_PS_SAMPLER_COUNT);
 
-   /* CACHE_NEW_WM_PROG */
+   /* BRW_NEW_FS_PROG_DATA */
    dw3 |=
-      ((brw->wm.prog_data->base.binding_table.size_bytes / 4) <<
+      ((prog_data->base.binding_table.size_bytes / 4) <<
        GEN7_PS_BINDING_TABLE_ENTRY_COUNT_SHIFT);
 
-   /* Use ALT floating point mode for ARB fragment programs, because they
-    * require 0^0 == 1.  Even though _CurrentFragmentProgram is used for
-    * rendering, CurrentFragmentProgram is used for this check to
-    * differentiate between the GLSL and non-GLSL cases.
-    */
-   if (ctx->Shader.CurrentProgram[MESA_SHADER_FRAGMENT] == NULL)
+   if (prog_data->base.use_alt_mode)
       dw3 |= GEN7_PS_FLOATING_POINT_MODE_ALT;
 
    /* 3DSTATE_PS expects the number of threads per PSD, which is always 64;
     * it implicitly scales for different GT levels (which have some # of PSDs).
+    *
+    * In Gen8 the format is U8-2 whereas in Gen9 it is U8-1.
     */
-   dw6 |= (64 - 2) << HSW_PS_MAX_THREADS_SHIFT;
+   if (brw->gen >= 9)
+      dw6 |= (64 - 1) << HSW_PS_MAX_THREADS_SHIFT;
+   else
+      dw6 |= (64 - 2) << HSW_PS_MAX_THREADS_SHIFT;
 
-   /* CACHE_NEW_WM_PROG */
-   if (brw->wm.prog_data->base.nr_params > 0)
+   if (prog_data->base.nr_params > 0)
       dw6 |= GEN7_PS_PUSH_CONSTANT_ENABLE;
 
    /* From the documentation for this packet:
@@ -180,55 +228,36 @@ upload_ps_state(struct brw_context *brw)
     * We only require XY sample offsets. So, this recommendation doesn't
     * look useful at the moment. We might need this in future.
     */
-   if (brw->wm.prog_data->uses_pos_offset)
+   if (prog_data->uses_pos_offset)
       dw6 |= GEN7_PS_POSOFFSET_SAMPLE;
    else
       dw6 |= GEN7_PS_POSOFFSET_NONE;
 
-   dw6 |= brw->wm.fast_clear_op;
+   dw6 |= fast_clear_op;
 
-   /* _NEW_MULTISAMPLE
-    * In case of non 1x per sample shading, only one of SIMD8 and SIMD16
-    * should be enabled. We do 'SIMD16 only' dispatch if a SIMD16 shader
-    * is successfully compiled. In majority of the cases that bring us
-    * better performance than 'SIMD8 only' dispatch.
-    */
-   int min_invocations_per_fragment =
-      _mesa_get_min_invocations_per_fragment(ctx, brw->fragment_program, false);
-   assert(min_invocations_per_fragment >= 1);
-
-   if (brw->wm.prog_data->prog_offset_16 || brw->wm.prog_data->no_8) {
-      dw6 |= GEN7_PS_16_DISPATCH_ENABLE;
-      if (!brw->wm.prog_data->no_8 && min_invocations_per_fragment == 1) {
-         dw6 |= GEN7_PS_8_DISPATCH_ENABLE;
-         dw7 |= (brw->wm.prog_data->base.dispatch_grf_start_reg <<
-                 GEN7_PS_DISPATCH_START_GRF_SHIFT_0);
-         dw7 |= (brw->wm.prog_data->dispatch_grf_start_reg_16 <<
-                 GEN7_PS_DISPATCH_START_GRF_SHIFT_2);
-         ksp0 = brw->wm.base.prog_offset;
-         ksp2 = brw->wm.base.prog_offset + brw->wm.prog_data->prog_offset_16;
-      } else {
-         dw7 |= (brw->wm.prog_data->dispatch_grf_start_reg_16 <<
-                 GEN7_PS_DISPATCH_START_GRF_SHIFT_0);
-
-         ksp0 = brw->wm.base.prog_offset + brw->wm.prog_data->prog_offset_16;
-      }
-   } else {
+   if (prog_data->dispatch_8)
       dw6 |= GEN7_PS_8_DISPATCH_ENABLE;
-      dw7 |= (brw->wm.prog_data->base.dispatch_grf_start_reg <<
-              GEN7_PS_DISPATCH_START_GRF_SHIFT_0);
-      ksp0 = brw->wm.base.prog_offset;
-   }
+
+   if (prog_data->dispatch_16)
+      dw6 |= GEN7_PS_16_DISPATCH_ENABLE;
+
+   dw7 |= prog_data->base.dispatch_grf_start_reg <<
+          GEN7_PS_DISPATCH_START_GRF_SHIFT_0;
+   dw7 |= prog_data->dispatch_grf_start_reg_2 <<
+          GEN7_PS_DISPATCH_START_GRF_SHIFT_2;
+
+   ksp0 = stage_state->prog_offset;
+   ksp2 = stage_state->prog_offset + prog_data->prog_offset_2;
 
    BEGIN_BATCH(12);
    OUT_BATCH(_3DSTATE_PS << 16 | (12 - 2));
    OUT_BATCH(ksp0);
    OUT_BATCH(0);
    OUT_BATCH(dw3);
-   if (brw->wm.prog_data->total_scratch) {
-      OUT_RELOC64(brw->wm.base.scratch_bo,
+   if (prog_data->base.total_scratch) {
+      OUT_RELOC64(stage_state->scratch_bo,
                   I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER,
-                  ffs(brw->wm.prog_data->total_scratch) - 11);
+                  ffs(stage_state->per_thread_scratch) - 11);
    } else {
       OUT_BATCH(0);
       OUT_BATCH(0);
@@ -242,12 +271,21 @@ upload_ps_state(struct brw_context *brw)
    ADVANCE_BATCH();
 }
 
+static void
+upload_ps_state(struct brw_context *brw)
+{
+   /* BRW_NEW_FS_PROG_DATA */
+   const struct brw_wm_prog_data *prog_data =
+      brw_wm_prog_data(brw->wm.base.prog_data);
+   gen8_upload_ps_state(brw, &brw->wm.base, prog_data, brw->wm.fast_clear_op);
+}
+
 const struct brw_tracked_state gen8_ps_state = {
    .dirty = {
       .mesa  = _NEW_MULTISAMPLE,
-      .brw   = BRW_NEW_FRAGMENT_PROGRAM |
-               BRW_NEW_BATCH,
-      .cache = CACHE_NEW_WM_PROG
+      .brw   = BRW_NEW_BATCH |
+               BRW_NEW_BLORP |
+               BRW_NEW_FS_PROG_DATA,
    },
    .emit = upload_ps_state,
 };

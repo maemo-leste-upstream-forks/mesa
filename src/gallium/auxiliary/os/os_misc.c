@@ -47,7 +47,7 @@
 #endif
 
 
-#if defined(PIPE_OS_LINUX) || defined(PIPE_OS_CYGWIN)
+#if defined(PIPE_OS_LINUX) || defined(PIPE_OS_CYGWIN) || defined(PIPE_OS_SOLARIS)
 #  include <unistd.h>
 #elif defined(PIPE_OS_APPLE) || defined(PIPE_OS_BSD)
 #  include <sys/sysctl.h>
@@ -69,10 +69,21 @@ os_log_message(const char *message)
    static FILE *fout = NULL;
 
    if (!fout) {
+#ifdef DEBUG
       /* one-time init */
       const char *filename = os_get_option("GALLIUM_LOG_FILE");
-      if (filename)
-         fout = fopen(filename, "w");
+      if (filename) {
+         const char *mode = "w";
+         if (filename[0] == '+') {
+            /* If the filename is prefixed with '+' then open the file for
+             * appending instead of normal writing.
+             */
+            mode = "a";
+            filename++; /* skip the '+' */
+         }
+         fout = fopen(filename, mode);
+      }
+#endif
       if (!fout)
          fout = stderr;
    }
@@ -96,11 +107,13 @@ os_log_message(const char *message)
 }
 
 
+#if !defined(PIPE_SUBSYSTEM_EMBEDDED)
 const char *
 os_get_option(const char *name)
 {
    return getenv(name);
 }
+#endif /* !PIPE_SUBSYSTEM_EMBEDDED */
 
 
 /**
@@ -111,14 +124,17 @@ os_get_option(const char *name)
 bool
 os_get_total_physical_memory(uint64_t *size)
 {
-#if defined(PIPE_OS_LINUX) || defined(PIPE_OS_CYGWIN)
+#if defined(PIPE_OS_LINUX) || defined(PIPE_OS_CYGWIN) || defined(PIPE_OS_SOLARIS)
    const long phys_pages = sysconf(_SC_PHYS_PAGES);
    const long page_size = sysconf(_SC_PAGE_SIZE);
 
-   *size = phys_pages * page_size;
-   return (phys_pages > 0 && page_size > 0);
+   if (phys_pages <= 0 || page_size <= 0)
+      return false;
+
+   *size = (uint64_t)phys_pages * (uint64_t)page_size;
+   return true;
 #elif defined(PIPE_OS_APPLE) || defined(PIPE_OS_BSD)
-   size_t len = sizeof(size);
+   size_t len = sizeof(*size);
    int mib[2];
 
    mib[0] = CTL_HW;
@@ -128,18 +144,23 @@ os_get_total_physical_memory(uint64_t *size)
    mib[1] = HW_PHYSMEM64;
 #elif defined(PIPE_OS_FREEBSD)
    mib[1] = HW_REALMEM;
+#elif defined(PIPE_OS_DRAGONFLY)
+   mib[1] = HW_PHYSMEM;
 #else
 #error Unsupported *BSD
 #endif
 
-   return (sysctl(mib, 2, &size, &len, NULL, 0) == 0);
+   return (sysctl(mib, 2, size, &len, NULL, 0) == 0);
 #elif defined(PIPE_OS_HAIKU)
    system_info info;
    status_t ret;
 
    ret = get_system_info(&info);
-   *size = info.max_pages * B_PAGE_SIZE;
-   return (ret == B_OK);
+   if (ret != B_OK || info.max_pages <= 0)
+      return false;
+
+   *size = (uint64_t)info.max_pages * (uint64_t)B_PAGE_SIZE;
+   return true;
 #elif defined(PIPE_OS_WINDOWS)
    MEMORYSTATUSEX status;
    BOOL ret;

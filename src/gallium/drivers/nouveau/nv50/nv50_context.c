@@ -23,10 +23,6 @@
 #include "pipe/p_defines.h"
 #include "util/u_framebuffer.h"
 
-#ifdef NV50_WITH_DRAW_MODULE
-#include "draw/draw_context.h"
-#endif
-
 #include "nv50/nv50_context.h"
 #include "nv50/nv50_screen.h"
 #include "nv50/nv50_resource.h"
@@ -68,12 +64,12 @@ nv50_memory_barrier(struct pipe_context *pipe, unsigned flags)
          if (!nv50->vtxbuf[i].buffer)
             continue;
          if (nv50->vtxbuf[i].buffer->flags & PIPE_RESOURCE_FLAG_MAP_PERSISTENT)
-            nv50->base.vbo_dirty = TRUE;
+            nv50->base.vbo_dirty = true;
       }
 
       if (nv50->idxbuf.buffer &&
           nv50->idxbuf.buffer->flags & PIPE_RESOURCE_FLAG_MAP_PERSISTENT)
-         nv50->base.vbo_dirty = TRUE;
+         nv50->base.vbo_dirty = true;
 
       for (s = 0; s < 3 && !nv50->cb_dirty; ++s) {
          uint32_t valid = nv50->constbuf_valid[s];
@@ -91,9 +87,33 @@ nv50_memory_barrier(struct pipe_context *pipe, unsigned flags)
                continue;
 
             if (res->flags & PIPE_RESOURCE_FLAG_MAP_PERSISTENT)
-               nv50->cb_dirty = TRUE;
+               nv50->cb_dirty = true;
          }
       }
+   }
+}
+
+static void
+nv50_emit_string_marker(struct pipe_context *pipe, const char *str, int len)
+{
+   struct nouveau_pushbuf *push = nv50_context(pipe)->base.pushbuf;
+   int string_words = len / 4;
+   int data_words;
+
+   if (len <= 0)
+      return;
+   string_words = MIN2(string_words, NV04_PFIFO_MAX_PACKET_LEN);
+   if (string_words == NV04_PFIFO_MAX_PACKET_LEN)
+      data_words = string_words;
+   else
+      data_words = string_words + !!(len & 3);
+   BEGIN_NI04(push, SUBC_3D(NV04_GRAPH_NOP), data_words);
+   if (string_words)
+      PUSH_DATAp(push, str, string_words);
+   if (string_words != data_words) {
+      int data = 0;
+      memcpy(&data, &str[string_words * 4], len & 3);
+      PUSH_DATA (push, data);
    }
 }
 
@@ -104,9 +124,9 @@ nv50_default_kick_notify(struct nouveau_pushbuf *push)
 
    if (screen) {
       nouveau_fence_next(&screen->base);
-      nouveau_fence_update(&screen->base, TRUE);
+      nouveau_fence_update(&screen->base, true);
       if (screen->cur_ctx)
-         screen->cur_ctx->state.flushed = TRUE;
+         screen->cur_ctx->state.flushed = true;
    }
 }
 
@@ -117,6 +137,7 @@ nv50_context_unreference_resources(struct nv50_context *nv50)
 
    nouveau_bufctx_del(&nv50->bufctx_3d);
    nouveau_bufctx_del(&nv50->bufctx);
+   nouveau_bufctx_del(&nv50->bufctx_cp);
 
    util_unreference_framebuffer_state(&nv50->framebuffer);
 
@@ -135,6 +156,14 @@ nv50_context_unreference_resources(struct nv50_context *nv50)
          if (!nv50->constbuf[s][i].user)
             pipe_resource_reference(&nv50->constbuf[s][i].u.buf, NULL);
    }
+
+   for (i = 0; i < nv50->global_residents.size / sizeof(struct pipe_resource *);
+        ++i) {
+      struct pipe_resource **res = util_dynarray_element(
+         &nv50->global_residents, struct pipe_resource *, i);
+      pipe_resource_reference(res, NULL);
+   }
+   util_dynarray_fini(&nv50->global_residents);
 }
 
 static void
@@ -142,16 +171,15 @@ nv50_destroy(struct pipe_context *pipe)
 {
    struct nv50_context *nv50 = nv50_context(pipe);
 
-   if (nv50_context_screen(nv50)->cur_ctx == nv50)
-      nv50_context_screen(nv50)->cur_ctx = NULL;
+   if (nv50->screen->cur_ctx == nv50) {
+      nv50->screen->cur_ctx = NULL;
+      /* Save off the state in case another context gets created */
+      nv50->screen->save_state = nv50->state;
+   }
    nouveau_pushbuf_bufctx(nv50->base.pushbuf, NULL);
    nouveau_pushbuf_kick(nv50->base.pushbuf, nv50->base.pushbuf->channel);
 
    nv50_context_unreference_resources(nv50);
-
-#ifdef NV50_WITH_DRAW_MODULE
-   draw_destroy(nv50->draw);
-#endif
 
    FREE(nv50->blit);
 
@@ -164,71 +192,77 @@ nv50_invalidate_resource_storage(struct nouveau_context *ctx,
                                  int ref)
 {
    struct nv50_context *nv50 = nv50_context(&ctx->pipe);
+   unsigned bind = res->bind ? res->bind : PIPE_BIND_VERTEX_BUFFER;
    unsigned s, i;
 
-   if (res->bind & PIPE_BIND_RENDER_TARGET) {
+   if (bind & PIPE_BIND_RENDER_TARGET) {
       assert(nv50->framebuffer.nr_cbufs <= PIPE_MAX_COLOR_BUFS);
       for (i = 0; i < nv50->framebuffer.nr_cbufs; ++i) {
          if (nv50->framebuffer.cbufs[i] &&
              nv50->framebuffer.cbufs[i]->texture == res) {
-            nv50->dirty |= NV50_NEW_FRAMEBUFFER;
-            nouveau_bufctx_reset(nv50->bufctx_3d, NV50_BIND_FB);
+            nv50->dirty_3d |= NV50_NEW_3D_FRAMEBUFFER;
+            nouveau_bufctx_reset(nv50->bufctx_3d, NV50_BIND_3D_FB);
             if (!--ref)
                return ref;
          }
       }
    }
-   if (res->bind & PIPE_BIND_DEPTH_STENCIL) {
+   if (bind & PIPE_BIND_DEPTH_STENCIL) {
       if (nv50->framebuffer.zsbuf &&
           nv50->framebuffer.zsbuf->texture == res) {
-         nv50->dirty |= NV50_NEW_FRAMEBUFFER;
-         nouveau_bufctx_reset(nv50->bufctx_3d, NV50_BIND_FB);
+         nv50->dirty_3d |= NV50_NEW_3D_FRAMEBUFFER;
+         nouveau_bufctx_reset(nv50->bufctx_3d, NV50_BIND_3D_FB);
          if (!--ref)
             return ref;
       }
    }
 
-   if (res->bind & PIPE_BIND_VERTEX_BUFFER) {
+   if (bind & (PIPE_BIND_VERTEX_BUFFER |
+               PIPE_BIND_INDEX_BUFFER |
+               PIPE_BIND_CONSTANT_BUFFER |
+               PIPE_BIND_STREAM_OUTPUT |
+               PIPE_BIND_SAMPLER_VIEW)) {
+
       assert(nv50->num_vtxbufs <= PIPE_MAX_ATTRIBS);
       for (i = 0; i < nv50->num_vtxbufs; ++i) {
          if (nv50->vtxbuf[i].buffer == res) {
-            nv50->dirty |= NV50_NEW_ARRAYS;
-            nouveau_bufctx_reset(nv50->bufctx_3d, NV50_BIND_VERTEX);
+            nv50->dirty_3d |= NV50_NEW_3D_ARRAYS;
+            nouveau_bufctx_reset(nv50->bufctx_3d, NV50_BIND_3D_VERTEX);
             if (!--ref)
                return ref;
          }
       }
-   }
-   if (res->bind & PIPE_BIND_INDEX_BUFFER) {
-      if (nv50->idxbuf.buffer == res)
+
+      if (nv50->idxbuf.buffer == res) {
+         /* Just rebind to the bufctx as there is no separate dirty bit */
+         nouveau_bufctx_reset(nv50->bufctx_3d, NV50_BIND_3D_INDEX);
+         BCTX_REFN(nv50->bufctx_3d, 3D_INDEX, nv04_resource(res), RD);
          if (!--ref)
             return ref;
-   }
+      }
 
-   if (res->bind & PIPE_BIND_SAMPLER_VIEW) {
       for (s = 0; s < 3; ++s) {
       assert(nv50->num_textures[s] <= PIPE_MAX_SAMPLERS);
       for (i = 0; i < nv50->num_textures[s]; ++i) {
          if (nv50->textures[s][i] &&
              nv50->textures[s][i]->texture == res) {
-            nv50->dirty |= NV50_NEW_TEXTURES;
-            nouveau_bufctx_reset(nv50->bufctx_3d, NV50_BIND_TEXTURES);
+            nv50->dirty_3d |= NV50_NEW_3D_TEXTURES;
+            nouveau_bufctx_reset(nv50->bufctx_3d, NV50_BIND_3D_TEXTURES);
             if (!--ref)
                return ref;
          }
       }
       }
-   }
 
-   if (res->bind & PIPE_BIND_CONSTANT_BUFFER) {
       for (s = 0; s < 3; ++s) {
-      assert(nv50->num_vtxbufs <= NV50_MAX_PIPE_CONSTBUFS);
-      for (i = 0; i < nv50->num_vtxbufs; ++i) {
+      for (i = 0; i < NV50_MAX_PIPE_CONSTBUFS; ++i) {
+         if (!(nv50->constbuf_valid[s] & (1 << i)))
+            continue;
          if (!nv50->constbuf[s][i].user &&
              nv50->constbuf[s][i].u.buf == res) {
-            nv50->dirty |= NV50_NEW_CONSTBUF;
+            nv50->dirty_3d |= NV50_NEW_3D_CONSTBUF;
             nv50->constbuf_dirty[s] |= 1 << i;
-            nouveau_bufctx_reset(nv50->bufctx_3d, NV50_BIND_CB(s, i));
+            nouveau_bufctx_reset(nv50->bufctx_3d, NV50_BIND_3D_CB(s, i));
             if (!--ref)
                return ref;
          }
@@ -244,7 +278,7 @@ nv50_context_get_sample_position(struct pipe_context *, unsigned, unsigned,
                                  float *);
 
 struct pipe_context *
-nv50_create(struct pipe_screen *pscreen, void *priv)
+nv50_create(struct pipe_screen *pscreen, void *priv, unsigned ctxflags)
 {
    struct nv50_screen *screen = nv50_screen(pscreen);
    struct nv50_context *nv50;
@@ -263,24 +297,20 @@ nv50_create(struct pipe_screen *pscreen, void *priv)
    nv50->base.pushbuf = screen->base.pushbuf;
    nv50->base.client = screen->base.client;
 
-   ret = nouveau_bufctx_new(screen->base.client, NV50_BIND_COUNT,
-                            &nv50->bufctx_3d);
+   ret = nouveau_bufctx_new(screen->base.client, 2, &nv50->bufctx);
    if (!ret)
-      ret = nouveau_bufctx_new(screen->base.client, 2, &nv50->bufctx);
+      ret = nouveau_bufctx_new(screen->base.client, NV50_BIND_3D_COUNT,
+                               &nv50->bufctx_3d);
+   if (!ret)
+      ret = nouveau_bufctx_new(screen->base.client, NV50_BIND_CP_COUNT,
+                               &nv50->bufctx_cp);
    if (ret)
       goto out_err;
 
    nv50->base.screen    = &screen->base;
    nv50->base.copy_data = nv50_m2mf_copy_linear;
    nv50->base.push_data = nv50_sifc_linear_u8;
-   /* FIXME: Make it possible to use this again. The problem is that there is
-    * some clever logic in the card that allows for multiple renders to happen
-    * when there are only constbuf changes. However that relies on the
-    * constbuf updates happening to the right constbuf slots. Currently
-    * implementation just makes it go through a separate slot which doesn't
-    * properly update the right constbuf data.
    nv50->base.push_cb   = nv50_cb_push;
-    */
 
    nv50->screen = screen;
    pipe->screen = pscreen;
@@ -290,18 +320,25 @@ nv50_create(struct pipe_screen *pscreen, void *priv)
 
    pipe->draw_vbo = nv50_draw_vbo;
    pipe->clear = nv50_clear;
+   pipe->launch_grid = nv50_launch_grid;
 
    pipe->flush = nv50_flush;
    pipe->texture_barrier = nv50_texture_barrier;
    pipe->memory_barrier = nv50_memory_barrier;
    pipe->get_sample_position = nv50_context_get_sample_position;
+   pipe->emit_string_marker = nv50_emit_string_marker;
 
    if (!screen->cur_ctx) {
+      /* Restore the last context's state here, normally handled during
+       * context switch
+       */
+      nv50->state = screen->save_state;
       screen->cur_ctx = nv50;
       nouveau_pushbuf_bufctx(screen->base.pushbuf, nv50->bufctx);
    }
    nv50->base.pushbuf->kick_notify = nv50_default_kick_notify;
 
+   nouveau_context_init(&nv50->base);
    nv50_init_query_functions(nv50);
    nv50_init_surface_functions(nv50);
    nv50_init_state_functions(nv50);
@@ -309,15 +346,8 @@ nv50_create(struct pipe_screen *pscreen, void *priv)
 
    nv50->base.invalidate_resource_storage = nv50_invalidate_resource_storage;
 
-#ifdef NV50_WITH_DRAW_MODULE
-   /* no software fallbacks implemented */
-   nv50->draw = draw_create(pipe);
-   assert(nv50->draw);
-   draw_set_rasterize_stage(nv50->draw, nv50_draw_render_stage(nv50));
-#endif
-
    if (screen->base.device->chipset < 0x84 ||
-       debug_get_bool_option("NOUVEAU_PMPEG", FALSE)) {
+       debug_get_bool_option("NOUVEAU_PMPEG", false)) {
       /* PMPEG */
       nouveau_context_init_vdec(&nv50->base);
    } else if (screen->base.device->chipset < 0x98 ||
@@ -333,33 +363,43 @@ nv50_create(struct pipe_screen *pscreen, void *priv)
 
    flags = NOUVEAU_BO_VRAM | NOUVEAU_BO_RD;
 
-   BCTX_REFN_bo(nv50->bufctx_3d, SCREEN, flags, screen->code);
-   BCTX_REFN_bo(nv50->bufctx_3d, SCREEN, flags, screen->uniforms);
-   BCTX_REFN_bo(nv50->bufctx_3d, SCREEN, flags, screen->txc);
-   BCTX_REFN_bo(nv50->bufctx_3d, SCREEN, flags, screen->stack_bo);
+   BCTX_REFN_bo(nv50->bufctx_3d, 3D_SCREEN, flags, screen->code);
+   BCTX_REFN_bo(nv50->bufctx_3d, 3D_SCREEN, flags, screen->uniforms);
+   BCTX_REFN_bo(nv50->bufctx_3d, 3D_SCREEN, flags, screen->txc);
+   BCTX_REFN_bo(nv50->bufctx_3d, 3D_SCREEN, flags, screen->stack_bo);
+   if (screen->compute) {
+      BCTX_REFN_bo(nv50->bufctx_cp, CP_SCREEN, flags, screen->code);
+      BCTX_REFN_bo(nv50->bufctx_cp, CP_SCREEN, flags, screen->txc);
+      BCTX_REFN_bo(nv50->bufctx_cp, CP_SCREEN, flags, screen->stack_bo);
+   }
 
    flags = NOUVEAU_BO_GART | NOUVEAU_BO_WR;
 
-   BCTX_REFN_bo(nv50->bufctx_3d, SCREEN, flags, screen->fence.bo);
+   BCTX_REFN_bo(nv50->bufctx_3d, 3D_SCREEN, flags, screen->fence.bo);
    BCTX_REFN_bo(nv50->bufctx, FENCE, flags, screen->fence.bo);
+   if (screen->compute)
+      BCTX_REFN_bo(nv50->bufctx_cp, CP_SCREEN, flags, screen->fence.bo);
 
    nv50->base.scratch.bo_size = 2 << 20;
+
+   util_dynarray_init(&nv50->global_residents);
 
    return pipe;
 
 out_err:
    if (nv50->bufctx_3d)
       nouveau_bufctx_del(&nv50->bufctx_3d);
+   if (nv50->bufctx_cp)
+      nouveau_bufctx_del(&nv50->bufctx_cp);
    if (nv50->bufctx)
       nouveau_bufctx_del(&nv50->bufctx);
-   if (nv50->blit)
-      FREE(nv50->blit);
+   FREE(nv50->blit);
    FREE(nv50);
    return NULL;
 }
 
 void
-nv50_bufctx_fence(struct nouveau_bufctx *bufctx, boolean on_flush)
+nv50_bufctx_fence(struct nouveau_bufctx *bufctx, bool on_flush)
 {
    struct nouveau_list *list = on_flush ? &bufctx->current : &bufctx->pending;
    struct nouveau_list *it;

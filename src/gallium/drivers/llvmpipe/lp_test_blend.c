@@ -184,7 +184,7 @@ add_blend_test(struct gallivm_state *gallivm,
 
    LLVMBuildStore(builder, res, res_ptr);
 
-   LLVMBuildRetVoid(builder);;
+   LLVMBuildRetVoid(builder);
 
    gallivm_verify_function(gallivm, func);
 
@@ -437,6 +437,7 @@ test_one(unsigned verbose,
          const struct pipe_blend_state *blend,
          struct lp_type type)
 {
+   LLVMContextRef context;
    struct gallivm_state *gallivm;
    LLVMValueRef func = NULL;
    blend_test_ptr_t blend_test_ptr;
@@ -450,7 +451,8 @@ test_one(unsigned verbose,
    if(verbose >= 1)
       dump_blend_type(stdout, blend, type);
 
-   gallivm = gallivm_create("test_module");
+   context = LLVMContextCreate();
+   gallivm = gallivm_create("test_module", context);
 
    func = add_blend_test(gallivm, blend, type);
 
@@ -579,6 +581,7 @@ test_one(unsigned verbose,
       write_tsv_row(fp, blend, type, cycles_avg, success);
 
    gallivm_destroy(gallivm);
+   LLVMContextDispose(context);
 
    return success;
 }
@@ -625,9 +628,9 @@ const struct lp_type blend_types[] = {
 };
 
 
-const unsigned num_funcs = sizeof(blend_funcs)/sizeof(blend_funcs[0]);
-const unsigned num_factors = sizeof(blend_factors)/sizeof(blend_factors[0]);
-const unsigned num_types = sizeof(blend_types)/sizeof(blend_types[0]);
+const unsigned num_funcs = ARRAY_SIZE(blend_funcs);
+const unsigned num_factors = ARRAY_SIZE(blend_factors);
+const unsigned num_types = ARRAY_SIZE(blend_types);
 
 
 boolean

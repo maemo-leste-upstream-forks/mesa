@@ -86,6 +86,7 @@ const char *operationStr[OP_LAST + 1] =
    "mad",
    "fma",
    "sad",
+   "shladd",
    "abs",
    "neg",
    "not",
@@ -135,6 +136,7 @@ const char *operationStr[OP_LAST + 1] =
    "membar",
    "vfetch",
    "pfetch",
+   "afetch",
    "export",
    "linterp",
    "pinterp",
@@ -160,6 +162,7 @@ const char *operationStr[OP_LAST + 1] =
    "subfm",
    "suclamp",
    "sueau",
+   "suq",
    "madsp",
    "texbar",
    "dfdx",
@@ -188,12 +191,44 @@ const char *operationStr[OP_LAST + 1] =
    "vsel",
    "cctl",
    "shfl",
+   "vote",
+   "bufq",
    "(invalid)"
 };
 
 static const char *atomSubOpStr[] =
 {
    "add", "min", "max", "inc", "dec", "and", "or", "xor", "cas", "exch"
+};
+
+static const char *ldstSubOpStr[] =
+{
+   "", "lock", "unlock"
+};
+
+static const char *subfmOpStr[] =
+{
+   "", "3d"
+};
+
+static const char *shflOpStr[] =
+{
+  "idx", "up", "down", "bfly"
+};
+
+static const char *pixldOpStr[] =
+{
+   "count", "covmask", "offset", "cent_offset", "sampleid"
+};
+
+static const char *rcprsqOpStr[] =
+{
+   "", "64h"
+};
+
+static const char *emitOpStr[] =
+{
+   "", "restart"
 };
 
 static const char *DataTypeStr[] =
@@ -258,7 +293,8 @@ static const char *SemanticStr[SV_LAST + 1] =
    "SAMPLE_INDEX",
    "SAMPLE_POS",
    "SAMPLE_MASK",
-   "TESS_FACTOR",
+   "TESS_OUTER",
+   "TESS_INNER",
    "TESS_COORD",
    "TID",
    "CTAID",
@@ -273,6 +309,11 @@ static const char *SemanticStr[SV_LAST + 1] =
    "SBASE",
    "VERTEX_STRIDE",
    "INVOCATION_INFO",
+   "THREAD_KILL",
+   "BASEVERTEX",
+   "BASEINSTANCE",
+   "DRAWID",
+   "WORK_DIM",
    "?",
    "(INVALID)"
 };
@@ -409,7 +450,7 @@ int ImmediateValue::print(char *buf, size_t size, DataType ty) const
    case TYPE_U64:
    case TYPE_S64:
    default:
-      PRINT("0x%016"PRIx64, reg.data.u64);
+      PRINT("0x%016" PRIx64, reg.data.u64);
       break;
    }
    return pos;
@@ -445,6 +486,7 @@ int Symbol::print(char *buf, size_t size,
    case FILE_MEMORY_CONST:  c = 'c'; break;
    case FILE_SHADER_INPUT:  c = 'a'; break;
    case FILE_SHADER_OUTPUT: c = 'o'; break;
+   case FILE_MEMORY_BUFFER: c = 'b'; break; // Only used before lowering
    case FILE_MEMORY_GLOBAL: c = 'g'; break;
    case FILE_MEMORY_SHARED: c = 's'; break;
    case FILE_MEMORY_LOCAL:  c = 'l'; break;
@@ -529,9 +571,36 @@ void Instruction::print() const
          PRINT("%s ", interpStr[ipa]);
       switch (op) {
       case OP_SUREDP:
+      case OP_SUREDB:
       case OP_ATOM:
-         if (subOp < Elements(atomSubOpStr))
+         if (subOp < ARRAY_SIZE(atomSubOpStr))
             PRINT("%s ", atomSubOpStr[subOp]);
+         break;
+      case OP_LOAD:
+      case OP_STORE:
+         if (subOp < ARRAY_SIZE(ldstSubOpStr))
+            PRINT("%s ", ldstSubOpStr[subOp]);
+         break;
+      case OP_SUBFM:
+         if (subOp < ARRAY_SIZE(subfmOpStr))
+            PRINT("%s ", subfmOpStr[subOp]);
+         break;
+      case OP_SHFL:
+         if (subOp < ARRAY_SIZE(shflOpStr))
+            PRINT("%s ", shflOpStr[subOp]);
+         break;
+      case OP_PIXLD:
+         if (subOp < ARRAY_SIZE(pixldOpStr))
+            PRINT("%s ", pixldOpStr[subOp]);
+         break;
+      case OP_RCP:
+      case OP_RSQ:
+         if (subOp < ARRAY_SIZE(rcprsqOpStr))
+            PRINT("%s ", rcprsqOpStr[subOp]);
+         break;
+      case OP_EMIT:
+         if (subOp < ARRAY_SIZE(emitOpStr))
+            PRINT("%s ", emitOpStr[subOp]);
          break;
       default:
          if (subOp)

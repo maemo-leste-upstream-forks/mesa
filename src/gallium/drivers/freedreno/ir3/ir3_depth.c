@@ -67,14 +67,15 @@ int ir3_delayslots(struct ir3_instruction *assigner,
 		return 6;
 
 	/* handled via sync flags: */
-	if (is_sfu(assigner) || is_tex(assigner))
+	if (is_sfu(assigner) || is_tex(assigner) || is_mem(assigner))
 		return 0;
 
 	/* assigner must be alu: */
-	if (is_flow(consumer) || is_sfu(consumer) || is_tex(consumer)) {
+	if (is_flow(consumer) || is_sfu(consumer) || is_tex(consumer) ||
+			is_mem(consumer)) {
 		return 6;
-	} else if ((consumer->category == 3) &&
-			is_mad(consumer->opc) && (n == 2)) {
+	} else if ((is_mad(consumer->opc) || is_madsh(consumer->opc)) &&
+			(n == 3)) {
 		/* special case, 3rd src to cat3 not required on first cycle */
 		return 1;
 	} else {
@@ -82,27 +83,27 @@ int ir3_delayslots(struct ir3_instruction *assigner,
 	}
 }
 
-static void insert_by_depth(struct ir3_instruction *instr)
+void
+ir3_insert_by_depth(struct ir3_instruction *instr, struct list_head *list)
 {
-	struct ir3_block *block = instr->block;
-	struct ir3_instruction *n = block->head;
-	struct ir3_instruction *p = NULL;
+	/* remove from existing spot in list: */
+	list_delinit(&instr->node);
 
-	while (n && (n != instr) && (n->depth > instr->depth)) {
-		p = n;
-		n = n->next;
+	/* find where to re-insert instruction: */
+	list_for_each_entry (struct ir3_instruction, pos, list, node) {
+		if (pos->depth > instr->depth) {
+			list_add(&instr->node, &pos->node);
+			return;
+		}
 	}
-
-	instr->next = n;
-	if (p)
-		p->next = instr;
-	else
-		block->head = instr;
+	/* if we get here, we didn't find an insertion spot: */
+	list_addtail(&instr->node, list);
 }
 
-static void ir3_instr_depth(struct ir3_instruction *instr)
+static void
+ir3_instr_depth(struct ir3_instruction *instr)
 {
-	unsigned i;
+	struct ir3_instruction *src;
 
 	/* if we've already visited this instruction, bail now: */
 	if (ir3_instr_check_mark(instr))
@@ -110,50 +111,81 @@ static void ir3_instr_depth(struct ir3_instruction *instr)
 
 	instr->depth = 0;
 
-	for (i = 1; i < instr->regs_count; i++) {
-		struct ir3_register *src = instr->regs[i];
-		if (src->flags & IR3_REG_SSA) {
-			unsigned sd;
+	foreach_ssa_src_n(src, i, instr) {
+		unsigned sd;
 
-			/* visit child to compute it's depth: */
-			ir3_instr_depth(src->instr);
+		/* visit child to compute it's depth: */
+		ir3_instr_depth(src);
 
-			sd = ir3_delayslots(src->instr, instr, i-1) +
-					src->instr->depth;
+		/* for array writes, no need to delay on previous write: */
+		if (i == 0)
+			continue;
 
-			instr->depth = MAX2(instr->depth, sd);
-		}
+		sd = ir3_delayslots(src, instr, i) + src->depth;
+
+		instr->depth = MAX2(instr->depth, sd);
 	}
 
-	/* meta-instructions don't add cycles, other than PHI.. which
-	 * might translate to a real instruction..
-	 *
-	 * well, not entirely true, fan-in/out, etc might need to need
-	 * to generate some extra mov's in edge cases, etc.. probably
-	 * we might want to do depth calculation considering the worst
-	 * case for these??
-	 */
 	if (!is_meta(instr))
 		instr->depth++;
 
-	insert_by_depth(instr);
+	ir3_insert_by_depth(instr, &instr->block->instr_list);
 }
 
-void ir3_block_depth(struct ir3_block *block)
+static void
+remove_unused_by_block(struct ir3_block *block)
+{
+	list_for_each_entry_safe (struct ir3_instruction, instr, &block->instr_list, node) {
+		if (!ir3_instr_check_mark(instr)) {
+			if (instr->opc == OPC_END)
+				continue;
+			/* mark it, in case it is input, so we can
+			 * remove unused inputs:
+			 */
+			instr->flags |= IR3_INSTR_UNUSED;
+			/* and remove from instruction list: */
+			list_delinit(&instr->node);
+		}
+	}
+}
+
+void
+ir3_depth(struct ir3 *ir)
 {
 	unsigned i;
 
-	block->head = NULL;
+	ir3_clear_mark(ir);
+	for (i = 0; i < ir->noutputs; i++)
+		if (ir->outputs[i])
+			ir3_instr_depth(ir->outputs[i]);
 
-	ir3_clear_mark(block->shader);
-	for (i = 0; i < block->noutputs; i++)
-		if (block->outputs[i])
-			ir3_instr_depth(block->outputs[i]);
+	for (i = 0; i < ir->keeps_count; i++)
+		ir3_instr_depth(ir->keeps[i]);
 
-	/* at this point, any unvisited input is unused: */
-	for (i = 0; i < block->ninputs; i++) {
-		struct ir3_instruction *in = block->inputs[i];
-		if (in && !ir3_instr_check_mark(in))
-			block->inputs[i] = NULL;
+	/* We also need to account for if-condition: */
+	list_for_each_entry (struct ir3_block, block, &ir->block_list, node) {
+		if (block->condition)
+			ir3_instr_depth(block->condition);
+	}
+
+	/* mark un-used instructions: */
+	list_for_each_entry (struct ir3_block, block, &ir->block_list, node) {
+		remove_unused_by_block(block);
+	}
+
+	/* note that we can end up with unused indirects, but we should
+	 * not end up with unused predicates.
+	 */
+	for (i = 0; i < ir->indirects_count; i++) {
+		struct ir3_instruction *instr = ir->indirects[i];
+		if (instr->flags & IR3_INSTR_UNUSED)
+			ir->indirects[i] = NULL;
+	}
+
+	/* cleanup unused inputs: */
+	for (i = 0; i < ir->ninputs; i++) {
+		struct ir3_instruction *in = ir->inputs[i];
+		if (in && (in->flags & IR3_INSTR_UNUSED))
+			ir->inputs[i] = NULL;
 	}
 }

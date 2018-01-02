@@ -23,32 +23,31 @@ SUBDIRS = xmlpool
 
 include Makefile.sources
 
+EXTRA_DIST = drirc xmlpool.h SConscript
+
 AM_CFLAGS = \
 	-I$(top_srcdir)/include \
 	-I$(top_srcdir)/src/ \
 	-I$(top_srcdir)/src/mapi \
 	-I$(top_srcdir)/src/mesa/ \
+	-I$(top_srcdir)/src/gallium/include \
+	-I$(top_srcdir)/src/gallium/auxiliary \
+	$(LIBDRM_CFLAGS) \
 	$(DEFINES) \
-	$(EXPAT_CFLAGS) \
+	-DSYSCONFDIR=\"$(sysconfdir)\" \
 	$(VISIBILITY_CFLAGS)
 
 noinst_LTLIBRARIES = \
 	libdricommon.la \
-	libmegadriver_stub.la \
-	libdri_test_stubs.la
+	libxmlconfig.la \
+	libmegadriver_stub.la
 
 libdricommon_la_SOURCES = $(DRI_COMMON_FILES)
 
-libdri_test_stubs_la_SOURCES = $(test_stubs_FILES)
-libdri_test_stubs_la_CFLAGS = $(AM_CFLAGS) -DNO_MAIN
+libxmlconfig_la_SOURCES = $(XMLCONFIG_FILES)
+libxmlconfig_la_CFLAGS = $(AM_CFLAGS) $(EXPAT_CFLAGS)
+libxmlconfig_la_LIBADD = $(EXPAT_LIBS) -lm
 
 libmegadriver_stub_la_SOURCES = $(megadriver_stub_FILES)
 
 sysconf_DATA = drirc
-
-if DRICOMMON_NEED_LIBDRM
-AM_CFLAGS += $(LIBDRM_CFLAGS)
-libdricommon_la_LIBADD = $(LIBDRM_LIBS)
-else
-AM_CFLAGS += -D__NOT_HAVE_DRM_H
-endif

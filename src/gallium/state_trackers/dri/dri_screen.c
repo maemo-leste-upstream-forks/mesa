@@ -74,6 +74,7 @@ const __DRIconfigOptionsExtension gallium_config_options = {
 
       DRI_CONF_SECTION_MISCELLANEOUS
          DRI_CONF_ALWAYS_HAVE_DEPTH_BUFFER("false")
+         DRI_CONF_GLSL_ZERO_INIT("false")
       DRI_CONF_SECTION_END
    DRI_CONF_END
 };
@@ -98,19 +99,24 @@ dri_fill_st_options(struct st_config_options *options,
       driQueryOptionb(optionCache, "force_s3tc_enable");
    options->allow_glsl_extension_directive_midshader =
       driQueryOptionb(optionCache, "allow_glsl_extension_directive_midshader");
+   options->glsl_zero_init = driQueryOptionb(optionCache, "glsl_zero_init");
 }
 
 static const __DRIconfig **
 dri_fill_in_modes(struct dri_screen *screen)
 {
-   static const mesa_format mesa_formats[3] = {
+   static const mesa_format mesa_formats[] = {
       MESA_FORMAT_B8G8R8A8_UNORM,
       MESA_FORMAT_B8G8R8X8_UNORM,
+      MESA_FORMAT_B8G8R8A8_SRGB,
+      MESA_FORMAT_B8G8R8X8_SRGB,
       MESA_FORMAT_B5G6R5_UNORM,
    };
-   static const enum pipe_format pipe_formats[3] = {
+   static const enum pipe_format pipe_formats[] = {
       PIPE_FORMAT_BGRA8888_UNORM,
       PIPE_FORMAT_BGRX8888_UNORM,
+      PIPE_FORMAT_BGRA8888_SRGB,
+      PIPE_FORMAT_BGRX8888_SRGB,
       PIPE_FORMAT_B5G6R5_UNORM,
    };
    mesa_format format;
@@ -122,6 +128,7 @@ dri_fill_in_modes(struct dri_screen *screen)
    unsigned i;
    struct pipe_screen *p_screen = screen->base.screen;
    boolean pf_z16, pf_x8z24, pf_z24x8, pf_s8z24, pf_z24s8, pf_z32;
+   boolean mixed_color_depth;
 
    static const GLenum back_buffer_modes[] = {
       GLX_NONE, GLX_SWAP_UNDEFINED_OML, GLX_SWAP_COPY_OML
@@ -178,13 +185,21 @@ dri_fill_in_modes(struct dri_screen *screen)
       stencil_bits_array[depth_buffer_factor++] = 0;
    }
 
-   assert(Elements(mesa_formats) == Elements(pipe_formats));
+   mixed_color_depth =
+      p_screen->get_param(p_screen, PIPE_CAP_MIXED_COLOR_DEPTH_BITS);
+
+   assert(ARRAY_SIZE(mesa_formats) == ARRAY_SIZE(pipe_formats));
 
    /* Add configs. */
-   for (format = 0; format < Elements(mesa_formats); format++) {
+   for (format = 0; format < ARRAY_SIZE(mesa_formats); format++) {
       __DRIconfig **new_configs = NULL;
       unsigned num_msaa_modes = 0; /* includes a single-sample mode */
       uint8_t msaa_modes[MSAA_VISUAL_MAX_SAMPLES];
+
+      if (!p_screen->is_format_supported(p_screen, pipe_formats[format],
+                                         PIPE_TEXTURE_2D, 0,
+                                         PIPE_BIND_RENDER_TARGET))
+         continue;
 
       for (i = 1; i <= msaa_samples_max; i++) {
          int samples = i > 1 ? i : 0;
@@ -201,9 +216,9 @@ dri_fill_in_modes(struct dri_screen *screen)
          new_configs = driCreateConfigs(mesa_formats[format],
                                         depth_bits_array, stencil_bits_array,
                                         depth_buffer_factor, back_buffer_modes,
-                                        Elements(back_buffer_modes),
+                                        ARRAY_SIZE(back_buffer_modes),
                                         msaa_modes, 1,
-                                        GL_TRUE);
+                                        GL_TRUE, !mixed_color_depth);
          configs = driConcatConfigs(configs, new_configs);
 
          /* Multi-sample configs without an accumulation buffer. */
@@ -211,9 +226,9 @@ dri_fill_in_modes(struct dri_screen *screen)
             new_configs = driCreateConfigs(mesa_formats[format],
                                            depth_bits_array, stencil_bits_array,
                                            depth_buffer_factor, back_buffer_modes,
-                                           Elements(back_buffer_modes),
+                                           ARRAY_SIZE(back_buffer_modes),
                                            msaa_modes+1, num_msaa_modes-1,
-                                           GL_FALSE);
+                                           GL_FALSE, !mixed_color_depth);
             configs = driConcatConfigs(configs, new_configs);
          }
       }
@@ -241,9 +256,15 @@ dri_fill_st_visual(struct st_visual *stvis, struct dri_screen *screen,
 
    if (mode->redBits == 8) {
       if (mode->alphaBits == 8)
-         stvis->color_format = PIPE_FORMAT_BGRA8888_UNORM;
+         if (mode->sRGBCapable)
+            stvis->color_format = PIPE_FORMAT_BGRA8888_SRGB;
+         else
+            stvis->color_format = PIPE_FORMAT_BGRA8888_UNORM;
       else
-         stvis->color_format = PIPE_FORMAT_BGRX8888_UNORM;
+         if (mode->sRGBCapable)
+            stvis->color_format = PIPE_FORMAT_BGRX8888_SRGB;
+         else
+            stvis->color_format = PIPE_FORMAT_BGRX8888_UNORM;
    } else {
       stvis->color_format = PIPE_FORMAT_B5G6R5_UNORM;
    }
@@ -313,6 +334,17 @@ dri_get_egl_image(struct st_manager *smapi,
 
    stimg->texture = NULL;
    pipe_resource_reference(&stimg->texture, img->texture);
+   switch (img->dri_components) {
+   case __DRI_IMAGE_COMPONENTS_Y_U_V:
+      stimg->format = PIPE_FORMAT_IYUV;
+      break;
+   case __DRI_IMAGE_COMPONENTS_Y_UV:
+      stimg->format = PIPE_FORMAT_NV12;
+      break;
+   default:
+      stimg->format = img->texture->format;
+      break;
+   }
    stimg->level = img->level;
    stimg->layer = img->layer;
 
@@ -365,6 +397,7 @@ dri_destroy_screen_helper(struct dri_screen * screen)
       screen->base.screen->destroy(screen->base.screen);
 
    dri_destroy_option_cache(screen);
+   pipe_mutex_destroy(screen->opencl_func_mutex);
 }
 
 void
@@ -374,9 +407,7 @@ dri_destroy_screen(__DRIscreen * sPriv)
 
    dri_destroy_screen_helper(screen);
 
-#if !GALLIUM_STATIC_TARGETS
    pipe_loader_release(&screen->dev, 1);
-#endif // !GALLIUM_STATIC_TARGETS
 
    free(screen);
    sPriv->driverPrivate = NULL;
@@ -400,11 +431,6 @@ dri_init_screen_helper(struct dri_screen *screen,
                        const char* driver_name)
 {
    screen->base.screen = pscreen;
-   if (!screen->base.screen) {
-      debug_printf("%s: failed to create pipe_screen\n", __FUNCTION__);
-      return NULL;
-   }
-
    screen->base.get_egl_image = dri_get_egl_image;
    screen->base.get_param = dri_get_param;
 

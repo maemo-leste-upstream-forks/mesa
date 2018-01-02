@@ -32,13 +32,28 @@
 
 #include "ilo_common.h"
 
-struct ilo_screen;
+bool
+ilo_format_support_vb(const struct ilo_dev *dev,
+                      enum pipe_format format);
 
-void
-ilo_init_format_functions(struct ilo_screen *is);
+bool
+ilo_format_support_sol(const struct ilo_dev *dev,
+                       enum pipe_format format);
+
+bool
+ilo_format_support_sampler(const struct ilo_dev *dev,
+                           enum pipe_format format);
+
+bool
+ilo_format_support_rt(const struct ilo_dev *dev,
+                      enum pipe_format format);
+
+bool
+ilo_format_support_zs(const struct ilo_dev *dev,
+                      enum pipe_format format);
 
 int
-ilo_translate_color_format(const struct ilo_dev_info *dev,
+ilo_format_translate_color(const struct ilo_dev *dev,
                            enum pipe_format format);
 
 /**
@@ -49,7 +64,7 @@ ilo_translate_color_format(const struct ilo_dev_info *dev,
  * caveats that the callers should be aware of before calling this function.
  */
 static inline int
-ilo_translate_format(const struct ilo_dev_info *dev,
+ilo_format_translate(const struct ilo_dev *dev,
                      enum pipe_format format, unsigned bind)
 {
    switch (bind) {
@@ -63,7 +78,7 @@ ilo_translate_format(const struct ilo_dev_info *dev,
       case PIPE_FORMAT_B8G8R8X8_UNORM:
          return GEN6_FORMAT_B8G8R8A8_UNORM;
       default:
-         return ilo_translate_color_format(dev, format);
+         return ilo_format_translate_color(dev, format);
       }
       break;
    case PIPE_BIND_SAMPLER_VIEW:
@@ -89,12 +104,12 @@ ilo_translate_format(const struct ilo_dev_info *dev,
       case PIPE_FORMAT_ETC1_RGB8:
          return GEN6_FORMAT_R8G8B8X8_UNORM;
       default:
-         return ilo_translate_color_format(dev, format);
+         return ilo_format_translate_color(dev, format);
       }
       break;
    case PIPE_BIND_VERTEX_BUFFER:
-      if (dev->gen >= ILO_GEN(7.5))
-         return ilo_translate_color_format(dev, format);
+      if (ilo_dev_gen(dev) >= ILO_GEN(7.5))
+         return ilo_format_translate_color(dev, format);
 
       /*
        * Some 3-component formats are not supported as vertex element formats.
@@ -115,8 +130,11 @@ ilo_translate_format(const struct ilo_dev_info *dev,
       case PIPE_FORMAT_R8G8B8_SINT:
          return GEN6_FORMAT_R8G8B8A8_SINT;
       default:
-         return ilo_translate_color_format(dev, format);
+         return ilo_format_translate_color(dev, format);
       }
+      break;
+   case PIPE_BIND_STREAM_OUTPUT:
+      return ilo_format_translate_color(dev, format);
       break;
    default:
       assert(!"cannot translate format");
@@ -127,24 +145,59 @@ ilo_translate_format(const struct ilo_dev_info *dev,
 }
 
 static inline int
-ilo_translate_render_format(const struct ilo_dev_info *dev,
+ilo_format_translate_render(const struct ilo_dev *dev,
                             enum pipe_format format)
 {
-   return ilo_translate_format(dev, format, PIPE_BIND_RENDER_TARGET);
+   return ilo_format_translate(dev, format, PIPE_BIND_RENDER_TARGET);
 }
 
 static inline int
-ilo_translate_texture_format(const struct ilo_dev_info *dev,
+ilo_format_translate_texture(const struct ilo_dev *dev,
                              enum pipe_format format)
 {
-   return ilo_translate_format(dev, format, PIPE_BIND_SAMPLER_VIEW);
+   return ilo_format_translate(dev, format, PIPE_BIND_SAMPLER_VIEW);
 }
 
 static inline int
-ilo_translate_vertex_format(const struct ilo_dev_info *dev,
+ilo_format_translate_vertex(const struct ilo_dev *dev,
                             enum pipe_format format)
 {
-   return ilo_translate_format(dev, format, PIPE_BIND_VERTEX_BUFFER);
+   return ilo_format_translate(dev, format, PIPE_BIND_VERTEX_BUFFER);
+}
+
+static inline enum gen_depth_format
+ilo_format_translate_depth(const struct ilo_dev *dev,
+                           enum pipe_format format)
+{
+   if (ilo_dev_gen(dev) >= ILO_GEN(7)) {
+      switch (format) {
+      case PIPE_FORMAT_Z32_FLOAT:
+         return GEN6_ZFORMAT_D32_FLOAT;
+      case PIPE_FORMAT_Z24X8_UNORM:
+         return GEN6_ZFORMAT_D24_UNORM_X8_UINT;
+      case PIPE_FORMAT_Z16_UNORM:
+         return GEN6_ZFORMAT_D16_UNORM;
+      default:
+         assert(!"unknown depth format");
+         return GEN6_ZFORMAT_D32_FLOAT;
+      }
+   } else {
+      switch (format) {
+      case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
+         return GEN6_ZFORMAT_D32_FLOAT_S8X24_UINT;
+      case PIPE_FORMAT_Z32_FLOAT:
+         return GEN6_ZFORMAT_D32_FLOAT;
+      case PIPE_FORMAT_Z24_UNORM_S8_UINT:
+         return GEN6_ZFORMAT_D24_UNORM_S8_UINT;
+      case PIPE_FORMAT_Z24X8_UNORM:
+         return GEN6_ZFORMAT_D24_UNORM_X8_UINT;
+      case PIPE_FORMAT_Z16_UNORM:
+         return GEN6_ZFORMAT_D16_UNORM;
+      default:
+         assert(!"unknown depth format");
+         return GEN6_ZFORMAT_D32_FLOAT;
+      }
+   }
 }
 
 #endif /* ILO_FORMAT_H */

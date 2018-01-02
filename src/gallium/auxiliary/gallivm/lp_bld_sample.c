@@ -113,7 +113,7 @@ lp_sampler_static_texture_state(struct lp_static_texture_state *state,
    state->swizzle_b         = view->swizzle_b;
    state->swizzle_a         = view->swizzle_a;
 
-   state->target            = texture->target;
+   state->target            = view->target;
    state->pot_width         = util_is_power_of_two(texture->width0);
    state->pot_height        = util_is_power_of_two(texture->height0);
    state->pot_depth         = util_is_power_of_two(texture->depth0);
@@ -221,7 +221,7 @@ lp_build_rho(struct lp_build_sample_context *bld,
    struct lp_build_context *coord_bld = &bld->coord_bld;
    struct lp_build_context *rho_bld = &bld->lodf_bld;
    const unsigned dims = bld->dims;
-   LLVMValueRef ddx_ddy[2];
+   LLVMValueRef ddx_ddy[2] = {NULL};
    LLVMBuilderRef builder = bld->gallivm->builder;
    LLVMTypeRef i32t = LLVMInt32TypeInContext(bld->gallivm->context);
    LLVMValueRef index0 = LLVMConstInt(i32t, 0, 0);
@@ -246,8 +246,8 @@ lp_build_rho(struct lp_build_sample_context *bld,
     * the messy cube maps for now) when requested.
     */
 
-   first_level = bld->dynamic_state->first_level(bld->dynamic_state,
-                                                 bld->gallivm, texture_unit);
+   first_level = bld->dynamic_state->first_level(bld->dynamic_state, bld->gallivm,
+                                                 bld->context_ptr, texture_unit);
    first_level_vec = lp_build_broadcast_scalar(int_size_bld, first_level);
    int_size = lp_build_minify(int_size_bld, bld->int_size, first_level_vec, TRUE);
    float_size = lp_build_int_to_float(float_size_bld, int_size);
@@ -410,6 +410,9 @@ lp_build_rho(struct lp_build_sample_context *bld,
          ddx_ddy[0] = lp_build_abs(coord_bld, ddx_ddy[0]);
          if (dims > 2) {
             ddx_ddy[1] = lp_build_abs(coord_bld, ddx_ddy[1]);
+         }
+         else {
+            ddx_ddy[1] = NULL; /* silence compiler warning */
          }
 
          if (dims < 2) {
@@ -577,10 +580,8 @@ lp_build_brilinear_lod(struct lp_build_context *bld,
 
    lp_build_ifloor_fract(bld, lod, out_lod_ipart, &lod_fpart);
 
-   lod_fpart = lp_build_mul(bld, lod_fpart,
-                            lp_build_const_vec(bld->gallivm, bld->type, factor));
-
-   lod_fpart = lp_build_add(bld, lod_fpart,
+   lod_fpart = lp_build_mad(bld, lod_fpart,
+                            lp_build_const_vec(bld->gallivm, bld->type, factor),
                             lp_build_const_vec(bld->gallivm, bld->type, post_offset));
 
    /*
@@ -636,10 +637,8 @@ lp_build_brilinear_rho(struct lp_build_context *bld,
    /* fpart = rho / 2**ipart */
    lod_fpart = lp_build_extract_mantissa(bld, rho);
 
-   lod_fpart = lp_build_mul(bld, lod_fpart,
-                            lp_build_const_vec(bld->gallivm, bld->type, factor));
-
-   lod_fpart = lp_build_add(bld, lod_fpart,
+   lod_fpart = lp_build_mad(bld, lod_fpart,
+                            lp_build_const_vec(bld->gallivm, bld->type, factor),
                             lp_build_const_vec(bld->gallivm, bld->type, post_offset));
 
    /*
@@ -711,6 +710,7 @@ lp_build_lod_selector(struct lp_build_sample_context *bld,
 
 {
    LLVMBuilderRef builder = bld->gallivm->builder;
+   struct lp_sampler_dynamic_state *dynamic_state = bld->dynamic_state;
    struct lp_build_context *lodf_bld = &bld->lodf_bld;
    LLVMValueRef lod;
 
@@ -741,8 +741,8 @@ lp_build_lod_selector(struct lp_build_sample_context *bld,
        * This is hit during mipmap generation.
        */
       LLVMValueRef min_lod =
-         bld->dynamic_state->min_lod(bld->dynamic_state,
-                                     bld->gallivm, sampler_unit);
+         dynamic_state->min_lod(dynamic_state, bld->gallivm,
+                                bld->context_ptr, sampler_unit);
 
       lod = lp_build_broadcast_scalar(lodf_bld, min_lod);
    }
@@ -832,8 +832,8 @@ lp_build_lod_selector(struct lp_build_sample_context *bld,
       /* add sampler lod bias */
       if (bld->static_sampler_state->lod_bias_non_zero) {
          LLVMValueRef sampler_lod_bias =
-            bld->dynamic_state->lod_bias(bld->dynamic_state,
-                                         bld->gallivm, sampler_unit);
+            dynamic_state->lod_bias(dynamic_state, bld->gallivm,
+                                    bld->context_ptr, sampler_unit);
          sampler_lod_bias = lp_build_broadcast_scalar(lodf_bld,
                                                       sampler_lod_bias);
          lod = LLVMBuildFAdd(builder, lod, sampler_lod_bias, "sampler_lod_bias");
@@ -842,16 +842,16 @@ lp_build_lod_selector(struct lp_build_sample_context *bld,
       /* clamp lod */
       if (bld->static_sampler_state->apply_max_lod) {
          LLVMValueRef max_lod =
-            bld->dynamic_state->max_lod(bld->dynamic_state,
-                                        bld->gallivm, sampler_unit);
+            dynamic_state->max_lod(dynamic_state, bld->gallivm,
+                                   bld->context_ptr, sampler_unit);
          max_lod = lp_build_broadcast_scalar(lodf_bld, max_lod);
 
          lod = lp_build_min(lodf_bld, lod, max_lod);
       }
       if (bld->static_sampler_state->apply_min_lod) {
          LLVMValueRef min_lod =
-            bld->dynamic_state->min_lod(bld->dynamic_state,
-                                        bld->gallivm, sampler_unit);
+            dynamic_state->min_lod(dynamic_state, bld->gallivm,
+                                   bld->context_ptr, sampler_unit);
          min_lod = lp_build_broadcast_scalar(lodf_bld, min_lod);
 
          lod = lp_build_max(lodf_bld, lod, min_lod);
@@ -898,12 +898,13 @@ lp_build_nearest_mip_level(struct lp_build_sample_context *bld,
                            LLVMValueRef *out_of_bounds)
 {
    struct lp_build_context *leveli_bld = &bld->leveli_bld;
+   struct lp_sampler_dynamic_state *dynamic_state = bld->dynamic_state;
    LLVMValueRef first_level, last_level, level;
 
-   first_level = bld->dynamic_state->first_level(bld->dynamic_state,
-                                                 bld->gallivm, texture_unit);
-   last_level = bld->dynamic_state->last_level(bld->dynamic_state,
-                                               bld->gallivm, texture_unit);
+   first_level = dynamic_state->first_level(dynamic_state, bld->gallivm,
+                                            bld->context_ptr, texture_unit);
+   last_level = dynamic_state->last_level(dynamic_state, bld->gallivm,
+                                          bld->context_ptr, texture_unit);
    first_level = lp_build_broadcast_scalar(leveli_bld, first_level);
    last_level = lp_build_broadcast_scalar(leveli_bld, last_level);
 
@@ -953,6 +954,7 @@ lp_build_linear_mip_levels(struct lp_build_sample_context *bld,
                            LLVMValueRef *level1_out)
 {
    LLVMBuilderRef builder = bld->gallivm->builder;
+   struct lp_sampler_dynamic_state *dynamic_state = bld->dynamic_state;
    struct lp_build_context *leveli_bld = &bld->leveli_bld;
    struct lp_build_context *levelf_bld = &bld->levelf_bld;
    LLVMValueRef first_level, last_level;
@@ -961,10 +963,10 @@ lp_build_linear_mip_levels(struct lp_build_sample_context *bld,
 
    assert(bld->num_lods == bld->num_mips);
 
-   first_level = bld->dynamic_state->first_level(bld->dynamic_state,
-                                                 bld->gallivm, texture_unit);
-   last_level = bld->dynamic_state->last_level(bld->dynamic_state,
-                                               bld->gallivm, texture_unit);
+   first_level = dynamic_state->first_level(dynamic_state, bld->gallivm,
+                                            bld->context_ptr, texture_unit);
+   last_level = dynamic_state->last_level(dynamic_state, bld->gallivm,
+                                          bld->context_ptr, texture_unit);
    first_level = lp_build_broadcast_scalar(leveli_bld, first_level);
    last_level = lp_build_broadcast_scalar(leveli_bld, last_level);
 
@@ -1313,10 +1315,7 @@ lp_build_mipmap_level_sizes(struct lp_build_sample_context *bld,
                                                       bld->row_stride_array,
                                                       ilevel);
    }
-   if (dims == 3 ||
-       bld->static_texture_state->target == PIPE_TEXTURE_CUBE ||
-       bld->static_texture_state->target == PIPE_TEXTURE_1D_ARRAY ||
-       bld->static_texture_state->target == PIPE_TEXTURE_2D_ARRAY) {
+   if (dims == 3 || has_layer_coord(bld->static_texture_state->target)) {
       *img_stride_vec = lp_build_get_level_stride_vec(bld,
                                                       bld->img_stride_array,
                                                       ilevel);
@@ -1644,7 +1643,7 @@ lp_build_cube_lookup(struct lp_build_sample_context *bld,
    LLVMValueRef ma, mai, signma, signmabit, imahalfpos;
    LLVMValueRef posHalf = lp_build_const_vec(gallivm, coord_bld->type, 0.5);
    LLVMValueRef signmask = lp_build_const_int_vec(gallivm, intctype,
-                                                  1 << (intctype.width - 1));
+                                                  1LL << (intctype.width - 1));
    LLVMValueRef signshift = lp_build_const_int_vec(gallivm, intctype,
                                                    intctype.width -1);
    LLVMValueRef facex = lp_build_const_int_vec(gallivm, intctype, PIPE_TEX_FACE_POS_X);

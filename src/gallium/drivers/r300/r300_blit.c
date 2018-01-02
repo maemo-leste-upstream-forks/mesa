@@ -382,7 +382,7 @@ static void r300_clear(struct pipe_context* pipe,
             r300_get_num_cs_end_dwords(r300);
 
         /* Reserve CS space. */
-        if (dwords > (RADEON_MAX_CMDBUF_DWORDS - r300->cs->cdw)) {
+        if (!r300->rws->cs_check_space(r300->cs, dwords)) {
             r300_flush(&r300->context, RADEON_FLUSH_ASYNC, NULL);
         }
 
@@ -430,11 +430,13 @@ static void r300_clear_render_target(struct pipe_context *pipe,
                                      struct pipe_surface *dst,
                                      const union pipe_color_union *color,
                                      unsigned dstx, unsigned dsty,
-                                     unsigned width, unsigned height)
+                                     unsigned width, unsigned height,
+                                     bool render_condition_enabled)
 {
     struct r300_context *r300 = r300_context(pipe);
 
-    r300_blitter_begin(r300, R300_CLEAR_SURFACE);
+    r300_blitter_begin(r300, R300_CLEAR_SURFACE |
+                       (render_condition_enabled ? 0 : R300_IGNORE_RENDER_COND));
     util_blitter_clear_render_target(r300->blitter, dst, color,
                                      dstx, dsty, width, height);
     r300_blitter_end(r300);
@@ -447,7 +449,8 @@ static void r300_clear_depth_stencil(struct pipe_context *pipe,
                                      double depth,
                                      unsigned stencil,
                                      unsigned dstx, unsigned dsty,
-                                     unsigned width, unsigned height)
+                                     unsigned width, unsigned height,
+                                     bool render_condition_enabled)
 {
     struct r300_context *r300 = r300_context(pipe);
     struct pipe_framebuffer_state *fb =
@@ -460,7 +463,8 @@ static void r300_clear_depth_stencil(struct pipe_context *pipe,
     }
 
     /* XXX Do not decompress ZMask of the currently-set zbuffer. */
-    r300_blitter_begin(r300, R300_CLEAR_SURFACE);
+    r300_blitter_begin(r300, R300_CLEAR_SURFACE |
+                       (render_condition_enabled ? 0 : R300_IGNORE_RENDER_COND));
     util_blitter_clear_depth_stencil(r300->blitter, dst, clear_flags, depth, stencil,
                                      dstx, dsty, width, height);
     r300_blitter_end(r300);
@@ -667,7 +671,8 @@ static void r300_resource_copy_region(struct pipe_context *pipe,
     r300_blitter_begin(r300, R300_COPY);
     util_blitter_blit_generic(r300->blitter, dst_view, &dstbox,
                               src_view, src_box, src_width0, src_height0,
-                              PIPE_MASK_RGBAZS, PIPE_TEX_FILTER_NEAREST, NULL);
+                              PIPE_MASK_RGBAZS, PIPE_TEX_FILTER_NEAREST, NULL,
+                              FALSE);
     r300_blitter_end(r300);
 
     pipe_surface_reference(&dst_view, NULL);
@@ -679,7 +684,9 @@ static boolean r300_is_simple_msaa_resolve(const struct pipe_blit_info *info)
     unsigned dst_width = u_minify(info->dst.resource->width0, info->dst.level);
     unsigned dst_height = u_minify(info->dst.resource->height0, info->dst.level);
 
-    return info->dst.resource->format == info->src.resource->format &&
+    return info->src.resource->nr_samples > 1 &&
+           info->dst.resource->nr_samples <= 1 &&
+           info->dst.resource->format == info->src.resource->format &&
            info->dst.resource->format == info->dst.format &&
            info->src.resource->format == info->src.format &&
            !info->scissor_enable &&
@@ -801,9 +808,17 @@ static void r300_blit(struct pipe_context *pipe,
         (struct pipe_framebuffer_state*)r300->fb_state.state;
     struct pipe_blit_info info = *blit;
 
+    /* The driver supports sRGB textures but not framebuffers. Blitting
+     * from sRGB to sRGB should be the same as blitting from linear
+     * to linear, so use that, This avoids incorrect linearization.
+     */
+    if (util_format_is_srgb(info.src.format)) {
+      info.src.format = util_format_linear(info.src.format);
+      info.dst.format = util_format_linear(info.dst.format);
+    }
+
     /* MSAA resolve. */
     if (info.src.resource->nr_samples > 1 &&
-        info.dst.resource->nr_samples <= 1 &&
         !util_format_is_depth_or_stencil(info.src.resource->format)) {
         r300_msaa_resolve(pipe, &info);
         return;

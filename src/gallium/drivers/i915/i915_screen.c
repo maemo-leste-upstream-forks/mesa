@@ -55,6 +55,12 @@ i915_get_vendor(struct pipe_screen *screen)
 }
 
 static const char *
+i915_get_device_vendor(struct pipe_screen *screen)
+{
+   return "Intel";
+}
+
+static const char *
 i915_get_name(struct pipe_screen *screen)
 {
    static char buffer[128];
@@ -130,6 +136,8 @@ i915_get_shader_param(struct pipe_screen *screen, unsigned shader, enum pipe_sha
          return 0;
       case PIPE_SHADER_CAP_MAX_INPUTS:
          return 10;
+      case PIPE_SHADER_CAP_MAX_OUTPUTS:
+         return 1;
       case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
          return 32 * sizeof(float[4]);
       case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
@@ -153,6 +161,14 @@ i915_get_shader_param(struct pipe_screen *screen, unsigned shader, enum pipe_sha
       case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
       case PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS:
          return I915_TEX_UNITS;
+      case PIPE_SHADER_CAP_DOUBLES:
+      case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
+      case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
+      case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
+      case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
+         return 0;
+      case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
+         return 32;
       default:
          debug_printf("%s: Unknown cap %u.\n", __FUNCTION__, cap);
          return 0;
@@ -185,6 +201,7 @@ i915_get_param(struct pipe_screen *screen, enum pipe_cap cap)
    case PIPE_CAP_USER_VERTEX_BUFFERS:
    case PIPE_CAP_USER_INDEX_BUFFERS:
    case PIPE_CAP_USER_CONSTANT_BUFFERS:
+   case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
       return 1;
 
    /* Unsupported features (boolean caps). */
@@ -223,6 +240,44 @@ i915_get_param(struct pipe_screen *screen, enum pipe_cap cap)
    case PIPE_CAP_TEXTURE_GATHER_OFFSETS:
    case PIPE_CAP_TGSI_VS_WINDOW_SPACE_POSITION:
    case PIPE_CAP_CONDITIONAL_RENDER_INVERTED:
+   case PIPE_CAP_CLIP_HALFZ:
+   case PIPE_CAP_VERTEXID_NOBASE:
+   case PIPE_CAP_POLYGON_OFFSET_CLAMP:
+   case PIPE_CAP_MULTISAMPLE_Z_RESOLVE:
+   case PIPE_CAP_RESOURCE_FROM_USER_MEMORY:
+   case PIPE_CAP_DEVICE_RESET_STATUS_QUERY:
+   case PIPE_CAP_MAX_SHADER_PATCH_VARYINGS:
+   case PIPE_CAP_TEXTURE_FLOAT_LINEAR:
+   case PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR:
+   case PIPE_CAP_DEPTH_BOUNDS_TEST:
+   case PIPE_CAP_TGSI_TXQS:
+   case PIPE_CAP_FORCE_PERSAMPLE_INTERP:
+   case PIPE_CAP_SHAREABLE_SHADERS:
+   case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
+   case PIPE_CAP_CLEAR_TEXTURE:
+   case PIPE_CAP_DRAW_PARAMETERS:
+   case PIPE_CAP_TGSI_PACK_HALF_FLOAT:
+   case PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL:
+   case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
+   case PIPE_CAP_SHADER_BUFFER_OFFSET_ALIGNMENT:
+   case PIPE_CAP_INVALIDATE_BUFFER:
+   case PIPE_CAP_GENERATE_MIPMAP:
+   case PIPE_CAP_STRING_MARKER:
+   case PIPE_CAP_BUFFER_SAMPLER_VIEW_RGBA_ONLY:
+   case PIPE_CAP_SURFACE_REINTERPRET_BLOCKS:
+   case PIPE_CAP_QUERY_MEMORY_INFO:
+   case PIPE_CAP_PCI_GROUP:
+   case PIPE_CAP_PCI_BUS:
+   case PIPE_CAP_PCI_DEVICE:
+   case PIPE_CAP_PCI_FUNCTION:
+   case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
+   case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
+   case PIPE_CAP_CULL_DISTANCE:
+   case PIPE_CAP_PRIMITIVE_RESTART_FOR_PATCHES:
+   case PIPE_CAP_TGSI_VOTE:
+   case PIPE_CAP_MAX_WINDOW_RECTANGLES:
+   case PIPE_CAP_POLYGON_OFFSET_UNITS_UNSCALED:
+   case PIPE_CAP_TGSI_ARRAY_COMPONENTS:
       return 0;
 
    case PIPE_CAP_MAX_DUAL_SOURCE_RENDER_TARGETS:
@@ -233,8 +288,15 @@ i915_get_param(struct pipe_screen *screen, enum pipe_cap cap)
    case PIPE_CAP_TGSI_VS_LAYER_VIEWPORT:
    case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
    case PIPE_CAP_DRAW_INDIRECT:
+   case PIPE_CAP_MULTI_DRAW_INDIRECT:
+   case PIPE_CAP_MULTI_DRAW_INDIRECT_PARAMS:
    case PIPE_CAP_TGSI_FS_FINE_DERIVATIVE:
+   case PIPE_CAP_SAMPLER_VIEW_TARGET:
+   case PIPE_CAP_VIEWPORT_SUBPIXEL_BITS:
       return 0;
+
+   case PIPE_CAP_MAX_VIEWPORTS:
+      return 1;
 
    case PIPE_CAP_MIN_MAP_BUFFER_ALIGNMENT:
       return 64;
@@ -274,6 +336,9 @@ i915_get_param(struct pipe_screen *screen, enum pipe_cap cap)
    case PIPE_CAP_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS:
    case PIPE_CAP_MAX_VERTEX_STREAMS:
       return 0;
+
+   case PIPE_CAP_MAX_VERTEX_ATTRIB_STRIDE:
+      return 2048;
 
    /* Fragment coordinate conventions. */
    case PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT:
@@ -352,7 +417,9 @@ i915_is_format_supported(struct pipe_screen *screen,
       PIPE_FORMAT_B8G8R8X8_UNORM,
       PIPE_FORMAT_R8G8B8A8_UNORM,
       PIPE_FORMAT_R8G8B8X8_UNORM,
+      PIPE_FORMAT_B4G4R4A4_UNORM,
       PIPE_FORMAT_B5G6R5_UNORM,
+      PIPE_FORMAT_B5G5R5A1_UNORM,
       PIPE_FORMAT_B10G10R10A2_UNORM,
       PIPE_FORMAT_L8_UNORM,
       PIPE_FORMAT_A8_UNORM,
@@ -376,6 +443,8 @@ i915_is_format_supported(struct pipe_screen *screen,
       PIPE_FORMAT_R8G8B8A8_UNORM,
       PIPE_FORMAT_R8G8B8X8_UNORM,
       PIPE_FORMAT_B5G6R5_UNORM,
+      PIPE_FORMAT_B5G5R5A1_UNORM,
+      PIPE_FORMAT_B4G4R4A4_UNORM,
       PIPE_FORMAT_B10G10R10A2_UNORM,
       PIPE_FORMAT_L8_UNORM,
       PIPE_FORMAT_A8_UNORM,
@@ -432,20 +501,15 @@ i915_fence_reference(struct pipe_screen *screen,
 }
 
 static boolean
-i915_fence_signalled(struct pipe_screen *screen,
-                     struct pipe_fence_handle *fence)
-{
-   struct i915_screen *is = i915_screen(screen);
-
-   return is->iws->fence_signalled(is->iws, fence) == 1;
-}
-
-static boolean
 i915_fence_finish(struct pipe_screen *screen,
+                  struct pipe_context *ctx,
                   struct pipe_fence_handle *fence,
                   uint64_t timeout)
 {
    struct i915_screen *is = i915_screen(screen);
+
+   if (!timeout)
+      return is->iws->fence_signalled(is->iws, fence) == 1;
 
    return is->iws->fence_finish(is->iws, fence) == 1;
 }
@@ -525,6 +589,7 @@ i915_screen_create(struct i915_winsys *iws)
 
    is->base.get_name = i915_get_name;
    is->base.get_vendor = i915_get_vendor;
+   is->base.get_device_vendor = i915_get_device_vendor;
    is->base.get_param = i915_get_param;
    is->base.get_shader_param = i915_get_shader_param;
    is->base.get_paramf = i915_get_paramf;
@@ -533,7 +598,6 @@ i915_screen_create(struct i915_winsys *iws)
    is->base.context_create = i915_create_context;
 
    is->base.fence_reference = i915_fence_reference;
-   is->base.fence_signalled = i915_fence_signalled;
    is->base.fence_finish = i915_fence_finish;
 
    i915_init_screen_resource_functions(is);

@@ -24,46 +24,26 @@
 #ifndef BRW_PROGRAM_H
 #define BRW_PROGRAM_H
 
-enum gen6_gather_sampler_wa {
-   WA_SIGN = 1,      /* whether we need to sign extend */
-   WA_8BIT = 2,      /* if we have an 8bit format needing wa */
-   WA_16BIT = 4,     /* if we have a 16bit format needing wa */
-};
-
-/**
- * Sampler information needed by VS, WM, and GS program cache keys.
- */
-struct brw_sampler_prog_key_data {
-   /**
-    * EXT_texture_swizzle and DEPTH_TEXTURE_MODE swizzles.
-    */
-   uint16_t swizzles[MAX_SAMPLERS];
-
-   uint32_t gl_clamp_mask[3];
-
-   /**
-    * For RG32F, gather4's channel select is broken.
-    */
-   uint32_t gather_channel_quirk_mask;
-
-   /**
-    * Whether this sampler uses the compressed multisample surface layout.
-    */
-   uint32_t compressed_multisample_layout_mask;
-
-   /**
-    * For Sandybridge, which shader w/a we need for gather quirks.
-    */
-   uint8_t gen6_gather_wa[MAX_SAMPLERS];
-};
+#include "brw_compiler.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+struct brw_context;
+
+struct nir_shader *brw_create_nir(struct brw_context *brw,
+                                  const struct gl_shader_program *shader_prog,
+                                  const struct gl_program *prog,
+                                  gl_shader_stage stage,
+                                  bool is_scalar);
+
+void brw_setup_tex_for_precompile(struct brw_context *brw,
+                                  struct brw_sampler_prog_key_data *tex,
+                                  struct gl_program *prog);
+
 void brw_populate_sampler_prog_key_data(struct gl_context *ctx,
 				        const struct gl_program *prog,
-                                        unsigned sampler_count,
 				        struct brw_sampler_prog_key_data *key);
 bool brw_debug_recompile_sampler_key(struct brw_context *brw,
                                      const struct brw_sampler_prog_key_data *old_key,
@@ -74,17 +54,19 @@ void
 brw_mark_surface_used(struct brw_stage_prog_data *prog_data,
                       unsigned surf_index);
 
-bool
-brw_stage_prog_data_compare(const struct brw_stage_prog_data *a,
-                            const struct brw_stage_prog_data *b);
-
 void
 brw_stage_prog_data_free(const void *prog_data);
 
 void
-brw_dump_ir(struct brw_context *brw, const char *stage,
-            struct gl_shader_program *shader_prog,
-            struct gl_shader *shader, struct gl_program *prog);
+brw_dump_ir(const char *stage, struct gl_shader_program *shader_prog,
+            struct gl_linked_shader *shader, struct gl_program *prog);
+
+void brw_upload_tcs_prog(struct brw_context *brw);
+void brw_tcs_populate_key(struct brw_context *brw,
+                          struct brw_tcs_prog_key *key);
+void brw_upload_tes_prog(struct brw_context *brw);
+void brw_tes_populate_key(struct brw_context *brw,
+                          struct brw_tes_prog_key *key);
 
 #ifdef __cplusplus
 } /* extern "C" */

@@ -112,7 +112,7 @@ static Status Validate(Display *dpy, XvPortID port, int surface_type_id, int xvi
 {
    XvImageFormatValues *subpictures;
    int num_subpics;
-   unsigned int i;
+   int i;
 
    subpictures = XvMCListSubpictureTypes(dpy, port, surface_type_id, &num_subpics);
    if (num_subpics < 1) {
@@ -276,7 +276,7 @@ Status XvMCCreateSubpicture(Display *dpy, XvMCContext *context, XvMCSubpicture *
 
       memset(&sampler_templ, 0, sizeof(sampler_templ));
       u_sampler_view_default_template(&sampler_templ, tex, tex->format);
-      sampler_templ.swizzle_a = PIPE_SWIZZLE_ONE;
+      sampler_templ.swizzle_a = PIPE_SWIZZLE_1;
       subpicture_priv->palette = pipe->create_sampler_view(pipe, tex, &sampler_templ);
       pipe_resource_reference(&tex, NULL);
       if (!subpicture_priv->sampler) {

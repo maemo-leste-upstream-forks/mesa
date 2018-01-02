@@ -38,7 +38,9 @@
 #include "util/u_math.h"
 #include "util/u_half.h"
 #include "util/u_dynarray.h"
+#include "util/u_pack_color.h"
 
+#include "disasm.h"
 #include "adreno_common.xml.h"
 #include "adreno_pm4.xml.h"
 
@@ -52,19 +54,29 @@ enum adreno_stencil_op fd_stencil_op(unsigned op);
 /* TBD if it is same on a2xx, but for now: */
 #define MAX_MIP_LEVELS A3XX_MAX_MIP_LEVELS
 
+#define A2XX_MAX_RENDER_TARGETS 1
+#define A3XX_MAX_RENDER_TARGETS 4
+#define A4XX_MAX_RENDER_TARGETS 8
+
+#define MAX_RENDER_TARGETS A4XX_MAX_RENDER_TARGETS
+
 #define FD_DBG_MSGS     0x0001
 #define FD_DBG_DISASM   0x0002
 #define FD_DBG_DCLEAR   0x0004
-#define FD_DBG_DGMEM    0x0008
-#define FD_DBG_DSCIS    0x0010
+#define FD_DBG_DDRAW    0x0008
+#define FD_DBG_NOSCIS   0x0010
 #define FD_DBG_DIRECT   0x0020
-#define FD_DBG_DBYPASS  0x0040
+#define FD_DBG_NOBYPASS 0x0040
 #define FD_DBG_FRAGHALF 0x0080
 #define FD_DBG_NOBIN    0x0100
-#define FD_DBG_NOOPT    0x0200
-#define FD_DBG_OPTMSGS  0x0400
-#define FD_DBG_OPTDUMP  0x0800
-#define FD_DBG_GLSL130  0x1000
+#define FD_DBG_OPTMSGS  0x0200
+#define FD_DBG_GLSL120  0x0400
+#define FD_DBG_SHADERDB 0x0800
+#define FD_DBG_FLUSH    0x1000
+#define FD_DBG_DEQP     0x2000
+#define FD_DBG_NIR      0x4000
+#define FD_DBG_REORDER  0x8000
+#define FD_DBG_BSTAT   0x10000
 
 extern int fd_mesa_debug;
 extern bool fd_binning_enabled;
@@ -74,8 +86,6 @@ extern bool fd_binning_enabled;
 			debug_printf("%s:%d: "fmt "\n", \
 				__FUNCTION__, __LINE__, ##__VA_ARGS__); } while (0)
 
-#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
-
 /* for conditionally setting boolean flag(s): */
 #define COND(bool, val) ((bool) ? (val) : 0)
 
@@ -83,14 +93,16 @@ extern bool fd_binning_enabled;
 
 static inline uint32_t DRAW(enum pc_di_primtype prim_type,
 		enum pc_di_src_sel source_select, enum pc_di_index_size index_size,
-		enum pc_di_vis_cull_mode vis_cull_mode)
+		enum pc_di_vis_cull_mode vis_cull_mode,
+		uint8_t instances)
 {
 	return (prim_type         << 0) |
 			(source_select     << 6) |
 			((index_size & 1)  << 11) |
 			((index_size >> 1) << 13) |
 			(vis_cull_mode     << 9) |
-			(1                 << 14);
+			(1                 << 14) |
+			(instances         << 24);
 }
 
 /* for tracking cmdstream positions that need to be patched: */
@@ -109,6 +121,58 @@ pipe_surface_format(struct pipe_surface *psurf)
 	return psurf->format;
 }
 
+static inline bool
+fd_surface_half_precision(const struct pipe_surface *psurf)
+{
+	enum pipe_format format;
+
+	if (!psurf)
+		return true;
+
+	format = psurf->format;
+
+	/* colors are provided in consts, which go through cov.f32f16, which will
+	 * break these values
+	 */
+	if (util_format_is_pure_integer(format))
+		return false;
+
+	/* avoid losing precision on 32-bit float formats */
+	if (util_format_is_float(format) &&
+		util_format_get_component_bits(format, UTIL_FORMAT_COLORSPACE_RGB, 0) == 32)
+		return false;
+
+	return true;
+}
+
+static inline unsigned
+fd_sampler_first_level(const struct pipe_sampler_view *view)
+{
+	if (view->target == PIPE_BUFFER)
+		return 0;
+	return view->u.tex.first_level;
+}
+
+static inline unsigned
+fd_sampler_last_level(const struct pipe_sampler_view *view)
+{
+	if (view->target == PIPE_BUFFER)
+		return 0;
+	return view->u.tex.last_level;
+}
+
+static inline bool
+fd_half_precision(struct pipe_framebuffer_state *pfb)
+{
+	unsigned i;
+
+	for (i = 0; i < pfb->nr_cbufs; i++)
+		if (!fd_surface_half_precision(pfb->cbufs[i]))
+			return false;
+
+	return true;
+}
+
 #define LOG_DWORDS 0
 
 static inline void emit_marker(struct fd_ringbuffer *ring, int scratch_idx);
@@ -120,7 +184,7 @@ OUT_RING(struct fd_ringbuffer *ring, uint32_t data)
 		DBG("ring[%p]: OUT_RING   %04x:  %08x", ring,
 				(uint32_t)(ring->cur - ring->last_start), data);
 	}
-	*(ring->cur++) = data;
+	fd_ringbuffer_emit(ring, data);
 }
 
 /* like OUT_RING() but appends a cmdstream patch point to 'buf' */
@@ -146,6 +210,7 @@ OUT_RELOC(struct fd_ringbuffer *ring, struct fd_bo *bo,
 		DBG("ring[%p]: OUT_RELOC   %04x:  %p+%u << %d", ring,
 				(uint32_t)(ring->cur - ring->last_start), bo, offset, shift);
 	}
+	debug_assert(offset < fd_bo_size(bo));
 	fd_ringbuffer_reloc(ring, &(struct fd_reloc){
 		.bo = bo,
 		.flags = FD_RELOC_READ,
@@ -163,6 +228,7 @@ OUT_RELOCW(struct fd_ringbuffer *ring, struct fd_bo *bo,
 		DBG("ring[%p]: OUT_RELOCW  %04x:  %p+%u << %d", ring,
 				(uint32_t)(ring->cur - ring->last_start), bo, offset, shift);
 	}
+	debug_assert(offset < fd_bo_size(bo));
 	fd_ringbuffer_reloc(ring, &(struct fd_reloc){
 		.bo = bo,
 		.flags = FD_RELOC_READ | FD_RELOC_WRITE,
@@ -174,13 +240,8 @@ OUT_RELOCW(struct fd_ringbuffer *ring, struct fd_bo *bo,
 
 static inline void BEGIN_RING(struct fd_ringbuffer *ring, uint32_t ndwords)
 {
-	if ((ring->cur + ndwords) >= ring->end) {
-		/* this probably won't really work if we have multiple tiles..
-		 * but it is ok for 2d..  we might need different behavior
-		 * depending on 2d or 3d pipe.
-		 */
-		DBG("uh oh..");
-	}
+	if (ring->cur + ndwords >= ring->end)
+		fd_ringbuffer_grow(ring, ndwords);
 }
 
 static inline void
@@ -188,6 +249,13 @@ OUT_PKT0(struct fd_ringbuffer *ring, uint16_t regindx, uint16_t cnt)
 {
 	BEGIN_RING(ring, cnt+1);
 	OUT_RING(ring, CP_TYPE0_PKT | ((cnt-1) << 16) | (regindx & 0x7FFF));
+}
+
+static inline void
+OUT_PKT2(struct fd_ringbuffer *ring)
+{
+	BEGIN_RING(ring, 1);
+	OUT_RING(ring, CP_TYPE2_PKT);
 }
 
 static inline void
@@ -205,9 +273,10 @@ OUT_WFI(struct fd_ringbuffer *ring)
 }
 
 static inline void
-OUT_IB(struct fd_ringbuffer *ring, struct fd_ringmarker *start,
-		struct fd_ringmarker *end)
+__OUT_IB(struct fd_ringbuffer *ring, bool prefetch, struct fd_ringbuffer *target)
 {
+	unsigned count = fd_ringbuffer_cmd_count(target);
+
 	/* for debug after a lock up, write a unique counter value
 	 * to scratch6 for each IB, to make it easier to match up
 	 * register dumps to cmdstream.  The combination of IB and
@@ -216,9 +285,14 @@ OUT_IB(struct fd_ringbuffer *ring, struct fd_ringmarker *start,
 	 */
 	emit_marker(ring, 6);
 
-	OUT_PKT3(ring, CP_INDIRECT_BUFFER_PFD, 2);
-	fd_ringbuffer_emit_reloc_ring(ring, start, end);
-	OUT_RING(ring, fd_ringmarker_dwords(start, end));
+	for (unsigned i = 0; i < count; i++) {
+		uint32_t dwords;
+		OUT_PKT3(ring, prefetch ? CP_INDIRECT_BUFFER_PFE : CP_INDIRECT_BUFFER_PFD, 2);
+		dwords = fd_ringbuffer_emit_reloc_ring_full(ring, target, i) / 4;
+		assert(dwords > 0);
+		OUT_RING(ring, dwords);
+		OUT_PKT2(ring);
+	}
 
 	emit_marker(ring, 6);
 }
@@ -237,5 +311,34 @@ emit_marker(struct fd_ringbuffer *ring, int scratch_idx)
 	OUT_PKT0(ring, reg, 1);
 	OUT_RING(ring, ++marker_cnt);
 }
+
+/* helper to get numeric value from environment variable..  mostly
+ * just leaving this here because it is helpful to brute-force figure
+ * out unknown formats, etc, which blob driver does not support:
+ */
+static inline uint32_t env2u(const char *envvar)
+{
+	char *str = getenv(envvar);
+	if (str)
+		return strtoul(str, NULL, 0);
+	return 0;
+}
+
+static inline uint32_t
+pack_rgba(enum pipe_format format, const float *rgba)
+{
+	union util_color uc;
+	util_pack_color(rgba, format, &uc);
+	return uc.ui[0];
+}
+
+/*
+ * swap - swap value of @a and @b
+ */
+#define swap(a, b) \
+	do { __typeof(a) __tmp = (a); (a) = (b); (b) = __tmp; } while (0)
+
+#define foreach_bit(b, mask) \
+	for (uint32_t _m = (mask); _m && ({(b) = u_bit_scan(&_m); 1;});)
 
 #endif /* FREEDRENO_UTIL_H_ */

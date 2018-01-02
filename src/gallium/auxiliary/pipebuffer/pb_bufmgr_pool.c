@@ -40,7 +40,7 @@
 #include "os/os_thread.h"
 #include "pipe/p_defines.h"
 #include "util/u_memory.h"
-#include "util/u_double_list.h"
+#include "util/list.h"
 
 #include "pb_buffer.h"
 #include "pb_bufmgr.h"
@@ -73,7 +73,7 @@ struct pool_pb_manager
 };
 
 
-static INLINE struct pool_pb_manager *
+static inline struct pool_pb_manager *
 pool_pb_manager(struct pb_manager *mgr)
 {
    assert(mgr);
@@ -93,7 +93,7 @@ struct pool_buffer
 };
 
 
-static INLINE struct pool_buffer *
+static inline struct pool_buffer *
 pool_buffer(struct pb_buffer *buf)
 {
    assert(buf);
@@ -261,7 +261,7 @@ pool_bufmgr_create(struct pb_manager *provider,
    struct pool_buffer *pool_buf;
    pb_size i;
 
-   if(!provider)
+   if (!provider)
       return NULL;
    
    pool = CALLOC_STRUCT(pool_pb_manager);

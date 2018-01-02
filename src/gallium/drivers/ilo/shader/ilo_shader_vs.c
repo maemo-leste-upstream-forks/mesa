@@ -32,7 +32,6 @@
 #include "toy_legalize.h"
 #include "toy_optimize.h"
 #include "toy_helpers.h"
-#include "ilo_context.h"
 #include "ilo_shader_internal.h"
 
 struct vs_compile_context {
@@ -127,11 +126,11 @@ vs_lower_opcode_tgsi_const_gen6(struct vs_compile_context *vcc,
    tc_MOV(tc, block_offsets, idx);
 
    msg_type = GEN6_MSG_DP_OWORD_DUAL_BLOCK_READ;
-   msg_ctrl = GEN6_MSG_DP_OWORD_DUAL_BLOCK_SIZE_1;;
+   msg_ctrl = GEN6_MSG_DP_OWORD_DUAL_BLOCK_SIZE_1;
    msg_len = 2;
 
    desc = tsrc_imm_mdesc_data_port(tc, false, msg_len, 1, true, false,
-         msg_type, msg_ctrl, ILO_VS_CONST_SURFACE(dim));
+         msg_type, msg_ctrl, vcc->shader->bt.const_base + dim);
 
    tc_SEND(tc, dst, tsrc_from(header), desc, vcc->const_cache);
 }
@@ -163,7 +162,7 @@ vs_lower_opcode_tgsi_const_gen7(struct vs_compile_context *vcc,
          GEN6_MSG_SAMPLER_SIMD4X2,
          GEN6_MSG_SAMPLER_LD,
          0,
-         ILO_VS_CONST_SURFACE(dim));
+         vcc->shader->bt.const_base + dim);
 
    tc_SEND(tc, dst, tsrc_from(offset), desc, GEN6_SFID_SAMPLER);
 }
@@ -244,7 +243,7 @@ vs_lower_opcode_tgsi_direct(struct vs_compile_context *vcc,
       vs_lower_opcode_tgsi_in(vcc, inst->dst, dim, idx);
       break;
    case TOY_OPCODE_TGSI_CONST:
-      if (tc->dev->gen >= ILO_GEN(7))
+      if (ilo_dev_gen(tc->dev) >= ILO_GEN(7))
          vs_lower_opcode_tgsi_const_gen7(vcc, inst->dst, dim, inst->src[1]);
       else
          vs_lower_opcode_tgsi_const_gen6(vcc, inst->dst, dim, inst->src[1]);
@@ -298,7 +297,7 @@ vs_lower_opcode_tgsi_indirect(struct vs_compile_context *vcc,
             indirect_idx = tsrc_from(tmp);
          }
 
-         if (tc->dev->gen >= ILO_GEN(7))
+         if (ilo_dev_gen(tc->dev) >= ILO_GEN(7))
             vs_lower_opcode_tgsi_const_gen7(vcc, inst->dst, dim, indirect_idx);
          else
             vs_lower_opcode_tgsi_const_gen6(vcc, inst->dst, dim, indirect_idx);
@@ -330,7 +329,7 @@ vs_add_sampler_params(struct toy_compiler *tc, int msg_type, int base_mrf,
    assert(num_coords <= 4);
    assert(num_derivs <= 3 && num_derivs <= num_coords);
 
-   for (i = 0; i < Elements(m); i++)
+   for (i = 0; i < ARRAY_SIZE(m); i++)
       m[i] = tdst(TOY_FILE_MRF, base_mrf + i, 0);
 
    switch (msg_type) {
@@ -363,7 +362,7 @@ vs_add_sampler_params(struct toy_compiler *tc, int msg_type, int base_mrf,
       assert(num_coords <= 3);
       tc_MOV(tc, tdst_writemask(tdst_d(m[0]), coords_writemask), coords);
       tc_MOV(tc, tdst_writemask(tdst_d(m[0]), TOY_WRITEMASK_W), bias_or_lod);
-      if (tc->dev->gen >= ILO_GEN(7)) {
+      if (ilo_dev_gen(tc->dev) >= ILO_GEN(7)) {
          num_params = 4;
       }
       else {
@@ -388,9 +387,11 @@ vs_add_sampler_params(struct toy_compiler *tc, int msg_type, int base_mrf,
  * Set up message registers and return the message descriptor for sampling.
  */
 static struct toy_src
-vs_prepare_tgsi_sampling(struct toy_compiler *tc, const struct toy_inst *inst,
+vs_prepare_tgsi_sampling(struct vs_compile_context *vcc,
+                         const struct toy_inst *inst,
                          int base_mrf, unsigned *ret_sampler_index)
 {
+   struct toy_compiler *tc = &vcc->tc;
    unsigned simd_mode, msg_type, msg_len, sampler_index, binding_table_index;
    struct toy_src coords, ddx, ddy, bias_or_lod, ref_or_si;
    int num_coords, ref_pos, num_derivs;
@@ -406,7 +407,8 @@ vs_prepare_tgsi_sampling(struct toy_compiler *tc, const struct toy_inst *inst,
    num_derivs = 0;
    sampler_src = 1;
 
-   num_coords = tgsi_util_get_texture_coord_dim(inst->tex.target, &ref_pos);
+   num_coords = tgsi_util_get_texture_coord_dim(inst->tex.target);
+   ref_pos = tgsi_util_get_shadow_ref_src_index(inst->tex.target);
 
    /* extract the parameters */
    switch (inst->opcode) {
@@ -417,7 +419,7 @@ vs_prepare_tgsi_sampling(struct toy_compiler *tc, const struct toy_inst *inst,
          msg_type = GEN7_MSG_SAMPLER_SAMPLE_D_C;
          ref_or_si = tsrc_swizzle1(coords, ref_pos);
 
-         if (tc->dev->gen < ILO_GEN(7.5))
+         if (ilo_dev_gen(tc->dev) < ILO_GEN(7.5))
             tc_fail(tc, "TXD with shadow sampler not supported");
       }
       else {
@@ -503,7 +505,7 @@ vs_prepare_tgsi_sampling(struct toy_compiler *tc, const struct toy_inst *inst,
 
    assert(inst->src[sampler_src].file == TOY_FILE_IMM);
    sampler_index = inst->src[sampler_src].val32;
-   binding_table_index = ILO_VS_TEXTURE_SURFACE(sampler_index);
+   binding_table_index = vcc->shader->bt.tex_base + sampler_index;
 
    /*
     * From the Sandy Bridge PRM, volume 4 part 1, page 18:
@@ -521,7 +523,7 @@ vs_prepare_tgsi_sampling(struct toy_compiler *tc, const struct toy_inst *inst,
       if (num_coords >= 3) {
          struct toy_dst tmp, max;
          struct toy_src abs_coords[3];
-         int i;
+         unsigned i;
 
          tmp = tc_alloc_tmp(tc);
          max = tdst_writemask(tmp, TOY_WRITEMASK_W);
@@ -574,7 +576,7 @@ vs_lower_opcode_tgsi_sampling(struct vs_compile_context *vcc,
    unsigned swizzle_zero_mask, swizzle_one_mask, swizzle_normal_mask;
    bool need_filter;
 
-   desc = vs_prepare_tgsi_sampling(tc, inst,
+   desc = vs_prepare_tgsi_sampling(vcc, inst,
          vcc->first_free_mrf, &sampler_index);
 
    switch (inst->opcode) {
@@ -608,10 +610,10 @@ vs_lower_opcode_tgsi_sampling(struct vs_compile_context *vcc,
       swizzles[3] = vcc->variant->sampler_view_swizzles[sampler_index].a;
    }
    else {
-      swizzles[0] = PIPE_SWIZZLE_RED;
-      swizzles[1] = PIPE_SWIZZLE_GREEN;
-      swizzles[2] = PIPE_SWIZZLE_BLUE;
-      swizzles[3] = PIPE_SWIZZLE_ALPHA;
+      swizzles[0] = PIPE_SWIZZLE_X;
+      swizzles[1] = PIPE_SWIZZLE_Y;
+      swizzles[2] = PIPE_SWIZZLE_Z;
+      swizzles[3] = PIPE_SWIZZLE_W;
    }
 
    swizzle_zero_mask = 0;
@@ -619,11 +621,11 @@ vs_lower_opcode_tgsi_sampling(struct vs_compile_context *vcc,
    swizzle_normal_mask = 0;
    for (i = 0; i < 4; i++) {
       switch (swizzles[i]) {
-      case PIPE_SWIZZLE_ZERO:
+      case PIPE_SWIZZLE_0:
          swizzle_zero_mask |= 1 << i;
          swizzles[i] = i;
          break;
-      case PIPE_SWIZZLE_ONE:
+      case PIPE_SWIZZLE_1:
          swizzle_one_mask |= 1 << i;
          swizzles[i] = i;
          break;
@@ -789,7 +791,7 @@ vs_compile(struct vs_compile_context *vcc)
 
    if (ilo_debug & ILO_DEBUG_VS) {
       ilo_printf("disassembly:\n");
-      toy_compiler_disassemble(tc, sh->kernel, sh->kernel_size);
+      toy_compiler_disassemble(tc->dev, sh->kernel, sh->kernel_size, false);
       ilo_printf("\n");
    }
 
@@ -803,7 +805,7 @@ static int
 vs_collect_outputs(struct vs_compile_context *vcc, struct toy_src *outs)
 {
    const struct toy_tgsi *tgsi = &vcc->tgsi;
-   int i;
+   unsigned i;
 
    for (i = 0; i < vcc->shader->out.count; i++) {
       const int slot = vcc->output_map[i];
@@ -917,7 +919,7 @@ vs_write_vue(struct vs_compile_context *vcc)
    inst = tc_MOV(tc, header, r0);
    inst->mask_ctrl = GEN6_MASKCTRL_NOMASK;
 
-   if (tc->dev->gen >= ILO_GEN(7)) {
+   if (ilo_dev_gen(tc->dev) >= ILO_GEN(7)) {
       inst = tc_OR(tc, tdst_offset(header, 0, 5),
             tsrc_rect(tsrc_offset(r0, 0, 5), TOY_RECT_010),
             tsrc_rect(tsrc_imm_ud(0xff00), TOY_RECT_010));
@@ -955,7 +957,7 @@ vs_write_vue(struct vs_compile_context *vcc)
          eot = false;
       }
 
-      if (tc->dev->gen >= ILO_GEN(7)) {
+      if (ilo_dev_gen(tc->dev) >= ILO_GEN(7)) {
          /* do not forget about the header */
          msg_len = 1 + num_attrs;
       }
@@ -1273,7 +1275,7 @@ vs_setup(struct vs_compile_context *vcc,
 
    vcc->num_grf_per_vrf = 1;
 
-   if (vcc->tc.dev->gen >= ILO_GEN(7)) {
+   if (ilo_dev_gen(vcc->tc.dev) >= ILO_GEN(7)) {
       vcc->last_free_grf -= 15;
       vcc->first_free_mrf = vcc->last_free_grf + 1;
       vcc->last_free_mrf = vcc->first_free_mrf + 14;
@@ -1282,6 +1284,16 @@ vs_setup(struct vs_compile_context *vcc,
    vcc->shader->in.start_grf = vcc->first_const_grf;
    vcc->shader->pcb.clip_state_size =
       vcc->variant->u.vs.num_ucps * (sizeof(float) * 4);
+
+   vcc->shader->bt.tex_base = 0;
+   vcc->shader->bt.tex_count = vcc->variant->num_sampler_views;
+
+   vcc->shader->bt.const_base = vcc->shader->bt.tex_base +
+                                vcc->shader->bt.tex_count;
+   vcc->shader->bt.const_count = state->info.constant_buffer_count;
+
+   vcc->shader->bt.total_count = vcc->shader->bt.const_base +
+                                 vcc->shader->bt.const_count;
 
    return true;
 }
@@ -1299,7 +1311,7 @@ ilo_shader_compile_vs(const struct ilo_shader_state *state,
    if (!vs_setup(&vcc, state, variant))
       return NULL;
 
-   if (vcc.tc.dev->gen >= ILO_GEN(7)) {
+   if (ilo_dev_gen(vcc.tc.dev) >= ILO_GEN(7)) {
       need_gs = false;
    }
    else {

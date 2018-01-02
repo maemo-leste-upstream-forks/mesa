@@ -45,7 +45,6 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "swrast/s_renderbuffer.h"
 
 #include "radeon_chipset.h"
-#include "radeon_macros.h"
 #include "radeon_screen.h"
 #include "radeon_common.h"
 #include "radeon_common_context.h"
@@ -136,36 +135,26 @@ DRI_CONF_END
 static int
 radeonGetParam(__DRIscreen *sPriv, int param, void *value)
 {
-  int ret;
-  drm_radeon_getparam_t gp = { 0 };
   struct drm_radeon_info info = { 0 };
 
-  if (sPriv->drm_version.major >= 2) {
-      info.value = (uint64_t)(uintptr_t)value;
-      switch (param) {
-      case RADEON_PARAM_DEVICE_ID:
-          info.request = RADEON_INFO_DEVICE_ID;
-          break;
-      case RADEON_PARAM_NUM_GB_PIPES:
-          info.request = RADEON_INFO_NUM_GB_PIPES;
-          break;
-      case RADEON_PARAM_NUM_Z_PIPES:
-          info.request = RADEON_INFO_NUM_Z_PIPES;
-          break;
-      case RADEON_INFO_TILE_CONFIG:
-	  info.request = RADEON_INFO_TILE_CONFIG;
-          break;
-      default:
-          return -EINVAL;
-      }
-      ret = drmCommandWriteRead(sPriv->fd, DRM_RADEON_INFO, &info, sizeof(info));
-  } else {
-      gp.param = param;
-      gp.value = value;
-
-      ret = drmCommandWriteRead(sPriv->fd, DRM_RADEON_GETPARAM, &gp, sizeof(gp));
+  info.value = (uint64_t)(uintptr_t)value;
+  switch (param) {
+  case RADEON_PARAM_DEVICE_ID:
+    info.request = RADEON_INFO_DEVICE_ID;
+    break;
+  case RADEON_PARAM_NUM_GB_PIPES:
+    info.request = RADEON_INFO_NUM_GB_PIPES;
+    break;
+  case RADEON_PARAM_NUM_Z_PIPES:
+    info.request = RADEON_INFO_NUM_Z_PIPES;
+    break;
+  case RADEON_INFO_TILE_CONFIG:
+    info.request = RADEON_INFO_TILE_CONFIG;
+    break;
+  default:
+    return -EINVAL;
   }
-  return ret;
+  return drmCommandWriteRead(sPriv->fd, DRM_RADEON_INFO, &info, sizeof(info));
 }
 
 #if defined(RADEON_R100)
@@ -572,7 +561,7 @@ radeonCreateScreen2(__DRIscreen *sPriv)
    /* Allocate the private area */
    screen = calloc(1, sizeof(*screen));
    if ( !screen ) {
-      fprintf(stderr, "%s: Could not allocate memory for screen structure", __FUNCTION__);
+      fprintf(stderr, "%s: Could not allocate memory for screen structure", __func__);
       fprintf(stderr, "leaving here\n");
       return NULL;
    }
@@ -824,7 +813,7 @@ __DRIconfig **radeonInitScreen2(__DRIscreen *psp)
 				     ARRAY_SIZE(back_buffer_modes),
 				     msaa_samples_array,
 				     ARRAY_SIZE(msaa_samples_array),
-				     GL_TRUE);
+				     GL_TRUE, GL_FALSE);
       configs = driConcatConfigs(configs, new_configs);
    }
 

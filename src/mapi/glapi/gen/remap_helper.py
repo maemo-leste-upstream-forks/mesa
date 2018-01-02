@@ -24,9 +24,11 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-import gl_XML
+import argparse
+
 import license
-import sys, getopt, string
+import gl_XML
+
 
 def get_function_spec(func):
     sig = ""
@@ -53,6 +55,7 @@ def get_function_spec(func):
     spec.append('')
 
     return spec
+
 
 class PrintGlRemap(gl_XML.gl_print_base):
     def __init__(self):
@@ -118,75 +121,29 @@ class PrintGlRemap(gl_XML.gl_print_base):
         print '   {    -1, -1 }'
         print '};'
         print ''
-
-        # collect functions by versions/extensions
-        extension_functions = {}
-        abi_extensions = []
-        for f in api.functionIterateAll():
-            for n in f.entry_points:
-                category, num = api.get_category_for_name(n)
-                # consider only GL_VERSION_X_Y or extensions
-                c = gl_XML.real_category_name(category)
-                if c.startswith("GL_"):
-                    if not extension_functions.has_key(c):
-                        extension_functions[c] = []
-                    extension_functions[c].append(f)
-                    # remember the ext names of the ABI
-                    if (f.is_abi() and n == f.name and
-                            c not in abi_extensions):
-                        abi_extensions.append(c)
-        # ignore the ABI itself
-        for ext in abi_extensions:
-            extension_functions.pop(ext)
-
-        extensions = extension_functions.keys()
-        extensions.sort()
-
-        # output ABI functions that have alternative names (with ext suffix)
-        print '/* these functions are in the ABI, but have alternative names */'
-        print 'static const struct gl_function_remap MESA_alt_functions[] = {'
-        for ext in extensions:
-            funcs = []
-            for f in extension_functions[ext]:
-                # test if the function is in the ABI and has alt names
-                if f.is_abi() and len(f.entry_points) > 1:
-                    funcs.append(f)
-            if not funcs:
-                continue
-            print '   /* from %s */' % ext
-            for f in funcs:
-                print '   { %5d, _gloffset_%s },' \
-                                % (pool_indices[f], f.name)
-        print '   {    -1, -1 }'
-        print '};'
-        print ''
         return
 
 
-def show_usage():
-    print "Usage: %s [-f input_file_name] [-c ver]" % sys.argv[0]
-    print "    -c ver    Version can be 'es1' or 'es2'."
-    sys.exit(1)
+def _parser():
+    """Parse input options and return a namsepace."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-f', '--filename',
+                        default="gl_API.xml",
+                        metavar="input_file_name",
+                        dest='file_name',
+                        help="An xml description file.")
+    return parser.parse_args()
 
-if __name__ == '__main__':
-    file_name = "gl_API.xml"
 
-    try:
-        (args, trail) = getopt.getopt(sys.argv[1:], "f:c:")
-    except Exception,e:
-        show_usage()
+def main():
+    """Main function."""
+    args = _parser()
 
-    es = None
-    for (arg,val) in args:
-        if arg == "-f":
-            file_name = val
-        elif arg == "-c":
-            es = val
-
-    api = gl_XML.parse_GL_API( file_name )
-
-    if es is not None:
-        api.filter_functions_by_api(es)
+    api = gl_XML.parse_GL_API(args.file_name)
 
     printer = PrintGlRemap()
-    printer.Print( api )
+    printer.Print(api)
+
+
+if __name__ == '__main__':
+    main()

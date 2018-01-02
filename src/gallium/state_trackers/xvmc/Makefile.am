@@ -20,28 +20,32 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-AUTOMAKE_OPTIONS = subdir-objects
 include Makefile.sources
 include $(top_srcdir)/src/gallium/Automake.inc
 
 AM_CFLAGS = \
 	$(GALLIUM_CFLAGS) \
+	$(VISIBILITY_CFLAGS) \
+	$(VL_CFLAGS) \
 	$(XVMC_CFLAGS)
 
 noinst_LTLIBRARIES = libxvmctracker.la
 
 libxvmctracker_la_SOURCES = $(C_SOURCES)
 
-check_PROGRAMS = \
+## The tests require the XvMC library to be installed and the wrapper to
+## point to the correct library (via /etc/X11/XvMCConfig).
+noinst_PROGRAMS = \
+	tests/xvmc_bench \
 	tests/test_context \
 	tests/test_surface \
 	tests/test_subpicture \
 	tests/test_blocks \
 	tests/test_rendering
-TESTS = $(check_PROGRAMS)
-noinst_PROGRAMS = tests/xvmc_bench
 
-TEST_LIBS = $(XVMC_LIBS) -lXvMCW
+noinst_HEADERS = tests/testlib.h
+
+TEST_LIBS = $(XVMC_LIBS) -lXvMCW $(VL_LIBS)
 tests_test_context_SOURCES = tests/test_context.c tests/testlib.c
 tests_test_context_LDADD = $(TEST_LIBS)
 tests_test_surface_SOURCES = tests/test_surface.c tests/testlib.c

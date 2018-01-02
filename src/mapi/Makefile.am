@@ -19,10 +19,8 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-SUBDIRS = glapi/gen .
+SUBDIRS =
 TESTS =
-
-TOP = $(top_srcdir)
 
 BUILT_SOURCES =
 CLEANFILES = $(BUILT_SOURCES)
@@ -32,24 +30,43 @@ check_PROGRAMS =
 pkgconfigdir = $(libdir)/pkgconfig
 pkgconfig_DATA =
 
-AM_CFLAGS = $(PTHREAD_CFLAGS)
+EXTRA_DIST = \
+	es1api/ABI-check \
+	es2api/ABI-check \
+	mapi_abi.py \
+	glapi/SConscript \
+	glapi/registry/gl.xml \
+	shared-glapi/SConscript
+
+AM_CFLAGS = \
+	$(PTHREAD_CFLAGS) \
+	$(MSVC2013_COMPAT_CFLAGS)
 AM_CPPFLAGS =							\
 	$(DEFINES)						\
 	$(SELINUX_CFLAGS)					\
 	-I$(top_srcdir)/include					\
-	-I$(top_srcdir)/src/mapi				\
-	-I$(top_builddir)/src/mapi
+	-I$(top_srcdir)/src					\
+	-I$(top_builddir)/src/mapi				\
+	-I$(top_srcdir)/src/mapi
 
-GLAPI = $(top_srcdir)/src/mapi/glapi
 include Makefile.sources
-include glapi/Makefile.sources
-include glapi/gen/glapi_gen.mk
+
+MKDIR_GEN = $(AM_V_at)$(MKDIR_P) $(@D)
+PYTHON_GEN = $(AM_V_GEN)$(PYTHON2) $(PYTHON_FLAGS)
+
+glapi_gen_mapi_deps := \
+	mapi_abi.py \
+	$(wildcard $(top_srcdir)/src/mapi/glapi/gen/*.xml) \
+	$(wildcard $(top_srcdir)/src/mapi/glapi/gen/*.py)
 
 if HAVE_SHARED_GLAPI
 BUILT_SOURCES += shared-glapi/glapi_mapi_tmp.h
 
 lib_LTLIBRARIES += shared-glapi/libglapi.la
-shared_glapi_libglapi_la_SOURCES = $(MAPI_GLAPI_FILES)
+shared_glapi_libglapi_la_SOURCES = $(MAPI_GLAPI_FILES) shared-glapi/glapi_mapi_tmp.h
+shared_glapi_libglapi_la_CFLAGS = \
+	$(AM_CFLAGS) \
+	$(VISIBILITY_CFLAGS)
 shared_glapi_libglapi_la_CPPFLAGS = \
 	$(AM_CPPFLAGS) \
 	-DMAPI_MODE_GLAPI \
@@ -61,9 +78,6 @@ shared_glapi_libglapi_la_LDFLAGS = \
 	-no-undefined \
 	$(GC_SECTIONS) \
 	$(LD_NO_UNDEFINED)
-
-shared-glapi/glapi_mapi_tmp.h : $(GLAPI)/gen/gl_and_es_API.xml $(glapi_gen_mapi_deps)
-	$(call glapi_gen_mapi,$<,shared-glapi)
 
 TESTS += shared-glapi-test
 check_PROGRAMS += shared-glapi-test
@@ -77,28 +91,40 @@ shared_glapi_test_LDADD = \
 	$(top_builddir)/src/gtest/libgtest.la
 endif
 
+shared-glapi/glapi_mapi_tmp.h : glapi/gen/gl_and_es_API.xml $(glapi_gen_mapi_deps)
+	$(MKDIR_GEN)
+	$(PYTHON_GEN) $(srcdir)/mapi_abi.py --mode lib --printer shared-glapi \
+		$(srcdir)/glapi/gen/gl_and_es_API.xml > $@
+
 if HAVE_OPENGL
 noinst_LTLIBRARIES = glapi/libglapi.la
 
 if HAVE_X86_ASM
 if HAVE_X86_64_ASM
-GLAPI_ASM_SOURCES = $(X86_64_API)
+GLAPI_ASM_SOURCES = glapi/glapi_x86-64.S
 else
-GLAPI_ASM_SOURCES = $(X86_API)
+GLAPI_ASM_SOURCES = glapi/glapi_x86.S
 endif
 endif
 if HAVE_SPARC_ASM
-GLAPI_ASM_SOURCES = $(SPARC_API)
+GLAPI_ASM_SOURCES = glapi/glapi_sparc.S
 endif
 
-glapi_libglapi_la_SOURCES = $(GLAPI_UTIL_SOURCES)
+glapi_libglapi_la_SOURCES =
 glapi_libglapi_la_CPPFLAGS = \
 	$(AM_CPPFLAGS) \
 	-I$(top_srcdir)/src/mapi/glapi \
 	-I$(top_srcdir)/src/mesa
 
+if HAVE_APPLEDRI
+glapi_libglapi_la_SOURCES += glapi/glapi_gentable.c
+endif
+if HAVE_WINDOWSDRI
+glapi_libglapi_la_SOURCES += glapi/glapi_gentable.c
+endif
+
 if HAVE_SHARED_GLAPI
-glapi_libglapi_la_SOURCES += $(MAPI_BRIDGE_FILES)
+glapi_libglapi_la_SOURCES += $(MAPI_BRIDGE_FILES) glapi/glapi_mapi_tmp.h
 glapi_libglapi_la_CPPFLAGS += \
 	-DMAPI_MODE_BRIDGE \
 	-DMAPI_ABI_HEADER=\"glapi/glapi_mapi_tmp.h\"
@@ -106,7 +132,13 @@ else
 glapi_libglapi_la_CPPFLAGS += \
 	-DMAPI_MODE_UTIL
 glapi_libglapi_la_SOURCES += \
-	$(GLAPI_SOURCES) \
+	glapi/glapi_dispatch.c \
+	glapi/glapi_entrypoint.c \
+	glapi/glapi_getproc.c \
+	glapi/glapi_nop.c \
+	glapi/glapi.c \
+	glapi/glapi.h \
+	glapi/glapi_priv.h \
 	$(GLAPI_ASM_SOURCES) \
 	$(MAPI_UTIL_FILES)
 
@@ -158,10 +190,12 @@ es1api_libGLESv1_CM_la_LDFLAGS = \
 if HAVE_SHARED_GLAPI
 es1api_libGLESv1_CM_la_LIBADD += shared-glapi/libglapi.la
 endif
+endif
 
 es1api/glapi_mapi_tmp.h: glapi/gen/gl_and_es_API.xml $(glapi_gen_mapi_deps)
-	$(call glapi_gen_mapi,$<,es1api)
-endif
+	$(MKDIR_GEN)
+	$(PYTHON_GEN) $(srcdir)/mapi_abi.py --mode lib --printer es1api \
+		$(srcdir)/glapi/gen/gl_and_es_API.xml > $@
 
 if HAVE_OPENGL_ES2
 TESTS += es2api/ABI-check
@@ -179,6 +213,7 @@ GLES3_includedir = $(includedir)/GLES3
 GLES3_include_HEADERS = \
 	$(top_srcdir)/include/GLES3/gl3.h \
 	$(top_srcdir)/include/GLES3/gl31.h \
+	$(top_srcdir)/include/GLES3/gl32.h \
 	$(top_srcdir)/include/GLES3/gl3ext.h \
 	$(top_srcdir)/include/GLES3/gl3platform.h
 
@@ -202,13 +237,11 @@ es2api_libGLESv2_la_LDFLAGS = \
 if HAVE_SHARED_GLAPI
 es2api_libGLESv2_la_LIBADD += shared-glapi/libglapi.la
 endif
+endif
 
 es2api/glapi_mapi_tmp.h: glapi/gen/gl_and_es_API.xml $(glapi_gen_mapi_deps)
-	$(call glapi_gen_mapi,$<,es2api)
-endif
-
-if HAVE_OPENVG
-SUBDIRS += vgapi
-endif
+	$(MKDIR_GEN)
+	$(PYTHON_GEN) $(srcdir)/mapi_abi.py --mode lib --printer es2api \
+		$(srcdir)/glapi/gen/gl_and_es_API.xml > $@
 
 include $(top_srcdir)/install-lib-links.mk

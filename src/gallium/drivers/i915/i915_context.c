@@ -155,12 +155,12 @@ static void i915_destroy(struct pipe_context *pipe)
 }
 
 struct pipe_context *
-i915_create_context(struct pipe_screen *screen, void *priv)
+i915_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
 {
    struct i915_context *i915;
 
    i915 = CALLOC_STRUCT(i915_context);
-   if (i915 == NULL)
+   if (!i915)
       return NULL;
 
    i915->iws = i915_screen(screen)->iws;
@@ -177,10 +177,10 @@ i915_create_context(struct pipe_screen *screen, void *priv)
    i915->base.draw_vbo = i915_draw_vbo;
 
    /* init this before draw */
-   util_slab_create(&i915->transfer_pool, sizeof(struct pipe_transfer),
-                    16, UTIL_SLAB_SINGLETHREADED);
-   util_slab_create(&i915->texture_transfer_pool, sizeof(struct i915_transfer),
-                    16, UTIL_SLAB_SINGLETHREADED);
+   slab_create(&i915->transfer_pool, sizeof(struct pipe_transfer),
+                    16);
+   slab_create(&i915->texture_transfer_pool, sizeof(struct i915_transfer),
+                    16);
 
    /* Batch stream debugging is a bit hacked up at the moment:
     */

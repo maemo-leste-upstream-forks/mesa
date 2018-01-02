@@ -30,7 +30,6 @@
   */
 
 
-#include "main/glheader.h"
 #include "main/macros.h"
 #include "main/enums.h"
 
@@ -101,7 +100,7 @@ have_attr(struct brw_sf_compile *c, GLuint attr)
 static void copy_bfc( struct brw_sf_compile *c,
 		      struct brw_reg vert )
 {
-   struct brw_compile *p = &c->func;
+   struct brw_codegen *p = &c->func;
    GLuint i;
 
    for (i = 0; i < 2; i++) {
@@ -116,7 +115,7 @@ static void copy_bfc( struct brw_sf_compile *c,
 
 static void do_twoside_color( struct brw_sf_compile *c )
 {
-   struct brw_compile *p = &c->func;
+   struct brw_codegen *p = &c->func;
    GLuint backface_conditional = c->key.frontface_ccw ? BRW_CONDITIONAL_G : BRW_CONDITIONAL_L;
 
    /* Already done in clip program:
@@ -159,11 +158,11 @@ static void copy_flatshaded_attributes(struct brw_sf_compile *c,
                                        struct brw_reg dst,
                                        struct brw_reg src)
 {
-   struct brw_compile *p = &c->func;
+   struct brw_codegen *p = &c->func;
    int i;
 
    for (i = 0; i < c->vue_map.num_slots; i++) {
-      if (c->key.interpolation_mode.mode[i] == INTERP_QUALIFIER_FLAT) {
+      if (c->key.interpolation_mode.mode[i] == INTERP_MODE_FLAT) {
          brw_MOV(p,
                  get_vue_slot(c, dst, i),
                  get_vue_slot(c, src, i));
@@ -177,7 +176,7 @@ static int count_flatshaded_attributes(struct brw_sf_compile *c)
    int count = 0;
 
    for (i = 0; i < c->vue_map.num_slots; i++)
-      if (c->key.interpolation_mode.mode[i] == INTERP_QUALIFIER_FLAT)
+      if (c->key.interpolation_mode.mode[i] == INTERP_MODE_FLAT)
          count++;
 
    return count;
@@ -191,8 +190,7 @@ static int count_flatshaded_attributes(struct brw_sf_compile *c)
  */
 static void do_flatshade_triangle( struct brw_sf_compile *c )
 {
-   struct brw_compile *p = &c->func;
-   struct brw_context *brw = p->brw;
+   struct brw_codegen *p = &c->func;
    GLuint nr;
    GLuint jmpi = 1;
 
@@ -201,7 +199,7 @@ static void do_flatshade_triangle( struct brw_sf_compile *c )
    if (c->key.primitive == SF_UNFILLED_TRIS)
       return;
 
-   if (brw->gen == 5)
+   if (p->devinfo->gen == 5)
        jmpi = 2;
 
    nr = count_flatshaded_attributes(c);
@@ -220,12 +218,11 @@ static void do_flatshade_triangle( struct brw_sf_compile *c )
    copy_flatshaded_attributes(c, c->vert[0], c->vert[2]);
    copy_flatshaded_attributes(c, c->vert[1], c->vert[2]);
 }
-	
+
 
 static void do_flatshade_line( struct brw_sf_compile *c )
 {
-   struct brw_compile *p = &c->func;
-   struct brw_context *brw = p->brw;
+   struct brw_codegen *p = &c->func;
    GLuint nr;
    GLuint jmpi = 1;
 
@@ -234,7 +231,7 @@ static void do_flatshade_line( struct brw_sf_compile *c )
    if (c->key.primitive == SF_UNFILLED_TRIS)
       return;
 
-   if (brw->gen == 5)
+   if (p->devinfo->gen == 5)
        jmpi = 2;
 
    nr = count_flatshaded_attributes(c);
@@ -247,7 +244,6 @@ static void do_flatshade_line( struct brw_sf_compile *c )
    copy_flatshaded_attributes(c, c->vert[0], c->vert[1]);
 }
 
-	
 
 /***********************************************************************
  * Triangle setup.
@@ -307,7 +303,7 @@ static void alloc_regs( struct brw_sf_compile *c )
 
 static void copy_z_inv_w( struct brw_sf_compile *c )
 {
-   struct brw_compile *p = &c->func;
+   struct brw_codegen *p = &c->func;
    GLuint i;
 
    /* Copy both scalars with a single MOV:
@@ -327,7 +323,6 @@ static void invert_det( struct brw_sf_compile *c)
 	     BRW_MATH_FUNCTION_INV,
 	     0,
 	     c->det,
-	     BRW_MATH_DATA_SCALAR,
 	     BRW_MATH_PRECISION_FULL);
 
 }
@@ -341,17 +336,17 @@ calculate_masks(struct brw_sf_compile *c,
                 GLushort *pc_linear)
 {
    bool is_last_attr = (reg == c->nr_setup_regs - 1);
-   enum glsl_interp_qualifier interp;
+   enum glsl_interp_mode interp;
 
    *pc_persp = 0;
    *pc_linear = 0;
    *pc = 0xf;
 
    interp = c->key.interpolation_mode.mode[vert_reg_to_vue_slot(c, reg, 0)];
-   if (interp == INTERP_QUALIFIER_SMOOTH) {
+   if (interp == INTERP_MODE_SMOOTH) {
       *pc_linear = 0xf;
       *pc_persp = 0xf;
-   } else if (interp == INTERP_QUALIFIER_NOPERSPECTIVE)
+   } else if (interp == INTERP_MODE_NOPERSPECTIVE)
       *pc_linear = 0xf;
 
    /* Maybe only processs one attribute on the final round:
@@ -360,10 +355,10 @@ calculate_masks(struct brw_sf_compile *c,
       *pc |= 0xf0;
 
       interp = c->key.interpolation_mode.mode[vert_reg_to_vue_slot(c, reg, 1)];
-      if (interp == INTERP_QUALIFIER_SMOOTH) {
+      if (interp == INTERP_MODE_SMOOTH) {
          *pc_linear |= 0xf0;
          *pc_persp |= 0xf0;
-      } else if (interp == INTERP_QUALIFIER_NOPERSPECTIVE)
+      } else if (interp == INTERP_MODE_NOPERSPECTIVE)
          *pc_linear |= 0xf0;
    }
 
@@ -400,7 +395,7 @@ calculate_point_sprite_mask(struct brw_sf_compile *c, GLuint reg)
 }
 
 static void
-set_predicate_control_flag_value(struct brw_compile *p,
+set_predicate_control_flag_value(struct brw_codegen *p,
                                  struct brw_sf_compile *c,
                                  unsigned value)
 {
@@ -418,7 +413,7 @@ set_predicate_control_flag_value(struct brw_compile *p,
 
 void brw_emit_tri_setup(struct brw_sf_compile *c, bool allocate)
 {
-   struct brw_compile *p = &c->func;
+   struct brw_codegen *p = &c->func;
    GLuint i;
 
    c->flag_value = 0xff;
@@ -470,7 +465,7 @@ void brw_emit_tri_setup(struct brw_sf_compile *c, bool allocate)
 	 brw_MUL(p, brw_null_reg(), c->a1_sub_a0, c->dy2);
 	 brw_MAC(p, c->tmp, c->a2_sub_a0, negate(c->dy0));
 	 brw_MUL(p, c->m1Cx, c->tmp, c->inv_det);
-		
+
 	 /* calculate dA/dy
 	  */
 	 brw_MUL(p, brw_null_reg(), c->a2_sub_a0, c->dx0);
@@ -486,7 +481,7 @@ void brw_emit_tri_setup(struct brw_sf_compile *c, bool allocate)
 
 	 /* Copy m0..m3 to URB.  m0 is implicitly copied from r0 in
 	  * the send instruction:
-	  */	
+	  */
 	 brw_urb_WRITE(p,
 		       brw_null_reg(),
 		       0,
@@ -507,7 +502,7 @@ void brw_emit_tri_setup(struct brw_sf_compile *c, bool allocate)
 
 void brw_emit_line_setup(struct brw_sf_compile *c, bool allocate)
 {
-   struct brw_compile *p = &c->func;
+   struct brw_codegen *p = &c->func;
    GLuint i;
 
    c->flag_value = 0xff;
@@ -547,7 +542,7 @@ void brw_emit_line_setup(struct brw_sf_compile *c, bool allocate)
 
  	 brw_MUL(p, c->tmp, c->a1_sub_a0, c->dx0);
 	 brw_MUL(p, c->m1Cx, c->tmp, c->inv_det);
-		
+
 	 brw_MUL(p, c->tmp, c->a1_sub_a0, c->dy0);
 	 brw_MUL(p, c->m2Cy, c->tmp, c->inv_det);
       }
@@ -579,7 +574,7 @@ void brw_emit_line_setup(struct brw_sf_compile *c, bool allocate)
 
 void brw_emit_point_sprite_setup(struct brw_sf_compile *c, bool allocate)
 {
-   struct brw_compile *p = &c->func;
+   struct brw_codegen *p = &c->func;
    GLuint i;
 
    c->flag_value = 0xff;
@@ -616,7 +611,6 @@ void brw_emit_point_sprite_setup(struct brw_sf_compile *c, bool allocate)
 		   BRW_MATH_FUNCTION_INV,
 		   0,
 		   c->dx0,
-		   BRW_MATH_DATA_SCALAR,
 		   BRW_MATH_PRECISION_FULL);
 
 	 brw_set_default_access_mode(p, BRW_ALIGN_16);
@@ -672,7 +666,7 @@ void brw_emit_point_sprite_setup(struct brw_sf_compile *c, bool allocate)
  */
 void brw_emit_point_setup(struct brw_sf_compile *c, bool allocate)
 {
-   struct brw_compile *p = &c->func;
+   struct brw_codegen *p = &c->func;
    GLuint i;
 
    c->flag_value = 0xff;
@@ -693,7 +687,7 @@ void brw_emit_point_setup(struct brw_sf_compile *c, bool allocate)
       bool last = calculate_masks(c, i, &pc, &pc_persp, &pc_linear);
 
       if (pc_persp)
-      {				
+      {
 	 /* This seems odd as the values are all constant, but the
 	  * fragment shader will be expecting it:
 	  */
@@ -731,8 +725,7 @@ void brw_emit_point_setup(struct brw_sf_compile *c, bool allocate)
 
 void brw_emit_anyprim_setup( struct brw_sf_compile *c )
 {
-   struct brw_compile *p = &c->func;
-   struct brw_context *brw = p->brw;
+   struct brw_codegen *p = &c->func;
    struct brw_reg payload_prim = brw_uw1_reg(BRW_GENERAL_REGISTER_FILE, 1, 0);
    struct brw_reg payload_attr = get_element_ud(brw_vec1_reg(BRW_GENERAL_REGISTER_FILE, 1, 0), 0);
    struct brw_reg primmask;
@@ -754,7 +747,7 @@ void brw_emit_anyprim_setup( struct brw_sf_compile *c )
 					       (1<<_3DPRIM_POLYGON) |
 					       (1<<_3DPRIM_RECTLIST) |
 					       (1<<_3DPRIM_TRIFAN_NOSTIPPLE)));
-   brw_inst_set_cond_modifier(brw, brw_last_inst, BRW_CONDITIONAL_Z);
+   brw_inst_set_cond_modifier(p->devinfo, brw_last_inst, BRW_CONDITIONAL_Z);
    jmp = brw_JMPI(p, brw_imm_d(0), BRW_PREDICATE_NORMAL) - p->store;
    brw_emit_tri_setup(c, false);
    brw_land_fwd_jump(p, jmp);
@@ -765,13 +758,13 @@ void brw_emit_anyprim_setup( struct brw_sf_compile *c )
 					       (1<<_3DPRIM_LINESTRIP_CONT) |
 					       (1<<_3DPRIM_LINESTRIP_BF) |
 					       (1<<_3DPRIM_LINESTRIP_CONT_BF)));
-   brw_inst_set_cond_modifier(brw, brw_last_inst, BRW_CONDITIONAL_Z);
+   brw_inst_set_cond_modifier(p->devinfo, brw_last_inst, BRW_CONDITIONAL_Z);
    jmp = brw_JMPI(p, brw_imm_d(0), BRW_PREDICATE_NORMAL) - p->store;
    brw_emit_line_setup(c, false);
    brw_land_fwd_jump(p, jmp);
 
    brw_AND(p, v1_null_ud, payload_attr, brw_imm_ud(1<<BRW_SPRITE_POINT_ENABLE));
-   brw_inst_set_cond_modifier(brw, brw_last_inst, BRW_CONDITIONAL_Z);
+   brw_inst_set_cond_modifier(p->devinfo, brw_last_inst, BRW_CONDITIONAL_Z);
    jmp = brw_JMPI(p, brw_imm_d(0), BRW_PREDICATE_NORMAL) - p->store;
    brw_emit_point_sprite_setup(c, false);
    brw_land_fwd_jump(p, jmp);

@@ -74,31 +74,23 @@ _mesa_texstore_needs_transfer_ops(struct gl_context *ctx,
                                   GLenum baseInternalFormat,
                                   mesa_format dstFormat);
 
+extern void
+_mesa_memcpy_texture(struct gl_context *ctx,
+                     GLuint dimensions,
+                     mesa_format dstFormat,
+                     GLint dstRowStride,
+                     GLubyte **dstSlices,
+                     GLint srcWidth, GLint srcHeight, GLint srcDepth,
+                     GLenum srcFormat, GLenum srcType,
+                     const GLvoid *srcAddr,
+                     const struct gl_pixelstore_attrib *srcPacking);
+
 extern GLboolean
 _mesa_texstore_can_use_memcpy(struct gl_context *ctx,
                               GLenum baseInternalFormat, mesa_format dstFormat,
                               GLenum srcFormat, GLenum srcType,
                               const struct gl_pixelstore_attrib *srcPacking);
 
-
-extern GLubyte *
-_mesa_make_temp_ubyte_image(struct gl_context *ctx, GLuint dims,
-                           GLenum logicalBaseFormat,
-                           GLenum textureBaseFormat,
-                           GLint srcWidth, GLint srcHeight, GLint srcDepth,
-                           GLenum srcFormat, GLenum srcType,
-                           const GLvoid *srcAddr,
-                           const struct gl_pixelstore_attrib *srcPacking);
-
-GLfloat *
-_mesa_make_temp_float_image(struct gl_context *ctx, GLuint dims,
-			    GLenum logicalBaseFormat,
-			    GLenum textureBaseFormat,
-			    GLint srcWidth, GLint srcHeight, GLint srcDepth,
-			    GLenum srcFormat, GLenum srcType,
-			    const GLvoid *srcAddr,
-			    const struct gl_pixelstore_attrib *srcPacking,
-			    GLbitfield transferOps);
 
 extern void
 _mesa_store_teximage(struct gl_context *ctx,
