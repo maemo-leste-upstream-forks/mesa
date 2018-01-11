@@ -2486,6 +2486,7 @@ static const struct wl_drm_components_descriptor {
    { __DRI_IMAGE_COMPONENTS_Y_U_V, EGL_TEXTURE_Y_U_V_WL, 3 },
    { __DRI_IMAGE_COMPONENTS_Y_UV, EGL_TEXTURE_Y_UV_WL, 2 },
    { __DRI_IMAGE_COMPONENTS_Y_XUXV, EGL_TEXTURE_Y_XUXV_WL, 2 },
+   { __DRI_IMAGE_COMPONENTS_EXTERNAL, EGL_TEXTURE_EXTERNAL_WL, 1 },
 };
 
 static _EGLImage *
