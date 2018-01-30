@@ -1140,6 +1140,25 @@
 
 </category>
 
+<category name="GL_EXT_multi_draw_indirect" number="205">
+
+    <function name="MultiDrawArraysIndirectEXT" es2="3.1" exec="dynamic">
+        <param name="mode" type="GLenum"/>
+        <param name="indirect" type="const GLvoid *"/>
+        <param name="drawcount" type="GLsizei"/>
+        <param name="stride" type="GLsizei"/>
+    </function>
+
+    <function name="MultiDrawElementsIndirectEXT" es2="3.1" exec="dynamic">
+        <param name="mode" type="GLenum"/>
+        <param name="type" type="GLenum"/>
+        <param name="indirect" type="const GLvoid *"/>
+        <param name="drawcount" type="GLsizei"/>
+        <param name="stride" type="GLsizei"/>
+    </function>
+
+</category>
+
 <category name="GL_EXT_copy_image" number="208">
 
     <function name="CopyImageSubDataEXT" alias="CopyImageSubData" es2="3.0">
