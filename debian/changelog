@@ -21,7 +21,11 @@ mesa (17.3.4-1) unstable; urgency=medium
 
 mesa (17.3.3-1~bpo9+1) UNRELEASED; urgency=medium
 
+  [ Jérémy Viès ]
   * Rebuild for stretch-backports.
+
+  [ Andreas Boll ]
+  * Bump vulkan dependency to use vulkan from backports.
 
  -- Jérémy Viès <jeremy.vies@gmail.com>  Mon, 05 Feb 2018 20:07:01 +0100
 
