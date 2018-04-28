@@ -1286,7 +1286,8 @@ static LLVMValueRef emit_bcsel(struct ac_llvm_context *ctx,
 {
 	LLVMValueRef v = LLVMBuildICmp(ctx->builder, LLVMIntNE, src0,
 				       ctx->i32_0, "");
-	return LLVMBuildSelect(ctx->builder, v, src1, src2, "");
+	return LLVMBuildSelect(ctx->builder, v, ac_to_integer(ctx, src1),
+			       ac_to_integer(ctx, src2), "");
 }
 
 static LLVMValueRef emit_find_lsb(struct ac_llvm_context *ctx,
@@ -1773,16 +1774,16 @@ static void visit_alu(struct ac_nir_context *ctx, const nir_alu_instr *instr)
 		result = emit_int_cmp(&ctx->ac, LLVMIntUGE, src[0], src[1]);
 		break;
 	case nir_op_feq:
-		result = emit_float_cmp(&ctx->ac, LLVMRealUEQ, src[0], src[1]);
+		result = emit_float_cmp(&ctx->ac, LLVMRealOEQ, src[0], src[1]);
 		break;
 	case nir_op_fne:
 		result = emit_float_cmp(&ctx->ac, LLVMRealUNE, src[0], src[1]);
 		break;
 	case nir_op_flt:
-		result = emit_float_cmp(&ctx->ac, LLVMRealULT, src[0], src[1]);
+		result = emit_float_cmp(&ctx->ac, LLVMRealOLT, src[0], src[1]);
 		break;
 	case nir_op_fge:
-		result = emit_float_cmp(&ctx->ac, LLVMRealUGE, src[0], src[1]);
+		result = emit_float_cmp(&ctx->ac, LLVMRealOGE, src[0], src[1]);
 		break;
 	case nir_op_fabs:
 		result = emit_intrin_1f_param(&ctx->ac, "llvm.fabs",
@@ -2256,11 +2257,19 @@ static LLVMValueRef build_tex_intrinsic(struct ac_nir_context *ctx,
 					struct ac_image_args *args)
 {
 	if (instr->sampler_dim == GLSL_SAMPLER_DIM_BUF) {
-		return ac_build_buffer_load_format(&ctx->ac,
-						   args->resource,
-						   args->addr,
-						   LLVMConstInt(ctx->ac.i32, 0, false),
-						   true);
+		if (ctx->abi->gfx9_stride_size_workaround) {
+			return ac_build_buffer_load_format_gfx9_safe(&ctx->ac,
+								     args->resource,
+								     args->addr,
+								     ctx->ac.i32_0,
+								     true);
+		} else {
+			return ac_build_buffer_load_format(&ctx->ac,
+							   args->resource,
+							   args->addr,
+							   ctx->ac.i32_0,
+							   true);
+		}
 	}
 
 	args->opcode = ac_image_sample;
@@ -2848,7 +2857,7 @@ get_dw_address(struct nir_to_llvm_context *ctx,
 						    LLVMConstInt(ctx->i32, 4, false), ""), "");
 	else if (const_index && !compact_const_index)
 		dw_addr = LLVMBuildAdd(ctx->builder, dw_addr,
-				       LLVMConstInt(ctx->i32, const_index, false), "");
+				       LLVMConstInt(ctx->i32, const_index * 4, false), "");
 
 	dw_addr = LLVMBuildAdd(ctx->builder, dw_addr,
 			       LLVMConstInt(ctx->i32, param * 4, false), "");
@@ -3612,8 +3621,23 @@ static void visit_image_store(struct ac_nir_context *ctx,
 		glc = i1true;
 
 	if (glsl_get_sampler_dim(type) == GLSL_SAMPLER_DIM_BUF) {
+		LLVMValueRef rsrc = get_sampler_desc(ctx, instr->variables[0], AC_DESC_BUFFER, true, true);
+
+		if (ctx->abi->gfx9_stride_size_workaround) {
+			LLVMValueRef elem_count = LLVMBuildExtractElement(ctx->ac.builder, rsrc, LLVMConstInt(ctx->ac.i32, 2, 0), "");
+			LLVMValueRef stride = LLVMBuildExtractElement(ctx->ac.builder, rsrc, LLVMConstInt(ctx->ac.i32, 1, 0), "");
+			stride = LLVMBuildLShr(ctx->ac.builder, stride, LLVMConstInt(ctx->ac.i32, 16, 0), "");
+
+			LLVMValueRef new_elem_count = LLVMBuildSelect(ctx->ac.builder,
+			                                              LLVMBuildICmp(ctx->ac.builder, LLVMIntUGT, elem_count, stride, ""),
+			                                              elem_count, stride, "");
+
+			rsrc = LLVMBuildInsertElement(ctx->ac.builder, rsrc, new_elem_count,
+			                              LLVMConstInt(ctx->ac.i32, 2, 0), "");
+		}
+
 		params[0] = ac_to_float(&ctx->ac, get_src(ctx, instr->src[2])); /* data */
-		params[1] = get_sampler_desc(ctx, instr->variables[0], AC_DESC_BUFFER, true, true);
+		params[1] = rsrc;
 		params[2] = LLVMBuildExtractElement(ctx->ac.builder, get_src(ctx, instr->src[0]),
 						    ctx->ac.i32_0, ""); /* vindex */
 		params[3] = ctx->ac.i32_0; /* voffset */
@@ -4774,7 +4798,7 @@ static void visit_tex(struct ac_nir_context *ctx, nir_tex_instr *instr)
 			/* This seems like a bit of a hack - but it passes Vulkan CTS with it */
 			if (instr->sampler_dim != GLSL_SAMPLER_DIM_3D &&
 			    instr->sampler_dim != GLSL_SAMPLER_DIM_CUBE &&
-			    instr->op != nir_texop_txf) {
+			    instr->op != nir_texop_txf && instr->op != nir_texop_txf_ms) {
 				coords[2] = apply_round_slice(&ctx->ac, coords[2]);
 			}
 			address[count++] = coords[2];
@@ -4960,17 +4984,15 @@ static void visit_ssa_undef(struct ac_nir_context *ctx,
 	_mesa_hash_table_insert(ctx->defs, &instr->def, undef);
 }
 
-static void visit_jump(struct ac_nir_context *ctx,
+static void visit_jump(struct ac_llvm_context *ctx,
 		       const nir_jump_instr *instr)
 {
 	switch (instr->type) {
 	case nir_jump_break:
-		LLVMBuildBr(ctx->ac.builder, ctx->break_block);
-		LLVMClearInsertionPosition(ctx->ac.builder);
+		ac_build_break(ctx);
 		break;
 	case nir_jump_continue:
-		LLVMBuildBr(ctx->ac.builder, ctx->continue_block);
-		LLVMClearInsertionPosition(ctx->ac.builder);
+		ac_build_continue(ctx);
 		break;
 	default:
 		fprintf(stderr, "Unknown NIR jump instr: ");
@@ -5008,7 +5030,7 @@ static void visit_block(struct ac_nir_context *ctx, nir_block *block)
 			visit_ssa_undef(ctx, nir_instr_as_ssa_undef(instr));
 			break;
 		case nir_instr_type_jump:
-			visit_jump(ctx, nir_instr_as_jump(instr));
+			visit_jump(&ctx->ac, nir_instr_as_jump(instr));
 			break;
 		default:
 			fprintf(stderr, "Unknown NIR instr type: ");
@@ -5025,56 +5047,34 @@ static void visit_if(struct ac_nir_context *ctx, nir_if *if_stmt)
 {
 	LLVMValueRef value = get_src(ctx, if_stmt->condition);
 
-	LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->ac.builder));
-	LLVMBasicBlockRef merge_block =
-	    LLVMAppendBasicBlockInContext(ctx->ac.context, fn, "");
-	LLVMBasicBlockRef if_block =
-	    LLVMAppendBasicBlockInContext(ctx->ac.context, fn, "");
-	LLVMBasicBlockRef else_block = merge_block;
-	if (!exec_list_is_empty(&if_stmt->else_list))
-		else_block = LLVMAppendBasicBlockInContext(
-		    ctx->ac.context, fn, "");
+	nir_block *then_block =
+		(nir_block *) exec_list_get_head(&if_stmt->then_list);
 
-	LLVMValueRef cond = LLVMBuildICmp(ctx->ac.builder, LLVMIntNE, value,
-	                                  LLVMConstInt(ctx->ac.i32, 0, false), "");
-	LLVMBuildCondBr(ctx->ac.builder, cond, if_block, else_block);
+	ac_build_uif(&ctx->ac, value, then_block->index);
 
-	LLVMPositionBuilderAtEnd(ctx->ac.builder, if_block);
 	visit_cf_list(ctx, &if_stmt->then_list);
-	if (LLVMGetInsertBlock(ctx->ac.builder))
-		LLVMBuildBr(ctx->ac.builder, merge_block);
 
 	if (!exec_list_is_empty(&if_stmt->else_list)) {
-		LLVMPositionBuilderAtEnd(ctx->ac.builder, else_block);
+		nir_block *else_block =
+			(nir_block *) exec_list_get_head(&if_stmt->else_list);
+
+		ac_build_else(&ctx->ac, else_block->index);
 		visit_cf_list(ctx, &if_stmt->else_list);
-		if (LLVMGetInsertBlock(ctx->ac.builder))
-			LLVMBuildBr(ctx->ac.builder, merge_block);
 	}
 
-	LLVMPositionBuilderAtEnd(ctx->ac.builder, merge_block);
+	ac_build_endif(&ctx->ac, then_block->index);
 }
 
 static void visit_loop(struct ac_nir_context *ctx, nir_loop *loop)
 {
-	LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->ac.builder));
-	LLVMBasicBlockRef continue_parent = ctx->continue_block;
-	LLVMBasicBlockRef break_parent = ctx->break_block;
+	nir_block *first_loop_block =
+		(nir_block *) exec_list_get_head(&loop->body);
 
-	ctx->continue_block =
-	    LLVMAppendBasicBlockInContext(ctx->ac.context, fn, "");
-	ctx->break_block =
-	    LLVMAppendBasicBlockInContext(ctx->ac.context, fn, "");
+	ac_build_bgnloop(&ctx->ac, first_loop_block->index);
 
-	LLVMBuildBr(ctx->ac.builder, ctx->continue_block);
-	LLVMPositionBuilderAtEnd(ctx->ac.builder, ctx->continue_block);
 	visit_cf_list(ctx, &loop->body);
 
-	if (LLVMGetInsertBlock(ctx->ac.builder))
-		LLVMBuildBr(ctx->ac.builder, ctx->continue_block);
-	LLVMPositionBuilderAtEnd(ctx->ac.builder, ctx->break_block);
-
-	ctx->continue_block = continue_parent;
-	ctx->break_block = break_parent;
+	ac_build_endloop(&ctx->ac, first_loop_block->index);
 }
 
 static void visit_cf_list(struct ac_nir_context *ctx,
@@ -5938,7 +5938,7 @@ handle_es_outputs_post(struct nir_to_llvm_context *ctx,
 	}
 
 	for (unsigned i = 0; i < RADEON_LLVM_MAX_OUTPUTS; ++i) {
-		LLVMValueRef dw_addr;
+		LLVMValueRef dw_addr = NULL;
 		LLVMValueRef *out_ptr = &ctx->nir->outputs[i * 4];
 		int param_index;
 		int length = 4;
@@ -6428,6 +6428,8 @@ static void ac_llvm_finalize_module(struct nir_to_llvm_context * ctx)
 
 	LLVMDisposeBuilder(ctx->builder);
 	LLVMDisposePassManager(passmgr);
+
+	ac_llvm_context_dispose(&ctx->ac);
 }
 
 static void
@@ -6644,6 +6646,7 @@ LLVMModuleRef ac_translate_nir_to_llvm(LLVMTargetMachineRef tm,
 	ctx.abi.load_ssbo = radv_load_ssbo;
 	ctx.abi.load_sampler_desc = radv_get_sampler_desc;
 	ctx.abi.clamp_shadow_reference = false;
+	ctx.abi.gfx9_stride_size_workaround = ctx.ac.chip_class == GFX9;
 
 	if (shader_count >= 2)
 		ac_init_exec_full_mask(&ctx.ac);
