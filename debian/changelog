@@ -6,7 +6,7 @@ mesa (17.3.6-1~bpo9+1) stretch-backports; urgency=medium
   [ Andreas Boll ]
   * Bump vulkan dependency to use vulkan from backports.
 
- -- Jérémy Viès <jeremy.vies@gmail.com>  Mon, 05 Feb 2018 20:07:01 +0100
+ -- Jérémy Viès <jeremy.vies@gmail.com>  Fri, 02 Mar 2018 13:53:25 +0100
 
 mesa (17.3.6-1) unstable; urgency=medium
 
