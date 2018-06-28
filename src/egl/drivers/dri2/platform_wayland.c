@@ -1456,8 +1456,6 @@ dri2_initialize_wayland_drm(_EGLDriver *drv, _EGLDisplay *disp)
    if (!dri2_dpy->is_different_gpu)
       disp->Extensions.WL_create_wayland_buffer_from_image = EGL_TRUE;
 
-   disp->Extensions.EXT_buffer_age = EGL_TRUE;
-
    disp->Extensions.EXT_swap_buffers_with_damage = EGL_TRUE;
 
    /* Fill vtbl last to prevent accidentally calling virtual function during

@@ -759,6 +759,9 @@ i915_query_renderer_integer(__DRIscreen *psp, int param, unsigned int *value)
    case __DRI2_RENDERER_HAS_TEXTURE_3D:
       value[0] = 1;
       return 0;
+   case __DRI2_RENDERER_EXPOSE_BUFFER_AGE:
+      value[0] = 1;
+      return 0;
    default:
       return driQueryRendererIntegerCommon(psp, param, value);
    }

@@ -827,6 +827,7 @@ dri3_create_screen(int screen, struct glx_display * priv)
    char *driverName, *tmp;
    int i;
    unsigned char disable;
+   unsigned int enable = 1;
 
    psc = calloc(1, sizeof *psc);
    if (psc == NULL)
@@ -978,9 +979,14 @@ dri3_create_screen(int screen, struct glx_display * priv)
    __glXEnableDirectExtension(&psc->base, "GLX_MESA_copy_sub_buffer");
 
    psp->getBufferAge = dri3_get_buffer_age;
-   if (psc->config->configQueryb(psc->driScreen,
-                                 "glx_disable_ext_buffer_age",
-                                 &disable) || !disable)
+   if (psc->rendererQuery)
+      psc->rendererQuery->queryInteger(psc->driScreen,
+                                       __DRI2_RENDERER_EXPOSE_BUFFER_AGE,
+                                       &enable);
+   if (enable &&
+       (psc->config->configQueryb(psc->driScreen,
+                                  "glx_disable_ext_buffer_age",
+                                  &disable) || !disable))
       __glXEnableDirectExtension(&psc->base, "GLX_EXT_buffer_age");
 
    free(driverName);

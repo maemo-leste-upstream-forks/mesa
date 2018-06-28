@@ -178,6 +178,9 @@ swrast_query_renderer_integer(__DRIscreen *psp, int param,
        */
       value[0] = 0;
       return 0;
+   case __DRI2_RENDERER_EXPOSE_BUFFER_AGE:
+      value[0] = 1;
+      return 0;
    default:
       return driQueryRendererIntegerCommon(psp, param, value);
    }

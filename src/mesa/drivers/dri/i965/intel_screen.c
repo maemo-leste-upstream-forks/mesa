@@ -1531,6 +1531,9 @@ brw_query_renderer_integer(__DRIscreen *dri_screen,
    case __DRI2_RENDERER_HAS_FRAMEBUFFER_SRGB:
       value[0] = 1;
       return 0;
+   case __DRI2_RENDERER_EXPOSE_BUFFER_AGE:
+      value[0] = 1;
+      return 0;
    default:
       return driQueryRendererIntegerCommon(dri_screen, param, value);
    }
