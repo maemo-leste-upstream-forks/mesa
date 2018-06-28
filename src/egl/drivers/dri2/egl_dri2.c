@@ -753,6 +753,9 @@ dri2_setup_screen(_EGLDisplay *disp)
 
    if (dri2_dpy->flush_control)
       disp->Extensions.KHR_context_flush_control = EGL_TRUE;
+
+   disp->Extensions.EXT_buffer_age =
+      dri2_renderer_query_integer(dri2_dpy, __DRI2_RENDERER_EXPOSE_BUFFER_AGE);
 }
 
 void

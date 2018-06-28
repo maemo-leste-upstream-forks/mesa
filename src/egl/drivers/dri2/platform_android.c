@@ -1584,7 +1584,6 @@ dri2_initialize_android(_EGLDriver *drv, _EGLDisplay *disp)
    disp->Extensions.ANDROID_framebuffer_target = EGL_TRUE;
    disp->Extensions.ANDROID_image_native_buffer = EGL_TRUE;
    disp->Extensions.ANDROID_recordable = EGL_TRUE;
-   disp->Extensions.EXT_buffer_age = EGL_TRUE;
 #if ANDROID_API_LEVEL >= 23
    disp->Extensions.KHR_partial_update = EGL_TRUE;
 #endif

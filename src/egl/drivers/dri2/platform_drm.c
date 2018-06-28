@@ -781,8 +781,8 @@ dri2_initialize_drm(_EGLDriver *drv, _EGLDisplay *disp)
    }
 
    disp->Extensions.KHR_image_pixmap = EGL_TRUE;
-   if (dri2_dpy->dri2)
-      disp->Extensions.EXT_buffer_age = EGL_TRUE;
+   if (!dri2_dpy->dri2)
+      disp->Extensions.EXT_buffer_age = EGL_FALSE;
 
 #ifdef HAVE_WAYLAND_PLATFORM
    dri2_dpy->device_name = loader_get_device_name_for_fd(dri2_dpy->fd);

@@ -530,6 +530,9 @@ radeonQueryRendererInteger(__DRIscreen *psp, int param,
    case __DRI2_RENDERER_UNIFIED_MEMORY_ARCHITECTURE:
       value[0] = 0;
       return 0;
+   case __DRI2_RENDERER_EXPOSE_BUFFER_AGE:
+      value[0] = 1;
+      return 0;
    default:
       return driQueryRendererIntegerCommon(psp, param, value);
    }
