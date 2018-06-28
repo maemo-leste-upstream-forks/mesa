@@ -388,7 +388,12 @@ _eglQuerySurface(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurface *surface,
       *value = surface->PostSubBufferSupportedNV;
       break;
    case EGL_BUFFER_AGE_EXT:
-      if (!dpy->Extensions.EXT_buffer_age)
+      /* EGL_BUFFER_AGE_EXT belong to EGL_EXT_buffer_age
+       * EGL_BUFFER_AGE_KHR belong to EGL_KHR_partial_update
+       * but EGL_BUFFER_AGE_EXT == EGL_BUFFER_AGE_KHR by value
+       */
+      if (!dpy->Extensions.EXT_buffer_age &&
+          !dpy->Extensions.KHR_partial_update)
          return _eglError(EGL_BAD_ATTRIBUTE, "eglQuerySurface");
 
       _EGLContext *ctx = _eglGetCurrentContext();
