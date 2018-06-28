@@ -477,6 +477,7 @@ subpixel precision bias in bits during conservative rasterization.
   0 means no limit.
 * ``PIPE_CAP_MAX_VERTEX_ELEMENT_SRC_OFFSET``: The maximum supported value for
   of pipe_vertex_element::src_offset.
+* ``PIPE_CAP_BUFFER_AGE``: True if the driver wants to expose EGL/GLX_EXT_buffer_age.
 
 .. _pipe_capf:
 
