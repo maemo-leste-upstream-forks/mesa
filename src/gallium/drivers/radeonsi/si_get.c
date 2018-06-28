@@ -187,6 +187,7 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_TGSI_BALLOT:
 	case PIPE_CAP_TGSI_VOTE:
 	case PIPE_CAP_TGSI_FS_FBFETCH:
+	case PIPE_CAP_BUFFER_AGE:
 		return 1;
 
 	case PIPE_CAP_RESOURCE_FROM_USER_MEMORY:

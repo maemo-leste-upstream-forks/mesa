@@ -199,6 +199,7 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
 	case PIPE_CAP_TEXTURE_BARRIER:
 	case PIPE_CAP_INVALIDATE_BUFFER:
+	case PIPE_CAP_BUFFER_AGE:
 		return 1;
 
 	case PIPE_CAP_VERTEXID_NOBASE:

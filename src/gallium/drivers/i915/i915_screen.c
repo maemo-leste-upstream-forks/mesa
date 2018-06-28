@@ -205,6 +205,7 @@ i915_get_param(struct pipe_screen *screen, enum pipe_cap cap)
    case PIPE_CAP_VERTEX_COLOR_CLAMPED:
    case PIPE_CAP_USER_VERTEX_BUFFERS:
    case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
+   case PIPE_CAP_BUFFER_AGE:
       return 1;
 
    /* Unsupported features (boolean caps). */

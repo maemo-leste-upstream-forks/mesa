@@ -251,6 +251,7 @@ swr_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_CULL_DISTANCE:
    case PIPE_CAP_CUBE_MAP_ARRAY:
    case PIPE_CAP_DOUBLES:
+   case PIPE_CAP_BUFFER_AGE:
       return 1;
 
    /* MSAA support

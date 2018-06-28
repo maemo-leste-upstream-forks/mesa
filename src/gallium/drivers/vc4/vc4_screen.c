@@ -146,6 +146,7 @@ vc4_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
         case PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY:
         case PIPE_CAP_ALLOW_MAPPED_BUFFERS_DURING_EXECUTION:
         case PIPE_CAP_TEXTURE_BARRIER:
+        case PIPE_CAP_BUFFER_AGE:
                 return 1;
 
         case PIPE_CAP_NATIVE_FENCE_FD:
