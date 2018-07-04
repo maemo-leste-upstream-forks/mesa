@@ -1667,7 +1667,7 @@ dri2_set_damage_region(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurface *surf,
                        EGLint *rects, EGLint n_rects)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(dpy);
-   return dri2_dpy->vtbl->set_damage_region(drv, dpy, surf, rects, n_rects);
+   return false;
 }
 
 static EGLBoolean
