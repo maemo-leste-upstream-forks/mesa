@@ -83,6 +83,7 @@ typedef struct __DRI2throttleExtensionRec	__DRI2throttleExtension;
 typedef struct __DRI2fenceExtensionRec          __DRI2fenceExtension;
 typedef struct __DRI2interopExtensionRec	__DRI2interopExtension;
 typedef struct __DRI2blobExtensionRec           __DRI2blobExtension;
+typedef struct __DRI2damageExtensionRec         __DRI2damageExtension;
 
 typedef struct __DRIimageLoaderExtensionRec     __DRIimageLoaderExtension;
 typedef struct __DRIimageDriverExtensionRec     __DRIimageDriverExtension;
@@ -460,6 +461,30 @@ struct __DRI2fenceExtensionRec {
    int (*get_fence_fd)(__DRIscreen *screen, void *fence);
 };
 
+/**
+ * Extension for damage rendering
+ */
+
+#define __DRI2_DAMAGE "DRI2_Damage"
+#define __DRI2_DAMAGE_VERSION 1
+
+struct __DRI2damageExtensionRec {
+   __DRIextension base;
+
+   /**
+    * Provides rectangles to the driver to restrict its rendering
+    * to those rectangles.
+    *
+    * \param ctx     the context where commands are flushed
+    * \param size    total elements in the array
+    * \param rects   the array of rectangles
+    *
+    * Calling this function with size: 0 and rects: NULL should reset the
+    * damage to the full surface.
+    */
+   GLboolean (*set_damage_region)(__DRIcontext *ctx, GLuint size, GLint *rects);
+
+};
 
 /**
  * Extension for API interop.
