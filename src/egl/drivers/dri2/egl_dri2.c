@@ -430,6 +430,7 @@ static const struct dri2_extension_match optional_core_extensions[] = {
    { __DRI2_NO_ERROR, 1, offsetof(struct dri2_egl_display, no_error) },
    { __DRI2_CONFIG_QUERY, 1, offsetof(struct dri2_egl_display, config) },
    { __DRI2_FENCE, 1, offsetof(struct dri2_egl_display, fence) },
+   { __DRI2_DAMAGE, 1, offsetof(struct dri2_egl_display, damage_extension) },
    { __DRI2_RENDERER_QUERY, 1, offsetof(struct dri2_egl_display, rendererQuery) },
    { __DRI2_INTEROP, 1, offsetof(struct dri2_egl_display, interop) },
    { __DRI_IMAGE, 1, offsetof(struct dri2_egl_display, image) },
@@ -871,6 +872,9 @@ dri2_setup_extensions(_EGLDisplay *disp)
 #endif
 
    dri2_bind_extensions(dri2_dpy, optional_core_extensions, extensions, true);
+   if (dri2_dpy->damage_extension)
+      disp->Extensions.KHR_partial_update = true;
+
    return EGL_TRUE;
 }
 
@@ -1663,10 +1667,20 @@ dri2_swap_buffers(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurface *surf)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(dpy);
    _EGLContext *ctx = _eglGetCurrentContext();
+   __DRIcontext *dri_ctx = dri2_egl_context(ctx)->dri_context;
+   int ret;
 
    if (ctx && surf)
       dri2_surf_update_fence_fd(ctx, dpy, surf);
-   return dri2_dpy->vtbl->swap_buffers(drv, dpy, surf);
+   ret = dri2_dpy->vtbl->swap_buffers(drv, dpy, surf);
+
+   /* Successfully swapped the buffer.
+    * This marks the end of frame boundary.
+    * Set the damage rects back to full again.
+    */
+   if (ret && dri2_dpy->damage_extension)
+      dri2_dpy->damage_extension->set_damage_region(dri_ctx, 0, NULL);
+   return ret;
 }
 
 static EGLBoolean
@@ -1676,11 +1690,20 @@ dri2_swap_buffers_with_damage(_EGLDriver *drv, _EGLDisplay *dpy,
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(dpy);
    _EGLContext *ctx = _eglGetCurrentContext();
+   __DRIcontext *dri_ctx = dri2_egl_context(ctx)->dri_context;
+   int ret;
 
    if (ctx && surf)
       dri2_surf_update_fence_fd(ctx, dpy, surf);
-   return dri2_dpy->vtbl->swap_buffers_with_damage(drv, dpy, surf,
+   ret = dri2_dpy->vtbl->swap_buffers_with_damage(drv, dpy, surf,
                                                    rects, n_rects);
+   /* Successfully swapped the buffer.
+    * This marks the end of frame boundary.
+    * Set the damage rects back to full again.
+    */
+   if (ret && dri2_dpy->damage_extension)
+      dri2_dpy->damage_extension->set_damage_region(dri_ctx, 0, NULL);
+   return ret;
 }
 
 static EGLBoolean
@@ -1688,7 +1711,16 @@ dri2_swap_buffers_region(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurface *surf,
                          EGLint numRects, const EGLint *rects)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(dpy);
-   return dri2_dpy->vtbl->swap_buffers_region(drv, dpy, surf, numRects, rects);
+   _EGLContext *ctx = _eglGetCurrentContext();
+   __DRIcontext *dri_ctx = dri2_egl_context(ctx)->dri_context;
+   int ret = dri2_dpy->vtbl->swap_buffers_region(drv, dpy, surf, numRects, rects);
+   /* Successfully swapped the buffer.
+    * This marks the end of frame boundary.
+    * Set the damage rects back to full again.
+    */
+   if (ret && dri2_dpy->damage_extension)
+      dri2_dpy->damage_extension->set_damage_region(dri_ctx, 0, NULL);
+   return ret;
 }
 
 static EGLBoolean
@@ -1696,7 +1728,13 @@ dri2_set_damage_region(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurface *surf,
                        EGLint *rects, EGLint n_rects)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(dpy);
-   return false;
+
+   _EGLContext *ctx = _eglGetCurrentContext();
+   __DRIcontext *dri_ctx = dri2_egl_context(ctx)->dri_context;
+   if (dri2_dpy->damage_extension)
+      return dri2_dpy->damage_extension->set_damage_region(dri_ctx, n_rects, rects);
+   else
+      return false;
 }
 
 static EGLBoolean
