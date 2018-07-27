@@ -98,6 +98,11 @@ if HAVE_GALLIUM_VIRGL
 SUBDIRS += drivers/virgl winsys/virgl/drm winsys/virgl/vtest
 endif
 
+## lima
+if HAVE_GALLIUM_LIMA
+SUBDIRS += drivers/lima winsys/lima/drm
+endif
+
 ## the sw winsys'
 SUBDIRS += winsys/sw/null
 
