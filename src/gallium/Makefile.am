@@ -103,6 +103,10 @@ if HAVE_GALLIUM_LIMA
 SUBDIRS += drivers/lima winsys/lima/drm
 endif
 
+if HAVE_GALLIUM_SUN4I
+SUBDIRS += drivers/sun4i winsys/sun4i/drm
+endif
+
 ## the sw winsys'
 SUBDIRS += winsys/sw/null
 

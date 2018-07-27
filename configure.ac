@@ -1366,7 +1366,7 @@ GALLIUM_DRIVERS_DEFAULT="r300,r600,svga,swrast"
 AC_ARG_WITH([gallium-drivers],
     [AS_HELP_STRING([--with-gallium-drivers@<:@=DIRS...@:>@],
         [comma delimited Gallium drivers list, e.g.
-        "i915,nouveau,r300,r600,radeonsi,freedreno,pl111,svga,swrast,swr,tegra,v3d,vc4,virgl,etnaviv,imx,lima"
+        "i915,nouveau,r300,r600,radeonsi,freedreno,pl111,svga,swrast,swr,tegra,v3d,vc4,virgl,etnaviv,imx,lima,sun4i"
         @<:@default=r300,r600,svga,swrast@:>@])],
     [with_gallium_drivers="$withval"],
     [with_gallium_drivers="$GALLIUM_DRIVERS_DEFAULT"])
@@ -2807,6 +2807,9 @@ if test -n "$with_gallium_drivers"; then
             HAVE_GALLIUM_LIMA=yes
             require_libdrm "lima"
             ;;
+        xsun4i)
+            HAVE_GALLIUM_SUN4I=yes
+            ;;
         *)
             AC_MSG_ERROR([Unknown Gallium driver: $driver])
             ;;
@@ -2842,6 +2845,10 @@ fi
 
 if test "x$HAVE_GALLIUM_NOUVEAU" != xyes -a "x$HAVE_GALLIUM_TEGRA" = xyes; then
     AC_MSG_ERROR([Building with tegra requires nouveau])
+fi
+
+if test "x$HAVE_GALLIUM_LIMA" != xyes -a "x$HAVE_GALLIUM_SUN4I" = xyes  ; then
+    AC_MSG_ERROR([Building with sun4i requires lima])
 fi
 
 detect_old_buggy_llvm() {
@@ -2952,6 +2959,7 @@ AM_CONDITIONAL(HAVE_GALLIUM_V3D, test "x$HAVE_GALLIUM_V3D" = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_VC4, test "x$HAVE_GALLIUM_VC4" = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_VIRGL, test "x$HAVE_GALLIUM_VIRGL" = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_LIMA, test "x$HAVE_GALLIUM_LIMA" = xyes)
+AM_CONDITIONAL(HAVE_GALLIUM_SUN4I, test "x$HAVE_GALLIUM_SUN4I" = xyes)
 
 AM_CONDITIONAL(HAVE_GALLIUM_STATIC_TARGETS, test "x$enable_shared_pipe_drivers" = xno)
 
@@ -3096,6 +3104,7 @@ AC_CONFIG_FILES([Makefile
                  src/gallium/drivers/vc4/Makefile
                  src/gallium/drivers/virgl/Makefile
                  src/gallium/drivers/lima/Makefile
+                 src/gallium/drivers/sun4i/Makefile
                  src/gallium/state_trackers/clover/Makefile
                  src/gallium/state_trackers/dri/Makefile
                  src/gallium/state_trackers/glx/xlib/Makefile
@@ -3146,6 +3155,7 @@ AC_CONFIG_FILES([Makefile
                  src/gallium/winsys/virgl/drm/Makefile
                  src/gallium/winsys/virgl/vtest/Makefile
                  src/gallium/winsys/lima/drm/Makefile
+                 src/gallium/winsys/sun4i/drm/Makefile
                  src/gbm/Makefile
                  src/gbm/main/gbm.pc
                  src/glx/Makefile
