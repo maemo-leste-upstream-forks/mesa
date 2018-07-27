@@ -107,6 +107,10 @@ if HAVE_GALLIUM_SUN4I
 SUBDIRS += drivers/sun4i winsys/sun4i/drm
 endif
 
+if HAVE_GALLIUM_EXYNOS
+SUBDIRS += drivers/exynos winsys/exynos/drm
+endif
+
 ## the sw winsys'
 SUBDIRS += winsys/sw/null
 

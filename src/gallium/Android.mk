@@ -49,6 +49,7 @@ SUBDIRS += winsys/etnaviv/drm drivers/etnaviv drivers/renderonly
 SUBDIRS += winsys/imx/drm
 SUBDIRS += winsys/lima/drm drivers/lima
 SUBDIRS += winsys/sun4i/drm drivers/sun4i
+SUBDIRS += winsys/exynos/drm drivers/exynos
 SUBDIRS += state_trackers/dri
 
 # sort to eliminate any duplicates
