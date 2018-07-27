@@ -99,4 +99,7 @@ DEFINE_LOADER_DRM_ENTRYPOINT(sun4i_drm)
 #if defined(GALLIUM_EXYNOS)
 DEFINE_LOADER_DRM_ENTRYPOINT(exynos)
 #endif
+#if defined(GALLIUM_MESON)
+DEFINE_LOADER_DRM_ENTRYPOINT(meson)
+#endif
 #endif

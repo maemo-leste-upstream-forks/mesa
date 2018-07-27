@@ -63,6 +63,9 @@ pipe_sun4i_create_screen(int fd, const struct pipe_screen_config *config);
 struct pipe_screen *
 pipe_exynos_create_screen(int fd, const struct pipe_screen_config *config);
 
+struct pipe_screen *
+pipe_meson_create_screen(int fd, const struct pipe_screen_config *config);
+
 const struct drm_conf_ret *
 pipe_default_configuration_query(enum drm_conf conf);
 
