@@ -111,6 +111,10 @@ if HAVE_GALLIUM_EXYNOS
 SUBDIRS += drivers/exynos winsys/exynos/drm
 endif
 
+if HAVE_GALLIUM_MESON
+SUBDIRS += drivers/meson winsys/meson/drm
+endif
+
 ## the sw winsys'
 SUBDIRS += winsys/sw/null
 

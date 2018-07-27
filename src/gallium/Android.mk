@@ -50,6 +50,7 @@ SUBDIRS += winsys/imx/drm
 SUBDIRS += winsys/lima/drm drivers/lima
 SUBDIRS += winsys/sun4i/drm drivers/sun4i
 SUBDIRS += winsys/exynos/drm drivers/exynos
+SUBDIRS += winsys/meson/drm drivers/meson
 SUBDIRS += state_trackers/dri
 
 # sort to eliminate any duplicates
