@@ -47,6 +47,7 @@ SUBDIRS += winsys/virgl/drm winsys/virgl/vtest drivers/virgl
 SUBDIRS += winsys/svga/drm drivers/svga
 SUBDIRS += winsys/etnaviv/drm drivers/etnaviv drivers/renderonly
 SUBDIRS += winsys/imx/drm
+SUBDIRS += winsys/lima/drm drivers/lima
 SUBDIRS += state_trackers/dri
 
 # sort to eliminate any duplicates
