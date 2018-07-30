@@ -64,7 +64,7 @@ lima_resource_create_scanout(struct pipe_screen *pscreen,
    if (!scanout)
       return NULL;
 
-   assert(handle.type == DRM_API_HANDLE_TYPE_FD);
+   assert(handle.type == WINSYS_HANDLE_TYPE_FD);
    pres = pscreen->resource_from_handle(pscreen, templat, &handle,
                                         PIPE_HANDLE_USAGE_WRITE);
 
@@ -315,7 +315,7 @@ lima_resource_get_handle(struct pipe_screen *pscreen,
    else
       handle->modifier = DRM_FORMAT_MOD_LINEAR;
 
-   if (handle->type == DRM_API_HANDLE_TYPE_KMS && screen->ro &&
+   if (handle->type == WINSYS_HANDLE_TYPE_KMS && screen->ro &&
        renderonly_get_handle(res->scanout, handle))
       return TRUE;
 
