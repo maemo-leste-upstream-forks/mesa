@@ -228,7 +228,7 @@ bool lima_bo_export(struct lima_bo *bo, struct winsys_handle *handle)
    struct lima_screen *screen = bo->screen;
 
    switch (handle->type) {
-   case DRM_API_HANDLE_TYPE_SHARED:
+   case WINSYS_HANDLE_TYPE_SHARED:
       if (!bo->flink_name) {
          struct drm_gem_flink flink = {
             .handle = bo->handle,
@@ -247,7 +247,7 @@ bool lima_bo_export(struct lima_bo *bo, struct winsys_handle *handle)
       handle->handle = bo->flink_name;
       return true;
 
-   case DRM_API_HANDLE_TYPE_KMS:
+   case WINSYS_HANDLE_TYPE_KMS:
       mtx_lock(&screen->bo_table_lock);
       util_hash_table_set(screen->bo_handles,
                           (void *)(uintptr_t)bo->handle, bo);
@@ -256,7 +256,7 @@ bool lima_bo_export(struct lima_bo *bo, struct winsys_handle *handle)
       handle->handle = bo->handle;
       return true;
 
-   case DRM_API_HANDLE_TYPE_FD:
+   case WINSYS_HANDLE_TYPE_FD:
       if (drmPrimeHandleToFD(screen->fd, bo->handle, DRM_CLOEXEC,
                              (int*)&handle->handle))
          return false;
@@ -283,7 +283,7 @@ struct lima_bo *lima_bo_import(struct lima_screen *screen,
    mtx_lock(&screen->bo_table_lock);
 
    /* Convert a DMA buf handle to a KMS handle now. */
-   if (handle->type == DRM_API_HANDLE_TYPE_FD) {
+   if (handle->type == WINSYS_HANDLE_TYPE_FD) {
       uint32_t prime_handle;
       off_t size;
 
@@ -307,12 +307,12 @@ struct lima_bo *lima_bo_import(struct lima_screen *screen,
    }
 
    switch (handle->type) {
-   case DRM_API_HANDLE_TYPE_SHARED:
+   case WINSYS_HANDLE_TYPE_SHARED:
       bo = util_hash_table_get(screen->bo_flink_names,
                                (void *)(uintptr_t)h);
       break;
-   case DRM_API_HANDLE_TYPE_KMS:
-   case DRM_API_HANDLE_TYPE_FD:
+   case WINSYS_HANDLE_TYPE_KMS:
+   case WINSYS_HANDLE_TYPE_FD:
       bo = util_hash_table_get(screen->bo_handles,
                                (void *)(uintptr_t)h);
       break;
@@ -329,7 +329,7 @@ struct lima_bo *lima_bo_import(struct lima_screen *screen,
 
    if (!(bo = calloc(1, sizeof(*bo)))) {
       mtx_unlock(&screen->bo_table_lock);
-      if (handle->type == DRM_API_HANDLE_TYPE_FD)
+      if (handle->type == WINSYS_HANDLE_TYPE_FD)
          lima_close_kms_handle(screen, h);
       return NULL;
    }
@@ -338,7 +338,7 @@ struct lima_bo *lima_bo_import(struct lima_screen *screen,
    p_atomic_set(&bo->refcnt, 1);
 
    switch (handle->type) {
-   case DRM_API_HANDLE_TYPE_SHARED:
+   case WINSYS_HANDLE_TYPE_SHARED:
       req.name = h;
       if (drmIoctl(screen->fd, DRM_IOCTL_GEM_OPEN, &req)) {
          mtx_unlock(&screen->bo_table_lock);
@@ -352,7 +352,7 @@ struct lima_bo *lima_bo_import(struct lima_screen *screen,
       util_hash_table_set(screen->bo_flink_names,
                           (void *)(uintptr_t)bo->flink_name, bo);
       break;
-   case DRM_API_HANDLE_TYPE_FD:
+   case WINSYS_HANDLE_TYPE_FD:
       bo->handle = h;
       bo->size = dma_buf_size;
       break;
