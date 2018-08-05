@@ -2069,6 +2069,21 @@ static const __DRI2configQueryExtension dri2GalliumConfigQueryExtension = {
    .configQueryf        = dri2GalliumConfigQueryf,
 };
 
+static GLboolean
+dri2SetDamageRegion(__DRIcontext *context, GLuint size, GLint *rects)
+{
+   struct dri_context *ctx = dri_context(context);
+   struct pipe_context *pipe = ctx->st->pipe;
+
+   return pipe->set_damage_region(pipe, size, rects);
+}
+
+static const __DRI2damageExtension dri2DamageExtension = {
+   .base = { __DRI2_DAMAGE, 1 },
+
+   .set_damage_region   = dri2SetDamageRegion,
+};
+
 /*
  * Backend function init_screen.
  */
@@ -2099,7 +2114,7 @@ dri2_init_screen(__DRIscreen * sPriv)
    struct pipe_screen *pscreen = NULL;
    const struct drm_conf_ret *throttle_ret;
    const struct drm_conf_ret *dmabuf_ret;
-   const int num_optional_extensions = 1;
+   const int num_optional_extensions = 2;
    const int num_extensions =
       ARRAY_SIZE(dri_screen_extensions) + num_optional_extensions;
    const __DRIextension **extensions, **optional_extensions;
@@ -2157,8 +2172,13 @@ dri2_init_screen(__DRIscreen * sPriv)
    }
 
    if (pscreen->get_param(pscreen, PIPE_CAP_DEVICE_RESET_STATUS_QUERY)) {
-      *optional_extensions = &dri2Robustness.base;
       screen->has_reset_status_query = true;
+      *optional_extensions = &dri2Robustness.base;
+      optional_extensions++;
+   }
+
+   if (pscreen->get_param(pscreen, PIPE_CAP_SET_DAMAGE)) {
+      *optional_extensions = &dri2DamageExtension.base;
       optional_extensions++;
    }
 

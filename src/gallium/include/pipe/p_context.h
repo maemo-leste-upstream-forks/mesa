@@ -934,6 +934,17 @@ struct pipe_context {
    void (*set_context_param)(struct pipe_context *ctx,
                              enum pipe_context_param param,
                              unsigned value);
+   /**
+    * Set draw damage region
+    *
+    * For implementing EGL_KHR_partial_update. This is a hint for
+    * driver to skip un-damaged region re-draw as an optimization.
+    *
+    * \param ctx        pipe context
+    * \param num_rects  number of rectangles
+    * \patam rects      rectangle array
+    */
+   boolean (*set_damage_region)(struct pipe_context *ctx, unsigned num_rects, int *rects);
 };
 
 
