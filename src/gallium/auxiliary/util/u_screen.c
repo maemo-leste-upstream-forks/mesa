@@ -332,6 +332,9 @@ u_pipe_screen_get_param_defaults(struct pipe_screen *pscreen,
    case PIPE_CAP_BUFFER_AGE:
       return 1;
 
+   case PIPE_CAP_SET_DAMAGE:
+      return 0;
+
    default:
       unreachable("bad PIPE_CAP_*");
    }
