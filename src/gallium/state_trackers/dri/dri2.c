@@ -2057,20 +2057,6 @@ static const __DRIextension *dri_screen_extensions[] = {
    NULL
 };
 
-static const __DRIextension *dri_robust_screen_extensions[] = {
-   &driTexBufferExtension.base,
-   &dri2FlushExtension.base,
-   &dri2ImageExtension.base,
-   &dri2RendererQueryExtension.base,
-   &dri2GalliumConfigQueryExtension.base,
-   &dri2ThrottleExtension.base,
-   &dri2FenceExtension.base,
-   &dri2InteropExtension.base,
-   &dri2Robustness.base,
-   &dri2NoErrorExtension.base,
-   NULL
-};
-
 /**
  * This is the driver specific part of the createNewScreen entry point.
  *
@@ -2084,11 +2070,20 @@ dri2_init_screen(__DRIscreen * sPriv)
    struct pipe_screen *pscreen = NULL;
    const struct drm_conf_ret *throttle_ret;
    const struct drm_conf_ret *dmabuf_ret;
+   const int num_optional_extensions = 1;
+   const int num_extensions =
+      ARRAY_SIZE(dri_screen_extensions) + num_optional_extensions;
+   const __DRIextension **extensions, **optional_extensions;
    int fd;
 
-   screen = CALLOC_STRUCT(dri_screen);
+   screen = CALLOC(1, sizeof(*screen) + sizeof(*extensions) * num_extensions);
    if (!screen)
       return NULL;
+
+   extensions = (const __DRIextension **)(screen + 1);
+   memcpy(extensions, dri_screen_extensions, sizeof(dri_screen_extensions));
+   optional_extensions = extensions + ARRAY_SIZE(dri_screen_extensions) - 1;
+   sPriv->extensions = extensions;
 
    screen->sPriv = sPriv;
    screen->fd = sPriv->fd;
@@ -2138,11 +2133,10 @@ dri2_init_screen(__DRIscreen * sPriv)
    }
 
    if (pscreen->get_param(pscreen, PIPE_CAP_DEVICE_RESET_STATUS_QUERY)) {
-      sPriv->extensions = dri_robust_screen_extensions;
+      *optional_extensions = &dri2Robustness.base;
       screen->has_reset_status_query = true;
+      optional_extensions++;
    }
-   else
-      sPriv->extensions = dri_screen_extensions;
 
    configs = dri_init_screen_helper(screen, pscreen);
    if (!configs)
