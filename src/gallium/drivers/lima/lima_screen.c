@@ -108,6 +108,7 @@ lima_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_ALLOW_MAPPED_BUFFERS_DURING_EXECUTION:
    case PIPE_CAP_FORCE_COMPUTE_MINMAX_INDICES:
    case PIPE_CAP_NATIVE_FENCE_FD:
+   case PIPE_CAP_SET_DAMAGE:
       return 1;
 
    /* Unimplemented, but for exporting OpenGL 2.0 */
