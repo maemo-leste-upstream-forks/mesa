@@ -473,6 +473,39 @@ lima_set_sampler_views(struct pipe_context *pctx,
    ctx->dirty |= LIMA_CONTEXT_DIRTY_TEXTURES;
 }
 
+static boolean
+lima_set_damage_region(struct pipe_context *pctx, unsigned num_rects, int *rects)
+{
+   struct lima_context *ctx = lima_context(pctx);
+   int i;
+
+   if (ctx->damage_region)
+      ralloc_free(ctx->damage_region);
+
+   if (!num_rects) {
+      ctx->damage_region = NULL;
+      ctx->num_damage = 0;
+      return true;
+   }
+
+   ctx->damage_region = ralloc_size(ctx, sizeof(*ctx->damage_region) * num_rects);
+   if (!ctx->damage_region) {
+      ctx->num_damage = 0;
+      return false;
+   }
+
+   for (i = 0; i < num_rects; i++) {
+      struct pipe_scissor_state *r = ctx->damage_region + i;
+      r->minx = rects[i * 4];
+      r->miny = rects[i * 4 + 1];
+      r->maxx = rects[i * 4 + 2];
+      r->maxy = rects[i * 4 + 3];
+   }
+
+   ctx->num_damage = num_rects;
+   return true;
+}
+
 void
 lima_state_init(struct lima_context *ctx)
 {
@@ -509,6 +542,8 @@ lima_state_init(struct lima_context *ctx)
    ctx->base.create_sampler_view = lima_create_sampler_view;
    ctx->base.sampler_view_destroy = lima_sampler_view_destroy;
    ctx->base.set_sampler_views = lima_set_sampler_views;
+
+   ctx->base.set_damage_region = lima_set_damage_region;
 }
 
 void

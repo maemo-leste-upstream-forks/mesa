@@ -195,6 +195,8 @@ struct lima_context {
    struct pipe_stencil_ref stencil_ref;
    struct lima_context_constant_buffer const_buffer[PIPE_SHADER_TYPES];
    struct lima_texture_stateobj tex_stateobj;
+   struct pipe_scissor_state *damage_region;
+   unsigned num_damage;
 
    #define LIMA_CTX_PLB_MIN_NUM  1
    #define LIMA_CTX_PLB_MAX_NUM  4
