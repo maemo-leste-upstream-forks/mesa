@@ -1284,6 +1284,8 @@ _lima_flush(struct lima_context *ctx, bool save_state)
    else {
       struct drm_lima_m450_pp_frame pp_frame = {0};
       lima_pack_pp_frame_reg(ctx, pp_frame.frame, pp_frame.wb);
+      pp_frame.num_pp = screen->num_pp;
+      pp_frame.use_dlbu = true;
 
       struct lima_context_framebuffer *fb = &ctx->framebuffer;
       pp_frame.dlbu_regs[0] = ctx->current_plb->va;
