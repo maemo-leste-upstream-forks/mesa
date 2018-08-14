@@ -245,7 +245,9 @@ static boolean
 lima_screen_is_format_supported(struct pipe_screen *pscreen,
                                 enum pipe_format format,
                                 enum pipe_texture_target target,
-                                unsigned sample_count, unsigned usage)
+                                unsigned sample_count,
+                                unsigned storage_sample_count,
+                                unsigned usage)
 {
    switch (target) {
    case PIPE_BUFFER:
@@ -255,6 +257,9 @@ lima_screen_is_format_supported(struct pipe_screen *pscreen,
    default:
       return FALSE;
    }
+
+   if (MAX2(1, sample_count) != MAX2(1, storage_sample_count))
+      return false;
 
    /* be able to support 16, now limit to 4 */
    if (sample_count > 1 && sample_count != 4)
