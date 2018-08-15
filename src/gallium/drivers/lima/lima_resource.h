@@ -42,16 +42,6 @@ struct lima_resource {
 struct lima_surface {
    struct pipe_surface base;
    int tiled_w, tiled_h;
-
-   struct pipe_resource *gp_stream;
-   unsigned gp_stream_offset;
-
-   struct lima_bo *save_state;
-   struct lima_bo *tile_heap;
-   struct lima_bo *plb;
-
-   struct lima_bo *pp_stream;
-   unsigned pp_stream_offset[4];
 };
 
 struct lima_transfer {
