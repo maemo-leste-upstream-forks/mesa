@@ -46,7 +46,6 @@ struct lima_context_clear {
    uint32_t color;
    uint32_t depth;
    uint32_t stencil;
-   bool dirty;
 };
 
 struct lima_depth_stencil_alpha_state {
@@ -209,12 +208,8 @@ struct lima_context {
    struct lima_bo *plb[LIMA_CTX_PLB_MAX_NUM];
    struct lima_bo *plb_gp_stream;
    struct hash_table *plb_pp_stream;
+   struct lima_ctx_plb_pp_stream *current_plb_pp_stream;
    uint32_t plb_index;
-
-   struct lima_bo *current_plb;
-   struct lima_bo *current_tile_heap;
-   struct lima_bo *current_pp_stream;
-   uint32_t *current_pp_stream_offset;
 
    struct lima_ctx_buff_state buffer_state[lima_ctx_buff_num];
 

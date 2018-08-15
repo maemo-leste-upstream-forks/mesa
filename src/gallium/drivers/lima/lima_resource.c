@@ -426,21 +426,6 @@ lima_surface_destroy(struct pipe_context *pctx, struct pipe_surface *psurf)
       }
    }
 
-   if (surf->gp_stream)
-      pipe_resource_reference(&surf->gp_stream, NULL);
-
-   if (surf->save_state)
-      lima_bo_free(surf->save_state);
-
-   if (surf->tile_heap)
-      lima_bo_free(surf->tile_heap);
-
-   if (surf->plb)
-      lima_bo_free(surf->plb);
-
-   if (surf->pp_stream)
-      lima_bo_free(surf->pp_stream);
-
    pipe_resource_reference(&psurf->texture, NULL);
    FREE(surf);
 }
