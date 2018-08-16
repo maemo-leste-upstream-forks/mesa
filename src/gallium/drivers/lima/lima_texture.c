@@ -161,7 +161,7 @@ lima_update_tex_desc(struct lima_context *ctx, struct lima_sampler_state *sample
 
    /* Only clamp to edge and mirror repeat are supported */
    desc[2] &= ~0x070000;
-   switch (sampler->base.wrap_s) {
+   switch (sampler->base.wrap_t) {
    case PIPE_TEX_WRAP_CLAMP:
    case PIPE_TEX_WRAP_CLAMP_TO_EDGE:
    case PIPE_TEX_WRAP_CLAMP_TO_BORDER:
