@@ -25,6 +25,8 @@
 #ifndef H_LIMA_TEXTURE
 #define H_LIMA_TEXTURE
 
+void lima_texture_desc_set_res(struct lima_context *ctx, uint32_t *desc,
+                               struct pipe_resource *prsc);
 void lima_update_textures(struct lima_context *ctx);
 
 #endif

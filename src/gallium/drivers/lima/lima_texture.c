@@ -81,21 +81,17 @@ static uint32_t pipe_format_to_lima(enum pipe_format pformat)
    return (swap_chans << 7) | (flag1 << 6) | format;
 }
 
-static void
-lima_update_tex_desc(struct lima_context *ctx, struct lima_sampler_state *sampler,
-                     struct lima_sampler_view *texture, void *pdesc)
+void
+lima_texture_desc_set_res(struct lima_context *ctx, uint32_t *desc,
+                          struct pipe_resource *prsc)
 {
-   uint32_t *desc = pdesc;
    unsigned width, height, layout;
-   struct pipe_resource *prsc = texture->base.texture;
    struct lima_resource *lima_res = lima_resource(prsc);
 
    width = prsc->width0;
    height = prsc->height0;
 
    desc[0] = pipe_format_to_lima(prsc->format);
-   /* 2D texture */
-   desc[1] = 0x400;
    desc[2] = (width << 22);
    desc[3] = 0x10000 | (height << 3) | (width >> 10);
 
@@ -110,16 +106,24 @@ lima_update_tex_desc(struct lima_context *ctx, struct lima_sampler_state *sample
       layout = 0;
    }
 
-   desc[6] = layout << 13;
-
    lima_submit_add_bo(ctx->pp_submit, lima_res->bo, LIMA_SUBMIT_BO_READ);
    lima_bo_update(lima_res->bo, false, true);
 
    /* attach level 0 */
-   desc[6] &= ~0xc0000000;
-   desc[6] |= lima_res->bo->va << 24;
-   desc[7] &= ~0x00ffffff;
-   desc[7] |= lima_res->bo->va >> 8;
+   desc[6] = layout | (lima_res->bo->va << 24);
+   desc[7] = lima_res->bo->va >> 8;
+}
+
+static void
+lima_update_tex_desc(struct lima_context *ctx, struct lima_sampler_state *sampler,
+                     struct lima_sampler_view *texture, void *pdesc)
+{
+   uint32_t *desc = pdesc;
+
+   lima_texture_desc_set_res(ctx, desc, texture->base.texture);
+
+   /* 2D texture */
+   desc[1] = 0x400;
 
    desc[1] &= ~0xff000000;
    switch (sampler->base.mag_img_filter) {
