@@ -460,11 +460,27 @@ lima_screen_create(int fd, struct renderonly *ro)
       goto err_out3;
 
    /* fs program for clear buffer? */
-   static uint32_t pp_program[] = {
+   static const uint32_t pp_clear_program[] = {
       0x00020425, 0x0000000c, 0x01e007cf, 0xb0000000, /* 0x00000000 */
       0x000005f5, 0x00000000, 0x00000000, 0x00000000, /* 0x00000010 */
    };
-   memcpy(screen->pp_buffer->map + pp_clear_program_offset, pp_program, sizeof(pp_program));
+   memcpy(screen->pp_buffer->map + pp_clear_program_offset,
+          pp_clear_program, sizeof(pp_clear_program));
+
+   /* copy texture to framebuffer, used to reload gpu tile buffer */
+   static const uint32_t pp_reload_program[] = {
+      0x000005e6, 0xf1003c20, 0x00000000, 0x39001000, /* 0x00000000 */
+      0x00000e4e, 0x000007cf, 0x00000000, 0x00000000, /* 0x00000010 */
+   };
+   memcpy(screen->pp_buffer->map + pp_reload_program_offset,
+          pp_reload_program, sizeof(pp_reload_program));
+
+   /* 0/1/2 vertex index for reload draw */
+   static const uint32_t pp_reload_index[] = {
+      0x00020100, 0x00000000, 0x00000000, 0x00000000, /* 0x00000000 */
+   };
+   memcpy(screen->pp_buffer->map + pp_reload_index_offset,
+          pp_reload_index, sizeof(pp_reload_index));
 
    /* is pp frame render state static? */
    uint32_t *pp_frame_rsw = screen->pp_buffer->map + pp_frame_rsw_offset;
