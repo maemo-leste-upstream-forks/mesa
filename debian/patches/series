@@ -1,1 +1,5 @@
 07_gallium-fix-build-failure-on-powerpcspe.diff
+
+# Backports patches.
+dont-enable-10bpc-by-default.diff
+disable-intel-ccs-compression.diff

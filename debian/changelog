@@ -1,6 +1,10 @@
 mesa (18.1.6-1~bpo9+1) stretch-backports; urgency=medium
 
   * Rebuild for stretch-backports.
+  * Add patches from Ubuntu to fix some regressions with the older xorg-
+    server on stretch.
+    - debian/patches/dont-enable-10bpc-by-default.diff
+    - debian/patches/disable-intel-ccs-compression.diff
 
  -- Andreas Boll <aboll@debian.org>  Thu, 23 Aug 2018 20:12:46 +0200
 
