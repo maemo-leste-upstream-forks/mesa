@@ -18,8 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-inc_amd_common = include_directories('.')
-
 sid_tables_h = custom_target(
   'sid_tables_h',
   input : ['sid_tables.py', 'sid.h', 'gfx9d.h'],
@@ -38,8 +36,8 @@ amd_common_files = files(
   'ac_llvm_util.c',
   'ac_llvm_util.h',
   'ac_shader_abi.h',
-  'ac_shader_info.c',
-  'ac_shader_info.h',
+  'ac_shader_util.c',
+  'ac_shader_util.h',
   'ac_nir_to_llvm.c',
   'ac_nir_to_llvm.h',
   'ac_gpu_info.c',
@@ -52,12 +50,14 @@ amd_common_files = files(
 
 libamd_common = static_library(
   'amd_common',
-  [amd_common_files, sid_tables_h, nir_opcodes_h],
-  include_directories : [inc_common, inc_compiler, inc_nir, inc_mesa, inc_mapi,
-                         inc_amd],
-  dependencies : [dep_llvm, dep_thread, dep_elf, dep_libdrm_amdgpu,
-                  dep_valgrind],
+  [amd_common_files, sid_tables_h],
+  include_directories : [
+    inc_common, inc_compiler, inc_mesa, inc_mapi, inc_amd,
+  ],
+  dependencies : [
+    dep_llvm, dep_thread, dep_elf, dep_libdrm_amdgpu, dep_valgrind,
+    idep_nir_headers,
+  ],
   c_args : [c_vis_args],
   cpp_args : [cpp_vis_args],
-  build_by_default : false,
 )

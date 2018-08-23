@@ -380,6 +380,7 @@ void
 intelInitDriverFunctions(struct dd_function_table *functions)
 {
    _mesa_init_driver_functions(functions);
+   _tnl_init_driver_draw_function(functions);
 
    functions->Flush = intel_glFlush;
    functions->Finish = intelFinish;
@@ -626,20 +627,11 @@ intelMakeCurrent(__DRIcontext * driContextPriv,
                  __DRIdrawable * driReadPriv)
 {
    struct intel_context *intel;
-   GET_CURRENT_CONTEXT(curCtx);
 
    if (driContextPriv)
       intel = (struct intel_context *) driContextPriv->driverPrivate;
    else
       intel = NULL;
-
-   /* According to the glXMakeCurrent() man page: "Pending commands to
-    * the previous context, if any, are flushed before it is released."
-    * But only flush if we're actually changing contexts.
-    */
-   if (intel_context(curCtx) && intel_context(curCtx) != intel) {
-      _mesa_flush(curCtx);
-   }
 
    if (driContextPriv) {
       struct gl_context *ctx = &intel->ctx;

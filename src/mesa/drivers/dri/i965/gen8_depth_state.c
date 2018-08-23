@@ -94,9 +94,9 @@ emit_depth_packets(struct brw_context *brw,
       assert(depth_mt);
       BEGIN_BATCH(5);
       OUT_BATCH(GEN7_3DSTATE_HIER_DEPTH_BUFFER << 16 | (5 - 2));
-      OUT_BATCH((depth_mt->hiz_buf->pitch - 1) | mocs_wb << 25);
-      OUT_RELOC64(depth_mt->hiz_buf->bo, RELOC_WRITE, 0);
-      OUT_BATCH(depth_mt->hiz_buf->qpitch >> 2);
+      OUT_BATCH((depth_mt->aux_buf->pitch - 1) | mocs_wb << 25);
+      OUT_RELOC64(depth_mt->aux_buf->bo, RELOC_WRITE, 0);
+      OUT_BATCH(depth_mt->aux_buf->qpitch >> 2);
       ADVANCE_BATCH();
    }
 
@@ -331,11 +331,9 @@ gen8_write_pma_stall_bits(struct brw_context *brw, uint32_t pma_stall_bits)
                                render_cache_flush);
 
    /* CACHE_MODE_1 is a non-privileged register. */
-   BEGIN_BATCH(3);
-   OUT_BATCH(MI_LOAD_REGISTER_IMM | (3 - 2));
-   OUT_BATCH(GEN7_CACHE_MODE_1);
-   OUT_BATCH(GEN8_HIZ_PMA_MASK_BITS | pma_stall_bits);
-   ADVANCE_BATCH();
+   brw_load_register_imm32(brw, GEN7_CACHE_MODE_1,
+                           GEN8_HIZ_PMA_MASK_BITS |
+                           pma_stall_bits );
 
    /* After the LRI, a PIPE_CONTROL with both the Depth Stall and Depth Cache
     * Flush bits is often necessary.  We do it regardless because it's easier.

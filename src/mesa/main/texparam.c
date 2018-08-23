@@ -208,7 +208,7 @@ comp_to_swizzle(GLenum comp)
 
 
 static void
-set_swizzle_component(GLuint *swizzle, GLuint comp, GLuint swz)
+set_swizzle_component(GLushort *swizzle, GLuint comp, GLuint swz)
 {
    assert(comp < 4);
    assert(swz <= SWIZZLE_NIL);
@@ -1287,8 +1287,8 @@ _mesa_legal_get_tex_level_parameter_target(struct gl_context *ctx, GLenum target
        * From the OpenGL 3.1 spec:
        * "target may also be TEXTURE_BUFFER, indicating the texture buffer."
        */
-      return (ctx->API == API_OPENGL_CORE && ctx->Version >= 31) ||
-         _mesa_has_OES_texture_buffer(ctx);
+      return (_mesa_is_desktop_gl(ctx) && ctx->Version >= 31) ||
+             _mesa_has_OES_texture_buffer(ctx);
    case GL_TEXTURE_CUBE_MAP_ARRAY:
       return _mesa_has_texture_cube_map_array(ctx);
    }

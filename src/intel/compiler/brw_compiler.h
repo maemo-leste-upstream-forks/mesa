@@ -25,9 +25,9 @@
 #define BRW_COMPILER_H
 
 #include <stdio.h>
-#include "common/gen_device_info.h"
-#include "main/mtypes.h"
+#include "dev/gen_device_info.h"
 #include "main/macros.h"
+#include "main/mtypes.h"
 #include "util/ralloc.h"
 
 #ifdef __cplusplus
@@ -114,6 +114,14 @@ struct brw_compiler {
    bool supports_pull_constants;
 };
 
+/**
+ * We use a constant subgroup size of 32.  It really only needs to be a
+ * maximum and, since we do SIMD32 for compute shaders in some cases, it
+ * needs to be at least 32.  SIMD8 and SIMD16 shaders will still claim a
+ * subgroup size of 32 but will act as if 16 or 24 of those channels are
+ * disabled.
+ */
+#define BRW_SUBGROUP_SIZE 32
 
 /**
  * Program key structures.
@@ -389,7 +397,6 @@ struct brw_wm_prog_key {
    bool force_dual_color_blend:1;
    bool coherent_fb_fetch:1;
 
-   uint16_t drawable_height;
    uint64_t input_slots_valid;
    unsigned program_string_id;
    GLenum alpha_test_func;          /* < For Gen4/5 MRT alpha test */
@@ -401,6 +408,16 @@ struct brw_wm_prog_key {
 struct brw_cs_prog_key {
    uint32_t program_string_id;
    struct brw_sampler_prog_key_data tex;
+};
+
+/* brw_any_prog_key is any of the keys that map to an API stage */
+union brw_any_prog_key {
+   struct brw_vs_prog_key vs;
+   struct brw_tcs_prog_key tcs;
+   struct brw_tes_prog_key tes;
+   struct brw_gs_prog_key gs;
+   struct brw_wm_prog_key wm;
+   struct brw_cs_prog_key cs;
 };
 
 /*
@@ -543,7 +560,10 @@ enum brw_param_builtin {
    BRW_PARAM_BUILTIN_TESS_LEVEL_INNER_X,
    BRW_PARAM_BUILTIN_TESS_LEVEL_INNER_Y,
 
-   BRW_PARAM_BUILTIN_THREAD_LOCAL_ID,
+   BRW_PARAM_BUILTIN_BASE_WORK_GROUP_ID_X,
+   BRW_PARAM_BUILTIN_BASE_WORK_GROUP_ID_Y,
+   BRW_PARAM_BUILTIN_BASE_WORK_GROUP_ID_Z,
+   BRW_PARAM_BUILTIN_SUBGROUP_ID,
 };
 
 #define BRW_PARAM_BUILTIN_CLIP_PLANE(idx, comp) \
@@ -572,7 +592,6 @@ struct brw_stage_prog_data {
       uint32_t gather_texture_start;
       uint32_t ubo_start;
       uint32_t ssbo_start;
-      uint32_t abo_start;
       uint32_t image_start;
       uint32_t shader_time_start;
       uint32_t plane_start[3];
@@ -587,6 +606,8 @@ struct brw_stage_prog_data {
    unsigned curb_read_length;
    unsigned total_scratch;
    unsigned total_shared;
+
+   unsigned program_size;
 
    /**
     * Register where the thread expects to find input data from the URB
@@ -672,7 +693,6 @@ struct brw_wm_prog_data {
       /** @{
        * surface indices the WM-specific surfaces
        */
-      uint32_t render_target_start;
       uint32_t render_target_read_start;
       /** @} */
    } binding_table;
@@ -734,7 +754,6 @@ struct brw_push_const_block {
 struct brw_cs_prog_data {
    struct brw_stage_prog_data base;
 
-   GLuint dispatch_grf_start_reg_16;
    unsigned local_size[3];
    unsigned simd_size;
    unsigned threads;
@@ -954,12 +973,12 @@ struct brw_vs_prog_data {
    GLbitfield64 inputs_read;
    GLbitfield64 double_inputs_read;
 
-   unsigned nr_attributes;
    unsigned nr_attribute_slots;
 
    bool uses_vertexid;
    bool uses_instanceid;
    bool uses_basevertex;
+   bool uses_firstvertex;
    bool uses_baseinstance;
    bool uses_drawid;
 };
@@ -1064,6 +1083,18 @@ struct brw_clip_prog_data {
    uint32_t total_grf;
 };
 
+/* brw_any_prog_data is prog_data for any stage that maps to an API stage */
+union brw_any_prog_data {
+   struct brw_stage_prog_data base;
+   struct brw_vue_prog_data vue;
+   struct brw_vs_prog_data vs;
+   struct brw_tcs_prog_data tcs;
+   struct brw_tes_prog_data tes;
+   struct brw_gs_prog_data gs;
+   struct brw_wm_prog_data wm;
+   struct brw_cs_prog_data cs;
+};
+
 #define DEFINE_PROG_DATA_DOWNCAST(stage)                       \
 static inline struct brw_##stage##_prog_data *                 \
 brw_##stage##_prog_data(struct brw_stage_prog_data *prog_data) \
@@ -1087,6 +1118,12 @@ DEFINE_PROG_DATA_DOWNCAST(sf)
 struct brw_compiler *
 brw_compiler_create(void *mem_ctx, const struct gen_device_info *devinfo);
 
+unsigned
+brw_prog_data_size(gl_shader_stage stage);
+
+unsigned
+brw_prog_key_size(gl_shader_stage stage);
+
 /**
  * Compile a vertex shader.
  *
@@ -1098,9 +1135,7 @@ brw_compile_vs(const struct brw_compiler *compiler, void *log_data,
                const struct brw_vs_prog_key *key,
                struct brw_vs_prog_data *prog_data,
                const struct nir_shader *shader,
-               bool use_legacy_snorm_formula,
                int shader_time_index,
-               unsigned *final_assembly_size,
                char **error_str);
 
 /**
@@ -1116,7 +1151,6 @@ brw_compile_tcs(const struct brw_compiler *compiler,
                 struct brw_tcs_prog_data *prog_data,
                 const struct nir_shader *nir,
                 int shader_time_index,
-                unsigned *final_assembly_size,
                 char **error_str);
 
 /**
@@ -1133,7 +1167,6 @@ brw_compile_tes(const struct brw_compiler *compiler, void *log_data,
                 const struct nir_shader *shader,
                 struct gl_program *prog,
                 int shader_time_index,
-                unsigned *final_assembly_size,
                 char **error_str);
 
 /**
@@ -1149,7 +1182,6 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
                const struct nir_shader *shader,
                struct gl_program *prog,
                int shader_time_index,
-               unsigned *final_assembly_size,
                char **error_str);
 
 /**
@@ -1200,7 +1232,6 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
                int shader_time_index16,
                bool allow_spilling,
                bool use_rep_send, struct brw_vue_map *vue_map,
-               unsigned *final_assembly_size,
                char **error_str);
 
 /**
@@ -1215,7 +1246,6 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
                struct brw_cs_prog_data *prog_data,
                const struct nir_shader *shader,
                int shader_time_index,
-               unsigned *final_assembly_size,
                char **error_str);
 
 static inline uint32_t
@@ -1257,7 +1287,7 @@ encode_slm_size(unsigned gen, uint32_t bytes)
  * '2^n - 1' for some n.
  */
 static inline bool
-brw_stage_has_packed_dispatch(const struct gen_device_info *devinfo,
+brw_stage_has_packed_dispatch(MAYBE_UNUSED const struct gen_device_info *devinfo,
                               gl_shader_stage stage,
                               const struct brw_stage_prog_data *prog_data)
 {
@@ -1266,7 +1296,7 @@ brw_stage_has_packed_dispatch(const struct gen_device_info *devinfo,
     * to do a full test run with brw_fs_test_dispatch_packing() hooked up to
     * the NIR front-end before changing this assertion.
     */
-   assert(devinfo->gen <= 10);
+   assert(devinfo->gen <= 11);
 
    switch (stage) {
    case MESA_SHADER_FRAGMENT: {

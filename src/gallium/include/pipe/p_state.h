@@ -34,6 +34,10 @@
  * Basic notes:
  *   1. Want compact representations, so we use bitfields.
  *   2. Put bitfields before other (GLfloat) fields.
+ *   3. enum bitfields need to be at least one bit extra in size so the most
+ *      significant bit is zero.  MSVC treats enums as signed so if the high
+ *      bit is set, the value will be interpreted as a negative number.
+ *      That causes trouble in various places.
  */
 
 
@@ -60,7 +64,7 @@ extern "C" {
 #define PIPE_MAX_SAMPLERS         32
 #define PIPE_MAX_SHADER_INPUTS    80 /* 32 GENERIC + 32 PATCH + 16 others */
 #define PIPE_MAX_SHADER_OUTPUTS   80 /* 32 GENERIC + 32 PATCH + 16 others */
-#define PIPE_MAX_SHADER_SAMPLER_VIEWS 32
+#define PIPE_MAX_SHADER_SAMPLER_VIEWS 128
 #define PIPE_MAX_SHADER_BUFFERS   32
 #define PIPE_MAX_SHADER_IMAGES    32
 #define PIPE_MAX_TEXTURE_LEVELS   16
@@ -71,6 +75,7 @@ extern "C" {
 #define PIPE_MAX_CLIP_OR_CULL_DISTANCE_ELEMENT_COUNT 2
 #define PIPE_MAX_WINDOW_RECTANGLES 8
 
+#define PIPE_MAX_HW_ATOMIC_BUFFERS 32
 
 struct pipe_reference
 {
@@ -262,7 +267,6 @@ struct pipe_shader_state
    /* TODO move tokens into union. */
    const struct tgsi_token *tokens;
    union {
-      void *llvm;
       void *native;
       void *nir;
    } ir;
@@ -436,8 +440,8 @@ struct pipe_surface
 struct pipe_sampler_view
 {
    struct pipe_reference reference;
-   enum pipe_format format:16;      /**< typed PIPE_FORMAT_x */
-   enum pipe_texture_target target:4; /**< PIPE_TEXTURE_x */
+   enum pipe_format format:15;      /**< typed PIPE_FORMAT_x */
+   enum pipe_texture_target target:5; /**< PIPE_TEXTURE_x */
    unsigned swizzle_r:3;         /**< PIPE_SWIZZLE_x for red component */
    unsigned swizzle_g:3;         /**< PIPE_SWIZZLE_x for green component */
    unsigned swizzle_b:3;         /**< PIPE_SWIZZLE_x for blue component */
@@ -777,8 +781,9 @@ struct pipe_blit_info
 struct pipe_grid_info
 {
    /**
-    * For drivers that use PIPE_SHADER_IR_LLVM as their prefered IR, this value
-    * will be the index of the kernel in the opencl.kernels metadata list.
+    * For drivers that use PIPE_SHADER_IR_NATIVE as their prefered IR, this
+    * value will be the index of the kernel in the opencl.kernels metadata
+    * list.
     */
    uint32_t pc;
 

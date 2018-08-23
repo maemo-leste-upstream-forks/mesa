@@ -180,6 +180,22 @@ struct intel_miptree_aux_buffer
     * @see 3DSTATE_HIER_DEPTH_BUFFER.SurfaceQPitch
     */
    uint32_t qpitch;
+
+   /**
+    * Buffer object containing the indirect clear color.
+    *
+    * @see create_ccs_buf_for_image
+    * @see RENDER_SURFACE_STATE.ClearValueAddress
+    */
+   struct brw_bo *clear_color_bo;
+
+   /**
+    * Offset into bo where the clear color can be found.
+    *
+    * @see create_ccs_buf_for_image
+    * @see RENDER_SURFACE_STATE.ClearValueAddress
+    */
+   uint32_t clear_color_offset;
 };
 
 struct intel_mipmap_tree
@@ -257,16 +273,6 @@ struct intel_mipmap_tree
    uint32_t offset;
 
    /**
-    * \brief HiZ aux buffer
-    *
-    * To allocate the hiz buffer, use intel_miptree_alloc_hiz().
-    *
-    * To determine if hiz is enabled, do not check this pointer. Instead, use
-    * intel_miptree_level_has_hiz().
-    */
-   struct intel_miptree_aux_buffer *hiz_buf;
-
-   /**
     * \brief The type of auxiliary compression used by this miptree.
     *
     * This describes the type of auxiliary compression that is intended to be
@@ -319,15 +325,29 @@ struct intel_mipmap_tree
    bool r8stencil_needs_update;
 
    /**
-    * \brief MCS auxiliary buffer.
+    * \brief CCS, MCS, or HiZ auxiliary buffer.
     *
-    * This buffer contains the "multisample control surface", which stores
-    * the necessary information to implement compressed MSAA
-    * (INTEL_MSAA_FORMAT_CMS) and "fast color clear" behaviour on Gen7+.
+    * NULL if no auxiliary buffer is in use for this surface.
     *
-    * NULL if no MCS buffer is in use for this surface.
+    * For single-sampled color miptrees:
+    *    This buffer contains the Color Control Surface, which stores the
+    *    necessary information to implement lossless color compression (CCS_E)
+    *    and "fast color clear" (CCS_D) behaviour.
+    *
+    * For multi-sampled color miptrees:
+    *    This buffer contains the Multisample Control Surface, which stores the
+    *    necessary information to implement compressed MSAA
+    *    (INTEL_MSAA_FORMAT_CMS).
+    *
+    * For depth miptrees:
+    *    This buffer contains the Hierarchical Depth Buffer, which stores the
+    *    necessary information to implement lossless depth compression and fast
+    *    depth clear behavior.
+    *
+    *    To determine if HiZ is enabled, do not check this pointer. Instead,
+    *    use intel_miptree_level_has_hiz().
     */
-   struct intel_miptree_aux_buffer *mcs_buf;
+   struct intel_miptree_aux_buffer *aux_buf;
 
    /**
     * Planes 1 and 2 in case this is a planar surface.
@@ -468,10 +488,6 @@ get_isl_surf_dim(GLenum target);
 enum isl_dim_layout
 get_isl_dim_layout(const struct gen_device_info *devinfo,
                    enum isl_tiling tiling, GLenum target);
-
-enum isl_aux_usage
-intel_miptree_get_aux_isl_usage(const struct brw_context *brw,
-                                const struct intel_mipmap_tree *mt);
 
 void
 intel_get_image_dims(struct gl_texture_image *image,
@@ -675,6 +691,9 @@ intel_miptree_finish_depth(struct brw_context *brw,
 void
 intel_miptree_prepare_external(struct brw_context *brw,
                                struct intel_mipmap_tree *mt);
+void
+intel_miptree_finish_external(struct brw_context *brw,
+                              struct intel_mipmap_tree *mt);
 
 void
 intel_miptree_make_shareable(struct brw_context *brw,
@@ -712,32 +731,15 @@ bool
 intel_miptree_sample_with_hiz(struct brw_context *brw,
                               struct intel_mipmap_tree *mt);
 
-
-static inline bool
-intel_miptree_set_clear_color(struct gl_context *ctx,
+bool
+intel_miptree_set_clear_color(struct brw_context *brw,
                               struct intel_mipmap_tree *mt,
-                              union isl_color_value clear_color)
-{
-   if (memcmp(&mt->fast_clear_color, &clear_color, sizeof(clear_color)) != 0) {
-      mt->fast_clear_color = clear_color;
-      ctx->NewDriverState |= BRW_NEW_AUX_STATE;
-      return true;
-   }
-   return false;
-}
+                              const union gl_color_union *color);
 
-static inline bool
-intel_miptree_set_depth_clear_value(struct gl_context *ctx,
+bool
+intel_miptree_set_depth_clear_value(struct brw_context *brw,
                                     struct intel_mipmap_tree *mt,
-                                    float clear_value)
-{
-   if (mt->fast_clear_color.f32[0] != clear_value) {
-      mt->fast_clear_color.f32[0] = clear_value;
-      ctx->NewDriverState |= BRW_NEW_AUX_STATE;
-      return true;
-   }
-   return false;
-}
+                                    float clear_value);
 
 #ifdef __cplusplus
 }

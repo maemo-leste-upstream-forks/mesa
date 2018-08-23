@@ -18,16 +18,9 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-# TODO: main/tests
-# TODO: xlib_glx
-# TODO: osmesa
-# TODO: asm_offsets
-
 subdir('program')
 subdir('main')
 
-# program files
-# program nir files
 # files shared between classic mesa and gallium mesa
 files_libmesa_common = files(
   'program/arbprogparse.c',
@@ -111,7 +104,6 @@ files_libmesa_common = files(
   'main/convolve.h',
   'main/copyimage.c',
   'main/copyimage.h',
-  'main/core.h',
   'main/cpuinfo.c',
   'main/cpuinfo.h',
   'main/dd.h',
@@ -167,6 +159,8 @@ files_libmesa_common = files(
   'main/getstring.c',
   'main/glformats.c',
   'main/glformats.h',
+  'main/glspirv.c',
+  'main/glspirv.h',
   'main/glthread.c',
   'main/glthread.h',
   'main/glheader.h',
@@ -193,6 +187,7 @@ files_libmesa_common = files(
   'main/mipmap.h',
   'main/mm.c',
   'main/mm.h',
+  'main/menums.h',
   'main/mtypes.h',
   'main/multisample.c',
   'main/multisample.h',
@@ -220,6 +215,8 @@ files_libmesa_common = files(
   'main/points.h',
   'main/polygon.c',
   'main/polygon.h',
+  'main/program_binary.c',
+  'main/program_binary.h',
   'main/program_resource.c',
   'main/program_resource.h',
   'main/querymatrix.c',
@@ -328,7 +325,6 @@ files_libmesa_common = files(
   'vbo/vbo_attrib.h',
   'vbo/vbo_attrib_tmp.h',
   'vbo/vbo_context.c',
-  'vbo/vbo_context.h',
   'vbo/vbo_exec_api.c',
   'vbo/vbo_exec_array.c',
   'vbo/vbo_exec.c',
@@ -340,16 +336,11 @@ files_libmesa_common = files(
   'vbo/vbo_noop.c',
   'vbo/vbo_noop.h',
   'vbo/vbo_primitive_restart.c',
-  'vbo/vbo_rebase.c',
   'vbo/vbo_save_api.c',
   'vbo/vbo_save.c',
   'vbo/vbo_save_draw.c',
   'vbo/vbo_save.h',
   'vbo/vbo_save_loopback.c',
-  'vbo/vbo_split.c',
-  'vbo/vbo_split_copy.c',
-  'vbo/vbo_split.h',
-  'vbo/vbo_split_inplace.c',
   'x86/common_x86.c',
 )
 
@@ -368,6 +359,11 @@ files_libmesa_classic = files(
   'tnl/tnl.h',
   'tnl/t_pipeline.c',
   'tnl/t_pipeline.h',
+  'tnl/t_rebase.c',
+  'tnl/t_split.c',
+  'tnl/t_split_copy.c',
+  'tnl/t_split.h',
+  'tnl/t_split_inplace.c',
   'tnl/t_vb_cliptmp.h',
   'tnl/t_vb_fog.c',
   'tnl/t_vb_light.c',
@@ -537,6 +533,8 @@ files_libmesa_gallium = files(
   'state_tracker/st_cb_readpixels.h',
   'state_tracker/st_cb_strings.c',
   'state_tracker/st_cb_strings.h',
+  'state_tracker/st_cb_semaphoreobjects.c',
+  'state_tracker/st_cb_semaphoreobjects.h',
   'state_tracker/st_cb_syncobj.c',
   'state_tracker/st_cb_syncobj.h',
   'state_tracker/st_cb_texturebarrier.c',
@@ -579,6 +577,7 @@ files_libmesa_gallium = files(
   'state_tracker/st_nir.h',
   'state_tracker/st_nir_lower_builtin.c',
   'state_tracker/st_nir_lower_tex_src_plane.c',
+  'state_tracker/st_nir_lower_uniforms_to_ubo.c',
   'state_tracker/st_pbo.c',
   'state_tracker/st_pbo.h',
   'state_tracker/st_program.c',
@@ -596,9 +595,6 @@ files_libmesa_gallium = files(
   'state_tracker/st_vdpau.c',
   'state_tracker/st_vdpau.h',
 )
-
-# TODO: sse41
-libmesa_sse41 = []
 
 matypes_h = []
 if with_asm_arch == 'x86' or with_asm_arch == 'x86_64'
@@ -691,11 +687,21 @@ files_libmesa_common += [
   main_marshal_generated_h,
   main_dispatch_h,
   ir_expression_operation_h,
-  nir_opcodes_h,
   main_remap_helper_h,
   matypes_h,
   sha1_h,
 ]
+
+if with_sse41
+  libmesa_sse41 = static_library(
+    'mesa_sse41',
+    files('main/streaming-load-memcpy.c', 'main/sse_minmax.c'),
+    c_args : [c_vis_args, c_msvc_compat_args, sse41_args],
+    include_directories : inc_common,
+  )
+else
+  libmesa_sse41 = []
+endif
 
 libmesa_classic = static_library(
   'mesa_classic',
@@ -704,6 +710,7 @@ libmesa_classic = static_library(
   cpp_args : [cpp_vis_args, cpp_msvc_compat_args],
   include_directories : [inc_common, include_directories('main')],
   link_with : [libglsl, libmesa_sse41],
+  dependencies : idep_nir_headers,
   build_by_default : false,
 )
 
@@ -714,10 +721,17 @@ libmesa_gallium = static_library(
   cpp_args : [cpp_vis_args, cpp_msvc_compat_args],
   include_directories : [inc_common, include_directories('main')],
   link_with : [libglsl, libmesa_sse41],
+  dependencies : [idep_nir_headers, dep_vdpau],
   build_by_default : false,
 )
 
 subdir('drivers/dri')
-if with_tests
+if with_osmesa == 'classic'
+  subdir('drivers/osmesa')
+endif
+if with_glx == 'xlib'
+  subdir('drivers/x11')
+endif
+if with_tests and dri_drivers != []
   subdir('main/tests')
 endif

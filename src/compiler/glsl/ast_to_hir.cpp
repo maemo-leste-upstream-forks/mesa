@@ -54,6 +54,7 @@
 #include "ast.h"
 #include "compiler/glsl_types.h"
 #include "util/hash_table.h"
+#include "main/mtypes.h"
 #include "main/macros.h"
 #include "main/shaderobj.h"
 #include "ir.h"
@@ -1108,12 +1109,17 @@ do_comparison(void *mem_ctx, int operation, ir_rvalue *op0, ir_rvalue *op1)
 
    switch (op0->type->base_type) {
    case GLSL_TYPE_FLOAT:
+   case GLSL_TYPE_FLOAT16:
    case GLSL_TYPE_UINT:
    case GLSL_TYPE_INT:
    case GLSL_TYPE_BOOL:
    case GLSL_TYPE_DOUBLE:
    case GLSL_TYPE_UINT64:
    case GLSL_TYPE_INT64:
+   case GLSL_TYPE_UINT16:
+   case GLSL_TYPE_INT16:
+   case GLSL_TYPE_UINT8:
+   case GLSL_TYPE_INT8:
       return new(mem_ctx) ir_expression(operation, op0, op1);
 
    case GLSL_TYPE_ARRAY: {
@@ -1337,8 +1343,8 @@ ast_expression::do_hir(exec_list *instructions,
       ir_binop_lshift,
       ir_binop_rshift,
       ir_binop_less,
-      ir_binop_greater,
-      ir_binop_lequal,
+      ir_binop_less,    /* This is correct.  See the ast_greater case below. */
+      ir_binop_gequal,  /* This is correct.  See the ast_lequal case below. */
       ir_binop_gequal,
       ir_binop_all_equal,
       ir_binop_any_nequal,
@@ -1487,6 +1493,15 @@ ast_expression::do_hir(exec_list *instructions,
       assert(type->is_error()
              || (type->is_boolean() && type->is_scalar()));
 
+      /* Like NIR, GLSL IR does not have opcodes for > or <=.  Instead, swap
+       * the arguments and use < or >=.
+       */
+      if (this->oper == ast_greater || this->oper == ast_lequal) {
+         ir_rvalue *const tmp = op[0];
+         op[0] = op[1];
+         op[1] = tmp;
+      }
+
       result = new(ctx) ir_expression(operations[this->oper], type,
                                       op[0], op[1]);
       error_emitted = type->is_error();
@@ -1577,7 +1592,6 @@ ast_expression::do_hir(exec_list *instructions,
 
       if (rhs_instructions.is_empty()) {
          result = new(ctx) ir_expression(ir_binop_logic_and, op[0], op[1]);
-         type = result->type;
       } else {
          ir_variable *const tmp = new(ctx) ir_variable(glsl_type::bool_type,
                                                        "and_tmp",
@@ -1599,7 +1613,6 @@ ast_expression::do_hir(exec_list *instructions,
          stmt->else_instructions.push_tail(else_assign);
 
          result = new(ctx) ir_dereference_variable(tmp);
-         type = tmp->type;
       }
       break;
    }
@@ -1613,7 +1626,6 @@ ast_expression::do_hir(exec_list *instructions,
 
       if (rhs_instructions.is_empty()) {
          result = new(ctx) ir_expression(ir_binop_logic_or, op[0], op[1]);
-         type = result->type;
       } else {
          ir_variable *const tmp = new(ctx) ir_variable(glsl_type::bool_type,
                                                        "or_tmp",
@@ -1635,7 +1647,6 @@ ast_expression::do_hir(exec_list *instructions,
          stmt->else_instructions.push_tail(else_assign);
 
          result = new(ctx) ir_dereference_variable(tmp);
-         type = tmp->type;
       }
       break;
    }
@@ -1916,6 +1927,11 @@ ast_expression::do_hir(exec_list *instructions,
 
       error_emitted = op[0]->type->is_error() || op[1]->type->is_error();
 
+      if (error_emitted) {
+         result = ir_rvalue::error_value(ctx);
+         break;
+      }
+
       type = arithmetic_result_type(op[0], op[1], false, state, & loc);
 
       ir_rvalue *temp_rhs;
@@ -2000,6 +2016,20 @@ ast_expression::do_hir(exec_list *instructions,
             _mesa_glsl_warning(&loc, state, "`%s' used uninitialized",
                                this->primary_expression.identifier);
          }
+
+         /* From the EXT_shader_framebuffer_fetch spec:
+          *
+          *   "Unless the GL_EXT_shader_framebuffer_fetch extension has been
+          *    enabled in addition, it's an error to use gl_LastFragData if it
+          *    hasn't been explicitly redeclared with layout(noncoherent)."
+          */
+         if (var->data.fb_fetch_output && var->data.memory_coherent &&
+             !state->EXT_shader_framebuffer_fetch_enable) {
+            _mesa_glsl_error(&loc, state,
+                             "invalid use of framebuffer fetch output not "
+                             "qualified with layout(noncoherent)");
+         }
+
       } else {
          _mesa_glsl_error(& loc, state, "`%s' undeclared",
                           this->primary_expression.identifier);
@@ -2361,7 +2391,9 @@ ast_type_specifier::glsl_type(const char **name,
 {
    const struct glsl_type *type;
 
-   if (structure)
+   if (this->type != NULL)
+      type = this->type;
+   else if (structure)
       type = structure->type;
    else
       type = state->symbols->get_type(this->type_name);
@@ -3984,8 +4016,41 @@ apply_type_qualifier_to_variable(const struct ast_type_qualifier *qual,
    else if (qual->flags.q.shared_storage)
       var->data.mode = ir_var_shader_shared;
 
-   var->data.fb_fetch_output = state->stage == MESA_SHADER_FRAGMENT &&
-                               qual->flags.q.in && qual->flags.q.out;
+   if (!is_parameter && state->has_framebuffer_fetch() &&
+       state->stage == MESA_SHADER_FRAGMENT) {
+      if (state->is_version(130, 300))
+         var->data.fb_fetch_output = qual->flags.q.in && qual->flags.q.out;
+      else
+         var->data.fb_fetch_output = (strcmp(var->name, "gl_LastFragData") == 0);
+   }
+
+   if (var->data.fb_fetch_output) {
+      var->data.assigned = true;
+      var->data.memory_coherent = !qual->flags.q.non_coherent;
+
+      /* From the EXT_shader_framebuffer_fetch spec:
+       *
+       *   "It is an error to declare an inout fragment output not qualified
+       *    with layout(noncoherent) if the GL_EXT_shader_framebuffer_fetch
+       *    extension hasn't been enabled."
+       */
+      if (var->data.memory_coherent &&
+          !state->EXT_shader_framebuffer_fetch_enable)
+         _mesa_glsl_error(loc, state,
+                          "invalid declaration of framebuffer fetch output not "
+                          "qualified with layout(noncoherent)");
+
+   } else {
+      /* From the EXT_shader_framebuffer_fetch spec:
+       *
+       *   "Fragment outputs declared inout may specify the following layout
+       *    qualifier: [...] noncoherent"
+       */
+      if (qual->flags.q.non_coherent)
+         _mesa_glsl_error(loc, state,
+                          "invalid layout(noncoherent) qualifier not part of "
+                          "framebuffer fetch output declaration");
+   }
 
    if (!is_parameter && is_varying_var(var, state->stage)) {
       /* User-defined ins/outs are not permitted in compute shaders. */
@@ -4066,30 +4131,8 @@ apply_type_qualifier_to_variable(const struct ast_type_qualifier *qual,
       }
    }
 
-   if (state->all_invariant && (state->current_function == NULL)) {
-      switch (state->stage) {
-      case MESA_SHADER_VERTEX:
-         if (var->data.mode == ir_var_shader_out)
-            var->data.invariant = true;
-         break;
-      case MESA_SHADER_TESS_CTRL:
-      case MESA_SHADER_TESS_EVAL:
-      case MESA_SHADER_GEOMETRY:
-         if ((var->data.mode == ir_var_shader_in)
-             || (var->data.mode == ir_var_shader_out))
-            var->data.invariant = true;
-         break;
-      case MESA_SHADER_FRAGMENT:
-         if (var->data.mode == ir_var_shader_in)
-            var->data.invariant = true;
-         break;
-      case MESA_SHADER_COMPUTE:
-         /* Invariance isn't meaningful in compute shaders. */
-         break;
-      default:
-         break;
-      }
-   }
+   if (state->all_invariant && var->data.mode == ir_var_shader_out)
+      var->data.invariant = true;
 
    var->data.interpolation =
       interpret_interpolation_qualifier(qual, var->type,
@@ -4275,8 +4318,12 @@ get_variable_being_redeclared(ir_variable **var_ptr, YYLTYPE loc,
        *   "By default, gl_LastFragData is declared with the mediump precision
        *    qualifier. This can be changed by redeclaring the corresponding
        *    variables with the desired precision qualifier."
+       *
+       *   "Fragment shaders may specify the following layout qualifier only for
+       *    redeclaring the built-in gl_LastFragData array [...]: noncoherent"
        */
       earlier->data.precision = var->data.precision;
+      earlier->data.memory_coherent = var->data.memory_coherent;
 
    } else if (earlier->data.how_declared == ir_var_declared_implicitly &&
               state->allow_builtin_variable_redeclaration) {

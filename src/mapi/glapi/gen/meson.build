@@ -52,6 +52,7 @@ api_xml_files = files(
   'ARB_framebuffer_object.xml',
   'ARB_get_program_binary.xml',
   'ARB_get_texture_sub_image.xml',
+  'ARB_gl_spirv.xml',
   'ARB_gpu_shader_fp64.xml',
   'ARB_gpu_shader_int64.xml',
   'ARB_gpu_shader5.xml',
@@ -146,17 +147,17 @@ glx_gen_depends = files(
 
 glapi_mapi_tmp_h = custom_target(
   'glapi_mapi_tmp.h',
-  input : ['../../mapi_abi.py', 'gl_and_es_API.xml'],
+  input : [mapi_abi_py, 'gl_and_es_API.xml'],
   output : 'glapi_mapi_tmp.h',
   command : [prog_python2, '@INPUT0@', '--printer', 'glapi', '@INPUT1@'],
   depend_files : glapi_gen_depends,
   capture : true,
 )
 
-gl_procs_h = custom_target(
-  'gl_procs.h',
+glprocs_h = custom_target(
+  'glprocs.h',
   input : ['gl_procs.py', 'gl_and_es_API.xml'],
-  output : 'gl_procs.h',
+  output : 'glprocs.h',
   command : [prog_python2, '@INPUT0@', '-c', '-f', '@INPUT1@'],
   depend_files : glapi_gen_depends,
   capture : true,

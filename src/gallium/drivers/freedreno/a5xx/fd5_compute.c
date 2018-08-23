@@ -26,6 +26,8 @@
 
 #include "pipe/p_state.h"
 
+#include "freedreno_resource.h"
+
 #include "fd5_compute.h"
 #include "fd5_context.h"
 #include "fd5_emit.h"
@@ -40,6 +42,18 @@ fd5_create_compute_state(struct pipe_context *pctx,
 		const struct pipe_compute_state *cso)
 {
 	struct fd_context *ctx = fd_context(pctx);
+
+	/* req_input_mem will only be non-zero for cl kernels (ie. clover).
+	 * This isn't a perfect test because I guess it is possible (but
+	 * uncommon) for none for the kernel parameters to be a global,
+	 * but ctx->set_global_bindings() can't fail, so this is the next
+	 * best place to fail if we need a newer version of kernel driver:
+	 */
+	if ((cso->req_input_mem > 0) &&
+			fd_device_version(ctx->dev) < FD_VERSION_BO_IOVA) {
+		return NULL;
+	}
+
 	struct ir3_compiler *compiler = ctx->screen->compiler;
 	struct fd5_compute_stateobj *so = CALLOC_STRUCT(fd5_compute_stateobj);
 	so->shader = ir3_shader_create_compute(compiler, cso, &ctx->debug);
@@ -110,12 +124,41 @@ cs_program_emit(struct fd_ringbuffer *ring, struct ir3_shader_variant *v)
 
 	OUT_PKT4(ring, REG_A5XX_HLSQ_CS_CNTL_0, 2);
 	OUT_RING(ring, A5XX_HLSQ_CS_CNTL_0_WGIDCONSTID(work_group_id) |
-			A5XX_HLSQ_CS_CNTL_0_UNK0(regid(63, 0)) |
-			A5XX_HLSQ_CS_CNTL_0_UNK1(regid(63, 0)) |
-			A5XX_HLSQ_CS_CNTL_0_LOCALIDREGID(local_invocation_id));
+		A5XX_HLSQ_CS_CNTL_0_UNK0(regid(63, 0)) |
+		A5XX_HLSQ_CS_CNTL_0_UNK1(regid(63, 0)) |
+		A5XX_HLSQ_CS_CNTL_0_LOCALIDREGID(local_invocation_id));
 	OUT_RING(ring, 0x1);               /* HLSQ_CS_CNTL_1 */
 
 	fd5_emit_shader(ring, v);
+}
+
+static void
+emit_setup(struct fd_context *ctx)
+{
+	struct fd_ringbuffer *ring = ctx->batch->draw;
+
+	fd5_emit_restore(ctx->batch, ring);
+	fd5_emit_lrz_flush(ring);
+
+	OUT_PKT7(ring, CP_SKIP_IB2_ENABLE_GLOBAL, 1);
+	OUT_RING(ring, 0x0);
+
+	OUT_PKT7(ring, CP_EVENT_WRITE, 1);
+	OUT_RING(ring, UNK_19);
+
+	OUT_PKT4(ring, REG_A5XX_PC_POWER_CNTL, 1);
+	OUT_RING(ring, 0x00000003);   /* PC_POWER_CNTL */
+
+	OUT_PKT4(ring, REG_A5XX_VFD_POWER_CNTL, 1);
+	OUT_RING(ring, 0x00000003);   /* VFD_POWER_CNTL */
+
+	/* 0x10000000 for BYPASS.. 0x7c13c080 for GMEM: */
+	fd_wfi(ctx->batch, ring);
+	OUT_PKT4(ring, REG_A5XX_RB_CCU_CNTL, 1);
+	OUT_RING(ring, 0x10000000);   /* RB_CCU_CNTL */
+
+	OUT_PKT4(ring, REG_A5XX_RB_CNTL, 1);
+	OUT_RING(ring, A5XX_RB_CNTL_BYPASS);
 }
 
 static void
@@ -125,9 +168,9 @@ fd5_launch_grid(struct fd_context *ctx, const struct pipe_grid_info *info)
 	struct ir3_shader_key key = {0};
 	struct ir3_shader_variant *v;
 	struct fd_ringbuffer *ring = ctx->batch->draw;
+	unsigned i, nglobal = 0;
 
-	if (info->indirect)
-		return;  // TODO
+	emit_setup(ctx);
 
 	v = ir3_shader_variant(so->shader, key, &ctx->debug);
 
@@ -136,6 +179,23 @@ fd5_launch_grid(struct fd_context *ctx, const struct pipe_grid_info *info)
 
 	fd5_emit_cs_state(ctx, ring, v);
 	ir3_emit_cs_consts(v, ring, ctx, info);
+
+	foreach_bit(i, ctx->global_bindings.enabled_mask)
+		nglobal++;
+
+	if (nglobal > 0) {
+		/* global resources don't otherwise get an OUT_RELOC(), since
+		 * the raw ptr address is emitted ir ir3_emit_cs_consts().
+		 * So to make the kernel aware that these buffers are referenced
+		 * by the batch, emit dummy reloc's as part of a no-op packet
+		 * payload:
+		 */
+		OUT_PKT7(ring, CP_NOP, 2 * nglobal);
+		foreach_bit(i, ctx->global_bindings.enabled_mask) {
+			struct pipe_resource *prsc = ctx->global_bindings.buf[i];
+			OUT_RELOCW(ring, fd_resource(prsc)->bo, 0, 0, 0);
+		}
+	}
 
 	const unsigned *local_size = info->block; // v->shader->nir->info->cs.local_size;
 	const unsigned *num_groups = info->grid;
@@ -158,11 +218,24 @@ fd5_launch_grid(struct fd_context *ctx, const struct pipe_grid_info *info)
 	OUT_RING(ring, 1);            /* HLSQ_CS_KERNEL_GROUP_Y */
 	OUT_RING(ring, 1);            /* HLSQ_CS_KERNEL_GROUP_Z */
 
-	OUT_PKT7(ring, CP_EXEC_CS, 4);
-	OUT_RING(ring, 0x00000000);
-	OUT_RING(ring, CP_EXEC_CS_1_NGROUPS_X(info->grid[0]));
-	OUT_RING(ring, CP_EXEC_CS_2_NGROUPS_Y(info->grid[1]));
-	OUT_RING(ring, CP_EXEC_CS_3_NGROUPS_Z(info->grid[2]));
+	if (info->indirect) {
+		struct fd_resource *rsc = fd_resource(info->indirect);
+
+		fd5_emit_flush(ctx, ring);
+
+		OUT_PKT7(ring, CP_EXEC_CS_INDIRECT, 4);
+		OUT_RING(ring, 0x00000000);
+		OUT_RELOC(ring, rsc->bo, info->indirect_offset, 0, 0);  /* ADDR_LO/HI */
+		OUT_RING(ring, A5XX_CP_EXEC_CS_INDIRECT_3_LOCALSIZEX(local_size[0] - 1) |
+				A5XX_CP_EXEC_CS_INDIRECT_3_LOCALSIZEY(local_size[1] - 1) |
+				A5XX_CP_EXEC_CS_INDIRECT_3_LOCALSIZEZ(local_size[2] - 1));
+	} else {
+		OUT_PKT7(ring, CP_EXEC_CS, 4);
+		OUT_RING(ring, 0x00000000);
+		OUT_RING(ring, CP_EXEC_CS_1_NGROUPS_X(info->grid[0]));
+		OUT_RING(ring, CP_EXEC_CS_2_NGROUPS_Y(info->grid[1]));
+		OUT_RING(ring, CP_EXEC_CS_3_NGROUPS_Z(info->grid[2]));
+	}
 }
 
 void

@@ -22,8 +22,10 @@ glcpp_parse = custom_target(
   'glcpp-parse.[ch]',
   input : 'glcpp-parse.y',
   output : ['glcpp-parse.c', 'glcpp-parse.h'],
-  command : [prog_bison, '-o', '@OUTPUT0@', '-p', 'glcpp_parser_',
-             '--defines=@OUTPUT1@', '@INPUT@'],
+  command : [
+    prog_bison, '-o', '@OUTPUT0@', '-p', 'glcpp_parser_',
+    '--defines=@OUTPUT1@', '@INPUT@',
+  ],
 )
 
 glcpp_lex = custom_target(
@@ -53,4 +55,20 @@ glcpp = executable(
   build_by_default : false,
 )
 
-# TODO: figure out how to make all of these tests work.
+if with_tests
+  modes = ['unix', 'windows', 'oldmac', 'bizarro']
+  if dep_valgrind != [] and dep_valgrind.found()
+    modes += ['valgrind']
+  endif
+
+  foreach m : modes
+    test(
+      'glcpp test (@0@)'.format(m),
+      find_program('tests/glcpp_test.py'),
+      args : [
+        glcpp, join_paths(meson.current_source_dir(), 'tests'),
+        '--@0@'.format(m),
+      ],
+    )
+  endforeach
+endif

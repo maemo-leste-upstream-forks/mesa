@@ -21,6 +21,7 @@
 inc_compiler = include_directories('.')
 inc_nir = include_directories('nir')
 inc_glsl = include_directories('glsl')
+inc_spirv = include_directories('spirv')
 
 files_libcompiler = files(
   'blob.c',
@@ -53,16 +54,21 @@ libcompiler = static_library(
   build_by_default : false,
 )
 
+subdir('spirv')
+
 subdir('nir')
 
+# This is here because putting it in spirv/meson.build would create a circular
+# dependency with nir/meson.build.
 spirv2nir = executable(
   'spirv2nir',
   [files('spirv/spirv2nir.c'), dummy_cpp],
-  dependencies : [dep_m, dep_thread],
+  dependencies : [dep_m, dep_thread, idep_nir],
   include_directories : [inc_common, inc_nir, include_directories('spirv')],
-  link_with : [libnir, libmesa_util],
+  link_with : libmesa_util,
   c_args : [c_vis_args, c_msvc_compat_args, no_override_init_args],
-  build_by_default : false,
+  build_by_default : with_tools.contains('nir'),
+  install : with_tools.contains('nir'),
 )
 
 subdir('glsl')

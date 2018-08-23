@@ -906,6 +906,7 @@ XMesaContext XMesaCreateContext( XMesaVisual v, XMesaContext share_list )
 
    /* initialize with default driver functions, then plug in XMesa funcs */
    _mesa_init_driver_functions(&functions);
+   _tnl_init_driver_draw_function(&functions);
    xmesa_init_driver_functions(v, &functions);
    if (!_mesa_initialize_context(mesaCtx, API_OPENGL_COMPAT, &v->mesa_visual,
                       share_list ? &(share_list->mesa) : (struct gl_context *) NULL,
@@ -957,6 +958,7 @@ XMesaContext XMesaCreateContext( XMesaVisual v, XMesaContext share_list )
 
    _mesa_meta_init(mesaCtx);
 
+   _mesa_override_extensions(mesaCtx);
    _mesa_compute_version(mesaCtx);
 
     /* Exec table initialization requires the version to be computed */
@@ -1309,14 +1311,6 @@ Display *XMesaGetCurrentDisplay(void)
    GET_CURRENT_CONTEXT(ctx);
    XMesaContext xmctx = XMESA_CONTEXT(ctx);
    return xmctx ? xmctx->display : NULL;
-}
-
-
-
-GLboolean XMesaSetFXmode( GLint mode )
-{
-   (void) mode;
-   return GL_FALSE;
 }
 
 

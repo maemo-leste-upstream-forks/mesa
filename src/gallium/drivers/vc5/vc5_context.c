@@ -60,8 +60,7 @@ vc5_pipe_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence,
 
         if (fence) {
                 struct pipe_screen *screen = pctx->screen;
-                struct vc5_fence *f = vc5_fence_create(vc5->screen,
-                                                       vc5->last_emit_seqno);
+                struct vc5_fence *f = vc5_fence_create(vc5);
                 screen->fence_reference(screen, fence, NULL);
                 *fence = (struct pipe_fence_handle *)f;
         }
@@ -128,14 +127,26 @@ vc5_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
 
         vc5->screen = screen;
 
+        int ret = drmSyncobjCreate(screen->fd, DRM_SYNCOBJ_CREATE_SIGNALED,
+                                   &vc5->out_sync);
+        if (ret) {
+                ralloc_free(vc5);
+                return NULL;
+        }
+
         pctx->screen = pscreen;
         pctx->priv = priv;
         pctx->destroy = vc5_context_destroy;
         pctx->flush = vc5_pipe_flush;
         pctx->invalidate_resource = vc5_invalidate_resource;
 
-        vc5_draw_init(pctx);
-        vc5_state_init(pctx);
+        if (screen->devinfo.ver >= 41) {
+                v3d41_draw_init(pctx);
+                v3d41_state_init(pctx);
+        } else {
+                v3d33_draw_init(pctx);
+                v3d33_state_init(pctx);
+        }
         vc5_program_init(pctx);
         vc5_query_init(pctx);
         vc5_resource_context_init(pctx);
@@ -162,6 +173,7 @@ vc5_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
         V3D_DEBUG |= saved_shaderdb_flag;
 
         vc5->sample_mask = (1 << VC5_MAX_SAMPLES) - 1;
+        vc5->active_queries = true;
 
         return &vc5->base;
 

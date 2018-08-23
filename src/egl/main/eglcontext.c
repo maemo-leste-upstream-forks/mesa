@@ -386,6 +386,15 @@ _eglParseContextAttribList(_EGLContext *ctx, _EGLDisplay *dpy,
             break;
          }
 
+      case EGL_CONTEXT_RELEASE_BEHAVIOR_KHR:
+         if (val == EGL_CONTEXT_RELEASE_BEHAVIOR_NONE_KHR ||
+             val == EGL_CONTEXT_RELEASE_BEHAVIOR_FLUSH_KHR) {
+            ctx->ReleaseBehavior = val;
+         } else {
+            err = EGL_BAD_ATTRIBUTE;
+         }
+         break;
+
       default:
          err = EGL_BAD_ATTRIBUTE;
          break;
@@ -585,9 +594,9 @@ _eglInitContext(_EGLContext *ctx, _EGLDisplay *dpy, _EGLConfig *conf,
    ctx->ClientMajorVersion = 1; /* the default, per EGL spec */
    ctx->ClientMinorVersion = 0;
    ctx->Flags = 0;
-   ctx->Profile = EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR;
    ctx->ResetNotificationStrategy = EGL_NO_RESET_NOTIFICATION_KHR;
    ctx->ContextPriority = EGL_CONTEXT_PRIORITY_MEDIUM_IMG;
+   ctx->ReleaseBehavior = EGL_CONTEXT_RELEASE_BEHAVIOR_FLUSH_KHR;
 
    err = _eglParseContextAttribList(ctx, dpy, attrib_list);
    if (err == EGL_SUCCESS && ctx->Config) {

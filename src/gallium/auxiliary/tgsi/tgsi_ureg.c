@@ -80,6 +80,7 @@ struct ureg_tokens {
 #define UREG_MAX_SYSTEM_VALUE PIPE_MAX_ATTRIBS
 #define UREG_MAX_OUTPUT (4 * PIPE_MAX_SHADER_OUTPUTS)
 #define UREG_MAX_CONSTANT_RANGE 32
+#define UREG_MAX_HW_ATOMIC_RANGE 32
 #define UREG_MAX_IMMEDIATE 4096
 #define UREG_MAX_ADDR 3
 #define UREG_MAX_ARRAY_TEMPS 256
@@ -92,22 +93,31 @@ struct const_decl {
    unsigned nr_constant_ranges;
 };
 
+struct hw_atomic_decl {
+   struct {
+      unsigned first;
+      unsigned last;
+      unsigned array_id;
+   } hw_atomic_range[UREG_MAX_HW_ATOMIC_RANGE];
+   unsigned nr_hw_atomic_ranges;
+};
+
 #define DOMAIN_DECL 0
 #define DOMAIN_INSN 1
 
 struct ureg_program
 {
-   unsigned processor;
+   enum pipe_shader_type processor;
    bool supports_any_inout_decl_range;
    int next_shader_processor;
 
    struct {
-      unsigned semantic_name;
+      enum tgsi_semantic semantic_name;
       unsigned semantic_index;
-      unsigned interp;
+      enum tgsi_interpolate_mode interp;
       unsigned char cylindrical_wrap;
       unsigned char usage_mask;
-      unsigned interp_location;
+      enum tgsi_interpolate_loc interp_location;
       unsigned first;
       unsigned last;
       unsigned array_id;
@@ -117,13 +127,13 @@ struct ureg_program
    unsigned vs_inputs[PIPE_MAX_ATTRIBS/32];
 
    struct {
-      unsigned semantic_name;
+      enum tgsi_semantic semantic_name;
       unsigned semantic_index;
    } system_value[UREG_MAX_SYSTEM_VALUE];
    unsigned nr_system_values;
 
    struct {
-      unsigned semantic_name;
+      enum tgsi_semantic semantic_name;
       unsigned semantic_index;
       unsigned streams;
       unsigned usage_mask; /* = TGSI_WRITEMASK_* */
@@ -149,17 +159,17 @@ struct ureg_program
 
    struct {
       unsigned index;
-      unsigned target;
-      unsigned return_type_x;
-      unsigned return_type_y;
-      unsigned return_type_z;
-      unsigned return_type_w;
+      enum tgsi_texture_type target;
+      enum tgsi_return_type return_type_x;
+      enum tgsi_return_type return_type_y;
+      enum tgsi_return_type return_type_z;
+      enum tgsi_return_type return_type_w;
    } sampler_view[PIPE_MAX_SHADER_SAMPLER_VIEWS];
    unsigned nr_sampler_views;
 
    struct {
       unsigned index;
-      unsigned target;
+      enum tgsi_texture_type target;
       unsigned format;
       boolean wr;
       boolean raw;
@@ -181,6 +191,8 @@ struct ureg_program
    unsigned nr_array_temps;
 
    struct const_decl const_decls[PIPE_MAX_CONSTANT_BUFFERS];
+
+   struct hw_atomic_decl hw_atomic_decls[PIPE_MAX_HW_ATOMIC_BUFFERS];
 
    unsigned properties[TGSI_PROPERTY_COUNT];
 
@@ -269,11 +281,11 @@ ureg_property(struct ureg_program *ureg, unsigned name, unsigned value)
 
 struct ureg_src
 ureg_DECL_fs_input_cyl_centroid_layout(struct ureg_program *ureg,
-                       unsigned semantic_name,
+                       enum tgsi_semantic semantic_name,
                        unsigned semantic_index,
-                       unsigned interp_mode,
+                       enum tgsi_interpolate_mode interp_mode,
                        unsigned cylindrical_wrap,
-                       unsigned interp_location,
+                       enum tgsi_interpolate_loc interp_location,
                        unsigned index,
                        unsigned usage_mask,
                        unsigned array_id,
@@ -322,16 +334,17 @@ out:
 
 struct ureg_src
 ureg_DECL_fs_input_cyl_centroid(struct ureg_program *ureg,
-                       unsigned semantic_name,
+                       enum tgsi_semantic semantic_name,
                        unsigned semantic_index,
-                       unsigned interp_mode,
+                       enum tgsi_interpolate_mode interp_mode,
                        unsigned cylindrical_wrap,
-                       unsigned interp_location,
+                       enum tgsi_interpolate_loc interp_location,
                        unsigned array_id,
                        unsigned array_size)
 {
    return ureg_DECL_fs_input_cyl_centroid_layout(ureg,
-         semantic_name, semantic_index, interp_mode, cylindrical_wrap, interp_location,
+         semantic_name, semantic_index, interp_mode,
+         cylindrical_wrap, interp_location,
          ureg->nr_input_regs, TGSI_WRITEMASK_XYZW, array_id, array_size);
 }
 
@@ -350,7 +363,7 @@ ureg_DECL_vs_input( struct ureg_program *ureg,
 
 struct ureg_src
 ureg_DECL_input_layout(struct ureg_program *ureg,
-                unsigned semantic_name,
+                enum tgsi_semantic semantic_name,
                 unsigned semantic_index,
                 unsigned index,
                 unsigned usage_mask,
@@ -358,26 +371,29 @@ ureg_DECL_input_layout(struct ureg_program *ureg,
                 unsigned array_size)
 {
    return ureg_DECL_fs_input_cyl_centroid_layout(ureg,
-               semantic_name, semantic_index, 0, 0, 0,
+               semantic_name, semantic_index,
+               TGSI_INTERPOLATE_CONSTANT, 0, TGSI_INTERPOLATE_LOC_CENTER,
                index, usage_mask, array_id, array_size);
 }
 
 
 struct ureg_src
 ureg_DECL_input(struct ureg_program *ureg,
-                unsigned semantic_name,
+                enum tgsi_semantic semantic_name,
                 unsigned semantic_index,
                 unsigned array_id,
                 unsigned array_size)
 {
    return ureg_DECL_fs_input_cyl_centroid(ureg, semantic_name, semantic_index,
-                                          0, 0, 0, array_id, array_size);
+                                          TGSI_INTERPOLATE_CONSTANT, 0,
+                                          TGSI_INTERPOLATE_LOC_CENTER,
+                                          array_id, array_size);
 }
 
 
 struct ureg_src
 ureg_DECL_system_value(struct ureg_program *ureg,
-                       unsigned semantic_name,
+                       enum tgsi_semantic semantic_name,
                        unsigned semantic_index)
 {
    unsigned i;
@@ -405,7 +421,7 @@ out:
 
 struct ureg_dst
 ureg_DECL_output_layout(struct ureg_program *ureg,
-                        unsigned semantic_name,
+                        enum tgsi_semantic semantic_name,
                         unsigned semantic_index,
                         unsigned streams,
                         unsigned index,
@@ -470,7 +486,7 @@ ureg_DECL_output_masked(struct ureg_program *ureg,
 
 struct ureg_dst 
 ureg_DECL_output(struct ureg_program *ureg,
-                 unsigned name,
+                 enum tgsi_semantic name,
                  unsigned index)
 {
    return ureg_DECL_output_masked(ureg, name, index, TGSI_WRITEMASK_XYZW,
@@ -479,7 +495,7 @@ ureg_DECL_output(struct ureg_program *ureg,
 
 struct ureg_dst
 ureg_DECL_output_array(struct ureg_program *ureg,
-                       unsigned semantic_name,
+                       enum tgsi_semantic semantic_name,
                        unsigned semantic_index,
                        unsigned array_id,
                        unsigned array_size)
@@ -581,6 +597,30 @@ out:
 
    struct ureg_src src = ureg_src_register(TGSI_FILE_CONSTANT, index);
    return ureg_src_dimension(src, 0);
+}
+
+
+/* Returns a new hw atomic register.  Keep track of which have been
+ * referred to so that we can emit decls later.
+ */
+void
+ureg_DECL_hw_atomic(struct ureg_program *ureg,
+                    unsigned first,
+                    unsigned last,
+                    unsigned buffer_id,
+                    unsigned array_id)
+{
+   struct hw_atomic_decl *decl = &ureg->hw_atomic_decls[buffer_id];
+
+   if (decl->nr_hw_atomic_ranges < UREG_MAX_HW_ATOMIC_RANGE) {
+      uint i = decl->nr_hw_atomic_ranges++;
+
+      decl->hw_atomic_range[i].first = first;
+      decl->hw_atomic_range[i].last = last;
+      decl->hw_atomic_range[i].array_id = array_id;
+   } else {
+      set_bad(ureg);
+   }
 }
 
 static struct ureg_dst alloc_temporary( struct ureg_program *ureg,
@@ -697,11 +737,11 @@ struct ureg_src ureg_DECL_sampler( struct ureg_program *ureg,
 struct ureg_src
 ureg_DECL_sampler_view(struct ureg_program *ureg,
                        unsigned index,
-                       unsigned target,
-                       unsigned return_type_x,
-                       unsigned return_type_y,
-                       unsigned return_type_z,
-                       unsigned return_type_w)
+                       enum tgsi_texture_type target,
+                       enum tgsi_return_type return_type_x,
+                       enum tgsi_return_type return_type_y,
+                       enum tgsi_return_type return_type_z,
+                       enum tgsi_return_type return_type_w)
 {
    struct ureg_src reg = ureg_src_register(TGSI_FILE_SAMPLER_VIEW, index);
    uint i;
@@ -732,7 +772,7 @@ ureg_DECL_sampler_view(struct ureg_program *ureg,
 struct ureg_src
 ureg_DECL_image(struct ureg_program *ureg,
                 unsigned index,
-                unsigned target,
+                enum tgsi_texture_type target,
                 unsigned format,
                 boolean wr,
                 boolean raw)
@@ -1194,7 +1234,7 @@ ureg_emit_dst( struct ureg_program *ureg,
 }
 
 
-static void validate( unsigned opcode,
+static void validate( enum tgsi_opcode opcode,
                       unsigned nr_dst,
                       unsigned nr_src )
 {
@@ -1210,7 +1250,7 @@ static void validate( unsigned opcode,
 
 struct ureg_emit_insn_result
 ureg_emit_insn(struct ureg_program *ureg,
-               unsigned opcode,
+               enum tgsi_opcode opcode,
                boolean saturate,
                unsigned precise,
                unsigned num_dst,
@@ -1290,7 +1330,8 @@ ureg_fixup_label(struct ureg_program *ureg,
 void
 ureg_emit_texture(struct ureg_program *ureg,
                   unsigned extended_token,
-                  unsigned target, unsigned return_type, unsigned num_offsets)
+                  enum tgsi_texture_type target,
+                  enum tgsi_return_type return_type, unsigned num_offsets)
 {
    union tgsi_any_token *out, *insn;
 
@@ -1351,7 +1392,7 @@ ureg_fixup_insn_size(struct ureg_program *ureg,
 
 void
 ureg_insn(struct ureg_program *ureg,
-          unsigned opcode,
+          enum tgsi_opcode opcode,
           const struct ureg_dst *dst,
           unsigned nr_dst,
           const struct ureg_src *src,
@@ -1386,11 +1427,11 @@ ureg_insn(struct ureg_program *ureg,
 
 void
 ureg_tex_insn(struct ureg_program *ureg,
-              unsigned opcode,
+              enum tgsi_opcode opcode,
               const struct ureg_dst *dst,
               unsigned nr_dst,
-              unsigned target,
-              unsigned return_type,
+              enum tgsi_texture_type target,
+              enum tgsi_return_type return_type,
               const struct tgsi_texture_offset *texoffsets,
               unsigned nr_offset,
               const struct ureg_src *src,
@@ -1431,7 +1472,7 @@ ureg_tex_insn(struct ureg_program *ureg,
 
 void
 ureg_memory_insn(struct ureg_program *ureg,
-                 unsigned opcode,
+                 enum tgsi_opcode opcode,
                  const struct ureg_dst *dst,
                  unsigned nr_dst,
                  const struct ureg_src *src,
@@ -1467,7 +1508,7 @@ emit_decl_semantic(struct ureg_program *ureg,
                    unsigned file,
                    unsigned first,
                    unsigned last,
-                   unsigned semantic_name,
+                   enum tgsi_semantic semantic_name,
                    unsigned semantic_index,
                    unsigned streams,
                    unsigned usage_mask,
@@ -1501,17 +1542,46 @@ emit_decl_semantic(struct ureg_program *ureg,
    }
 }
 
+static void
+emit_decl_atomic_2d(struct ureg_program *ureg,
+                    unsigned first,
+                    unsigned last,
+                    unsigned index2D,
+                    unsigned array_id)
+{
+   union tgsi_any_token *out = get_tokens(ureg, DOMAIN_DECL, array_id ? 4 : 3);
+
+   out[0].value = 0;
+   out[0].decl.Type = TGSI_TOKEN_TYPE_DECLARATION;
+   out[0].decl.NrTokens = 3;
+   out[0].decl.File = TGSI_FILE_HW_ATOMIC;
+   out[0].decl.UsageMask = TGSI_WRITEMASK_XYZW;
+   out[0].decl.Dimension = 1;
+   out[0].decl.Array = array_id != 0;
+
+   out[1].value = 0;
+   out[1].decl_range.First = first;
+   out[1].decl_range.Last = last;
+
+   out[2].value = 0;
+   out[2].decl_dim.Index2D = index2D;
+
+   if (array_id) {
+      out[3].value = 0;
+      out[3].array.ArrayID = array_id;
+   }
+}
 
 static void
 emit_decl_fs(struct ureg_program *ureg,
              unsigned file,
              unsigned first,
              unsigned last,
-             unsigned semantic_name,
+             enum tgsi_semantic semantic_name,
              unsigned semantic_index,
-             unsigned interpolate,
+             enum tgsi_interpolate_mode interpolate,
              unsigned cylindrical_wrap,
-             unsigned interpolate_location,
+             enum tgsi_interpolate_loc interpolate_location,
              unsigned array_id,
              unsigned usage_mask)
 {
@@ -1619,11 +1689,11 @@ emit_decl_range2D(struct ureg_program *ureg,
 static void
 emit_decl_sampler_view(struct ureg_program *ureg,
                        unsigned index,
-                       unsigned target,
-                       unsigned return_type_x,
-                       unsigned return_type_y,
-                       unsigned return_type_z,
-                       unsigned return_type_w )
+                       enum tgsi_texture_type target,
+                       enum tgsi_return_type return_type_x,
+                       enum tgsi_return_type return_type_y,
+                       enum tgsi_return_type return_type_z,
+                       enum tgsi_return_type return_type_w )
 {
    union tgsi_any_token *out = get_tokens(ureg, DOMAIN_DECL, 3);
 
@@ -1648,7 +1718,7 @@ emit_decl_sampler_view(struct ureg_program *ureg,
 static void
 emit_decl_image(struct ureg_program *ureg,
                 unsigned index,
-                unsigned target,
+                enum tgsi_texture_type target,
                 unsigned format,
                 boolean wr,
                 boolean raw)
@@ -1908,6 +1978,22 @@ static void emit_decls( struct ureg_program *ureg )
       }
    }
 
+   for (i = 0; i < PIPE_MAX_HW_ATOMIC_BUFFERS; i++) {
+      struct hw_atomic_decl *decl = &ureg->hw_atomic_decls[i];
+
+      if (decl->nr_hw_atomic_ranges) {
+         uint j;
+
+         for (j = 0; j < decl->nr_hw_atomic_ranges; j++) {
+            emit_decl_atomic_2d(ureg,
+                                decl->hw_atomic_range[j].first,
+                                decl->hw_atomic_range[j].last,
+                                i,
+                                decl->hw_atomic_range[j].array_id);
+         }
+      }
+   }
+
    if (ureg->nr_temps) {
       unsigned array = 0;
       for (i = 0; i < ureg->nr_temps;) {
@@ -1987,6 +2073,8 @@ const struct tgsi_token *ureg_finalize( struct ureg_program *ureg )
                        PIPE_SHADER_FRAGMENT :
                        ureg->next_shader_processor);
       break;
+   default:
+      ; /* nothing */
    }
 
    emit_header( ureg );
@@ -2080,14 +2168,15 @@ void ureg_free_tokens( const struct tgsi_token *tokens )
 
 
 struct ureg_program *
-ureg_create(unsigned processor)
+ureg_create(enum pipe_shader_type processor)
 {
    return ureg_create_with_screen(processor, NULL);
 }
 
 
 struct ureg_program *
-ureg_create_with_screen(unsigned processor, struct pipe_screen *screen)
+ureg_create_with_screen(enum pipe_shader_type processor,
+                        struct pipe_screen *screen)
 {
    int i;
    struct ureg_program *ureg = CALLOC_STRUCT( ureg_program );

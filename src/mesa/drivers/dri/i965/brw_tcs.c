@@ -185,7 +185,7 @@ brw_codegen_tcs_prog(struct brw_context *brw, struct brw_program *tcp,
       brw_nir_setup_glsl_uniforms(mem_ctx, nir, &tcp->program,
                                   &prog_data.base.base,
                                   compiler->scalar_stage[MESA_SHADER_TESS_CTRL]);
-      brw_nir_analyze_ubo_ranges(compiler, tcp->program.nir,
+      brw_nir_analyze_ubo_ranges(compiler, tcp->program.nir, NULL,
                                  prog_data.base.base.ubo_ranges);
    } else {
       /* Upload the Patch URB Header as the first two uniforms.
@@ -226,14 +226,13 @@ brw_codegen_tcs_prog(struct brw_context *brw, struct brw_program *tcp,
       start_time = get_time();
    }
 
-   unsigned program_size;
    char *error_str;
    const unsigned *program =
       brw_compile_tcs(compiler, brw, mem_ctx, key, &prog_data, nir, st_index,
-                      &program_size, &error_str);
+                      &error_str);
    if (program == NULL) {
       if (tep) {
-         tep->program.sh.data->LinkStatus = linking_failure;
+         tep->program.sh.data->LinkStatus = LINKING_FAILURE;
          ralloc_strcat(&tep->program.sh.data->InfoLog, error_str);
       }
 
@@ -267,7 +266,7 @@ brw_codegen_tcs_prog(struct brw_context *brw, struct brw_program *tcp,
    ralloc_steal(NULL, prog_data.base.base.pull_param);
    brw_upload_cache(&brw->cache, BRW_CACHE_TCS_PROG,
                     key, sizeof(*key),
-                    program, program_size,
+                    program, prog_data.base.base.program_size,
                     &prog_data, sizeof(prog_data),
                     &stage_state->prog_offset, &brw->tcs.base.prog_data);
    ralloc_free(mem_ctx);
@@ -338,14 +337,21 @@ brw_upload_tcs_prog(struct brw_context *brw)
 
    brw_tcs_populate_key(brw, &key);
 
-   if (!brw_search_cache(&brw->cache, BRW_CACHE_TCS_PROG,
-                         &key, sizeof(key),
-                         &stage_state->prog_offset,
-                         &brw->tcs.base.prog_data)) {
-      bool success = brw_codegen_tcs_prog(brw, tcp, tep, &key);
-      assert(success);
-      (void)success;
-   }
+   if (brw_search_cache(&brw->cache, BRW_CACHE_TCS_PROG,
+                        &key, sizeof(key),
+                        &stage_state->prog_offset,
+                        &brw->tcs.base.prog_data))
+      return;
+
+   if (brw_disk_cache_upload_program(brw, MESA_SHADER_TESS_CTRL))
+      return;
+
+   tcp = (struct brw_program *) brw->programs[MESA_SHADER_TESS_CTRL];
+   if (tcp)
+      tcp->id = key.program_string_id;
+
+   MAYBE_UNUSED bool success = brw_codegen_tcs_prog(brw, tcp, tep, &key);
+   assert(success);
 }
 
 

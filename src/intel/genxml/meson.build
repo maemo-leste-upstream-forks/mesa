@@ -28,6 +28,7 @@ gen_xml_files = [
   'gen8.xml',
   'gen9.xml',
   'gen10.xml',
+  'gen11.xml',
 ]
 
 genX_xml_h = custom_target(
@@ -48,12 +49,11 @@ genX_bits_h = custom_target(
 gen_xml_pack = []
 foreach f : gen_xml_files
   _name = '@0@_pack.h'.format(f.split('.')[0])
-  _xml = custom_target(
+  gen_xml_pack += custom_target(
     _name,
     input : ['gen_pack_header.py', f],
     output : _name,
     command : [prog_python2, '@INPUT@'],
     capture : true,
   )
-  gen_xml_pack += _xml
 endforeach

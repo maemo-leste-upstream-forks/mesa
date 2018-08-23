@@ -66,7 +66,7 @@ _mesa_alloc_shared_state(struct gl_context *ctx)
    if (!shared)
       return NULL;
 
-   mtx_init(&shared->Mutex, mtx_plain);
+   simple_mtx_init(&shared->Mutex, mtx_plain);
 
    shared->DisplayList = _mesa_NewHashTable();
    shared->BitmapAtlas = _mesa_NewHashTable();
@@ -136,6 +136,8 @@ _mesa_alloc_shared_state(struct gl_context *ctx)
                                           _mesa_key_pointer_equal);
 
    shared->MemoryObjects = _mesa_NewHashTable();
+   shared->SemaphoreObjects = _mesa_NewHashTable();
+
    return shared;
 
 fail:
@@ -316,6 +318,16 @@ delete_memory_object_cb(GLuint id, void *data, void *userData)
    ctx->Driver.DeleteMemoryObject(ctx, memObj);
 }
 
+/**
+ * Callback for deleting a memory object.  Called by _mesa_HashDeleteAll().
+ */
+static void
+delete_semaphore_object_cb(GLuint id, void *data, void *userData)
+{
+   struct gl_semaphore_object *semObj = (struct gl_semaphore_object *) data;
+   struct gl_context *ctx = (struct gl_context *) userData;
+   ctx->Driver.DeleteSemaphoreObject(ctx, semObj);
+}
 
 /**
  * Deallocate a shared state object and all children structures.
@@ -435,7 +447,12 @@ free_shared_state(struct gl_context *ctx, struct gl_shared_state *shared)
       _mesa_DeleteHashTable(shared->MemoryObjects);
    }
 
-   mtx_destroy(&shared->Mutex);
+   if (shared->SemaphoreObjects) {
+      _mesa_HashDeleteAll(shared->SemaphoreObjects, delete_semaphore_object_cb, ctx);
+      _mesa_DeleteHashTable(shared->SemaphoreObjects);
+   }
+
+   simple_mtx_destroy(&shared->Mutex);
    mtx_destroy(&shared->TexMutex);
 
    free(shared);
@@ -459,11 +476,11 @@ _mesa_reference_shared_state(struct gl_context *ctx,
       struct gl_shared_state *old = *ptr;
       GLboolean delete;
 
-      mtx_lock(&old->Mutex);
+      simple_mtx_lock(&old->Mutex);
       assert(old->RefCount >= 1);
       old->RefCount--;
       delete = (old->RefCount == 0);
-      mtx_unlock(&old->Mutex);
+      simple_mtx_unlock(&old->Mutex);
 
       if (delete) {
          free_shared_state(ctx, old);
@@ -474,9 +491,9 @@ _mesa_reference_shared_state(struct gl_context *ctx,
 
    if (state) {
       /* reference new state */
-      mtx_lock(&state->Mutex);
+      simple_mtx_lock(&state->Mutex);
       state->RefCount++;
       *ptr = state;
-      mtx_unlock(&state->Mutex);
+      simple_mtx_unlock(&state->Mutex);
    }
 }

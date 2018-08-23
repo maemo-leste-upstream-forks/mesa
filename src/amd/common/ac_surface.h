@@ -71,12 +71,12 @@ enum radeon_micro_mode {
 
 struct legacy_surf_level {
     uint64_t                    offset;
-    uint64_t                    slice_size;
-    uint64_t                    dcc_offset;
-    uint64_t                    dcc_fast_clear_size;
-    uint16_t                    nblk_x;
-    uint16_t                    nblk_y;
-    enum radeon_surf_mode       mode;
+    uint32_t                    slice_size_dw; /* in dwords; max = 4GB / 4. */
+    uint32_t                    dcc_offset; /* relative offset within DCC mip tree */
+    uint32_t                    dcc_fast_clear_size;
+    unsigned                    nblk_x:15;
+    unsigned                    nblk_y:15;
+    enum radeon_surf_mode       mode:2;
 };
 
 struct legacy_surf_layout {
@@ -147,6 +147,8 @@ struct gfx9_surf_layout {
 
     uint32_t                    fmask_alignment;
     uint32_t                    cmask_alignment;
+
+    uint8_t                     fmask_tile_swizzle;
 };
 
 struct radeon_surf {
@@ -175,7 +177,8 @@ struct radeon_surf {
     /* Tile swizzle can be OR'd with low bits of the BASE_256B address.
      * The value is the same for all mipmap levels. Supported tile modes:
      * - GFX6: Only macro tiling.
-     * - GFX9: Only *_X swizzle modes. Level 0 must not be in the mip tail.
+     * - GFX9: Only *_X and *_T swizzle modes. Level 0 must not be in the mip
+     *   tail.
      *
      * Only these surfaces are allowed to set it:
      * - color (if it doesn't have to be displayable)
@@ -187,8 +190,9 @@ struct radeon_surf {
     uint8_t                     tile_swizzle;
 
     uint64_t                    surf_size;
-    uint64_t                    dcc_size;
-    uint64_t                    htile_size;
+    /* DCC and HTILE are very small. */
+    uint32_t                    dcc_size;
+    uint32_t                    htile_size;
 
     uint32_t                    htile_slice_size;
 
@@ -215,8 +219,10 @@ struct ac_surf_info {
 	uint32_t depth;
 	uint8_t samples;
 	uint8_t levels;
+	uint8_t num_channels; /* heuristic for displayability */
 	uint16_t array_size;
 	uint32_t *surf_index; /* Set a monotonic counter for tile swizzling. */
+	uint32_t *fmask_surf_index; /* GFX9+ */
 };
 
 struct ac_surf_config {

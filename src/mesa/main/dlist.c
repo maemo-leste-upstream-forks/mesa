@@ -961,79 +961,60 @@ _mesa_delete_list(struct gl_context *ctx, struct gl_display_list *dlist)
             /* for some commands, we need to free malloc'd memory */
          case OPCODE_MAP1:
             free(get_pointer(&n[6]));
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_MAP2:
             free(get_pointer(&n[10]));
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_CALL_LISTS:
             free(get_pointer(&n[3]));
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_DRAW_PIXELS:
             free(get_pointer(&n[5]));
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_BITMAP:
             free(get_pointer(&n[7]));
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_POLYGON_STIPPLE:
             free(get_pointer(&n[1]));
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_TEX_IMAGE1D:
             free(get_pointer(&n[8]));
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_TEX_IMAGE2D:
             free(get_pointer(&n[9]));
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_TEX_IMAGE3D:
             free(get_pointer(&n[10]));
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_TEX_SUB_IMAGE1D:
             free(get_pointer(&n[7]));
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_TEX_SUB_IMAGE2D:
             free(get_pointer(&n[9]));
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_TEX_SUB_IMAGE3D:
             free(get_pointer(&n[11]));
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_COMPRESSED_TEX_IMAGE_1D:
             free(get_pointer(&n[7]));
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_COMPRESSED_TEX_IMAGE_2D:
             free(get_pointer(&n[8]));
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_COMPRESSED_TEX_IMAGE_3D:
             free(get_pointer(&n[9]));
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_COMPRESSED_TEX_SUB_IMAGE_1D:
             free(get_pointer(&n[7]));
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_COMPRESSED_TEX_SUB_IMAGE_2D:
             free(get_pointer(&n[9]));
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_COMPRESSED_TEX_SUB_IMAGE_3D:
             free(get_pointer(&n[11]));
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_PROGRAM_STRING_ARB:
             free(get_pointer(&n[4]));      /* program string */
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_UNIFORM_1FV:
          case OPCODE_UNIFORM_2FV:
@@ -1048,7 +1029,6 @@ _mesa_delete_list(struct gl_context *ctx, struct gl_display_list *dlist)
          case OPCODE_UNIFORM_3UIV:
          case OPCODE_UNIFORM_4UIV:
             free(get_pointer(&n[3]));
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_UNIFORM_MATRIX22:
          case OPCODE_UNIFORM_MATRIX33:
@@ -1060,7 +1040,6 @@ _mesa_delete_list(struct gl_context *ctx, struct gl_display_list *dlist)
          case OPCODE_UNIFORM_MATRIX34:
          case OPCODE_UNIFORM_MATRIX43:
             free(get_pointer(&n[4]));
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_PROGRAM_UNIFORM_1FV:
          case OPCODE_PROGRAM_UNIFORM_2FV:
@@ -1075,7 +1054,6 @@ _mesa_delete_list(struct gl_context *ctx, struct gl_display_list *dlist)
          case OPCODE_PROGRAM_UNIFORM_3UIV:
          case OPCODE_PROGRAM_UNIFORM_4UIV:
             free(get_pointer(&n[4]));
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_PROGRAM_UNIFORM_MATRIX22F:
          case OPCODE_PROGRAM_UNIFORM_MATRIX33F:
@@ -1087,15 +1065,12 @@ _mesa_delete_list(struct gl_context *ctx, struct gl_display_list *dlist)
          case OPCODE_PROGRAM_UNIFORM_MATRIX34F:
          case OPCODE_PROGRAM_UNIFORM_MATRIX43F:
             free(get_pointer(&n[5]));
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_PIXEL_MAP:
             free(get_pointer(&n[3]));
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_WINDOW_RECTANGLES:
             free(get_pointer(&n[3]));
-            n += InstSize[n[0].opcode];
             break;
          case OPCODE_CONTINUE:
             n = (Node *) get_pointer(&n[1]);
@@ -1107,9 +1082,13 @@ _mesa_delete_list(struct gl_context *ctx, struct gl_display_list *dlist)
             done = GL_TRUE;
             break;
          default:
-            /* Most frequent case */
-            n += InstSize[n[0].opcode];
-            break;
+            /* just increment 'n' pointer, below */
+            ;
+         }
+
+         if (opcode != OPCODE_CONTINUE) {
+            assert(InstSize[opcode] > 0);
+            n += InstSize[opcode];
          }
       }
    }
@@ -1324,6 +1303,8 @@ dlist_alloc(struct gl_context *ctx, OpCode opcode, GLuint bytes, bool align8)
    const GLuint contNodes = 1 + POINTER_DWORDS;  /* size of continue info */
    GLuint nopNode;
    Node *n;
+
+   assert(bytes <= BLOCK_SIZE * sizeof(Node));
 
    if (opcode < OPCODE_EXT_0) {
       if (InstSize[opcode] == 0) {
@@ -1912,7 +1893,7 @@ save_CallLists(GLsizei num, GLenum type, const GLvoid * lists)
       n[1].i = num;
       n[2].e = type;
       save_pointer(&n[3], lists_copy);
-   };
+   }
 
    /* After this, we don't know what state we're in.  Invalidate all
     * cached information previously gathered:
@@ -6606,7 +6587,7 @@ save_Uniform1ui(GLint location, GLuint x)
       n[2].i = x;
    }
    if (ctx->ExecuteFlag) {
-      /*CALL_Uniform1ui(ctx->Exec, (location, x));*/
+      CALL_Uniform1ui(ctx->Exec, (location, x));
    }
 }
 
@@ -6623,7 +6604,7 @@ save_Uniform2ui(GLint location, GLuint x, GLuint y)
       n[3].i = y;
    }
    if (ctx->ExecuteFlag) {
-      /*CALL_Uniform2ui(ctx->Exec, (location, x, y));*/
+      CALL_Uniform2ui(ctx->Exec, (location, x, y));
    }
 }
 
@@ -6641,7 +6622,7 @@ save_Uniform3ui(GLint location, GLuint x, GLuint y, GLuint z)
       n[4].i = z;
    }
    if (ctx->ExecuteFlag) {
-      /*CALL_Uniform3ui(ctx->Exec, (location, x, y, z));*/
+      CALL_Uniform3ui(ctx->Exec, (location, x, y, z));
    }
 }
 
@@ -6660,7 +6641,7 @@ save_Uniform4ui(GLint location, GLuint x, GLuint y, GLuint z, GLuint w)
       n[5].i = w;
    }
    if (ctx->ExecuteFlag) {
-      /*CALL_Uniform4ui(ctx->Exec, (location, x, y, z, w));*/
+      CALL_Uniform4ui(ctx->Exec, (location, x, y, z, w));
    }
 }
 
@@ -6679,7 +6660,7 @@ save_Uniform1uiv(GLint location, GLsizei count, const GLuint *v)
       save_pointer(&n[3], memdup(v, count * 1 * sizeof(*v)));
    }
    if (ctx->ExecuteFlag) {
-      /*CALL_Uniform1uiv(ctx->Exec, (location, count, v));*/
+      CALL_Uniform1uiv(ctx->Exec, (location, count, v));
    }
 }
 
@@ -6696,7 +6677,7 @@ save_Uniform2uiv(GLint location, GLsizei count, const GLuint *v)
       save_pointer(&n[3], memdup(v, count * 2 * sizeof(*v)));
    }
    if (ctx->ExecuteFlag) {
-      /*CALL_Uniform2uiv(ctx->Exec, (location, count, v));*/
+      CALL_Uniform2uiv(ctx->Exec, (location, count, v));
    }
 }
 
@@ -6713,7 +6694,7 @@ save_Uniform3uiv(GLint location, GLsizei count, const GLuint *v)
       save_pointer(&n[3], memdup(v, count * 3 * sizeof(*v)));
    }
    if (ctx->ExecuteFlag) {
-      /*CALL_Uniform3uiv(ctx->Exec, (location, count, v));*/
+      CALL_Uniform3uiv(ctx->Exec, (location, count, v));
    }
 }
 
@@ -6730,7 +6711,7 @@ save_Uniform4uiv(GLint location, GLsizei count, const GLuint *v)
       save_pointer(&n[3], memdup(v, count * 4 * sizeof(*v)));
    }
    if (ctx->ExecuteFlag) {
-      /*CALL_Uniform4uiv(ctx->Exec, (location, count, v));*/
+      CALL_Uniform4uiv(ctx->Exec, (location, count, v));
    }
 }
 
@@ -8742,34 +8723,29 @@ execute_list(struct gl_context *ctx, GLuint list)
             CALL_Uniform4iv(ctx->Exec, (n[1].i, n[2].i, get_pointer(&n[3])));
             break;
          case OPCODE_UNIFORM_1UI:
-            /*CALL_Uniform1uiARB(ctx->Exec, (n[1].i, n[2].i));*/
+            CALL_Uniform1ui(ctx->Exec, (n[1].i, n[2].i));
             break;
          case OPCODE_UNIFORM_2UI:
-            /*CALL_Uniform2uiARB(ctx->Exec, (n[1].i, n[2].i, n[3].i));*/
+            CALL_Uniform2ui(ctx->Exec, (n[1].i, n[2].i, n[3].i));
             break;
          case OPCODE_UNIFORM_3UI:
-            /*CALL_Uniform3uiARB(ctx->Exec, (n[1].i, n[2].i, n[3].i, n[4].i));*/
+            CALL_Uniform3ui(ctx->Exec, (n[1].i, n[2].i, n[3].i, n[4].i));
             break;
          case OPCODE_UNIFORM_4UI:
-            /*CALL_Uniform4uiARB(ctx->Exec,
-                              (n[1].i, n[2].i, n[3].i, n[4].i, n[5].i));
-            */
+            CALL_Uniform4ui(ctx->Exec,
+                            (n[1].i, n[2].i, n[3].i, n[4].i, n[5].i));
             break;
          case OPCODE_UNIFORM_1UIV:
-            /*CALL_Uniform1uivARB(ctx->Exec, (n[1].i, n[2].i,
-                                              get_pointer(&n[3])));*/
+            CALL_Uniform1uiv(ctx->Exec, (n[1].i, n[2].i, get_pointer(&n[3])));
             break;
          case OPCODE_UNIFORM_2UIV:
-            /*CALL_Uniform2uivARB(ctx->Exec, (n[1].i, n[2].i,
-                                              get_pointer(&n[3])));*/
+            CALL_Uniform2uiv(ctx->Exec, (n[1].i, n[2].i, get_pointer(&n[3])));
             break;
          case OPCODE_UNIFORM_3UIV:
-            /*CALL_Uniform3uivARB(ctx->Exec, (n[1].i, n[2].i,
-                                              get_pointer(&n[3])));*/
+            CALL_Uniform3uiv(ctx->Exec, (n[1].i, n[2].i, get_pointer(&n[3])));
             break;
          case OPCODE_UNIFORM_4UIV:
-            /*CALL_Uniform4uivARB(ctx->Exec, (n[1].i, n[2].i,
-                                              get_pointer(&n[3])));*/
+            CALL_Uniform4uiv(ctx->Exec, (n[1].i, n[2].i, get_pointer(&n[3])));
             break;
          case OPCODE_UNIFORM_MATRIX22:
             CALL_UniformMatrix2fv(ctx->Exec,
@@ -9177,6 +9153,7 @@ execute_list(struct gl_context *ctx, GLuint list)
 
          /* increment n to point to next compiled command */
          if (opcode != OPCODE_CONTINUE) {
+            assert(InstSize[opcode] > 0);
             n += InstSize[opcode];
          }
       }
@@ -9949,7 +9926,6 @@ _mesa_initialize_save_table(const struct gl_context *ctx)
    SET_ClearBufferuiv(table, save_ClearBufferuiv);
    SET_ClearBufferfv(table, save_ClearBufferfv);
    SET_ClearBufferfi(table, save_ClearBufferfi);
-#if 0
    SET_Uniform1ui(table, save_Uniform1ui);
    SET_Uniform2ui(table, save_Uniform2ui);
    SET_Uniform3ui(table, save_Uniform3ui);
@@ -9958,16 +9934,6 @@ _mesa_initialize_save_table(const struct gl_context *ctx)
    SET_Uniform2uiv(table, save_Uniform2uiv);
    SET_Uniform3uiv(table, save_Uniform3uiv);
    SET_Uniform4uiv(table, save_Uniform4uiv);
-#else
-   (void) save_Uniform1ui;
-   (void) save_Uniform2ui;
-   (void) save_Uniform3ui;
-   (void) save_Uniform4ui;
-   (void) save_Uniform1uiv;
-   (void) save_Uniform2uiv;
-   (void) save_Uniform3uiv;
-   (void) save_Uniform4uiv;
-#endif
 
    /* These are: */
    SET_BeginTransformFeedback(table, save_BeginTransformFeedback);
@@ -10385,6 +10351,7 @@ print_list(struct gl_context *ctx, GLuint list, const char *fname)
          }
          /* increment n to point to next compiled command */
          if (opcode != OPCODE_CONTINUE) {
+            assert(InstSize[opcode] > 0);
             n += InstSize[opcode];
          }
       }

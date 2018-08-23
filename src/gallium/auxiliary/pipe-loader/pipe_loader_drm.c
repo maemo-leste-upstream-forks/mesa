@@ -134,7 +134,12 @@ static const struct drm_driver_descriptor driver_descriptors[] = {
         .driver_name = "imx-drm",
         .create_screen = pipe_imx_drm_create_screen,
         .configuration = pipe_default_configuration_query,
-    }
+    },
+    {
+        .driver_name = "tegra",
+        .create_screen = pipe_tegra_create_screen,
+        .configuration = pipe_default_configuration_query,
+    },
 };
 #endif
 
@@ -202,6 +207,7 @@ pipe_loader_drm_probe_fd(struct pipe_loader_device **dev, int fd)
    if (ddev->lib)
       util_dl_close(ddev->lib);
 #endif
+   FREE(ddev->base.driver_name);
    FREE(ddev);
    return false;
 }

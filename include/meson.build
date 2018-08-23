@@ -20,6 +20,9 @@
 
 inc_drm_uapi = include_directories('drm-uapi')
 inc_vulkan = include_directories('vulkan')
+inc_d3d9 = include_directories('D3D9')
+inc_gl_internal = include_directories('GL/internal')
+inc_haikugl = include_directories('HaikuGL')
 
 if with_gles1
   install_headers(
@@ -34,13 +37,13 @@ if with_gles2
     subdir : 'GLES2',
   )
   install_headers(
-    'GLES3/gl3.h', 'GLES3/gl32.h', 'GLES3/gl32.h', 'GLES3/gl3ext.h',
+    'GLES3/gl3.h', 'GLES3/gl31.h', 'GLES3/gl32.h', 'GLES3/gl3ext.h',
     'GLES3/gl3platform.h',
     subdir : 'GLES3',
   )
 endif
 
-if with_gles1 or with_gles2 # or with_egl
+if with_gles1 or with_gles2 or with_egl
   install_headers('KHR/khrplatform.h', subdir : 'KHR')
 endif
 
@@ -52,10 +55,10 @@ if with_opengl
 endif
 
 if with_glx != 'disabled'
-  install_headers('GL/glx.h', 'GL/glext.h', 'GL/glx_mangle.h', subdir : 'GL')
+  install_headers('GL/glx.h', 'GL/glxext.h', 'GL/glx_mangle.h', subdir : 'GL')
 endif
 
-if with_osmesa
+if with_osmesa != 'none'
   install_headers('GL/osmesa.h', subdir : 'GL')
 endif
 
@@ -65,4 +68,45 @@ if with_egl
     'EGL/eglplatform.h',
     subdir : 'EGL',
   )
+endif
+
+if with_dri
+  install_headers('GL/internal/dri_interface.h', subdir : 'GL/internal')
+endif
+
+if with_gallium_st_nine
+  install_headers(
+    'd3dadapter/d3dadapter9.h', 'd3dadapter/drm.h', 'd3dadapter/present.h',
+    subdir : 'd3dadapter',
+  )
+endif
+
+if with_platform_haiku
+  install_headers(
+    'HaikuGL/GLRenderer.h', 'HaikuGL/GLView.h', 'HaikuGL/OpenGLKit.h',
+    subdir : 'opengl',
+  )
+endif
+
+# Only install the headers if we are building a stand alone implementation and
+# not an ICD enabled implementation
+if with_gallium_opencl and not with_opencl_icd
+  install_headers(
+    'CL/cl.h',
+    'CL/cl.hpp',
+    'CL/cl_d3d10.h',
+    'CL/cl_d3d11.h',
+    'CL/cl_dx9_media_sharing.h',
+    'CL/cl_egl.h',
+    'CL/cl_ext.h',
+    'CL/cl_gl.h',
+    'CL/cl_gl_ext.h',
+    'CL/cl_platform.h',
+    'CL/opencl.h',
+    subdir: 'CL'
+  )
+endif
+
+if with_intel_vk
+  install_headers('vulkan/vulkan_intel.h', subdir : 'vulkan')
 endif

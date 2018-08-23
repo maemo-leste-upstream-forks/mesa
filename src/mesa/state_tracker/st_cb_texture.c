@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include "main/bufferobj.h"
 #include "main/enums.h"
+#include "main/errors.h"
 #include "main/fbobject.h"
 #include "main/formats.h"
 #include "main/format_utils.h"
@@ -151,10 +152,21 @@ static struct gl_texture_object *
 st_NewTextureObject(struct gl_context * ctx, GLuint name, GLenum target)
 {
    struct st_texture_object *obj = ST_CALLOC_STRUCT(st_texture_object);
+   if (!obj)
+      return NULL;
+
+   /* Pre-allocate a sampler views container to save a branch in the fast path. */
+   obj->sampler_views = calloc(1, sizeof(struct st_sampler_views) + sizeof(struct st_sampler_view));
+   if (!obj->sampler_views) {
+      free(obj);
+      return NULL;
+   }
+   obj->sampler_views->max = 1;
 
    DBG("%s\n", __func__);
    _mesa_initialize_texture_object(ctx, &obj->base, name, target);
 
+   simple_mtx_init(&obj->validate_mutex, mtx_plain);
    obj->needs_validation = true;
 
    return &obj->base;
@@ -171,6 +183,7 @@ st_DeleteTextureObject(struct gl_context *ctx,
    pipe_resource_reference(&stObj->pt, NULL);
    st_texture_release_all_sampler_views(st, stObj);
    st_texture_free_sampler_views(stObj);
+   simple_mtx_destroy(&stObj->validate_mutex);
    _mesa_delete_texture_object(ctx, texObj);
 }
 
@@ -242,19 +255,18 @@ st_MapTextureImage(struct gl_context *ctx,
 {
    struct st_context *st = st_context(ctx);
    struct st_texture_image *stImage = st_texture_image(texImage);
-   unsigned pipeMode;
    GLubyte *map;
    struct pipe_transfer *transfer;
 
-   pipeMode = 0x0;
-   if (mode & GL_MAP_READ_BIT)
-      pipeMode |= PIPE_TRANSFER_READ;
-   if (mode & GL_MAP_WRITE_BIT)
-      pipeMode |= PIPE_TRANSFER_WRITE;
-   if (mode & GL_MAP_INVALIDATE_RANGE_BIT)
-      pipeMode |= PIPE_TRANSFER_DISCARD_RANGE;
+   /* Check for unexpected flags */
+   assert((mode & ~(GL_MAP_READ_BIT |
+                    GL_MAP_WRITE_BIT |
+                    GL_MAP_INVALIDATE_RANGE_BIT)) == 0);
 
-   map = st_texture_image_map(st, stImage, pipeMode, x, y, slice, w, h, 1,
+   const enum pipe_transfer_usage transfer_flags =
+      st_access_flags_to_transfer_flags(mode, false);
+
+   map = st_texture_image_map(st, stImage, transfer_flags, x, y, slice, w, h, 1,
                               &transfer);
    if (map) {
       if (st_etc_fallback(st, texImage)) {
@@ -1516,9 +1528,9 @@ st_TexSubImage(struct gl_context *ctx, GLuint dims,
 
    /* Check for NPOT texture support. */
    if (!screen->get_param(screen, PIPE_CAP_NPOT_TEXTURES) &&
-       (!util_is_power_of_two(src_templ.width0) ||
-        !util_is_power_of_two(src_templ.height0) ||
-        !util_is_power_of_two(src_templ.depth0))) {
+       (!util_is_power_of_two_or_zero(src_templ.width0) ||
+        !util_is_power_of_two_or_zero(src_templ.height0) ||
+        !util_is_power_of_two_or_zero(src_templ.depth0))) {
       goto fallback;
    }
 
@@ -2270,6 +2282,31 @@ fallback_copy_texsubimage(struct gl_context *ctx,
    pipe->transfer_unmap(pipe, src_trans);
 }
 
+static bool
+st_can_copyteximage_using_blit(const struct gl_texture_image *texImage,
+                               const struct gl_renderbuffer *rb)
+{
+   GLenum tex_baseformat = _mesa_get_format_base_format(texImage->TexFormat);
+
+   /* We don't blit to a teximage where the GL base format doesn't match the
+    * texture's chosen format, except in the case of a GL_RGB texture
+    * represented with GL_RGBA (where the alpha channel is just being
+    * dropped).
+    */
+   if (texImage->_BaseFormat != tex_baseformat &&
+       ((texImage->_BaseFormat != GL_RGB || tex_baseformat != GL_RGBA))) {
+      return false;
+   }
+
+   /* We can't blit from a RB where the GL base format doesn't match the RB's
+    * chosen format (for example, GL RGB or ALPHA with rb->Format of an RGBA
+    * type, because the other channels will be undefined).
+    */
+   if (rb->_BaseFormat != _mesa_get_format_base_format(rb->Format))
+      return false;
+
+   return true;
+}
 
 /**
  * Do a CopyTex[Sub]Image1/2/3D() using a hardware (blit) path if possible.
@@ -2313,12 +2350,7 @@ st_CopyTexSubImage(struct gl_context *ctx, GLuint dims,
       goto fallback;
    }
 
-   /* The base internal format must match the mesa format, so make sure
-    * e.g. an RGB internal format is really allocated as RGB and not as RGBA.
-    */
-   if (texImage->_BaseFormat !=
-       _mesa_get_format_base_format(texImage->TexFormat) ||
-       rb->_BaseFormat != _mesa_get_format_base_format(rb->Format)) {
+   if (!st_can_copyteximage_using_blit(texImage, rb)) {
       goto fallback;
    }
 
@@ -2459,22 +2491,10 @@ st_finalize_texture(struct gl_context *ctx,
    if (tObj->Immutable)
       return GL_TRUE;
 
-   if (_mesa_is_texture_complete(tObj, &tObj->Sampler)) {
-      /* The texture is complete and we know exactly how many mipmap levels
-       * are present/needed.  This is conditional because we may be called
-       * from the st_generate_mipmap() function when the texture object is
-       * incomplete.  In that case, we'll have set stObj->lastLevel before
-       * we get here.
-       */
-      if (stObj->base.Sampler.MinFilter == GL_LINEAR ||
-          stObj->base.Sampler.MinFilter == GL_NEAREST)
-         stObj->lastLevel = stObj->base.BaseLevel;
-      else
-         stObj->lastLevel = stObj->base._MaxLevel;
-   }
-
-   firstImage = st_texture_image_const(stObj->base.Image[cubeMapFace][stObj->base.BaseLevel]);
-   assert(firstImage);
+   if (tObj->_MipmapComplete)
+      stObj->lastLevel = stObj->base._MaxLevel;
+   else if (tObj->_BaseComplete)
+      stObj->lastLevel = stObj->base.BaseLevel;
 
    /* Skip the loop over images in the common case of no images having
     * changed.  But if the GL_BASE_LEVEL or GL_MAX_LEVEL change to something we
@@ -2486,6 +2506,14 @@ st_finalize_texture(struct gl_context *ctx,
       return GL_TRUE;
    }
 
+   /* If this texture comes from a window system, there is nothing else to do. */
+   if (stObj->surface_based) {
+      return GL_TRUE;
+   }
+
+   firstImage = st_texture_image_const(stObj->base.Image[cubeMapFace][stObj->base.BaseLevel]);
+   assert(firstImage);
+
    /* If both firstImage and stObj point to a texture which can contain
     * all active images, favour firstImage.  Note that because of the
     * completeness requirement, we know that the image dimensions
@@ -2496,11 +2524,6 @@ st_finalize_texture(struct gl_context *ctx,
        (!stObj->pt || firstImage->pt->last_level >= stObj->pt->last_level)) {
       pipe_resource_reference(&stObj->pt, firstImage->pt);
       st_texture_release_all_sampler_views(st, stObj);
-   }
-
-   /* If this texture comes from a window system, there is nothing else to do. */
-   if (stObj->surface_based) {
-      return GL_TRUE;
    }
 
    /* Find gallium format for the Mesa texture */
@@ -3168,7 +3191,6 @@ st_init_texture_functions(struct dd_function_table *functions)
 
    /* compressed texture functions */
    functions->CompressedTexImage = st_CompressedTexImage;
-   functions->GetCompressedTexSubImage = _mesa_GetCompressedTexSubImage_sw;
 
    functions->NewTextureObject = st_NewTextureObject;
    functions->NewTextureImage = st_NewTextureImage;

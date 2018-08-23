@@ -817,7 +817,7 @@ static void r600_init_color_surface(struct r600_context *rctx,
 	unsigned offset;
 	const struct util_format_description *desc;
 	int i;
-	bool blend_bypass = 0, blend_clamp = 1, do_endian_swap = FALSE;
+	bool blend_bypass = 0, blend_clamp = 0, do_endian_swap = FALSE;
 
 	if (rtex->db_compatible && !r600_can_sample_zs(rtex, false)) {
 		r600_init_flushed_depth_texture(&rctx->b.b, surf->base.texture, NULL);
@@ -869,6 +869,8 @@ static void r600_init_color_surface(struct r600_context *rctx,
 			ntype = V_0280A0_NUMBER_UNORM;
 		else if (desc->channel[i].pure_integer)
 			ntype = V_0280A0_NUMBER_UINT;
+	} else if (desc->channel[i].type == UTIL_FORMAT_TYPE_FLOAT) {
+		ntype = V_0280A0_NUMBER_FLOAT;
 	}
 
 	if (R600_BIG_ENDIAN)
@@ -882,6 +884,11 @@ static void r600_init_color_surface(struct r600_context *rctx,
 	assert(swap != ~0);
 
 	endian = r600_colorformat_endian_swap(format, do_endian_swap);
+
+	/* blend clamp should be set for all NORM/SRGB types */
+	if (ntype == V_0280A0_NUMBER_UNORM || ntype == V_0280A0_NUMBER_SNORM ||
+	    ntype == V_0280A0_NUMBER_SRGB)
+		blend_clamp = 1;
 
 	/* set blend bypass according to docs if SINT/UINT or
 	   8/24 COLOR variants */
@@ -898,6 +905,7 @@ static void r600_init_color_surface(struct r600_context *rctx,
 		S_0280A0_COMP_SWAP(swap) |
 		S_0280A0_BLEND_BYPASS(blend_bypass) |
 		S_0280A0_BLEND_CLAMP(blend_clamp) |
+		S_0280A0_SIMPLE_FLOAT(1) |
 		S_0280A0_NUMBER_TYPE(ntype) |
 		S_0280A0_ENDIAN(endian);
 
@@ -916,6 +924,7 @@ static void r600_init_color_surface(struct r600_context *rctx,
 		     ntype != V_0280A0_NUMBER_UINT &&
 		     ntype != V_0280A0_NUMBER_SINT) &&
 		    G_0280A0_BLEND_CLAMP(color_info) &&
+		    /* XXX this condition is always true since BLEND_FLOAT32 is never set (bug?). */
 		    !G_0280A0_BLEND_FLOAT32(color_info)) {
 			color_info |= S_0280A0_SOURCE_FORMAT(V_0280A0_EXPORT_NORM);
 			surf->export_16bpc = true;
@@ -1079,6 +1088,7 @@ static void r600_set_framebuffer_state(struct pipe_context *ctx,
 	struct r600_surface *surf;
 	struct r600_texture *rtex;
 	unsigned i;
+	uint32_t target_mask = 0;
 
 	/* Flush TC when changing the framebuffer state, because the only
 	 * client not using TC that can change textures is the framebuffer.
@@ -1118,6 +1128,8 @@ static void r600_set_framebuffer_state(struct pipe_context *ctx,
 
 		rtex = (struct r600_texture*)surf->base.texture;
 		r600_context_add_resource_size(ctx, state->cbufs[i]->texture);
+
+		target_mask |= (0xf << (i * 4));
 
 		if (!surf->color_initialized || force_cmask_fmask) {
 			r600_init_color_surface(rctx, surf, force_cmask_fmask);
@@ -1178,7 +1190,9 @@ static void r600_set_framebuffer_state(struct pipe_context *ctx,
 		r600_mark_atom_dirty(rctx, &rctx->db_misc_state.atom);
 	}
 
-	if (rctx->cb_misc_state.nr_cbufs != state->nr_cbufs) {
+	if (rctx->cb_misc_state.nr_cbufs != state->nr_cbufs ||
+	    rctx->cb_misc_state.bound_cbufs_target_mask != target_mask) {
+		rctx->cb_misc_state.bound_cbufs_target_mask = target_mask;
 		rctx->cb_misc_state.nr_cbufs = state->nr_cbufs;
 		r600_mark_atom_dirty(rctx, &rctx->cb_misc_state.atom);
 	}
@@ -1516,8 +1530,8 @@ static void r600_emit_cb_misc_state(struct r600_context *rctx, struct r600_atom 
 		}
 		radeon_set_context_reg(cs, R_028808_CB_COLOR_CONTROL, a->cb_color_control);
 	} else {
-		unsigned fb_colormask = (1ULL << ((unsigned)a->nr_cbufs * 4)) - 1;
-		unsigned ps_colormask = (1ULL << ((unsigned)a->nr_ps_color_outputs * 4)) - 1;
+		unsigned fb_colormask = a->bound_cbufs_target_mask;
+		unsigned ps_colormask = a->ps_color_export_mask;
 		unsigned multiwrite = a->multiwrite && a->nr_cbufs > 1;
 
 		radeon_set_context_reg_seq(cs, R_028238_CB_TARGET_MASK, 2);
@@ -1703,19 +1717,19 @@ static void r600_emit_constant_buffers(struct r600_context *rctx,
 		offset = cb->buffer_offset;
 
 		if (!gs_ring_buffer) {
+			assert(buffer_index < R600_MAX_HW_CONST_BUFFERS);
 			radeon_set_context_reg(cs, reg_alu_constbuf_size + buffer_index * 4,
 					       DIV_ROUND_UP(cb->buffer_size, 256));
 			radeon_set_context_reg(cs, reg_alu_const_cache + buffer_index * 4, offset >> 8);
+			radeon_emit(cs, PKT3(PKT3_NOP, 0, 0));
+			radeon_emit(cs, radeon_add_to_buffer_list(&rctx->b, &rctx->b.gfx, rbuffer,
+								  RADEON_USAGE_READ, RADEON_PRIO_CONST_BUFFER));
 		}
-
-		radeon_emit(cs, PKT3(PKT3_NOP, 0, 0));
-		radeon_emit(cs, radeon_add_to_buffer_list(&rctx->b, &rctx->b.gfx, rbuffer,
-						      RADEON_USAGE_READ, RADEON_PRIO_CONST_BUFFER));
 
 		radeon_emit(cs, PKT3(PKT3_SET_RESOURCE, 7, 0));
 		radeon_emit(cs, (buffer_id_base + buffer_index) * 7);
 		radeon_emit(cs, offset); /* RESOURCEi_WORD0 */
-		radeon_emit(cs, rbuffer->b.b.width0 - offset - 1); /* RESOURCEi_WORD1 */
+		radeon_emit(cs, cb->buffer_size - 1); /* RESOURCEi_WORD1 */
 		radeon_emit(cs, /* RESOURCEi_WORD2 */
 			    S_038008_ENDIAN_SWAP(gs_ring_buffer ? ENDIAN_NONE : r600_endian_swap(32)) |
 			    S_038008_STRIDE(gs_ring_buffer ? 4 : 16));
@@ -2511,6 +2525,7 @@ void r600_update_ps_state(struct pipe_context *ctx, struct r600_pipe_shader *sha
 	}
 
 	shader->nr_ps_color_outputs = num_cout;
+	shader->ps_color_export_mask = rshader->ps_color_export_mask;
 
 	spi_ps_in_control_0 = S_0286CC_NUM_INTERP(rshader->ninput) |
 				S_0286CC_PERSP_GRADIENT_ENA(1)|
@@ -2872,7 +2887,7 @@ static boolean r600_dma_copy_tile(struct r600_context *rctx,
 		z = src_z;
 		base = rsrc->surface.u.legacy.level[src_level].offset;
 		addr = rdst->surface.u.legacy.level[dst_level].offset;
-		addr += rdst->surface.u.legacy.level[dst_level].slice_size * dst_z;
+		addr += (uint64_t)rdst->surface.u.legacy.level[dst_level].slice_size_dw * 4 * dst_z;
 		addr += dst_y * pitch + dst_x * bpp;
 	} else {
 		/* L2T */
@@ -2891,7 +2906,7 @@ static boolean r600_dma_copy_tile(struct r600_context *rctx,
 		z = dst_z;
 		base = rdst->surface.u.legacy.level[dst_level].offset;
 		addr = rsrc->surface.u.legacy.level[src_level].offset;
-		addr += rsrc->surface.u.legacy.level[src_level].slice_size * src_z;
+		addr += (uint64_t)rsrc->surface.u.legacy.level[src_level].slice_size_dw * 4 * src_z;
 		addr += src_y * pitch + src_x * bpp;
 	}
 	/* check that we are in dw/base alignment constraint */
@@ -2996,10 +3011,10 @@ static void r600_dma_copy(struct pipe_context *ctx,
 		 *   dst_pitch == src_pitch
 		 */
 		src_offset= rsrc->surface.u.legacy.level[src_level].offset;
-		src_offset += rsrc->surface.u.legacy.level[src_level].slice_size * src_box->z;
+		src_offset += (uint64_t)rsrc->surface.u.legacy.level[src_level].slice_size_dw * 4 * src_box->z;
 		src_offset += src_y * src_pitch + src_x * bpp;
 		dst_offset = rdst->surface.u.legacy.level[dst_level].offset;
-		dst_offset += rdst->surface.u.legacy.level[dst_level].slice_size * dst_z;
+		dst_offset += (uint64_t)rdst->surface.u.legacy.level[dst_level].slice_size_dw * 4 * dst_z;
 		dst_offset += dst_y * dst_pitch + dst_x * bpp;
 		size = src_box->height * src_pitch;
 		/* must be dw aligned */

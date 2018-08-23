@@ -29,6 +29,7 @@
 #ifndef RADV_RADEON_WINSYS_H
 #define RADV_RADEON_WINSYS_H
 
+#include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -54,6 +55,8 @@ enum radeon_bo_flag { /* bitfield */
 	RADEON_FLAG_VIRTUAL =       (1 << 3),
 	RADEON_FLAG_VA_UNCACHED =   (1 << 4),
 	RADEON_FLAG_IMPLICIT_SYNC = (1 << 5),
+	RADEON_FLAG_NO_INTERPROCESS_SHARING = (1 << 6),
+	RADEON_FLAG_READ_ONLY =     (1 << 7),
 };
 
 enum radeon_bo_usage { /* bitfield */
@@ -77,6 +80,19 @@ enum radeon_ctx_priority {
 	RADEON_CTX_PRIORITY_MEDIUM,
 	RADEON_CTX_PRIORITY_HIGH,
 	RADEON_CTX_PRIORITY_REALTIME,
+};
+
+enum radeon_value_id {
+	RADEON_TIMESTAMP,
+	RADEON_NUM_BYTES_MOVED,
+	RADEON_NUM_EVICTIONS,
+	RADEON_NUM_VRAM_CPU_PAGE_FAULTS,
+	RADEON_VRAM_USAGE,
+	RADEON_VRAM_VIS_USAGE,
+	RADEON_GTT_USAGE,
+	RADEON_GPU_TEMPERATURE,
+	RADEON_CURRENT_SCLK,
+	RADEON_CURRENT_MCLK,
 };
 
 struct radeon_winsys_cs {
@@ -146,6 +162,7 @@ struct radeon_winsys_fence;
 
 struct radeon_winsys_bo {
 	uint64_t va;
+	bool is_local;
 };
 struct radv_winsys_sem_counts {
 	uint32_t syncobj_count;
@@ -161,11 +178,19 @@ struct radv_winsys_sem_info {
 	struct radv_winsys_sem_counts signal;
 };
 
+struct radv_winsys_bo_list {
+	struct radeon_winsys_bo **bos;
+	unsigned count;
+};
+
 struct radeon_winsys {
 	void (*destroy)(struct radeon_winsys *ws);
 
 	void (*query_info)(struct radeon_winsys *ws,
 			   struct radeon_info *info);
+
+	uint64_t (*query_value)(struct radeon_winsys *ws,
+				enum radeon_value_id value);
 
 	bool (*read_registers)(struct radeon_winsys *ws, unsigned reg_offset,
 			       unsigned num_registers, uint32_t *out);
@@ -180,6 +205,10 @@ struct radeon_winsys {
 
 	void (*buffer_destroy)(struct radeon_winsys_bo *bo);
 	void *(*buffer_map)(struct radeon_winsys_bo *bo);
+
+	struct radeon_winsys_bo *(*buffer_from_ptr)(struct radeon_winsys *ws,
+						    void *pointer,
+						    uint64_t size);
 
 	struct radeon_winsys_bo *(*buffer_from_fd)(struct radeon_winsys *ws,
 						   int fd,
@@ -222,6 +251,7 @@ struct radeon_winsys {
 			 struct radeon_winsys_cs *initial_preamble_cs,
 			 struct radeon_winsys_cs *continue_preamble_cs,
 			 struct radv_winsys_sem_info *sem_info,
+			 const struct radv_winsys_bo_list *bo_list, /* optional */
 			 bool can_patch,
 			 struct radeon_winsys_fence *fence);
 
@@ -247,6 +277,11 @@ struct radeon_winsys {
 			   struct radeon_winsys_fence *fence,
 			   bool absolute,
 			   uint64_t timeout);
+	bool (*fences_wait)(struct radeon_winsys *ws,
+			    struct radeon_winsys_fence *const *fences,
+			    uint32_t fence_count,
+			    bool wait_all,
+			    uint64_t timeout);
 
 	/* old semaphores - non shareable */
 	struct radeon_winsys_sem *(*create_sem)(struct radeon_winsys *ws);
@@ -256,8 +291,18 @@ struct radeon_winsys {
 	int (*create_syncobj)(struct radeon_winsys *ws, uint32_t *handle);
 	void (*destroy_syncobj)(struct radeon_winsys *ws, uint32_t handle);
 
+	void (*reset_syncobj)(struct radeon_winsys *ws, uint32_t handle);
+	void (*signal_syncobj)(struct radeon_winsys *ws, uint32_t handle);
+	bool (*wait_syncobj)(struct radeon_winsys *ws, const uint32_t *handles, uint32_t handle_count,
+			     bool wait_all, uint64_t timeout);
+
 	int (*export_syncobj)(struct radeon_winsys *ws, uint32_t syncobj, int *fd);
 	int (*import_syncobj)(struct radeon_winsys *ws, int fd, uint32_t *syncobj);
+
+	int (*export_syncobj_to_sync_file)(struct radeon_winsys *ws, uint32_t syncobj, int *fd);
+
+	/* Note that this, unlike the normal import, uses an existing syncobj. */
+	int (*import_syncobj_from_sync_file)(struct radeon_winsys *ws, uint32_t syncobj, int fd);
 
 };
 
@@ -276,6 +321,17 @@ static inline void radeon_emit_array(struct radeon_winsys_cs *cs,
 static inline uint64_t radv_buffer_get_va(struct radeon_winsys_bo *bo)
 {
 	return bo->va;
+}
+
+static inline void radv_cs_add_buffer(struct radeon_winsys *ws,
+				      struct radeon_winsys_cs *cs,
+				      struct radeon_winsys_bo *bo,
+				      uint8_t priority)
+{
+	if (bo->is_local)
+		return;
+
+	ws->cs_add_buffer(cs, bo, priority);
 }
 
 #endif /* RADV_RADEON_WINSYS_H */

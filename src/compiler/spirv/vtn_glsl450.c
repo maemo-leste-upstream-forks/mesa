@@ -25,6 +25,7 @@
  *
  */
 
+#include <math.h>
 #include "vtn_private.h"
 #include "GLSL.std.450.h"
 
@@ -101,7 +102,7 @@ build_mat_det(struct vtn_builder *b, struct vtn_ssa_value *src)
    case 3: return build_mat3_det(&b->nb, cols);
    case 4: return build_mat4_det(&b->nb, cols);
    default:
-      unreachable("Invalid matrix size");
+      vtn_fail("Invalid matrix size");
    }
 }
 
@@ -380,7 +381,7 @@ build_atan2(nir_builder *b, nir_ssa_def *y, nir_ssa_def *x)
 }
 
 static nir_ssa_def *
-build_frexp(nir_builder *b, nir_ssa_def *x, nir_ssa_def **exponent)
+build_frexp32(nir_builder *b, nir_ssa_def *x, nir_ssa_def **exponent)
 {
    nir_ssa_def *abs_x = nir_fabs(b, x);
    nir_ssa_def *zero = nir_imm_float(b, 0.0f);
@@ -412,8 +413,54 @@ build_frexp(nir_builder *b, nir_ssa_def *x, nir_ssa_def **exponent)
                      nir_bcsel(b, is_not_zero, exponent_value, zero));
 }
 
+static nir_ssa_def *
+build_frexp64(nir_builder *b, nir_ssa_def *x, nir_ssa_def **exponent)
+{
+   nir_ssa_def *abs_x = nir_fabs(b, x);
+   nir_ssa_def *zero = nir_imm_double(b, 0.0);
+   nir_ssa_def *zero32 = nir_imm_float(b, 0.0f);
+
+   /* Double-precision floating-point values are stored as
+    *   1 sign bit;
+    *   11 exponent bits;
+    *   52 mantissa bits.
+    *
+    * We only need to deal with the exponent so first we extract the upper 32
+    * bits using nir_unpack_64_2x32_split_y.
+    */
+   nir_ssa_def *upper_x = nir_unpack_64_2x32_split_y(b, x);
+   nir_ssa_def *abs_upper_x = nir_unpack_64_2x32_split_y(b, abs_x);
+
+   /* An exponent shift of 20 will shift the remaining mantissa bits out,
+    * leaving only the exponent and sign bit (which itself may be zero, if the
+    * absolute value was taken before the bitcast and shift.
+    */
+   nir_ssa_def *exponent_shift = nir_imm_int(b, 20);
+   nir_ssa_def *exponent_bias = nir_imm_int(b, -1022);
+
+   nir_ssa_def *sign_mantissa_mask = nir_imm_int(b, 0x800fffffu);
+
+   /* Exponent of floating-point values in the range [0.5, 1.0). */
+   nir_ssa_def *exponent_value = nir_imm_int(b, 0x3fe00000u);
+
+   nir_ssa_def *is_not_zero = nir_fne(b, abs_x, zero);
+
+   *exponent =
+      nir_iadd(b, nir_ushr(b, abs_upper_x, exponent_shift),
+                  nir_bcsel(b, is_not_zero, exponent_bias, zero32));
+
+   nir_ssa_def *new_upper =
+      nir_ior(b, nir_iand(b, upper_x, sign_mantissa_mask),
+                 nir_bcsel(b, is_not_zero, exponent_value, zero32));
+
+   nir_ssa_def *lower_x = nir_unpack_64_2x32_split_x(b, x);
+
+   return nir_pack_64_2x32_split(b, lower_x, new_upper);
+}
+
 static nir_op
-vtn_nir_alu_op_for_spirv_glsl_opcode(enum GLSLstd450 opcode)
+vtn_nir_alu_op_for_spirv_glsl_opcode(struct vtn_builder *b,
+                                     enum GLSLstd450 opcode)
 {
    switch (opcode) {
    case GLSLstd450Round:         return nir_op_fround_even;
@@ -463,11 +510,11 @@ vtn_nir_alu_op_for_spirv_glsl_opcode(enum GLSLstd450 opcode)
    case GLSLstd450UnpackDouble2x32: return nir_op_unpack_64_2x32;
 
    default:
-      unreachable("No NIR equivalent");
+      vtn_fail("No NIR equivalent");
    }
 }
 
-#define NIR_IMM_FP(n, v) (src[0]->bit_size == 64 ? nir_imm_double(n, v) : nir_imm_float(n, v))
+#define NIR_IMM_FP(n, v) (nir_imm_floatN_t(n, v, src[0]->bit_size))
 
 static void
 handle_glsl450_alu(struct vtn_builder *b, enum GLSLstd450 entrypoint,
@@ -515,7 +562,7 @@ handle_glsl450_alu(struct vtn_builder *b, enum GLSLstd450 entrypoint,
    case GLSLstd450ModfStruct: {
       nir_ssa_def *sign = nir_fsign(nb, src[0]);
       nir_ssa_def *abs = nir_fabs(nb, src[0]);
-      assert(glsl_type_is_struct(val->ssa->type));
+      vtn_assert(glsl_type_is_struct(val->ssa->type));
       val->ssa->elems[0]->def = nir_fmul(nb, sign, nir_ffract(nb, abs));
       val->ssa->elems[1]->def = nir_fmul(nb, sign, nir_ffloor(nb, abs));
       return;
@@ -582,14 +629,14 @@ handle_glsl450_alu(struct vtn_builder *b, enum GLSLstd450 entrypoint,
    case GLSLstd450FaceForward:
       val->ssa->def =
          nir_bcsel(nb, nir_flt(nb, nir_fdot(nb, src[2], src[1]),
-                                   nir_imm_float(nb, 0.0)),
+                                   NIR_IMM_FP(nb, 0.0)),
                        src[0], nir_fneg(nb, src[0]));
       return;
 
    case GLSLstd450Reflect:
       /* I - 2 * dot(N, I) * N */
       val->ssa->def =
-         nir_fsub(nb, src[0], nir_fmul(nb, nir_imm_float(nb, 2.0),
+         nir_fsub(nb, src[0], nir_fmul(nb, NIR_IMM_FP(nb, 2.0),
                               nir_fmul(nb, nir_fdot(nb, src[0], src[1]),
                                            src[1])));
       return;
@@ -599,8 +646,22 @@ handle_glsl450_alu(struct vtn_builder *b, enum GLSLstd450 entrypoint,
       nir_ssa_def *N = src[1];
       nir_ssa_def *eta = src[2];
       nir_ssa_def *n_dot_i = nir_fdot(nb, N, I);
-      nir_ssa_def *one = nir_imm_float(nb, 1.0);
-      nir_ssa_def *zero = nir_imm_float(nb, 0.0);
+      nir_ssa_def *one = NIR_IMM_FP(nb, 1.0);
+      nir_ssa_def *zero = NIR_IMM_FP(nb, 0.0);
+      /* According to the SPIR-V and GLSL specs, eta is always a float
+       * regardless of the type of the other operands. However in practice it
+       * seems that if you try to pass it a float then glslang will just
+       * promote it to a double and generate invalid SPIR-V. In order to
+       * support a hypothetical fixed version of glslang we’ll promote eta to
+       * double if the other operands are double also.
+       */
+      if (I->bit_size != eta->bit_size) {
+         nir_op conversion_op =
+            nir_type_conversion_op(nir_type_float | eta->bit_size,
+                                   nir_type_float | I->bit_size,
+                                   nir_rounding_mode_undef);
+         eta = nir_build_alu(nb, conversion_op, eta, NULL, NULL, NULL);
+      }
       /* k = 1.0 - eta * eta * (1.0 - dot(N, I) * dot(N, I)) */
       nir_ssa_def *k =
          nir_fsub(nb, one, nir_fmul(nb, eta, nir_fmul(nb, eta,
@@ -684,21 +745,29 @@ handle_glsl450_alu(struct vtn_builder *b, enum GLSLstd450 entrypoint,
 
    case GLSLstd450Frexp: {
       nir_ssa_def *exponent;
-      val->ssa->def = build_frexp(nb, src[0], &exponent);
+      if (src[0]->bit_size == 64)
+         val->ssa->def = build_frexp64(nb, src[0], &exponent);
+      else
+         val->ssa->def = build_frexp32(nb, src[0], &exponent);
       nir_store_deref_var(nb, vtn_nir_deref(b, w[6]), exponent, 0xf);
       return;
    }
 
    case GLSLstd450FrexpStruct: {
-      assert(glsl_type_is_struct(val->ssa->type));
-      val->ssa->elems[0]->def = build_frexp(nb, src[0],
-                                            &val->ssa->elems[1]->def);
+      vtn_assert(glsl_type_is_struct(val->ssa->type));
+      if (src[0]->bit_size == 64)
+         val->ssa->elems[0]->def = build_frexp64(nb, src[0],
+                                                 &val->ssa->elems[1]->def);
+      else
+         val->ssa->elems[0]->def = build_frexp32(nb, src[0],
+                                                 &val->ssa->elems[1]->def);
       return;
    }
 
    default:
       val->ssa->def =
-         nir_build_alu(&b->nb, vtn_nir_alu_op_for_spirv_glsl_opcode(entrypoint),
+         nir_build_alu(&b->nb,
+                       vtn_nir_alu_op_for_spirv_glsl_opcode(b, entrypoint),
                        src[0], src[1], src[2], NULL);
       return;
    }
@@ -726,7 +795,7 @@ handle_glsl450_interpolation(struct vtn_builder *b, enum GLSLstd450 opcode,
       op = nir_intrinsic_interp_var_at_offset;
       break;
    default:
-      unreachable("Invalid opcode");
+      vtn_fail("Invalid opcode");
    }
 
    nir_intrinsic_instr *intrin = nir_intrinsic_instr_create(b->nb.shader, op);
@@ -742,7 +811,7 @@ handle_glsl450_interpolation(struct vtn_builder *b, enum GLSLstd450 opcode,
       intrin->src[0] = nir_src_for_ssa(vtn_ssa_value(b, w[6])->def);
       break;
    default:
-      unreachable("Invalid opcode");
+      vtn_fail("Invalid opcode");
    }
 
    intrin->num_components = glsl_get_vector_elements(dest_type);
@@ -755,7 +824,7 @@ handle_glsl450_interpolation(struct vtn_builder *b, enum GLSLstd450 opcode,
 }
 
 bool
-vtn_handle_glsl450_instruction(struct vtn_builder *b, uint32_t ext_opcode,
+vtn_handle_glsl450_instruction(struct vtn_builder *b, SpvOp ext_opcode,
                                const uint32_t *w, unsigned count)
 {
    switch ((enum GLSLstd450)ext_opcode) {

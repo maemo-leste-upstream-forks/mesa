@@ -24,7 +24,7 @@
 #include <assert.h>
 
 #include "isl.h"
-#include "common/gen_device_info.h"
+#include "dev/gen_device_info.h"
 
 struct surface_format_info {
    bool exists;
@@ -365,11 +365,19 @@ format_gen(const struct gen_device_info *devinfo)
    return devinfo->gen * 10 + (devinfo->is_g4x || devinfo->is_haswell) * 5;
 }
 
+static bool
+format_info_exists(enum isl_format format)
+{
+   assert(format != ISL_FORMAT_UNSUPPORTED);
+   assert(format < ISL_NUM_FORMATS);
+   return format < ARRAY_SIZE(format_info) && format_info[format].exists;
+}
+
 bool
 isl_format_supports_rendering(const struct gen_device_info *devinfo,
                               enum isl_format format)
 {
-   if (!format_info[format].exists)
+   if (!format_info_exists(format))
       return false;
 
    return format_gen(devinfo) >= format_info[format].render_target;
@@ -379,7 +387,7 @@ bool
 isl_format_supports_alpha_blending(const struct gen_device_info *devinfo,
                                    enum isl_format format)
 {
-   if (!format_info[format].exists)
+   if (!format_info_exists(format))
       return false;
 
    return format_gen(devinfo) >= format_info[format].alpha_blend;
@@ -389,7 +397,7 @@ bool
 isl_format_supports_sampling(const struct gen_device_info *devinfo,
                              enum isl_format format)
 {
-   if (!format_info[format].exists)
+   if (!format_info_exists(format))
       return false;
 
    if (devinfo->is_baytrail) {
@@ -422,7 +430,7 @@ bool
 isl_format_supports_filtering(const struct gen_device_info *devinfo,
                               enum isl_format format)
 {
-   if (!format_info[format].exists)
+   if (!format_info_exists(format))
       return false;
 
    if (devinfo->is_baytrail) {
@@ -455,7 +463,7 @@ bool
 isl_format_supports_vertex_fetch(const struct gen_device_info *devinfo,
                                  enum isl_format format)
 {
-   if (!format_info[format].exists)
+   if (!format_info_exists(format))
       return false;
 
    /* For vertex fetch, Bay Trail supports the same set of formats as Haswell
@@ -474,7 +482,7 @@ bool
 isl_format_supports_typed_writes(const struct gen_device_info *devinfo,
                                  enum isl_format format)
 {
-   if (!format_info[format].exists)
+   if (!format_info_exists(format))
       return false;
 
    return format_gen(devinfo) >= format_info[format].typed_write;
@@ -495,7 +503,7 @@ bool
 isl_format_supports_typed_reads(const struct gen_device_info *devinfo,
                                 enum isl_format format)
 {
-   if (!format_info[format].exists)
+   if (!format_info_exists(format))
       return false;
 
    return format_gen(devinfo) >= format_info[format].typed_read;
@@ -533,8 +541,32 @@ bool
 isl_format_supports_ccs_e(const struct gen_device_info *devinfo,
                           enum isl_format format)
 {
-   if (!format_info[format].exists)
+   if (!format_info_exists(format))
       return false;
+
+   /* For simplicity, only report that a format supports CCS_E if blorp can
+    * perform bit-for-bit copies with an image of that format while compressed.
+    * This allows ISL users to avoid having to resolve the image before
+    * performing such a copy. We may want to change this behavior in the
+    * future.
+    *
+    * R11G11B10_FLOAT has no equivalent UINT format. Given how blorp_copy
+    * currently works, bit-for-bit copy operations are not possible without an
+    * intermediate resolve.
+    */
+   if (format == ISL_FORMAT_R11G11B10_FLOAT)
+      return false;
+
+   /* blorp_copy currently doesn't support formats with different bit-widths
+    * per-channel. Until that support is added, report that these formats don't
+    * support CCS_E. FIXME: Add support for these formats.
+    */
+   if (format == ISL_FORMAT_B10G10R10A2_UNORM ||
+       format == ISL_FORMAT_B10G10R10A2_UNORM_SRGB ||
+       format == ISL_FORMAT_R10G10B10A2_UNORM ||
+       format == ISL_FORMAT_R10G10B10A2_UINT) {
+      return false;
+   }
 
    return format_gen(devinfo) >= format_info[format].ccs_e;
 }

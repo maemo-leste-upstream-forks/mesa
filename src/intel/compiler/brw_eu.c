@@ -126,6 +126,35 @@ brw_swizzle_immediate(enum brw_reg_type type, uint32_t x, unsigned swz)
    }
 }
 
+unsigned
+brw_get_default_exec_size(struct brw_codegen *p)
+{
+   return brw_inst_exec_size(p->devinfo, p->current);
+}
+
+unsigned
+brw_get_default_group(struct brw_codegen *p)
+{
+   if (p->devinfo->gen >= 6) {
+      unsigned group = brw_inst_qtr_control(p->devinfo, p->current) * 8;
+      if (p->devinfo->gen >= 7)
+         group += brw_inst_nib_control(p->devinfo, p->current) * 4;
+      return group;
+   } else {
+      unsigned qtr_control = brw_inst_qtr_control(p->devinfo, p->current);
+      if (qtr_control == BRW_COMPRESSION_COMPRESSED)
+         return 0;
+      else
+         return qtr_control * 8;
+   }
+}
+
+unsigned
+brw_get_default_access_mode(struct brw_codegen *p)
+{
+   return brw_inst_access_mode(p->devinfo, p->current);
+}
+
 void
 brw_set_default_exec_size(struct brw_codegen *p, unsigned value)
 {
@@ -296,6 +325,7 @@ brw_init_codegen(const struct gen_device_info *devinfo,
    memset(p, 0, sizeof(*p));
 
    p->devinfo = devinfo;
+   p->automatic_exec_sizes = true;
    /*
     * Set the initial instruction store array size to 1024, if found that
     * isn't enough, then it will double the store size at brw_next_insn()
@@ -383,7 +413,8 @@ enum gen {
    GEN75 = (1 << 5),
    GEN8  = (1 << 6),
    GEN9  = (1 << 7),
-   GEN10  = (1 << 8),
+   GEN10 = (1 << 8),
+   GEN11 = (1 << 9),
    GEN_ALL = ~0
 };
 
@@ -627,16 +658,16 @@ static const struct opcode_desc opcode_descs[128] = {
    },
    /* Reserved 88 */
    [BRW_OPCODE_LINE] = {
-      .name = "line",    .nsrc = 2, .ndst = 1, .gens = GEN_ALL,
+      .name = "line",    .nsrc = 2, .ndst = 1, .gens = GEN_LE(GEN10),
    },
    [BRW_OPCODE_PLN] = {
-      .name = "pln",     .nsrc = 2, .ndst = 1, .gens = GEN_GE(GEN45),
+      .name = "pln",     .nsrc = 2, .ndst = 1, .gens = GEN_GE(GEN45) & GEN_LE(GEN10),
    },
    [BRW_OPCODE_MAD] = {
       .name = "mad",     .nsrc = 3, .ndst = 1, .gens = GEN_GE(GEN6),
    },
    [BRW_OPCODE_LRP] = {
-      .name = "lrp",     .nsrc = 3, .ndst = 1, .gens = GEN_GE(GEN6),
+      .name = "lrp",     .nsrc = 3, .ndst = 1, .gens = GEN_GE(GEN6) & GEN_LE(GEN10),
    },
    [93] = {
       .name = "madm",    .nsrc = 3, .ndst = 1, .gens = GEN_GE(GEN8),
@@ -661,6 +692,7 @@ gen_from_devinfo(const struct gen_device_info *devinfo)
    case 8: return GEN8;
    case 9: return GEN9;
    case 10: return GEN10;
+   case 11: return GEN11;
    default:
       unreachable("not reached");
    }

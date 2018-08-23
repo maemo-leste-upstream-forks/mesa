@@ -108,6 +108,9 @@ endif # NEED_GALLIUM_VL
 
 EXTRA_DIST = \
 	SConscript \
+	driver_rbug/README \
+	driver_trace/README \
+	driver_trace/trace.xsl \
 	indices/u_indices.c \
 	indices/u_unfilled_indices.c \
 	indices/u_indices_gen.py \
@@ -115,7 +118,9 @@ EXTRA_DIST = \
 	postprocess/ADDING \
 	rbug/README \
 	target-helpers \
+	util/u_debug_stack_android.cpp \
 	util/u_format.csv \
 	util/u_format_pack.py \
 	util/u_format_parse.py \
-	util/u_format_table.py
+	util/u_format_table.py \
+	meson.build

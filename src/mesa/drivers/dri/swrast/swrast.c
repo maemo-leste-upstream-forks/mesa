@@ -223,9 +223,6 @@ swrastFillInModes(__DRIscreen *psp,
     unsigned back_buffer_factor;
     mesa_format format;
 
-    /* GLX_SWAP_COPY_OML is only supported because the Intel driver doesn't
-     * support pageflipping at all.
-     */
     static const GLenum back_buffer_modes[] = {
 	__DRI_ATTRIB_SWAP_NONE, __DRI_ATTRIB_SWAP_UNDEFINED
     };
@@ -752,11 +749,7 @@ static GLboolean
 dri_create_context(gl_api api,
 		   const struct gl_config * visual,
 		   __DRIcontext * cPriv,
-		   unsigned major_version,
-		   unsigned minor_version,
-		   uint32_t flags,
-		   bool notify_reset,
-		   unsigned priority,
+		   const struct __DriverContextConfig *ctx_config,
 		   unsigned *error,
 		   void *sharedContextPrivate)
 {
@@ -770,7 +763,13 @@ dri_create_context(gl_api api,
 
     /* Flag filtering is handled in dri2CreateContextAttribs.
      */
-    (void) flags;
+    (void) ctx_config->flags;
+
+    /* The swrast driver doesn't understand any of the attributes */
+    if (ctx_config->attribute_mask != 0) {
+	*error = __DRI_CTX_ERROR_UNKNOWN_ATTRIBUTE;
+	return false;
+    }
 
     ctx = CALLOC_STRUCT(dri_context);
     if (ctx == NULL) {
@@ -784,6 +783,7 @@ dri_create_context(gl_api api,
     /* build table of device driver functions */
     _mesa_init_driver_functions(&functions);
     swrast_init_driver_functions(&functions);
+    _tnl_init_driver_draw_function(&functions);
 
     if (share) {
 	sharedCtx = &share->Base;
@@ -797,7 +797,7 @@ dri_create_context(gl_api api,
 	goto context_fail;
     }
 
-    driContextSetFlags(mesaCtx, flags);
+    driContextSetFlags(mesaCtx, ctx_config->flags);
 
     /* create module contexts */
     _swrast_CreateContext( mesaCtx );
@@ -815,6 +815,7 @@ dri_create_context(gl_api api,
     _mesa_meta_init(mesaCtx);
     _mesa_enable_sw_extensions(mesaCtx);
 
+   _mesa_override_extensions(mesaCtx);
     _mesa_compute_version(mesaCtx);
 
     _mesa_initialize_dispatch_tables(mesaCtx);

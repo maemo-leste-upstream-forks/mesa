@@ -1,5 +1,6 @@
 /*
  * Copyright 2016 Advanced Micro Devices, Inc.
+ * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -40,6 +41,9 @@
 #include <stdio.h>
 #include <llvm-c/Transforms/IPO.h>
 #include <llvm-c/Transforms/Scalar.h>
+#if HAVE_LLVM >= 0x0700
+#include <llvm-c/Transforms/Utils.h>
+#endif
 
 enum si_llvm_calling_convention {
 	RADEON_LLVM_AMDGPU_VS = 87,
@@ -48,14 +52,6 @@ enum si_llvm_calling_convention {
 	RADEON_LLVM_AMDGPU_CS = 90,
 	RADEON_LLVM_AMDGPU_HS = 93,
 };
-
-void si_llvm_add_attribute(LLVMValueRef F, const char *name, int value)
-{
-	char str[16];
-
-	snprintf(str, sizeof(str), "%i", value);
-	LLVMAddTargetDependentFunctionAttr(F, name, str);
-}
 
 struct si_llvm_diagnostics {
 	struct pipe_debug_callback *debug;
@@ -162,15 +158,15 @@ LLVMTypeRef tgsi2llvmtype(struct lp_build_tgsi_context *bld_base,
 	switch (type) {
 	case TGSI_TYPE_UNSIGNED:
 	case TGSI_TYPE_SIGNED:
-		return ctx->i32;
+		return ctx->ac.i32;
 	case TGSI_TYPE_UNSIGNED64:
 	case TGSI_TYPE_SIGNED64:
-		return ctx->i64;
+		return ctx->ac.i64;
 	case TGSI_TYPE_DOUBLE:
-		return LLVMDoubleTypeInContext(ctx->ac.context);
+		return ctx->ac.f64;
 	case TGSI_TYPE_UNTYPED:
 	case TGSI_TYPE_FLOAT:
-		return ctx->f32;
+		return ctx->ac.f32;
 	default: break;
 	}
 	return 0;
@@ -200,7 +196,7 @@ LLVMValueRef si_llvm_bound_index(struct si_shader_context *ctx,
 	LLVMValueRef c_max = LLVMConstInt(ctx->i32, num - 1, 0);
 	LLVMValueRef cc;
 
-	if (util_is_power_of_two(num)) {
+	if (util_is_power_of_two_or_zero(num)) {
 		index = LLVMBuildAnd(builder, index, c_max, "");
 	} else {
 		/* In theory, this MAX pattern should result in code that is
@@ -352,7 +348,7 @@ get_pointer_into_array(struct si_shader_context *ctx,
 
 LLVMValueRef
 si_llvm_emit_fetch_64bit(struct lp_build_tgsi_context *bld_base,
-			 enum tgsi_opcode_type type,
+			 LLVMTypeRef type,
 			 LLVMValueRef ptr,
 			 LLVMValueRef ptr2)
 {
@@ -369,7 +365,7 @@ si_llvm_emit_fetch_64bit(struct lp_build_tgsi_context *bld_base,
 					result,
 					ac_to_integer(&ctx->ac, ptr2),
 					ctx->i32_1, "");
-	return bitcast(bld_base, type, result);
+	return LLVMBuildBitCast(ctx->ac.builder, result, type, "");
 }
 
 static LLVMValueRef
@@ -414,7 +410,8 @@ load_value_from_array(struct lp_build_tgsi_context *bld_base,
 			LLVMValueRef ptr_hi, val_hi;
 			ptr_hi = LLVMBuildGEP(builder, ptr, &ctx->i32_1, 1, "");
 			val_hi = LLVMBuildLoad(builder, ptr_hi, "");
-			val = si_llvm_emit_fetch_64bit(bld_base, type, val, val_hi);
+			val = si_llvm_emit_fetch_64bit(bld_base, tgsi2llvmtype(bld_base, type),
+						       val, val_hi);
 		}
 
 		return val;
@@ -562,7 +559,8 @@ LLVMValueRef si_llvm_emit_fetch(struct lp_build_tgsi_context *bld_base,
 		if (tgsi_type_is_64bit(type)) {
 			ptr = result;
 			ptr2 = input[swizzle + 1];
-			return si_llvm_emit_fetch_64bit(bld_base, type, ptr, ptr2);
+			return si_llvm_emit_fetch_64bit(bld_base, tgsi2llvmtype(bld_base, type),
+							ptr, ptr2);
 		}
 		break;
 	}
@@ -573,7 +571,7 @@ LLVMValueRef si_llvm_emit_fetch(struct lp_build_tgsi_context *bld_base,
 		ptr = ctx->temps[reg->Register.Index * TGSI_NUM_CHANNELS + swizzle];
 		if (tgsi_type_is_64bit(type)) {
 			ptr2 = ctx->temps[reg->Register.Index * TGSI_NUM_CHANNELS + swizzle + 1];
-			return si_llvm_emit_fetch_64bit(bld_base, type,
+			return si_llvm_emit_fetch_64bit(bld_base, tgsi2llvmtype(bld_base, type),
 							LLVMBuildLoad(builder, ptr, ""),
 							LLVMBuildLoad(builder, ptr2, ""));
 		}
@@ -584,7 +582,7 @@ LLVMValueRef si_llvm_emit_fetch(struct lp_build_tgsi_context *bld_base,
 		ptr = get_output_ptr(bld_base, reg->Register.Index, swizzle);
 		if (tgsi_type_is_64bit(type)) {
 			ptr2 = get_output_ptr(bld_base, reg->Register.Index, swizzle + 1);
-			return si_llvm_emit_fetch_64bit(bld_base, type,
+			return si_llvm_emit_fetch_64bit(bld_base, tgsi2llvmtype(bld_base, type),
 							LLVMBuildLoad(builder, ptr, ""),
 							LLVMBuildLoad(builder, ptr2, ""));
 		}
@@ -617,7 +615,8 @@ static LLVMValueRef fetch_system_value(struct lp_build_tgsi_context *bld_base,
 		hi = LLVMBuildExtractElement(
 			builder, cval, LLVMConstInt(ctx->i32, swizzle + 1, 0), "");
 
-		return si_llvm_emit_fetch_64bit(bld_base, type, lo, hi);
+		return si_llvm_emit_fetch_64bit(bld_base, tgsi2llvmtype(bld_base, type),
+						lo, hi);
 	}
 
 	if (LLVMGetTypeKind(LLVMTypeOf(cval)) == LLVMVectorTypeKind) {
@@ -653,7 +652,7 @@ static void emit_declaration(struct lp_build_tgsi_context *bld_base,
 
 	case TGSI_FILE_TEMPORARY:
 	{
-		char name[16] = "";
+		char name[18] = "";
 		LLVMValueRef array_alloca = NULL;
 		unsigned decl_size;
 		unsigned writemask = decl->Declaration.UsageMask;
@@ -801,7 +800,7 @@ static void emit_declaration(struct lp_build_tgsi_context *bld_base,
 	}
 
 	case TGSI_FILE_MEMORY:
-		si_declare_compute_memory(ctx, decl);
+		si_tgsi_declare_compute_memory(ctx, decl);
 		break;
 
 	default:
@@ -1017,15 +1016,16 @@ void si_llvm_context_init(struct si_shader_context *ctx,
 	LLVMDisposeTargetData(data_layout);
 	LLVMDisposeMessage(data_layout_str);
 
-	bool unsafe_fpmath = (sscreen->b.debug_flags & DBG(UNSAFE_MATH)) != 0;
-	enum lp_float_mode float_mode =
-		unsafe_fpmath ? LP_FLOAT_MODE_UNSAFE_FP_MATH :
-				LP_FLOAT_MODE_NO_SIGNED_ZEROS_FP_MATH;
+	bool unsafe_fpmath = (sscreen->debug_flags & DBG(UNSAFE_MATH)) != 0;
+	enum ac_float_mode float_mode =
+		unsafe_fpmath ? AC_FLOAT_MODE_UNSAFE_FP_MATH :
+				AC_FLOAT_MODE_NO_SIGNED_ZEROS_FP_MATH;
 
-	ctx->gallivm.builder = lp_create_builder(ctx->gallivm.context,
+	ctx->gallivm.builder = ac_create_builder(ctx->gallivm.context,
 						 float_mode);
 
-	ac_llvm_context_init(&ctx->ac, ctx->gallivm.context, sscreen->b.chip_class);
+	ac_llvm_context_init(&ctx->ac, ctx->gallivm.context,
+			     sscreen->info.chip_class, sscreen->info.family);
 	ctx->ac.module = ctx->gallivm.module;
 	ctx->ac.builder = ctx->gallivm.builder;
 
@@ -1050,13 +1050,6 @@ void si_llvm_context_init(struct si_shader_context *ctx,
 	bld_base->emit_swizzle = emit_swizzle;
 	bld_base->emit_declaration = emit_declaration;
 	bld_base->emit_immediate = emit_immediate;
-
-	/* metadata allowing 2.5 ULP */
-	ctx->fpmath_md_kind = LLVMGetMDKindIDInContext(ctx->ac.context,
-						       "fpmath", 6);
-	LLVMValueRef arg = LLVMConstReal(ctx->ac.f32, 2.5);
-	ctx->fpmath_md_2p5_ulp = LLVMMDNodeInContext(ctx->ac.context,
-						     &arg, 1);
 
 	bld_base->op_actions[TGSI_OPCODE_BGNLOOP].emit = bgnloop_emit;
 	bld_base->op_actions[TGSI_OPCODE_BRK].emit = brk_emit;
@@ -1117,7 +1110,16 @@ void si_llvm_context_set_tgsi(struct si_shader_context *ctx,
 	ctx->temps = NULL;
 	ctx->temps_count = 0;
 
-	if (!info || !tokens)
+	if (!info)
+		return;
+
+	ctx->num_const_buffers = util_last_bit(info->const_buffers_declared);
+	ctx->num_shader_buffers = util_last_bit(info->shader_buffers_declared);
+
+	ctx->num_samplers = util_last_bit(info->samplers_declared);
+	ctx->num_images = util_last_bit(info->images_declared);
+
+	if (!tokens)
 		return;
 
 	if (info->array_max[TGSI_FILE_TEMPORARY] > 0) {
@@ -1145,11 +1147,6 @@ void si_llvm_context_set_tgsi(struct si_shader_context *ctx,
 	ctx->bld_base.emit_fetch_funcs[TGSI_FILE_TEMPORARY] = si_llvm_emit_fetch;
 	ctx->bld_base.emit_fetch_funcs[TGSI_FILE_OUTPUT] = si_llvm_emit_fetch;
 	ctx->bld_base.emit_fetch_funcs[TGSI_FILE_SYSTEM_VALUE] = fetch_system_value;
-
-	ctx->num_const_buffers = util_last_bit(info->const_buffers_declared);
-	ctx->num_shader_buffers = util_last_bit(info->shader_buffers_declared);
-	ctx->num_samplers = util_last_bit(info->samplers_declared);
-	ctx->num_images = util_last_bit(info->images_declared);
 }
 
 void si_llvm_create_func(struct si_shader_context *ctx,
@@ -1180,7 +1177,7 @@ void si_llvm_create_func(struct si_shader_context *ctx,
 	real_shader_type = ctx->type;
 
 	/* LS is merged into HS (TCS), and ES is merged into GS. */
-	if (ctx->screen->b.chip_class >= GFX9) {
+	if (ctx->screen->info.chip_class >= GFX9) {
 		if (ctx->shader->key.as_ls)
 			real_shader_type = PIPE_SHADER_TESS_CTRL;
 		else if (ctx->shader->key.as_es)
@@ -1219,8 +1216,8 @@ void si_llvm_optimize_module(struct si_shader_context *ctx)
 	LLVMTargetLibraryInfoRef target_library_info;
 
 	/* Dump LLVM IR before any optimization passes */
-	if (ctx->screen->b.debug_flags & DBG(PREOPT_IR) &&
-	    si_can_dump_shader(&ctx->screen->b, ctx->type))
+	if (ctx->screen->debug_flags & DBG(PREOPT_IR) &&
+	    si_can_dump_shader(ctx->screen, ctx->type))
 		LLVMDumpModule(ctx->gallivm.module);
 
 	/* Create the pass manager */
@@ -1229,7 +1226,7 @@ void si_llvm_optimize_module(struct si_shader_context *ctx)
 	target_library_info = gallivm_create_target_library_info(triple);
 	LLVMAddTargetLibraryInfo(target_library_info, gallivm->passmgr);
 
-	if (si_extra_shader_checks(&ctx->screen->b, ctx->type))
+	if (si_extra_shader_checks(ctx->screen, ctx->type))
 		LLVMAddVerifierPass(gallivm->passmgr);
 
 	LLVMAddAlwaysInlinerPass(gallivm->passmgr);
@@ -1242,10 +1239,8 @@ void si_llvm_optimize_module(struct si_shader_context *ctx)
 	LLVMAddLICMPass(gallivm->passmgr);
 	LLVMAddAggressiveDCEPass(gallivm->passmgr);
 	LLVMAddCFGSimplificationPass(gallivm->passmgr);
-#if HAVE_LLVM >= 0x0400
 	/* This is recommended by the instruction combining pass. */
 	LLVMAddEarlyCSEMemSSAPass(gallivm->passmgr);
-#endif
 	LLVMAddInstructionCombiningPass(gallivm->passmgr);
 
 	/* Run the pass */

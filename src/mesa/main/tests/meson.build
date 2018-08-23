@@ -30,10 +30,12 @@ if with_shared_glapi
   )
   link_main_test += libglapi
 else
-  files_main_test += files('stub.cpp')
+  files_main_test += files('stubs.cpp')
 endif
 
-test('main-test', executable(
+test(
+  'main-test',
+  executable(
     'main_test',
     [files_main_test, main_dispatch_h],
     include_directories : [inc_include, inc_src, inc_mapi, inc_mesa],

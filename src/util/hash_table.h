@@ -62,6 +62,8 @@ _mesa_hash_table_create(void *mem_ctx,
                         uint32_t (*key_hash_function)(const void *key),
                         bool (*key_equals_function)(const void *a,
                                                     const void *b));
+struct hash_table *
+_mesa_hash_table_clone(struct hash_table *src, void *dst_mem_ctx);
 void _mesa_hash_table_destroy(struct hash_table *ht,
                               void (*delete_function)(struct hash_entry *entry));
 void _mesa_hash_table_clear(struct hash_table *ht,
@@ -94,7 +96,7 @@ _mesa_hash_table_random_entry(struct hash_table *ht,
                               bool (*predicate)(struct hash_entry *entry));
 
 uint32_t _mesa_hash_data(const void *data, size_t size);
-uint32_t _mesa_hash_string(const char *key);
+uint32_t _mesa_hash_string(const void *key);
 bool _mesa_key_string_equal(const void *a, const void *b);
 bool _mesa_key_pointer_equal(const void *a, const void *b);
 

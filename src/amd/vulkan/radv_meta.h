@@ -171,6 +171,9 @@ void radv_resummarize_depth_image_inplace(struct radv_cmd_buffer *cmd_buffer,
 void radv_fast_clear_flush_image_inplace(struct radv_cmd_buffer *cmd_buffer,
 					 struct radv_image *image,
 					 const VkImageSubresourceRange *subresourceRange);
+void radv_decompress_dcc(struct radv_cmd_buffer *cmd_buffer,
+			struct radv_image *image,
+                        const VkImageSubresourceRange *subresourceRange);
 
 void radv_meta_resolve_compute_image(struct radv_cmd_buffer *cmd_buffer,
 				     struct radv_image *src_image,
@@ -188,9 +191,22 @@ void radv_meta_resolve_fragment_image(struct radv_cmd_buffer *cmd_buffer,
 				      uint32_t region_count,
 				      const VkImageResolve *regions);
 
+void radv_decompress_resolve_subpass_src(struct radv_cmd_buffer *cmd_buffer);
+
+void radv_decompress_resolve_src(struct radv_cmd_buffer *cmd_buffer,
+				 struct radv_image *src_image,
+				 VkImageLayout src_image_layout,
+				 uint32_t region_count,
+				 const VkImageResolve *regions);
+
 void radv_blit_to_prime_linear(struct radv_cmd_buffer *cmd_buffer,
 			       struct radv_image *image,
 			       struct radv_image *linear_image);
+
+uint32_t radv_clear_cmask(struct radv_cmd_buffer *cmd_buffer,
+			  struct radv_image *image, uint32_t value);
+uint32_t radv_clear_dcc(struct radv_cmd_buffer *cmd_buffer,
+			struct radv_image *image, uint32_t value);
 
 /* common nir builder helpers */
 #include "nir/nir_builder.h"

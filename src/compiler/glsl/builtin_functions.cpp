@@ -75,7 +75,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
-#include "main/core.h" /* for struct gl_shader */
+#include "main/mtypes.h"
 #include "main/shaderobj.h"
 #include "ir_builder.h"
 #include "glsl_parser_extras.h"
@@ -104,7 +104,7 @@ static bool
 compatibility_vs_only(const _mesa_glsl_parse_state *state)
 {
    return state->stage == MESA_SHADER_VERTEX &&
-          state->language_version <= 130 &&
+          (state->compat_shader || state->ARB_compatibility_enable) &&
           !state->es_shader;
 }
 
@@ -186,6 +186,14 @@ static bool
 texture_external(const _mesa_glsl_parse_state *state)
 {
    return state->OES_EGL_image_external_enable;
+}
+
+static bool
+texture_external_es3(const _mesa_glsl_parse_state *state)
+{
+   return state->OES_EGL_image_external_essl3_enable &&
+      state->es_shader &&
+      state->is_version(0, 300);
 }
 
 /** True if texturing functions with explicit LOD are allowed. */
@@ -744,7 +752,8 @@ private:
                                 ir_expression_operation opcode,
                                 const glsl_type *return_type,
                                 const glsl_type *param0_type,
-                                const glsl_type *param1_type);
+                                const glsl_type *param1_type,
+                                bool swap_operands = false);
 
 #define B0(X) ir_function_signature *_##X();
 #define B1(X) ir_function_signature *_##X(const glsl_type *);
@@ -1918,6 +1927,8 @@ builtin_builder::create_builtins()
 
                 _texture(ir_tex, v130, glsl_type::float_type, glsl_type::sampler2DRectShadow_type, glsl_type::vec3_type),
 
+                _texture(ir_tex, texture_external_es3, glsl_type::vec4_type,  glsl_type::samplerExternalOES_type, glsl_type::vec2_type),
+
                 _texture(ir_txb, v130_fs_only, glsl_type::vec4_type,  glsl_type::sampler1D_type,  glsl_type::float_type),
                 _texture(ir_txb, v130_fs_only, glsl_type::ivec4_type, glsl_type::isampler1D_type, glsl_type::float_type),
                 _texture(ir_txb, v130_fs_only, glsl_type::uvec4_type, glsl_type::usampler1D_type, glsl_type::float_type),
@@ -2077,6 +2088,9 @@ builtin_builder::create_builtins()
 
                 _texture(ir_tex, v130, glsl_type::vec4_type,  glsl_type::sampler2DRect_type,  glsl_type::vec3_type, TEX_PROJECT),
                 _texture(ir_tex, v130, glsl_type::ivec4_type, glsl_type::isampler2DRect_type, glsl_type::vec3_type, TEX_PROJECT),
+                _texture(ir_tex, texture_external_es3, glsl_type::vec4_type,  glsl_type::samplerExternalOES_type, glsl_type::vec3_type, TEX_PROJECT),
+                _texture(ir_tex, texture_external_es3, glsl_type::vec4_type,  glsl_type::samplerExternalOES_type, glsl_type::vec4_type, TEX_PROJECT),
+
                 _texture(ir_tex, v130, glsl_type::uvec4_type, glsl_type::usampler2DRect_type, glsl_type::vec3_type, TEX_PROJECT),
                 _texture(ir_tex, v130, glsl_type::vec4_type,  glsl_type::sampler2DRect_type,  glsl_type::vec4_type, TEX_PROJECT),
                 _texture(ir_tex, v130, glsl_type::ivec4_type, glsl_type::isampler2DRect_type, glsl_type::vec4_type, TEX_PROJECT),
@@ -2142,7 +2156,11 @@ builtin_builder::create_builtins()
                 _texelFetch(texture_multisample_array, glsl_type::vec4_type,  glsl_type::sampler2DMSArray_type,  glsl_type::ivec3_type),
                 _texelFetch(texture_multisample_array, glsl_type::ivec4_type, glsl_type::isampler2DMSArray_type, glsl_type::ivec3_type),
                 _texelFetch(texture_multisample_array, glsl_type::uvec4_type, glsl_type::usampler2DMSArray_type, glsl_type::ivec3_type),
+
+                _texelFetch(texture_external_es3, glsl_type::vec4_type,  glsl_type::samplerExternalOES_type, glsl_type::ivec2_type),
+
                 NULL);
+
 
    add_function("texelFetchOffset",
                 _texelFetch(v130, glsl_type::vec4_type,  glsl_type::sampler1D_type,  glsl_type::int_type, glsl_type::int_type),
@@ -3634,12 +3652,18 @@ builtin_builder::binop(builtin_available_predicate avail,
                        ir_expression_operation opcode,
                        const glsl_type *return_type,
                        const glsl_type *param0_type,
-                       const glsl_type *param1_type)
+                       const glsl_type *param1_type,
+                       bool swap_operands)
 {
    ir_variable *x = in_var(param0_type, "x");
    ir_variable *y = in_var(param1_type, "y");
    MAKE_SIG(return_type, avail, 2, x, y);
-   body.emit(ret(expr(opcode, x, y)));
+
+   if (swap_operands)
+      body.emit(ret(expr(opcode, y, x)));
+   else
+      body.emit(ret(expr(opcode, x, y)));
+
    return sig;
 }
 
@@ -4972,16 +4996,18 @@ ir_function_signature *
 builtin_builder::_lessThanEqual(builtin_available_predicate avail,
                                 const glsl_type *type)
 {
-   return binop(avail, ir_binop_lequal,
-                glsl_type::bvec(type->vector_elements), type, type);
+   return binop(avail, ir_binop_gequal,
+                glsl_type::bvec(type->vector_elements), type, type,
+                true);
 }
 
 ir_function_signature *
 builtin_builder::_greaterThan(builtin_available_predicate avail,
                               const glsl_type *type)
 {
-   return binop(avail, ir_binop_greater,
-                glsl_type::bvec(type->vector_elements), type, type);
+   return binop(avail, ir_binop_less,
+                glsl_type::bvec(type->vector_elements), type, type,
+                true);
 }
 
 ir_function_signature *

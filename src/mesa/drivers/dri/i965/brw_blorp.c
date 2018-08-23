@@ -106,6 +106,10 @@ brw_blorp_init(struct brw_context *brw)
    case 10:
       brw->blorp.exec = gen10_blorp_exec;
       break;
+   case 11:
+      brw->blorp.exec = gen11_blorp_exec;
+      break;
+
    default:
       unreachable("Invalid gen");
    }
@@ -139,21 +143,18 @@ blorp_surf_for_miptree(struct brw_context *brw,
          intel_miptree_check_level_layer(mt, *level, start_layer + i);
    }
 
-   surf->surf = &mt->surf;
-   surf->addr = (struct blorp_address) {
-      .buffer = mt->bo,
-      .offset = mt->offset,
-      .reloc_flags = is_render_target ? EXEC_OBJECT_WRITE : 0,
-      .mocs = brw_get_bo_mocs(devinfo, mt->bo),
+   *surf = (struct blorp_surf) {
+      .surf = &mt->surf,
+      .addr = (struct blorp_address) {
+         .buffer = mt->bo,
+         .offset = mt->offset,
+         .reloc_flags = is_render_target ? EXEC_OBJECT_WRITE : 0,
+         .mocs = brw_get_bo_mocs(devinfo, mt->bo),
+      },
+      .aux_usage = aux_usage,
+      .tile_x_sa = mt->level[*level].level_x,
+      .tile_y_sa = mt->level[*level].level_y,
    };
-
-   surf->aux_usage = aux_usage;
-
-   struct isl_surf *aux_surf = NULL;
-   if (mt->mcs_buf)
-      aux_surf = &mt->mcs_buf->surf;
-   else if (mt->hiz_buf)
-      aux_surf = &mt->hiz_buf->surf;
 
    if (mt->format == MESA_FORMAT_S_UINT8 && is_render_target &&
        devinfo->gen <= 7)
@@ -169,21 +170,20 @@ blorp_surf_for_miptree(struct brw_context *brw,
        */
       surf->clear_color = mt->fast_clear_color;
 
-      surf->aux_surf = aux_surf;
+      surf->aux_surf = &mt->aux_buf->surf;
       surf->aux_addr = (struct blorp_address) {
          .reloc_flags = is_render_target ? EXEC_OBJECT_WRITE : 0,
          .mocs = surf->addr.mocs,
       };
 
-      if (mt->mcs_buf) {
-         surf->aux_addr.buffer = mt->mcs_buf->bo;
-         surf->aux_addr.offset = mt->mcs_buf->offset;
-      } else {
-         assert(mt->hiz_buf);
-         assert(surf->aux_usage == ISL_AUX_USAGE_HIZ);
+      surf->aux_addr.buffer = mt->aux_buf->bo;
+      surf->aux_addr.offset = mt->aux_buf->offset;
 
-         surf->aux_addr.buffer = mt->hiz_buf->bo;
-         surf->aux_addr.offset = mt->hiz_buf->offset;
+      if (devinfo->gen >= 10) {
+         surf->clear_color_addr = (struct blorp_address) {
+            .buffer = mt->aux_buf->clear_color_bo,
+            .offset = mt->aux_buf->clear_color_offset,
+         };
       }
    } else {
       surf->aux_addr = (struct blorp_address) {
@@ -822,7 +822,7 @@ blorp_get_client_bo(struct brw_context *brw,
        * data which we need to copy into a BO.
        */
       struct brw_bo *bo =
-         brw_bo_alloc(brw->bufmgr, "tmp_tex_subimage_src", size, 64);
+         brw_bo_alloc(brw->bufmgr, "tmp_tex_subimage_src", size);
       if (bo == NULL) {
          perf_debug("intel_texsubimage: temp bo creation failed: size = %u\n",
                     size);
@@ -1131,7 +1131,7 @@ err:
 
 static bool
 set_write_disables(const struct intel_renderbuffer *irb,
-                   const GLubyte *color_mask, bool *color_write_disable)
+                   const unsigned color_mask, bool *color_write_disable)
 {
    /* Format information in the renderbuffer represents the requirements
     * given by the client. There are cases where the backing miptree uses,
@@ -1145,8 +1145,8 @@ set_write_disables(const struct intel_renderbuffer *irb,
    assert(components > 0);
 
    for (int i = 0; i < components; i++) {
-      color_write_disable[i] = !color_mask[i];
-      disables = disables || !color_mask[i];
+      color_write_disable[i] = !(color_mask & (1 << i));
+      disables = disables || color_write_disable[i];
    }
 
    return disables;
@@ -1183,7 +1183,8 @@ do_single_blorp_clear(struct brw_context *brw, struct gl_framebuffer *fb,
    bool can_fast_clear = !partial_clear;
 
    bool color_write_disable[4] = { false, false, false, false };
-   if (set_write_disables(irb, ctx->Color.ColorMask[buf], color_write_disable))
+   if (set_write_disables(irb, GET_COLORMASK(ctx->Color.ColorMask, buf),
+                          color_write_disable))
       can_fast_clear = false;
 
    /* We store clear colors as floats or uints as needed.  If there are
@@ -1211,7 +1212,7 @@ do_single_blorp_clear(struct brw_context *brw, struct gl_framebuffer *fb,
 
    /* If the MCS buffer hasn't been allocated yet, we need to allocate it now.
     */
-   if (can_fast_clear && !irb->mt->mcs_buf) {
+   if (can_fast_clear && !irb->mt->aux_buf) {
       assert(irb->mt->aux_usage == ISL_AUX_USAGE_CCS_D);
       if (!intel_miptree_alloc_ccs(brw, irb->mt)) {
          /* There are a few reasons in addition to out-of-memory, that can
@@ -1222,15 +1223,17 @@ do_single_blorp_clear(struct brw_context *brw, struct gl_framebuffer *fb,
       }
    }
 
+   /* FINISHME: Debug and enable fast clears */
+   const struct gen_device_info *devinfo = &brw->screen->devinfo;
+   if (devinfo->gen >= 11)
+      can_fast_clear = false;
+
    if (can_fast_clear) {
       const enum isl_aux_state aux_state =
          intel_miptree_get_aux_state(irb->mt, irb->mt_level, irb->mt_layer);
-      union isl_color_value clear_color =
-         brw_meta_convert_fast_clear_color(brw, irb->mt,
-                                           &ctx->Color.ClearColor);
 
       bool same_clear_color =
-         !intel_miptree_set_clear_color(ctx, irb->mt, clear_color);
+         !intel_miptree_set_clear_color(brw, irb->mt, &ctx->Color.ClearColor);
 
       /* If the buffer is already in INTEL_FAST_CLEAR_STATE_CLEAR, the clear
        * is redundant and can be skipped.
@@ -1420,8 +1423,8 @@ brw_blorp_clear_depth_stencil(struct brw_context *brw,
       } else {
          level = irb->mt_level;
          start_layer = irb->mt_layer;
-         num_layers = fb->MaxNumLayers ? irb->layer_count : 1;
       }
+      num_layers = fb->MaxNumLayers ? irb->layer_count : 1;
 
       stencil_mask = ctx->Stencil.WriteMask[0] & 0xff;
 
@@ -1462,7 +1465,7 @@ brw_blorp_clear_depth_stencil(struct brw_context *brw,
 void
 brw_blorp_resolve_color(struct brw_context *brw, struct intel_mipmap_tree *mt,
                         unsigned level, unsigned layer,
-                        enum blorp_fast_clear_op resolve_op)
+                        enum isl_aux_op resolve_op)
 {
    DBG("%s to mt %p level %u layer %u\n", __FUNCTION__, mt, level, layer);
 
@@ -1491,7 +1494,7 @@ brw_blorp_resolve_color(struct brw_context *brw, struct intel_mipmap_tree *mt,
 
    struct blorp_batch batch;
    blorp_batch_init(&brw->blorp, &batch, brw, 0);
-   blorp_ccs_resolve(&batch, &surf, level, layer,
+   blorp_ccs_resolve(&batch, &surf, level, layer, 1,
                      brw_blorp_to_isl_format(brw, format, true),
                      resolve_op);
    blorp_batch_finish(&batch);
@@ -1538,26 +1541,26 @@ brw_blorp_mcs_partial_resolve(struct brw_context *brw,
 void
 intel_hiz_exec(struct brw_context *brw, struct intel_mipmap_tree *mt,
                unsigned int level, unsigned int start_layer,
-               unsigned int num_layers, enum blorp_hiz_op op)
+               unsigned int num_layers, enum isl_aux_op op)
 {
    assert(intel_miptree_level_has_hiz(mt, level));
-   assert(op != BLORP_HIZ_OP_NONE);
+   assert(op != ISL_AUX_OP_NONE);
    const struct gen_device_info *devinfo = &brw->screen->devinfo;
    const char *opname = NULL;
 
    switch (op) {
-   case BLORP_HIZ_OP_DEPTH_RESOLVE:
+   case ISL_AUX_OP_FULL_RESOLVE:
       opname = "depth resolve";
       break;
-   case BLORP_HIZ_OP_HIZ_RESOLVE:
+   case ISL_AUX_OP_AMBIGUATE:
       opname = "hiz ambiguate";
       break;
-   case BLORP_HIZ_OP_DEPTH_CLEAR:
+   case ISL_AUX_OP_FAST_CLEAR:
       opname = "depth clear";
       break;
-   case BLORP_HIZ_OP_NONE:
-      opname = "noop?";
-      break;
+   case ISL_AUX_OP_PARTIAL_RESOLVE:
+   case ISL_AUX_OP_NONE:
+      unreachable("Invalid HiZ op");
    }
 
    DBG("%s %s to mt %p level %d layers %d-%d\n",
@@ -1608,7 +1611,7 @@ intel_hiz_exec(struct brw_context *brw, struct intel_mipmap_tree *mt,
        brw_emit_pipe_control_flush(brw, PIPE_CONTROL_DEPTH_STALL);
    }
 
-   assert(mt->aux_usage == ISL_AUX_USAGE_HIZ && mt->hiz_buf);
+   assert(mt->aux_usage == ISL_AUX_USAGE_HIZ && mt->aux_buf);
 
    struct isl_surf isl_tmp[2];
    struct blorp_surf surf;

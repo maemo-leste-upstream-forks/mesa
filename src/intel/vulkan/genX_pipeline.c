@@ -97,7 +97,7 @@ emit_vertex_input(struct anv_pipeline *pipeline,
    const uint32_t elements_double = double_inputs_read >> VERT_ATTRIB_GENERIC0;
    const bool needs_svgs_elem = vs_prog_data->uses_vertexid ||
                                 vs_prog_data->uses_instanceid ||
-                                vs_prog_data->uses_basevertex ||
+                                vs_prog_data->uses_firstvertex ||
                                 vs_prog_data->uses_baseinstance;
 
    uint32_t elem_count = __builtin_popcount(elements) -
@@ -138,7 +138,7 @@ emit_vertex_input(struct anv_pipeline *pipeline,
       struct GENX(VERTEX_ELEMENT_STATE) element = {
          .VertexBufferIndex = desc->binding,
          .Valid = true,
-         .SourceElementFormat = (enum GENX(SURFACE_FORMAT)) format,
+         .SourceElementFormat = format,
          .EdgeFlagEnable = false,
          .SourceElementOffset = desc->offset,
          .Component0Control = vertex_element_comp_control(format, 0),
@@ -156,7 +156,7 @@ emit_vertex_input(struct anv_pipeline *pipeline,
       anv_batch_emit(&pipeline->batch, GENX(3DSTATE_VF_INSTANCING), vfi) {
          vfi.InstancingEnable = pipeline->instancing_enable[desc->binding];
          vfi.VertexElementIndex = slot;
-         /* Our implementation of VK_KHX_multiview uses instancing to draw
+         /* Our implementation of VK_KHR_multiview uses instancing to draw
           * the different views.  If the client asks for instancing, we
           * need to use the Instance Data Step Rate to ensure that we
           * repeat the client's per-instance data once for each view.
@@ -177,14 +177,14 @@ emit_vertex_input(struct anv_pipeline *pipeline,
        * This means, that if we have BaseInstance, we need BaseVertex as
        * well.  Just do all or nothing.
        */
-      uint32_t base_ctrl = (vs_prog_data->uses_basevertex ||
+      uint32_t base_ctrl = (vs_prog_data->uses_firstvertex ||
                             vs_prog_data->uses_baseinstance) ?
                            VFCOMP_STORE_SRC : VFCOMP_STORE_0;
 
       struct GENX(VERTEX_ELEMENT_STATE) element = {
          .VertexBufferIndex = ANV_SVGS_VB_INDEX,
          .Valid = true,
-         .SourceElementFormat = (enum GENX(SURFACE_FORMAT)) ISL_FORMAT_R32G32_UINT,
+         .SourceElementFormat = ISL_FORMAT_R32G32_UINT,
          .Component0Control = base_ctrl,
          .Component1Control = base_ctrl,
 #if GEN_GEN >= 8
@@ -214,7 +214,7 @@ emit_vertex_input(struct anv_pipeline *pipeline,
       struct GENX(VERTEX_ELEMENT_STATE) element = {
          .VertexBufferIndex = ANV_DRAWID_VB_INDEX,
          .Valid = true,
-         .SourceElementFormat = (enum GENX(SURFACE_FORMAT)) ISL_FORMAT_R32_UINT,
+         .SourceElementFormat = ISL_FORMAT_R32_UINT,
          .Component0Control = VFCOMP_STORE_SRC,
          .Component1Control = VFCOMP_STORE_0,
          .Component2Control = VFCOMP_STORE_0,
@@ -379,8 +379,8 @@ emit_3dstate_sbe(struct anv_pipeline *pipeline)
          /* We have to subtract two slots to accout for the URB entry output
           * read offset in the VS and GS stages.
           */
-         assert(slot >= 2);
          const int source_attr = slot - 2 * urb_entry_read_offset;
+         assert(source_attr >= 0 && source_attr < 32);
          max_source_attr = MAX2(max_source_attr, source_attr);
          swiz.Attribute[input_index].SourceAttribute = source_attr;
       }
@@ -1081,7 +1081,13 @@ emit_3dstate_streamout(struct anv_pipeline *pipeline,
 static uint32_t
 get_sampler_count(const struct anv_shader_bin *bin)
 {
-   return DIV_ROUND_UP(bin->bind_map.sampler_count, 4);
+   uint32_t count_by_4 = DIV_ROUND_UP(bin->bind_map.sampler_count, 4);
+
+   /* We can potentially have way more than 32 samplers and that's ok.
+    * However, the 3DSTATE_XS packets only have 3 bits to specify how
+    * many to pre-fetch and all values above 4 are marked reserved.
+    */
+   return MIN2(count_by_4, 4);
 }
 
 static uint32_t
@@ -1109,22 +1115,6 @@ get_scratch_space(const struct anv_shader_bin *bin)
    return ffs(bin->prog_data->total_scratch / 2048);
 }
 
-static uint32_t
-get_urb_output_offset()
-{
-   /* Skip the VUE header and position slots */
-   return 1;
-}
-
-UNUSED static uint32_t
-get_urb_output_length(const struct anv_shader_bin *bin)
-{
-   const struct brw_vue_prog_data *prog_data =
-      (const struct brw_vue_prog_data *)bin->prog_data;
-
-   return (prog_data->vue_map.num_slots + 1) / 2 - get_urb_output_offset();
-}
-
 static void
 emit_3dstate_vs(struct anv_pipeline *pipeline)
 {
@@ -1145,7 +1135,9 @@ emit_3dstate_vs(struct anv_pipeline *pipeline)
 #endif
 
       assert(!vs_prog_data->base.base.use_alt_mode);
+#if GEN_GEN < 11
       vs.SingleVertexDispatch       = false;
+#endif
       vs.VectorMaskEnable           = false;
       vs.SamplerCount               = get_sampler_count(vs_bin);
       vs.BindingTableEntryCount     = get_binding_table_entry_count(vs_bin);
@@ -1161,9 +1153,6 @@ emit_3dstate_vs(struct anv_pipeline *pipeline)
          vs_prog_data->base.base.dispatch_grf_start_reg;
 
 #if GEN_GEN >= 8
-      vs.VertexURBEntryOutputReadOffset = get_urb_output_offset();
-      vs.VertexURBEntryOutputLength     = get_urb_output_length(vs_bin);
-
       vs.UserClipDistanceClipTestEnableBitmask =
          vs_prog_data->base.clip_distance_mask;
       vs.UserClipDistanceCullTestEnableBitmask =
@@ -1264,14 +1253,15 @@ emit_3dstate_hs_te_ds(struct anv_pipeline *pipeline,
          tes_prog_data->base.base.dispatch_grf_start_reg;
 
 #if GEN_GEN >= 8
-      ds.VertexURBEntryOutputReadOffset = 1;
-      ds.VertexURBEntryOutputLength =
-         (tes_prog_data->base.vue_map.num_slots + 1) / 2 - 1;
-
+#if GEN_GEN < 11
       ds.DispatchMode =
          tes_prog_data->base.dispatch_mode == DISPATCH_MODE_SIMD8 ?
             DISPATCH_MODE_SIMD8_SINGLE_PATCH :
             DISPATCH_MODE_SIMD4X2;
+#else
+      assert(tes_prog_data->base.dispatch_mode == DISPATCH_MODE_SIMD8);
+      ds.DispatchMode = DISPATCH_MODE_SIMD8_SINGLE_PATCH;
+#endif
 
       ds.UserClipDistanceClipTestEnableBitmask =
          tes_prog_data->base.clip_distance_mask;
@@ -1340,9 +1330,6 @@ emit_3dstate_gs(struct anv_pipeline *pipeline)
          gs_prog_data->base.base.dispatch_grf_start_reg;
 
 #if GEN_GEN >= 8
-      gs.VertexURBEntryOutputReadOffset = get_urb_output_offset();
-      gs.VertexURBEntryOutputLength     = get_urb_output_length(gs_bin);
-
       gs.UserClipDistanceClipTestEnableBitmask =
          gs_prog_data->base.clip_distance_mask;
       gs.UserClipDistanceCullTestEnableBitmask =
@@ -1405,6 +1392,28 @@ emit_3dstate_wm(struct anv_pipeline *pipeline, struct anv_subpass *subpass,
          } else {
             wm.EarlyDepthStencilControl         = EDSC_NORMAL;
          }
+
+#if GEN_GEN >= 8
+         /* Gen8 hardware tries to compute ThreadDispatchEnable for us but
+          * doesn't take into account KillPixels when no depth or stencil
+          * writes are enabled.  In order for occlusion queries to work
+          * correctly with no attachments, we need to force-enable PS thread
+          * dispatch.
+          *
+          * The BDW docs are pretty clear that that this bit isn't validated
+          * and probably shouldn't be used in production:
+          *
+          *    "This must always be set to Normal. This field should not be
+          *    tested for functional validation."
+          *
+          * Unfortunately, however, the other mechanism we have for doing this
+          * is 3DSTATE_PS_EXTRA::PixelShaderHasUAV which causes hangs on BDW.
+          * Given two bad options, we choose the one which works.
+          */
+         if ((wm_prog_data->has_side_effects || wm_prog_data->uses_kill) &&
+             !has_color_buffer_write_enabled(pipeline, blend))
+            wm.ForceThreadDispatchEnable = ForceON;
+#endif
 
          wm.BarycentricInterpolationMode =
             wm_prog_data->barycentric_interp_modes;
@@ -1513,7 +1522,8 @@ emit_3dstate_ps(struct anv_pipeline *pipeline,
       ps.VectorMaskEnable           = true;
       ps.SamplerCount               = get_sampler_count(fs_bin);
       ps.BindingTableEntryCount     = get_binding_table_entry_count(fs_bin);
-      ps.PushConstantEnable         = wm_prog_data->base.nr_params > 0;
+      ps.PushConstantEnable         = wm_prog_data->base.nr_params > 0 ||
+                                      wm_prog_data->base.ubo_ranges[0].length;
       ps.PositionXYOffsetSelect     = wm_prog_data->uses_pos_offset ?
                                       POSOFFSET_SAMPLE: POSOFFSET_NONE;
 #if GEN_GEN < 8
@@ -1579,37 +1589,6 @@ emit_3dstate_ps_extra(struct anv_pipeline *pipeline,
        */
       ps.PixelShaderKillsPixel         = subpass->has_ds_self_dep ||
                                          wm_prog_data->uses_kill;
-
-      /* The stricter cross-primitive coherency guarantees that the hardware
-       * gives us with the "Accesses UAV" bit set for at least one shader stage
-       * and the "UAV coherency required" bit set on the 3DPRIMITIVE command are
-       * redundant within the current image, atomic counter and SSBO GL APIs,
-       * which all have very loose ordering and coherency requirements and
-       * generally rely on the application to insert explicit barriers when a
-       * shader invocation is expected to see the memory writes performed by the
-       * invocations of some previous primitive.  Regardless of the value of
-       * "UAV coherency required", the "Accesses UAV" bits will implicitly cause
-       * an in most cases useless DC flush when the lowermost stage with the bit
-       * set finishes execution.
-       *
-       * It would be nice to disable it, but in some cases we can't because on
-       * Gen8+ it also has an influence on rasterization via the PS UAV-only
-       * signal (which could be set independently from the coherency mechanism
-       * in the 3DSTATE_WM command on Gen7), and because in some cases it will
-       * determine whether the hardware skips execution of the fragment shader
-       * or not via the ThreadDispatchEnable signal.  However if we know that
-       * GEN8_PS_BLEND_HAS_WRITEABLE_RT is going to be set and
-       * GEN8_PSX_PIXEL_SHADER_NO_RT_WRITE is not set it shouldn't make any
-       * difference so we may just disable it here.
-       *
-       * Gen8 hardware tries to compute ThreadDispatchEnable for us but doesn't
-       * take into account KillPixels when no depth or stencil writes are
-       * enabled. In order for occlusion queries to work correctly with no
-       * attachments, we need to force-enable here.
-       */
-      if ((wm_prog_data->has_side_effects || wm_prog_data->uses_kill) &&
-          !has_color_buffer_write_enabled(pipeline, blend))
-         ps.PixelShaderHasUAV = true;
 
 #if GEN_GEN >= 9
       ps.PixelShaderPullsBary    = wm_prog_data->pulls_bary;
@@ -1775,7 +1754,6 @@ compute_pipeline_create(
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
    pipeline->device = device;
-   pipeline->layout = anv_pipeline_layout_from_handle(pCreateInfo->layout);
 
    pipeline->blend_state.map = NULL;
 
@@ -1800,6 +1778,7 @@ compute_pipeline_create(
    pipeline->needs_data_cache = false;
 
    assert(pCreateInfo->stage.stage == VK_SHADER_STAGE_COMPUTE_BIT);
+   pipeline->active_stages |= VK_SHADER_STAGE_COMPUTE_BIT;
    ANV_FROM_HANDLE(anv_shader_module, module,  pCreateInfo->stage.module);
    result = anv_pipeline_compile_cs(pipeline, cache, pCreateInfo, module,
                                     pCreateInfo->stage.pName,
@@ -1840,7 +1819,9 @@ compute_pipeline_create(
       vfe.MaximumNumberofThreads =
          devinfo->max_cs_threads * subslices - 1;
       vfe.NumberofURBEntries     = GEN_GEN <= 7 ? 0 : 2;
+#if GEN_GEN < 11
       vfe.ResetGatewayTimer      = true;
+#endif
 #if GEN_GEN <= 8
       vfe.BypassGatewayControl   = true;
 #endif

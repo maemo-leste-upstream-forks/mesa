@@ -18,8 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-inc_gallium_aux = include_directories('.')
-
 files_libgallium = files(
   'cso_cache/cso_cache.c',
   'cso_cache/cso_cache.h',
@@ -79,6 +77,35 @@ files_libgallium = files(
   'draw/draw_vs_exec.c',
   'draw/draw_vs.h',
   'draw/draw_vs_variant.c',
+  'driver_ddebug/dd_context.c',
+  'driver_ddebug/dd_draw.c',
+  'driver_ddebug/dd_pipe.h',
+  'driver_ddebug/dd_public.h',
+  'driver_ddebug/dd_screen.c',
+  'driver_ddebug/dd_util.h',
+  'driver_noop/noop_pipe.c',
+  'driver_noop/noop_public.h',
+  'driver_noop/noop_state.c',
+  'driver_rbug/rbug_context.c',
+  'driver_rbug/rbug_context.h',
+  'driver_rbug/rbug_core.c',
+  'driver_rbug/rbug_objects.c',
+  'driver_rbug/rbug_objects.h',
+  'driver_rbug/rbug_public.h',
+  'driver_rbug/rbug_screen.c',
+  'driver_rbug/rbug_screen.h',
+  'driver_trace/tr_context.c',
+  'driver_trace/tr_context.h',
+  'driver_trace/tr_dump.c',
+  'driver_trace/tr_dump_defines.h',
+  'driver_trace/tr_dump.h',
+  'driver_trace/tr_dump_state.c',
+  'driver_trace/tr_dump_state.h',
+  'driver_trace/tr_public.h',
+  'driver_trace/tr_screen.c',
+  'driver_trace/tr_screen.h',
+  'driver_trace/tr_texture.c',
+  'driver_trace/tr_texture.h',
   'hud/font.c',
   'hud/font.h',
   'hud/hud_context.c',
@@ -105,8 +132,6 @@ files_libgallium = files(
   'os/os_process.c',
   'os/os_process.h',
   'os/os_thread.h',
-  'os/os_time.c',
-  'os/os_time.h',
   'pipebuffer/pb_buffer_fenced.c',
   'pipebuffer/pb_buffer_fenced.h',
   'pipebuffer/pb_buffer.h',
@@ -206,6 +231,8 @@ files_libgallium = files(
   'translate/translate_generic.c',
   'translate/translate_sse.c',
   'util/dbghelp.h',
+  'util/u_async_debug.h',
+  'util/u_async_debug.c',
   'util/u_bitcast.h',
   'util/u_bitmask.c',
   'util/u_bitmask.h',
@@ -324,9 +351,10 @@ files_libgallium = files(
   'util/u_texture.h',
   'util/u_tile.c',
   'util/u_tile.h',
-  'util/u_time.h',
   'util/u_transfer.c',
   'util/u_transfer.h',
+  'util/u_transfer_helper.c',
+  'util/u_transfer_helper.h',
   'util/u_threaded_context.c',
   'util/u_threaded_context.h',
   'util/u_threaded_context_calls.h',
@@ -340,7 +368,7 @@ files_libgallium = files(
   'nir/tgsi_to_nir.h',
 )
 
-if dep_libdrm != [] and dep_libdrm.found()
+if dep_libdrm.found()
   files_libgallium += files(
     'renderonly/renderonly.c',
     'renderonly/renderonly.h',
@@ -451,12 +479,18 @@ files_libgalliumvl = files(
   'vl/vl_vlc.h',
   'vl/vl_zscan.c',
   'vl/vl_zscan.h',
+  'vl/vl_probs_table.h',
 )
 
+vlwinsys_deps = []
 files_libgalliumvlwinsys = files('vl/vl_winsys.h')
-if with_dri2
+if with_dri2 and with_platform_x11
   files_libgalliumvlwinsys += files('vl/vl_winsys_dri.c')
   if with_dri3
+    vlwinsys_deps += [
+      dep_xcb_sync, dep_xcb_present, dep_xshmfence, dep_xcb_xfixes,
+      dep_xcb_dri3, 
+    ]
     files_libgalliumvlwinsys += files('vl/vl_winsys_dri3.c')
   endif
 endif
@@ -491,14 +525,16 @@ u_format_table_c = custom_target(
 
 libgallium = static_library(
   'gallium',
-  [files_libgallium, u_indices_gen_c, u_unfilled_gen_c, u_format_table_c,
-   nir_opcodes_h],
+  [files_libgallium, u_indices_gen_c, u_unfilled_gen_c, u_format_table_c],
   include_directories : [
     inc_loader, inc_gallium, inc_src, inc_include, include_directories('util')
   ],
   c_args : [c_vis_args, c_msvc_compat_args],
   cpp_args : [cpp_vis_args, cpp_msvc_compat_args],
-  dependencies : [dep_libdrm, dep_llvm, dep_unwind, dep_dl],
+  dependencies : [
+    dep_libdrm, dep_llvm, dep_unwind, dep_dl, dep_m, dep_thread, dep_lmsensors,
+    idep_nir_headers,
+  ],
   build_by_default : false,
 )
 
@@ -525,6 +561,6 @@ libgalliumvlwinsys = static_library(
   'galliumvlwinsys',
   files_libgalliumvlwinsys,
   include_directories : [inc_gallium, inc_include, inc_loader, inc_src],
-  dependencies : [dep_libdrm],
+  dependencies : [dep_libdrm, vlwinsys_deps],
   build_by_default : false,
 )

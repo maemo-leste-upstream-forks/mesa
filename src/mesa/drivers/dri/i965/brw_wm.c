@@ -46,13 +46,11 @@ assign_fs_binding_table_offsets(const struct gen_device_info *devinfo,
                                 const struct brw_wm_prog_key *key,
                                 struct brw_wm_prog_data *prog_data)
 {
-   uint32_t next_binding_table_offset = 0;
-
-   /* If there are no color regions, we still perform an FB write to a null
-    * renderbuffer, which we place at surface index 0.
+   /* Render targets implicitly start at surface index 0.  Even if there are
+    * no color regions, we still perform an FB write to a null render target,
+    * which will be surface 0.
     */
-   prog_data->binding_table.render_target_start = next_binding_table_offset;
-   next_binding_table_offset += MAX2(key->nr_color_regions, 1);
+   uint32_t next_binding_table_offset = MAX2(key->nr_color_regions, 1);
 
    next_binding_table_offset =
       brw_assign_common_binding_table_offsets(devinfo, prog, &prog_data->base,
@@ -88,27 +86,36 @@ brw_wm_debug_recompile(struct brw_context *brw, struct gl_program *prog,
                       old_key->stats_wm, key->stats_wm);
    found |= key_debug(brw, "flat shading",
                       old_key->flat_shade, key->flat_shade);
-   found |= key_debug(brw, "per-sample interpolation",
-                      old_key->persample_interp, key->persample_interp);
    found |= key_debug(brw, "number of color buffers",
                       old_key->nr_color_regions, key->nr_color_regions);
    found |= key_debug(brw, "MRT alpha test or alpha-to-coverage",
                       old_key->replicate_alpha, key->replicate_alpha);
    found |= key_debug(brw, "fragment color clamping",
                       old_key->clamp_fragment_color, key->clamp_fragment_color);
+   found |= key_debug(brw, "per-sample interpolation",
+                      old_key->persample_interp, key->persample_interp);
    found |= key_debug(brw, "multisampled FBO",
                       old_key->multisample_fbo, key->multisample_fbo);
+   found |= key_debug(brw, "frag coord adds sample pos",
+                      old_key->frag_coord_adds_sample_pos,
+                      key->frag_coord_adds_sample_pos);
    found |= key_debug(brw, "line smoothing",
                       old_key->line_aa, key->line_aa);
+   found |= key_debug(brw, "high quality derivatives",
+                      old_key->high_quality_derivatives,
+                      key->high_quality_derivatives);
+   found |= key_debug(brw, "force dual color blending",
+                      old_key->force_dual_color_blend,
+                      key->force_dual_color_blend);
+   found |= key_debug(brw, "coherent fb fetch",
+                      old_key->coherent_fb_fetch, key->coherent_fb_fetch);
+
    found |= key_debug(brw, "input slots valid",
                       old_key->input_slots_valid, key->input_slots_valid);
    found |= key_debug(brw, "mrt alpha test function",
                       old_key->alpha_test_func, key->alpha_test_func);
    found |= key_debug(brw, "mrt alpha test reference value",
                       old_key->alpha_test_ref, key->alpha_test_ref);
-   found |= key_debug(brw, "force dual color blending",
-                      old_key->force_dual_color_blend,
-                      key->force_dual_color_blend);
 
    found |= brw_debug_recompile_sampler_key(brw, &old_key->tex, &key->tex);
 
@@ -117,11 +124,6 @@ brw_wm_debug_recompile(struct brw_context *brw, struct gl_program *prog,
    }
 }
 
-/**
- * All Mesa program -> GPU code generation goes through this function.
- * Depending on the instructions used (i.e. flow control instructions)
- * we'll use one of two code generators.
- */
 static bool
 brw_codegen_wm_prog(struct brw_context *brw,
                     struct brw_program *fp,
@@ -132,7 +134,6 @@ brw_codegen_wm_prog(struct brw_context *brw,
    void *mem_ctx = ralloc_context(NULL);
    struct brw_wm_prog_data prog_data;
    const GLuint *program;
-   GLuint program_size;
    bool start_busy = false;
    double start_time = 0;
 
@@ -148,7 +149,7 @@ brw_codegen_wm_prog(struct brw_context *brw,
       brw_nir_setup_glsl_uniforms(mem_ctx, fp->program.nir, &fp->program,
                                   &prog_data.base, true);
       brw_nir_analyze_ubo_ranges(brw->screen->compiler, fp->program.nir,
-                                 prog_data.base.ubo_ranges);
+                                 NULL, prog_data.base.ubo_ranges);
    } else {
       brw_nir_setup_arb_uniforms(mem_ctx, fp->program.nir, &fp->program,
                                  &prog_data.base);
@@ -176,11 +177,11 @@ brw_codegen_wm_prog(struct brw_context *brw,
                             key, &prog_data, fp->program.nir,
                             &fp->program, st_index8, st_index16,
                             true, false, vue_map,
-                            &program_size, &error_str);
+                            &error_str);
 
    if (program == NULL) {
       if (!fp->program.is_arb_asm) {
-         fp->program.sh.data->LinkStatus = linking_failure;
+         fp->program.sh.data->LinkStatus = LINKING_FAILURE;
          ralloc_strcat(&fp->program.sh.data->InfoLog, error_str);
       }
 
@@ -211,7 +212,7 @@ brw_codegen_wm_prog(struct brw_context *brw,
    ralloc_steal(NULL, prog_data.base.pull_param);
    brw_upload_cache(&brw->cache, BRW_CACHE_FS_PROG,
                     key, sizeof(struct brw_wm_prog_key),
-                    program, program_size,
+                    program, prog_data.base.program_size,
                     &prog_data, sizeof(prog_data),
                     &brw->wm.base.prog_offset, &brw->wm.base.prog_data);
 
@@ -328,7 +329,7 @@ brw_populate_sampler_prog_key_data(struct gl_context *ctx,
          }
 
          /* gather4 for RG32* is broken in multiple ways on Gen7. */
-         if (devinfo->gen == 7 && prog->nir->info.uses_texture_gather) {
+         if (devinfo->gen == 7 && prog->info.uses_texture_gather) {
             switch (img->InternalFormat) {
             case GL_RG32I:
             case GL_RG32UI: {
@@ -366,7 +367,7 @@ brw_populate_sampler_prog_key_data(struct gl_context *ctx,
          /* Gen6's gather4 is broken for UINT/SINT; we treat them as
           * UNORM/FLOAT instead and fix it in the shader.
           */
-         if (devinfo->gen == 6 && prog->nir->info.uses_texture_gather) {
+         if (devinfo->gen == 6 && prog->info.uses_texture_gather) {
             key->gen6_gather_wa[s] = gen6_gather_workaround(img->InternalFormat);
          }
 
@@ -383,7 +384,7 @@ brw_populate_sampler_prog_key_data(struct gl_context *ctx,
          if (intel_tex->mt->aux_usage == ISL_AUX_USAGE_MCS) {
             assert(devinfo->gen >= 7);
             assert(intel_tex->mt->surf.samples > 1);
-            assert(intel_tex->mt->mcs_buf);
+            assert(intel_tex->mt->aux_buf);
             assert(intel_tex->mt->surf.msaa_layout == ISL_MSAA_LAYOUT_ARRAY);
             key->compressed_multisample_layout_mask |= 1 << s;
 
@@ -510,6 +511,7 @@ brw_wm_populate_key(struct brw_context *brw, struct brw_wm_prog_key *key)
 
    /* _NEW_HINT */
    key->high_quality_derivatives =
+      prog->info.uses_fddx_fddy &&
       ctx->Hint.FragmentShaderDerivative == GL_NICEST;
 
    if (devinfo->gen < 6)
@@ -571,7 +573,7 @@ brw_wm_populate_key(struct brw_context *brw, struct brw_wm_prog_key *key)
    key->program_string_id = fp->id;
 
    /* Whether reads from the framebuffer should behave coherently. */
-   key->coherent_fb_fetch = ctx->Extensions.MESA_shader_framebuffer_fetch;
+   key->coherent_fb_fetch = ctx->Extensions.EXT_shader_framebuffer_fetch;
 }
 
 void
@@ -586,15 +588,21 @@ brw_upload_wm_prog(struct brw_context *brw)
 
    brw_wm_populate_key(brw, &key);
 
-   if (!brw_search_cache(&brw->cache, BRW_CACHE_FS_PROG,
-                         &key, sizeof(key),
-                         &brw->wm.base.prog_offset,
-                         &brw->wm.base.prog_data)) {
-      bool success = brw_codegen_wm_prog(brw, fp, &key,
-                                         &brw->vue_map_geom_out);
-      (void) success;
-      assert(success);
-   }
+   if (brw_search_cache(&brw->cache, BRW_CACHE_FS_PROG,
+                        &key, sizeof(key),
+                        &brw->wm.base.prog_offset,
+                        &brw->wm.base.prog_data))
+      return;
+
+   if (brw_disk_cache_upload_program(brw, MESA_SHADER_FRAGMENT))
+      return;
+
+   fp = (struct brw_program *) brw->programs[MESA_SHADER_FRAGMENT];
+   fp->id = key.program_string_id;
+
+   MAYBE_UNUSED bool success = brw_codegen_wm_prog(brw, fp, &key,
+                                                   &brw->vue_map_geom_out);
+   assert(success);
 }
 
 bool
@@ -637,7 +645,7 @@ brw_fs_precompile(struct gl_context *ctx, struct gl_program *prog)
    key.program_string_id = bfp->id;
 
    /* Whether reads from the framebuffer should behave coherently. */
-   key.coherent_fb_fetch = ctx->Extensions.MESA_shader_framebuffer_fetch;
+   key.coherent_fb_fetch = ctx->Extensions.EXT_shader_framebuffer_fetch;
 
    uint32_t old_prog_offset = brw->wm.base.prog_offset;
    struct brw_stage_prog_data *old_prog_data = brw->wm.base.prog_data;

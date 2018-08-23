@@ -33,7 +33,6 @@
 #include "list.h"
 #include "ir_visitor.h"
 #include "ir_hierarchical_visitor.h"
-#include "main/mtypes.h"
 
 #ifdef __cplusplus
 
@@ -397,7 +396,7 @@ depth_layout_string(ir_depth_layout layout);
  * \sa ir_variable::state_slots
  */
 struct ir_state_slot {
-   int tokens[5];
+   gl_state_index16 tokens[STATE_LENGTH];
    int swizzle;
 };
 
@@ -457,7 +456,7 @@ public:
     *
     * For the first declaration below, there will be an \c ir_variable named
     * "instance" whose type and whose instance_type will be the same
-    *  \cglsl_type.  For the second declaration, there will be an \c ir_variable
+    * \c glsl_type.  For the second declaration, there will be an \c ir_variable
     * named "f" whose type is float and whose instance_type is B2.
     *
     * "instance" is an interface instance variable, but "f" is not.

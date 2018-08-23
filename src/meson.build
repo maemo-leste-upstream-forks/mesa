@@ -23,46 +23,90 @@ inc_common = include_directories(
 inc_mesa = include_directories('mesa')
 inc_mapi = include_directories('mapi')
 inc_src = include_directories('.')
+inc_gallium = include_directories('gallium/include')
+inc_gallium_aux = include_directories('gallium/auxiliary')
+inc_amd_common = include_directories('amd/common')
 
 libglsl_util = static_library(
   'glsl_util',
-  files('mesa/main/extensions_table.c', 'mesa/main/imports.c',
-        'mesa/program/prog_parameter.c', 'mesa/program/symbol_table.c',
-        'mesa/program/dummy_errors.c'),
+  files(
+    'mesa/main/extensions_table.c', 'mesa/main/imports.c',
+    'mesa/program/prog_parameter.c', 'mesa/program/symbol_table.c',
+    'mesa/program/dummy_errors.c',
+  ),
   include_directories : [inc_common],
   c_args : [c_vis_args],
   build_by_default : false,
 )
 
-sha1_h = vcs_tag(
-  input : 'git_sha1.h.in',
+sha1_h = custom_target(
+  'git_sha1.h',
   output : 'git_sha1.h',
+  command : [prog_python2, git_sha1_gen_py, '--output', '@OUTPUT@'],
+  build_always : true, # commit sha1 can change without having touched these files
 )
 
 subdir('gtest')
 subdir('util')
-subdir('mapi/glapi/gen')
 subdir('mapi')
 # TODO: opengl
-# TODO: osmesa
 subdir('compiler')
 subdir('egl/wayland/wayland-drm')
 subdir('vulkan')
-subdir('amd')
+if with_gallium_radeonsi or with_amd_vk
+  subdir('amd')
+endif
 if with_gallium_vc4
   subdir('broadcom')
 endif
-subdir('intel')
+if with_dri_i965 or with_intel_vk
+  subdir('intel')
+endif
 subdir('mesa')
 subdir('loader')
-subdir('glx')
-if with_platform_wayland
-  subdir('egl/wayland/wayland-egl')
+if with_platform_haiku
+  subdir('hgl')
+endif
+if with_glx != 'disabled'
+  subdir('glx')
 endif
 if with_gbm
   subdir('gbm')
+else
+  inc_gbm = []
 endif
 if with_egl
   subdir('egl')
 endif
-subdir('gallium')
+if with_gallium
+  subdir('gallium')
+  # This has to be here since it requires libgallium, and subdir cannot
+  # contain ..
+  if with_tests
+    subdir('mesa/state_tracker/tests')
+  endif
+endif
+
+# This must be after at least mesa, glx, and gallium, since libgl will be
+# defined in one of those subdirs depending on the glx provider.
+if with_glx != 'disabled'
+  # If using glvnd the pkg-config header should not point to GL_mesa, it should
+  # point to GL. glvnd is only available on unix like platforms so adding -l
+  # should be safe here
+  # TODO: in the glvnd case glvnd itself should really be providing this.
+  if with_glvnd
+    _gl = '-L${libdir} -lGL'
+  else
+    _gl = libgl
+  endif
+
+  pkg.generate(
+    name : 'gl',
+    description : 'Mesa OpenGL Library',
+    version : meson.project_version(),
+    libraries : _gl,
+    libraries_private : gl_priv_libs,
+    requires_private : gl_priv_reqs,
+    variables : ['glx_tls=yes'],
+  )
+endif

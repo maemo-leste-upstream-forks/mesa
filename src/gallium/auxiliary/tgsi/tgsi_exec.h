@@ -134,7 +134,7 @@ struct tgsi_image {
 
    void (*op)(const struct tgsi_image *image,
               const struct tgsi_image_params *params,
-              unsigned opcode,
+              enum tgsi_opcode opcode,
               const int s[TGSI_QUAD_SIZE],
               const int t[TGSI_QUAD_SIZE],
               const int r[TGSI_QUAD_SIZE],
@@ -167,7 +167,7 @@ struct tgsi_buffer {
 
    void (*op)(const struct tgsi_buffer *buffer,
               const struct tgsi_buffer_params *params,
-              unsigned opcode,
+              enum tgsi_opcode opcode,
               const int s[TGSI_QUAD_SIZE],
               float rgba[TGSI_NUM_CHANNELS][TGSI_QUAD_SIZE],
               float rgba2[TGSI_NUM_CHANNELS][TGSI_QUAD_SIZE]);
@@ -541,6 +541,8 @@ tgsi_exec_get_shader_param(enum pipe_shader_cap param)
    case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
    case PIPE_SHADER_CAP_LOWER_IF_THRESHOLD:
    case PIPE_SHADER_CAP_TGSI_SKIP_MERGE_REGISTERS:
+   case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
+   case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
       return 0;
    case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
       return PIPE_MAX_SHADER_BUFFERS;

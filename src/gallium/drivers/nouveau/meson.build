@@ -207,11 +207,12 @@ files_libnouveau = files(
 libnouveau = static_library(
   'nouveau',
   [files_libnouveau],
-  include_directories : [inc_src, inc_include, inc_gallium, inc_gallium_aux],
+  include_directories : [
+    inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_drm_uapi
+  ],
   c_args : [c_vis_args],
   cpp_args : [cpp_vis_args],
   dependencies : [dep_libdrm, dep_libdrm_nouveau],
-  build_by_default : false,
 )
 
 nouveau_compiler = executable(
@@ -220,5 +221,11 @@ nouveau_compiler = executable(
   include_directories : [inc_src, inc_include, inc_gallium, inc_gallium_aux],
   dependencies : [dep_libdrm, dep_libdrm_nouveau],
   link_with : [libnouveau, libgallium, libmesa_util],
-  build_by_default : false,
+  build_by_default : with_tools.contains('nouveau'),
+  install : with_tools.contains('nouveau'),
+)
+
+driver_nouveau = declare_dependency(
+  compile_args : '-DGALLIUM_NOUVEAU',
+  link_with : [libnouveauwinsys, libnouveau],
 )

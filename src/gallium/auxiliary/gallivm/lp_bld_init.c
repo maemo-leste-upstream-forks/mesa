@@ -32,7 +32,7 @@
 #include "util/u_debug.h"
 #include "util/u_memory.h"
 #include "util/simple_list.h"
-#include "os/os_time.h"
+#include "util/os_time.h"
 #include "lp_bld.h"
 #include "lp_bld_debug.h"
 #include "lp_bld_misc.h"
@@ -40,6 +40,9 @@
 
 #include <llvm-c/Analysis.h>
 #include <llvm-c/Transforms/Scalar.h>
+#if HAVE_LLVM >= 0x0700
+#include <llvm-c/Transforms/Utils.h>
+#endif
 #include <llvm-c/BitWriter.h>
 
 

@@ -141,6 +141,28 @@ _mesa_hash_table_create(void *mem_ctx,
    return ht;
 }
 
+struct hash_table *
+_mesa_hash_table_clone(struct hash_table *src, void *dst_mem_ctx)
+{
+   struct hash_table *ht;
+
+   ht = ralloc(dst_mem_ctx, struct hash_table);
+   if (ht == NULL)
+      return NULL;
+
+   memcpy(ht, src, sizeof(struct hash_table));
+
+   ht->table = ralloc_array(ht, struct hash_entry, ht->size);
+   if (ht->table == NULL) {
+      ralloc_free(ht);
+      return NULL;
+   }
+
+   memcpy(ht->table, src->table, ht->size * sizeof(struct hash_entry));
+
+   return ht;
+}
+
 /**
  * Frees the given hash table.
  *
@@ -476,9 +498,10 @@ _mesa_hash_data(const void *data, size_t size)
 
 /** FNV-1a string hash implementation */
 uint32_t
-_mesa_hash_string(const char *key)
+_mesa_hash_string(const void *_key)
 {
    uint32_t hash = _mesa_fnv32_1a_offset_bias;
+   const char *key = _key;
 
    while (*key != 0) {
       hash = _mesa_fnv32_1a_accumulate(hash, *key);

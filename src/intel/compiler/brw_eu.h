@@ -34,10 +34,11 @@
 #define BRW_EU_H
 
 #include <stdbool.h>
+#include <stdio.h>
 #include "brw_inst.h"
 #include "brw_eu_defines.h"
 #include "brw_reg.h"
-#include "intel_asm_annotation.h"
+#include "brw_disasm_info.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -64,6 +65,16 @@ struct brw_codegen {
    brw_inst stack[BRW_EU_MAX_INSN_STACK];
    bool compressed_stack[BRW_EU_MAX_INSN_STACK];
    brw_inst *current;
+
+   /** Whether or not the user wants automatic exec sizes
+    *
+    * If true, codegen will try to automatically infer the exec size of an
+    * instruction from the width of the destination register.  If false, it
+    * will take whatever is set by brw_set_default_exec_size verbatim.
+    *
+    * This is set to true by default in brw_init_codegen.
+    */
+   bool automatic_exec_sizes;
 
    bool single_program_flow;
    const struct gen_device_info *devinfo;
@@ -96,6 +107,9 @@ struct brw_codegen {
 
 void brw_pop_insn_state( struct brw_codegen *p );
 void brw_push_insn_state( struct brw_codegen *p );
+unsigned brw_get_default_exec_size(struct brw_codegen *p);
+unsigned brw_get_default_group(struct brw_codegen *p);
+unsigned brw_get_default_access_mode(struct brw_codegen *p);
 void brw_set_default_exec_size(struct brw_codegen *p, unsigned value);
 void brw_set_default_mask_control( struct brw_codegen *p, unsigned value );
 void brw_set_default_saturate( struct brw_codegen *p, bool enable );
@@ -161,6 +175,7 @@ ALU2(SHR)
 ALU2(SHL)
 ALU1(DIM)
 ALU2(ASR)
+ALU3(CSEL)
 ALU1(F32TO16)
 ALU1(F16TO32)
 ALU2(ADD)
@@ -434,7 +449,8 @@ brw_untyped_atomic(struct brw_codegen *p,
                    struct brw_reg surface,
                    unsigned atomic_op,
                    unsigned msg_length,
-                   bool response_expected);
+                   bool response_expected,
+                   bool header_present);
 
 void
 brw_untyped_surface_read(struct brw_codegen *p,
@@ -449,7 +465,8 @@ brw_untyped_surface_write(struct brw_codegen *p,
                           struct brw_reg payload,
                           struct brw_reg surface,
                           unsigned msg_length,
-                          unsigned num_channels);
+                          unsigned num_channels,
+                          bool header_present);
 
 void
 brw_typed_atomic(struct brw_codegen *p,
@@ -458,7 +475,8 @@ brw_typed_atomic(struct brw_codegen *p,
                  struct brw_reg surface,
                  unsigned atomic_op,
                  unsigned msg_length,
-                 bool response_expected);
+                 bool response_expected,
+                 bool header_present);
 
 void
 brw_typed_surface_read(struct brw_codegen *p,
@@ -466,14 +484,32 @@ brw_typed_surface_read(struct brw_codegen *p,
                        struct brw_reg payload,
                        struct brw_reg surface,
                        unsigned msg_length,
-                       unsigned num_channels);
+                       unsigned num_channels,
+                       bool header_present);
 
 void
 brw_typed_surface_write(struct brw_codegen *p,
                         struct brw_reg payload,
                         struct brw_reg surface,
                         unsigned msg_length,
-                        unsigned num_channels);
+                        unsigned num_channels,
+                        bool header_present);
+
+void
+brw_byte_scattered_read(struct brw_codegen *p,
+                        struct brw_reg dst,
+                        struct brw_reg payload,
+                        struct brw_reg surface,
+                        unsigned msg_length,
+                        unsigned bit_size);
+
+void
+brw_byte_scattered_write(struct brw_codegen *p,
+                         struct brw_reg payload,
+                         struct brw_reg surface,
+                         unsigned msg_length,
+                         unsigned bit_size,
+                         bool header_present);
 
 void
 brw_memory_fence(struct brw_codegen *p,
@@ -499,6 +535,10 @@ brw_broadcast(struct brw_codegen *p,
               struct brw_reg dst,
               struct brw_reg src,
               struct brw_reg idx);
+
+void
+brw_rounding_mode(struct brw_codegen *p,
+                  enum brw_rnd_mode mode);
 
 /***********************************************************************
  * brw_eu_util.c:
@@ -538,7 +578,7 @@ enum brw_conditional_mod brw_swap_cmod(uint32_t cmod);
 /* brw_eu_compact.c */
 void brw_init_compaction_tables(const struct gen_device_info *devinfo);
 void brw_compact_instructions(struct brw_codegen *p, int start_offset,
-                              int num_annotations, struct annotation *annotation);
+                              struct disasm_info *disasm);
 void brw_uncompact_instruction(const struct gen_device_info *devinfo,
                                brw_inst *dst, brw_compact_inst *src);
 bool brw_try_compact_instruction(const struct gen_device_info *devinfo,
@@ -549,8 +589,8 @@ void brw_debug_compact_uncompact(const struct gen_device_info *devinfo,
 
 /* brw_eu_validate.c */
 bool brw_validate_instructions(const struct gen_device_info *devinfo,
-                               void *assembly, int start_offset, int end_offset,
-                               struct annotation_info *annotation);
+                               const void *assembly, int start_offset, int end_offset,
+                               struct disasm_info *disasm);
 
 static inline int
 next_offset(const struct gen_device_info *devinfo, void *store, int offset)

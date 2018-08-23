@@ -44,6 +44,7 @@ struct u_vbuf;
 struct cso_context *cso_create_context(struct pipe_context *pipe,
                                        unsigned u_vbuf_flags);
 void cso_destroy_context( struct cso_context *cso );
+struct pipe_context *cso_get_pipe_context(struct cso_context *cso);
 
 
 enum pipe_error cso_set_blend( struct cso_context *cso,
@@ -213,6 +214,9 @@ void cso_set_constant_buffer_resource(struct cso_context *cso,
                                       enum pipe_shader_type shader_stage,
                                       unsigned index,
                                       struct pipe_resource *buffer);
+void cso_set_constant_user_buffer(struct cso_context *cso,
+                                  enum pipe_shader_type shader_stage,
+                                  unsigned index, void *ptr, unsigned size);
 void cso_save_constant_buffer_slot0(struct cso_context *cso,
                                     enum pipe_shader_type shader_stage);
 void cso_restore_constant_buffer_slot0(struct cso_context *cso,

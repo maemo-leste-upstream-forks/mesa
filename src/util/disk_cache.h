@@ -24,7 +24,7 @@
 #ifndef DISK_CACHE_H
 #define DISK_CACHE_H
 
-#ifdef ENABLE_SHADER_CACHE
+#ifdef HAVE_DLFCN_H
 #include <dlfcn.h>
 #endif
 #include <assert.h>
@@ -49,6 +49,14 @@ typedef uint8_t cache_key[CACHE_KEY_SIZE];
  */
 #define CACHE_ITEM_TYPE_UNKNOWN  0x0
 #define CACHE_ITEM_TYPE_GLSL     0x1
+
+typedef void
+(*disk_cache_put_cb) (const void *key, signed long keySize,
+                      const void *value, signed long valueSize);
+
+typedef signed long
+(*disk_cache_get_cb) (const void *key, signed long keySize,
+                      void *value, signed long valueSize);
 
 struct cache_item_metadata {
    /**
@@ -80,10 +88,10 @@ disk_cache_format_hex_id(char *buf, const uint8_t *hex_id, unsigned size)
    return buf;
 }
 
+#ifdef HAVE_DLFCN_H
 static inline bool
 disk_cache_get_function_timestamp(void *ptr, uint32_t* timestamp)
 {
-#ifdef ENABLE_SHADER_CACHE
    Dl_info info;
    struct stat st;
    if (!dladdr(ptr, &info) || !info.dli_fname) {
@@ -94,10 +102,8 @@ disk_cache_get_function_timestamp(void *ptr, uint32_t* timestamp)
    }
    *timestamp = st.st_mtime;
    return true;
-#else
-   return false;
-#endif
 }
+#endif
 
 /* Provide inlined stub functions if the shader cache is disabled. */
 
@@ -207,6 +213,10 @@ void
 disk_cache_compute_key(struct disk_cache *cache, const void *data, size_t size,
                        cache_key key);
 
+void
+disk_cache_set_callbacks(struct disk_cache *cache, disk_cache_put_cb put,
+                         disk_cache_get_cb get);
+
 #else
 
 static inline struct disk_cache *
@@ -256,6 +266,13 @@ disk_cache_has_key(struct disk_cache *cache, const cache_key key)
 static inline void
 disk_cache_compute_key(struct disk_cache *cache, const void *data, size_t size,
                        const cache_key key)
+{
+   return;
+}
+
+static inline void
+disk_cache_set_callbacks(struct disk_cache *cache, disk_cache_put_cb put,
+                         disk_cache_get_cb get)
 {
    return;
 }

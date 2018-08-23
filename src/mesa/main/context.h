@@ -49,6 +49,7 @@
 #define CONTEXT_H
 
 
+#include "errors.h"
 #include "imports.h"
 #include "extensions.h"
 #include "mtypes.h"
@@ -79,7 +80,7 @@ _mesa_create_visual( GLboolean dbFlag,
                      GLint accumGreenBits,
                      GLint accumBlueBits,
                      GLint accumAlphaBits,
-                     GLint numSamples );
+                     GLuint numSamples );
 
 extern GLboolean
 _mesa_initialize_visual( struct gl_config *v,
@@ -95,7 +96,7 @@ _mesa_initialize_visual( struct gl_config *v,
                          GLint accumGreenBits,
                          GLint accumBlueBits,
                          GLint accumAlphaBits,
-                         GLint numSamples );
+                         GLuint numSamples );
 
 extern void
 _mesa_destroy_visual( struct gl_config *vis );
@@ -154,10 +155,6 @@ _mesa_set_context_lost_dispatch(struct gl_context *ctx);
 /*@{*/
 
 extern void
-_mesa_record_error( struct gl_context *ctx, GLenum error );
-
-
-extern void
 _mesa_flush(struct gl_context *ctx);
 
 extern void GLAPIENTRY
@@ -210,7 +207,7 @@ _mesa_inside_dlist_begin_end(const struct gl_context *ctx)
 #define FLUSH_VERTICES(ctx, newstate)				\
 do {								\
    if (MESA_VERBOSE & VERBOSE_STATE)				\
-      _mesa_debug(ctx, "FLUSH_VERTICES in %s\n", MESA_FUNCTION);\
+      _mesa_debug(ctx, "FLUSH_VERTICES in %s\n", __func__);	\
    if (ctx->Driver.NeedFlush & FLUSH_STORED_VERTICES)		\
       vbo_exec_FlushVertices(ctx, FLUSH_STORED_VERTICES);	\
    ctx->NewState |= newstate;					\
@@ -229,7 +226,7 @@ do {								\
 #define FLUSH_CURRENT(ctx, newstate)				\
 do {								\
    if (MESA_VERBOSE & VERBOSE_STATE)				\
-      _mesa_debug(ctx, "FLUSH_CURRENT in %s\n", MESA_FUNCTION);	\
+      _mesa_debug(ctx, "FLUSH_CURRENT in %s\n", __func__);	\
    if (ctx->Driver.NeedFlush & FLUSH_UPDATE_CURRENT)		\
       vbo_exec_FlushVertices(ctx, FLUSH_UPDATE_CURRENT);	\
    ctx->NewState |= newstate;					\

@@ -34,6 +34,7 @@ files_i965 = files(
   'brw_cs.h',
   'brw_curbe.c',
   'brw_defines.h',
+  'brw_disk_cache.c',
   'brw_draw.c',
   'brw_draw.h',
   'brw_draw_upload.c',
@@ -41,6 +42,7 @@ files_i965 = files(
   'brw_ff_gs_emit.c',
   'brw_ff_gs.h',
   'brw_formatquery.c',
+  'brw_generate_mipmap.c',
   'brw_gs.c',
   'brw_gs.h',
   'brw_gs_surface_state.c',
@@ -56,6 +58,7 @@ files_i965 = files(
   'brw_performance_query.c',
   'brw_program.c',
   'brw_program.h',
+  'brw_program_binary.c',
   'brw_program_cache.c',
   'brw_primitive_restart.c',
   'brw_queryobj.c',
@@ -133,44 +136,60 @@ files_i965 = files(
 )
 
 i965_gen_libs = []
-foreach v : ['40', '45', '50', '60', '70', '75', '80', '90', '100']
-  _lib = static_library(
-    'libi965_gen@0@'.format(v),
-    ['genX_blorp_exec.c', 'genX_state_upload.c', nir_opcodes_h, gen_xml_pack],
+foreach v : ['40', '45', '50', '60', '70', '75', '80', '90', '100', '110']
+  i965_gen_libs += static_library(
+    'i965_gen@0@'.format(v),
+    ['genX_blorp_exec.c', 'genX_state_upload.c', gen_xml_pack],
     include_directories : [inc_common, inc_intel, inc_dri_common],
-    c_args : [c_vis_args, no_override_init_args, '-msse2',
-              '-DGEN_VERSIONx10=@0@'.format(v)],
-    dependencies : [dep_libdrm],
+    c_args : [
+      c_vis_args, no_override_init_args, '-msse2',
+      '-DGEN_VERSIONx10=@0@'.format(v),
+    ],
+    dependencies : [dep_libdrm, idep_nir_headers],
   )
-  i965_gen_libs += _lib
 endforeach
 
-oa_generator = generator(
-  prog_python2,
-  arguments : ['@CURRENT_SOURCE_DIR@/brw_oa.py', '@INPUT@',
-               '--chipset', '@EXTRA_ARGS@', '--code', '@OUTPUT0@',
-               '--header', '@OUTPUT1@'],
-  output : ['@BASENAME@.c', '@BASENAME@.h'],
+
+i965_hw_metrics = [
+  'hsw',
+  'bdw', 'chv',
+  'sklgt2', 'sklgt3', 'sklgt4',
+  'kblgt2', 'kblgt3',
+  'cflgt2', 'cflgt3',
+  'bxt', 'glk',
+  'cnl',
+]
+
+i965_hw_metrics_xml_files = []
+foreach hw : i965_hw_metrics
+  i965_hw_metrics_xml_files += 'brw_oa_@0@.xml'.format(hw)
+endforeach
+
+i965_oa_sources = custom_target(
+  'i965-oa-sources',
+  input : i965_hw_metrics_xml_files,
+  output : [ 'brw_oa_metrics.c', 'brw_oa_metrics.h' ],
+  command : [
+    prog_python2, files('brw_oa.py'),
+    '--code', '@OUTPUT0@', '--header', '@OUTPUT1@',
+    '@INPUT@',
+  ],
 )
-
-i965_oa_sources = []
-foreach hw : ['hsw', 'bdw', 'chv', 'sklgt2', 'sklgt3', 'sklgt4', 'bxt',
-              'kblgt2', 'kblgt3', 'glk']
-  _xml = 'brw_oa_@0@.xml'.format(hw)
-  i965_oa_sources += oa_generator.process(_xml, extra_args : hw)
-endforeach
 
 libi965 = static_library(
   'i965',
-  [files_i965, i965_oa_sources, nir_opcodes_h, ir_expression_operation_h,
+  [files_i965, i965_oa_sources, ir_expression_operation_h,
    xmlpool_options_h],
-  include_directories : [inc_common, inc_intel, inc_dri_common, inc_util,
-                         inc_drm_uapi, inc_nir],
+  include_directories : [
+    inc_common, inc_intel, inc_dri_common, inc_util, inc_drm_uapi,
+  ],
   c_args : [c_vis_args, no_override_init_args, '-msse2'],
   cpp_args : [cpp_vis_args, '-msse2'],
-  link_with : [i965_gen_libs, libintel_common, libisl, libintel_compiler,
-               libblorp],
-  dependencies : [dep_libdrm, dep_valgrind],
+  link_with : [
+    i965_gen_libs, libintel_common, libintel_dev, libisl, libintel_compiler,
+    libblorp,
+  ],
+  dependencies : [dep_libdrm, dep_valgrind, idep_nir_headers],
 )
 
 dri_drivers += libi965

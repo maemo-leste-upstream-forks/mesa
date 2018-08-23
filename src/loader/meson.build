@@ -25,10 +25,9 @@ if with_platform_x11 and with_dri3
     'loader_dri3_helper',
     ['loader_dri3_helper.c', 'loader_dri3_helper.h'],
     c_args : c_vis_args,
-    include_directories : inc_include,
+    include_directories : [inc_include, inc_src, inc_drm_uapi],
     dependencies : [
-      dep_xshmfence, dep_xcb_present, dep_xcb_dri3, dep_xcb_sync, dep_x11_xcb,
-      dep_xext, dep_xdamage, dep_xcb_glx, dep_libdrm,
+      dep_libdrm, dep_xcb_dri3, dep_xcb_present, dep_xcb_sync, dep_xshmfence,
     ],
     build_by_default : false,
   )
@@ -42,6 +41,6 @@ libloader = static_library(
    xmlpool_options_h],
   c_args : [c_vis_args, '-DUSE_DRICONF'],
   include_directories : [inc_include, inc_src, inc_util],
-  dependencies : dep_libdrm,
+  dependencies : [dep_libdrm, dep_thread],
   build_by_default : false,
 )

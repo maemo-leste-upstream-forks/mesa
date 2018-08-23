@@ -376,7 +376,7 @@ eglGetDisplay(EGLNativeDisplayType nativeDisplay)
 
 static EGLDisplay
 _eglGetPlatformDisplayCommon(EGLenum platform, void *native_display,
-                             const EGLint *attrib_list)
+                             const EGLAttrib *attrib_list)
 {
    _EGLDisplay *dpy;
 
@@ -412,28 +412,27 @@ _eglGetPlatformDisplayCommon(EGLenum platform, void *native_display,
 
 static EGLDisplay EGLAPIENTRY
 eglGetPlatformDisplayEXT(EGLenum platform, void *native_display,
-                         const EGLint *attrib_list)
+                         const EGLint *int_attribs)
 {
+   EGLAttrib *attrib_list;
+   EGLDisplay display;
+
    _EGL_FUNC_START(NULL, EGL_OBJECT_THREAD_KHR, NULL, EGL_NO_DISPLAY);
-   return _eglGetPlatformDisplayCommon(platform, native_display, attrib_list);
+
+   if (_eglConvertIntsToAttribs(int_attribs, &attrib_list) != EGL_SUCCESS)
+      RETURN_EGL_ERROR(NULL, EGL_BAD_ALLOC, NULL);
+
+   display = _eglGetPlatformDisplayCommon(platform, native_display, attrib_list);
+   free(attrib_list);
+   return display;
 }
 
 EGLDisplay EGLAPIENTRY
 eglGetPlatformDisplay(EGLenum platform, void *native_display,
                       const EGLAttrib *attrib_list)
 {
-   EGLDisplay display;
-   EGLint *int_attribs;
-
    _EGL_FUNC_START(NULL, EGL_OBJECT_THREAD_KHR, NULL, EGL_NO_DISPLAY);
-
-   int_attribs = _eglConvertAttribsToInt(attrib_list);
-   if (attrib_list && !int_attribs)
-      RETURN_EGL_ERROR(NULL, EGL_BAD_ALLOC, NULL);
-
-   display = _eglGetPlatformDisplayCommon(platform, native_display, int_attribs);
-   free(int_attribs);
-   return display;
+   return _eglGetPlatformDisplayCommon(platform, native_display, attrib_list);
 }
 
 /**
@@ -477,6 +476,7 @@ _eglCreateExtensionsString(_EGLDisplay *dpy)
    char *exts = dpy->ExtensionsString;
 
    /* Please keep these sorted alphabetically. */
+   _EGL_CHECK_EXTENSION(ANDROID_blob_cache);
    _EGL_CHECK_EXTENSION(ANDROID_framebuffer_target);
    _EGL_CHECK_EXTENSION(ANDROID_image_native_buffer);
    _EGL_CHECK_EXTENSION(ANDROID_native_fence_sync);
@@ -494,6 +494,7 @@ _eglCreateExtensionsString(_EGLDisplay *dpy)
 
    _EGL_CHECK_EXTENSION(KHR_cl_event2);
    _EGL_CHECK_EXTENSION(KHR_config_attribs);
+   _EGL_CHECK_EXTENSION(KHR_context_flush_control);
    _EGL_CHECK_EXTENSION(KHR_create_context);
    _EGL_CHECK_EXTENSION(KHR_create_context_no_error);
    _EGL_CHECK_EXTENSION(KHR_fence_sync);
@@ -504,7 +505,8 @@ _eglCreateExtensionsString(_EGLDisplay *dpy)
    _EGL_CHECK_EXTENSION(KHR_gl_texture_3D_image);
    _EGL_CHECK_EXTENSION(KHR_gl_texture_cubemap_image);
    if (dpy->Extensions.KHR_image_base && dpy->Extensions.KHR_image_pixmap)
-      _eglAppendExtension(&exts, "EGL_KHR_image");
+      dpy->Extensions.KHR_image = EGL_TRUE;
+   _EGL_CHECK_EXTENSION(KHR_image);
    _EGL_CHECK_EXTENSION(KHR_image_base);
    _EGL_CHECK_EXTENSION(KHR_image_pixmap);
    _EGL_CHECK_EXTENSION(KHR_no_config_context);
@@ -513,6 +515,7 @@ _eglCreateExtensionsString(_EGLDisplay *dpy)
    _EGL_CHECK_EXTENSION(KHR_surfaceless_context);
    if (dpy->Extensions.EXT_swap_buffers_with_damage)
       _eglAppendExtension(&exts, "EGL_KHR_swap_buffers_with_damage");
+   _EGL_CHECK_EXTENSION(EXT_pixel_format_float);
    _EGL_CHECK_EXTENSION(KHR_wait_sync);
 
    if (dpy->Extensions.KHR_no_config_context)
@@ -1317,9 +1320,7 @@ eglSwapBuffersWithDamageKHR(EGLDisplay dpy, EGLSurface surface,
 }
 
 /**
- * If the width of the passed rect is greater than the surface's
- * width then it is clamped to the width of the surface. Same with
- * height.
+ * Clamp the rectangles so that they lie within the surface.
  */
 
 static void
@@ -1331,17 +1332,16 @@ _eglSetDamageRegionKHRClampRects(_EGLDisplay* disp, _EGLSurface* surf,
    EGLint surf_width = surf->Width;
 
    for (i = 0; i < (4 * n_rects); i += 4) {
-      EGLint x, y, rect_width, rect_height;
-      x = rects[i];
-      y = rects[i + 1];
-      rect_width = rects[i + 2];
-      rect_height = rects[i + 3];
+      EGLint x1, y1, x2, y2;
+      x1 = rects[i];
+      y1 = rects[i + 1];
+      x2 = rects[i + 2] + x1;
+      y2 = rects[i + 3] + y1;
 
-      if (rect_width > surf_width - x)
-         rects[i + 2] = surf_width - x;
-
-      if (rect_height > surf_height - y)
-         rects[i + 3] = surf_height - y;
+      rects[i] = CLAMP(x1, 0, surf_width);
+      rects[i + 1] = CLAMP(y1, 0, surf_height);
+      rects[i + 2] = CLAMP(x2, 0, surf_width) - rects[i];
+      rects[i + 3] = CLAMP(y2, 0, surf_height) - rects[i + 1];
    }
 }
 
@@ -2518,6 +2518,49 @@ eglQueryDmaBufModifiersEXT(EGLDisplay dpy, EGLint format, EGLint max_modifiers,
                                           num_modifiers);
 
    RETURN_EGL_EVAL(disp, ret);
+}
+
+static void EGLAPIENTRY
+eglSetBlobCacheFuncsANDROID(EGLDisplay *dpy, EGLSetBlobFuncANDROID set,
+                            EGLGetBlobFuncANDROID get)
+{
+   /* This function does not return anything so we cannot
+    * utilize the helper macros _EGL_FUNC_START or _EGL_CHECK_DISPLAY.
+    */
+   _EGLDisplay *disp = _eglLockDisplay(dpy);
+   if (!_eglSetFuncName(__func__, disp, EGL_OBJECT_DISPLAY_KHR, NULL)) {
+      if (disp)
+         _eglUnlockDisplay(disp);
+      return;
+   }
+
+   _EGLDriver *drv = _eglCheckDisplay(disp, __func__);
+   if (!drv) {
+      if (disp)
+         _eglUnlockDisplay(disp);
+      return;
+   }
+
+   if (!set || !get) {
+      _eglError(EGL_BAD_PARAMETER,
+                "eglSetBlobCacheFuncsANDROID: NULL handler given");
+      _eglUnlockDisplay(disp);
+      return;
+   }
+
+   if (disp->BlobCacheSet) {
+      _eglError(EGL_BAD_PARAMETER,
+                "eglSetBlobCacheFuncsANDROID: functions already set");
+      _eglUnlockDisplay(disp);
+      return;
+   }
+
+   disp->BlobCacheSet = set;
+   disp->BlobCacheGet = get;
+
+   drv->API.SetBlobCacheFuncsANDROID(drv, disp, set, get);
+
+   _eglUnlockDisplay(disp);
 }
 
 __eglMustCastToProperFunctionPointerType EGLAPIENTRY

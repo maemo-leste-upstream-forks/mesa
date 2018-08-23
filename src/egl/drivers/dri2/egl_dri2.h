@@ -43,9 +43,15 @@
 #endif
 
 #ifdef HAVE_WAYLAND_PLATFORM
-#include <wayland-client.h>
-#include "wayland/wayland-egl/wayland-egl-backend.h"
-/* forward declarations of protocol elements */
+/* forward declarations to avoid pulling wayland headers everywhere */
+struct wl_egl_window;
+struct wl_event_queue;
+struct wl_callback;
+struct wl_display;
+struct wl_drm;
+struct wl_registry;
+struct wl_shm;
+struct wl_surface;
 struct zwp_linux_dmabuf_v1;
 #endif
 
@@ -164,12 +170,14 @@ struct dri2_egl_display
    const __DRIdri2Extension       *dri2;
    const __DRIswrastExtension     *swrast;
    const __DRI2flushExtension     *flush;
+   const __DRI2flushControlExtension *flush_control;
    const __DRItexBufferExtension  *tex_buffer;
    const __DRIimageExtension      *image;
    const __DRIrobustnessExtension *robustness;
    const __DRInoErrorExtension    *no_error;
    const __DRI2configQueryExtension *config;
    const __DRI2fenceExtension *fence;
+   const __DRI2blobExtension *blob;
    const __DRI2rendererQueryExtension *rendererQuery;
    const __DRI2interopExtension *interop;
    int                       fd;
@@ -197,6 +205,11 @@ struct dri2_egl_display
    xcb_screen_t             *screen;
    bool                     swap_available;
 #ifdef HAVE_DRI3
+   bool                     multibuffers_available;
+   int                      dri3_major_version;
+   int                      dri3_minor_version;
+   int                      present_major_version;
+   int                      present_minor_version;
    struct loader_dri3_extensions loader_dri3_ext;
 #endif
 #endif
@@ -210,11 +223,7 @@ struct dri2_egl_display
    struct wl_shm            *wl_shm;
    struct wl_event_queue    *wl_queue;
    struct zwp_linux_dmabuf_v1 *wl_dmabuf;
-   struct {
-      struct u_vector        xrgb8888;
-      struct u_vector        argb8888;
-      struct u_vector        rgb565;
-   } wl_modifiers;
+   struct u_vector          *wl_modifiers;
    bool                      authenticated;
    int                       formats;
    uint32_t                  capabilities;
@@ -399,20 +408,72 @@ _EGLImage *
 dri2_create_image_dma_buf(_EGLDisplay *disp, _EGLContext *ctx,
                           EGLClientBuffer buffer, const EGLint *attr_list);
 
+#ifdef HAVE_X11_PLATFORM
 EGLBoolean
 dri2_initialize_x11(_EGLDriver *drv, _EGLDisplay *disp);
+void
+dri2_teardown_x11(struct dri2_egl_display *dri2_dpy);
+#else
+static inline EGLBoolean
+dri2_initialize_x11(_EGLDriver *drv, _EGLDisplay *disp)
+{
+   return _eglError(EGL_NOT_INITIALIZED, "X11 platform not built");
+}
+static inline void
+dri2_teardown_x11(struct dri2_egl_display *dri2_dpy) {}
+#endif
 
+#ifdef HAVE_DRM_PLATFORM
 EGLBoolean
 dri2_initialize_drm(_EGLDriver *drv, _EGLDisplay *disp);
+void
+dri2_teardown_drm(struct dri2_egl_display *dri2_dpy);
+#else
+static inline EGLBoolean
+dri2_initialize_drm(_EGLDriver *drv, _EGLDisplay *disp)
+{
+   return _eglError(EGL_NOT_INITIALIZED, "GBM/DRM platform not built");
+}
+static inline void
+dri2_teardown_drm(struct dri2_egl_display *dri2_dpy) {}
+#endif
 
+#ifdef HAVE_WAYLAND_PLATFORM
 EGLBoolean
 dri2_initialize_wayland(_EGLDriver *drv, _EGLDisplay *disp);
+void
+dri2_teardown_wayland(struct dri2_egl_display *dri2_dpy);
+#else
+static inline EGLBoolean
+dri2_initialize_wayland(_EGLDriver *drv, _EGLDisplay *disp)
+{
+   return _eglError(EGL_NOT_INITIALIZED, "Wayland platform not built");
+}
+static inline void
+dri2_teardown_wayland(struct dri2_egl_display *dri2_dpy) {}
+#endif
 
+#ifdef HAVE_ANDROID_PLATFORM
 EGLBoolean
 dri2_initialize_android(_EGLDriver *drv, _EGLDisplay *disp);
+#else
+static inline EGLBoolean
+dri2_initialize_android(_EGLDriver *drv, _EGLDisplay *disp)
+{
+   return _eglError(EGL_NOT_INITIALIZED, "Android platform not built");
+}
+#endif
 
+#ifdef HAVE_SURFACELESS_PLATFORM
 EGLBoolean
 dri2_initialize_surfaceless(_EGLDriver *drv, _EGLDisplay *disp);
+#else
+static inline EGLBoolean
+dri2_initialize_surfaceless(_EGLDriver *drv, _EGLDisplay *disp)
+{
+   return _eglError(EGL_NOT_INITIALIZED, "Surfaceless platform not built");
+}
+#endif
 
 void
 dri2_flush_drawable_for_swapbuffers(_EGLDisplay *disp, _EGLSurface *draw);

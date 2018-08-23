@@ -85,7 +85,7 @@ brw_codegen_tes_prog(struct brw_context *brw,
    brw_nir_setup_glsl_uniforms(mem_ctx, nir, &tep->program,
                                &prog_data.base.base,
                                compiler->scalar_stage[MESA_SHADER_TESS_EVAL]);
-   brw_nir_analyze_ubo_ranges(compiler, tep->program.nir,
+   brw_nir_analyze_ubo_ranges(compiler, tep->program.nir, NULL,
                               prog_data.base.base.ubo_ranges);
 
    int st_index = -1;
@@ -101,13 +101,12 @@ brw_codegen_tes_prog(struct brw_context *brw,
    brw_compute_tess_vue_map(&input_vue_map, key->inputs_read,
                             key->patch_inputs_read);
 
-   unsigned program_size;
    char *error_str;
    const unsigned *program =
       brw_compile_tes(compiler, brw, mem_ctx, key, &input_vue_map, &prog_data,
-                      nir, &tep->program, st_index, &program_size, &error_str);
+                      nir, &tep->program, st_index, &error_str);
    if (program == NULL) {
-      tep->program.sh.data->LinkStatus = linking_failure;
+      tep->program.sh.data->LinkStatus = LINKING_FAILURE;
       ralloc_strcat(&tep->program.sh.data->InfoLog, error_str);
 
       _mesa_problem(NULL, "Failed to compile tessellation evaluation shader: "
@@ -137,7 +136,7 @@ brw_codegen_tes_prog(struct brw_context *brw,
    ralloc_steal(NULL, prog_data.base.base.pull_param);
    brw_upload_cache(&brw->cache, BRW_CACHE_TES_PROG,
                     key, sizeof(*key),
-                    program, program_size,
+                    program, prog_data.base.base.program_size,
                     &prog_data, sizeof(prog_data),
                     &stage_state->prog_offset, &brw->tes.base.prog_data);
    ralloc_free(mem_ctx);
@@ -196,14 +195,20 @@ brw_upload_tes_prog(struct brw_context *brw)
 
    brw_tes_populate_key(brw, &key);
 
-   if (!brw_search_cache(&brw->cache, BRW_CACHE_TES_PROG,
-                         &key, sizeof(key),
-                         &stage_state->prog_offset,
-                         &brw->tes.base.prog_data)) {
-      bool success = brw_codegen_tes_prog(brw, tep, &key);
-      assert(success);
-      (void)success;
-   }
+   if (brw_search_cache(&brw->cache, BRW_CACHE_TES_PROG,
+                        &key, sizeof(key),
+                        &stage_state->prog_offset,
+                        &brw->tes.base.prog_data))
+      return;
+
+   if (brw_disk_cache_upload_program(brw, MESA_SHADER_TESS_EVAL))
+      return;
+
+   tep = (struct brw_program *) brw->programs[MESA_SHADER_TESS_EVAL];
+   tep->id = key.program_string_id;
+
+   MAYBE_UNUSED bool success = brw_codegen_tes_prog(brw, tep, &key);
+   assert(success);
 }
 
 

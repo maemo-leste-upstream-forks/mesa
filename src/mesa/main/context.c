@@ -123,6 +123,7 @@
 #include "shared.h"
 #include "shaderobj.h"
 #include "shaderimage.h"
+#include "state.h"
 #include "util/debug.h"
 #include "util/disk_cache.h"
 #include "util/strtod.h"
@@ -227,7 +228,7 @@ _mesa_create_visual( GLboolean dbFlag,
                      GLint accumGreenBits,
                      GLint accumBlueBits,
                      GLint accumAlphaBits,
-                     GLint numSamples )
+                     GLuint numSamples )
 {
    struct gl_config *vis = CALLOC_STRUCT(gl_config);
    if (vis) {
@@ -269,7 +270,7 @@ _mesa_initialize_visual( struct gl_config *vis,
                          GLint accumGreenBits,
                          GLint accumBlueBits,
                          GLint accumAlphaBits,
-                         GLint numSamples )
+                         GLuint numSamples )
 {
    assert(vis);
 
@@ -390,7 +391,7 @@ one_time_init( struct gl_context *ctx )
 
       _mesa_locale_init();
 
-      _mesa_one_time_init_extension_overrides();
+      _mesa_one_time_init_extension_overrides(ctx);
 
       _mesa_get_cpu_features();
 
@@ -436,7 +437,6 @@ _mesa_init_current(struct gl_context *ctx)
    }
 
    /* redo special cases: */
-   ASSIGN_4V( ctx->Current.Attrib[VERT_ATTRIB_WEIGHT], 1.0, 0.0, 0.0, 0.0 );
    ASSIGN_4V( ctx->Current.Attrib[VERT_ATTRIB_NORMAL], 0.0, 0.0, 1.0, 1.0 );
    ASSIGN_4V( ctx->Current.Attrib[VERT_ATTRIB_COLOR0], 1.0, 1.0, 1.0, 1.0 );
    ASSIGN_4V( ctx->Current.Attrib[VERT_ATTRIB_COLOR1], 0.0, 0.0, 0.0, 1.0 );
@@ -654,7 +654,7 @@ _mesa_init_constants(struct gl_constants *consts, gl_api api)
    consts->UniformBooleanTrue = FLOAT_AS_UNION(1.0f).u;
 
    /* GL_ARB_sync */
-   consts->MaxServerWaitTimeout = 0x1fff7fffffffULL;
+   consts->MaxServerWaitTimeout = 0x7fffffff7fffffffULL;
 
    /* GL_EXT_provoking_vertex */
    consts->QuadsFollowProvokingVertexConvention = GL_TRUE;
@@ -1265,8 +1265,10 @@ _mesa_initialize_context(struct gl_context *ctx,
        * GL_OES_texture_cube_map says
        * "Initially all texture generation modes are set to REFLECTION_MAP_OES"
        */
-      for (i = 0; i < MAX_TEXTURE_UNITS; i++) {
-         struct gl_texture_unit *texUnit = &ctx->Texture.Unit[i];
+      for (i = 0; i < ARRAY_SIZE(ctx->Texture.FixedFuncUnit); i++) {
+         struct gl_fixedfunc_texture_unit *texUnit =
+            &ctx->Texture.FixedFuncUnit[i];
+
          texUnit->GenS.Mode = GL_REFLECTION_MAP_NV;
          texUnit->GenT.Mode = GL_REFLECTION_MAP_NV;
          texUnit->GenR.Mode = GL_REFLECTION_MAP_NV;
@@ -1333,6 +1335,8 @@ _mesa_free_context_data( struct gl_context *ctx )
 
    _mesa_reference_vao(ctx, &ctx->Array.VAO, NULL);
    _mesa_reference_vao(ctx, &ctx->Array.DefaultVAO, NULL);
+   _mesa_reference_vao(ctx, &ctx->Array._EmptyVAO, NULL);
+   _mesa_reference_vao(ctx, &ctx->Array._DrawVAO, NULL);
 
    _mesa_free_attrib_data(ctx);
    _mesa_free_buffer_objects(ctx);
@@ -1576,9 +1580,9 @@ handle_first_current(struct gl_context *ctx)
       return;
    }
 
-   ctx->Extensions.String = _mesa_make_extension_string(ctx);
-
    check_context_limits(ctx);
+
+   _mesa_update_vertex_processing_mode(ctx);
 
    /* According to GL_MESA_configless_context the default value of
     * glDrawBuffers depends on the config of the first surface it is bound to.
@@ -1586,7 +1590,7 @@ handle_first_current(struct gl_context *ctx)
     */
    if (!ctx->HasConfig && _mesa_is_desktop_gl(ctx)) {
       if (ctx->DrawBuffer != _mesa_get_incomplete_framebuffer()) {
-         GLenum buffer;
+         GLenum16 buffer;
 
          if (ctx->DrawBuffer->Visual.doubleBufferMode)
             buffer = GL_BACK;
@@ -1832,31 +1836,6 @@ _mesa_get_dispatch(struct gl_context *ctx)
 /** \name Miscellaneous functions                                     */
 /**********************************************************************/
 /*@{*/
-
-/**
- * Record an error.
- *
- * \param ctx GL context.
- * \param error error code.
- *
- * Records the given error code and call the driver's dd_function_table::Error
- * function if defined.
- *
- * \sa
- * This is called via _mesa_error().
- */
-void
-_mesa_record_error(struct gl_context *ctx, GLenum error)
-{
-   if (!ctx)
-      return;
-
-   if (ctx->ErrorValue == GL_NO_ERROR) {
-      ctx->ErrorValue = error;
-   }
-}
-
-
 /**
  * Flush commands.
  */

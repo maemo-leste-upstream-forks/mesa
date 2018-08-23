@@ -462,15 +462,13 @@ brw_emit_select_pipeline(struct brw_context *brw, enum brw_pipeline pipeline)
                                   PIPE_CONTROL_RENDER_TARGET_FLUSH |
                                   PIPE_CONTROL_DEPTH_CACHE_FLUSH |
                                   dc_flush |
-                                  PIPE_CONTROL_NO_WRITE |
                                   PIPE_CONTROL_CS_STALL);
 
       brw_emit_pipe_control_flush(brw,
                                   PIPE_CONTROL_TEXTURE_CACHE_INVALIDATE |
                                   PIPE_CONTROL_CONST_CACHE_INVALIDATE |
                                   PIPE_CONTROL_STATE_CACHE_INVALIDATE |
-                                  PIPE_CONTROL_INSTRUCTION_INVALIDATE |
-                                  PIPE_CONTROL_NO_WRITE);
+                                  PIPE_CONTROL_INSTRUCTION_INVALIDATE);
 
    } else {
       /* From "BXML » GT » MI » vol1a GPU Overview » [Instruction]
@@ -515,6 +513,21 @@ brw_emit_select_pipeline(struct brw_context *brw, enum brw_pipeline pipeline)
       OUT_BATCH(0);
       OUT_BATCH(0);
       ADVANCE_BATCH();
+   }
+
+   if (devinfo->is_geminilake) {
+      /* Project: DevGLK
+       *
+       * "This chicken bit works around a hardware issue with barrier logic
+       *  encountered when switching between GPGPU and 3D pipelines.  To
+       *  workaround the issue, this mode bit should be set after a pipeline
+       *  is selected."
+       */
+      const unsigned barrier_mode =
+         pipeline == BRW_RENDER_PIPELINE ? GLK_SCEC_BARRIER_MODE_3D_HULL
+                                         : GLK_SCEC_BARRIER_MODE_GPGPU;
+      brw_load_register_imm32(brw, SLICE_COMMON_ECO_CHICKEN1,
+                              barrier_mode | GLK_SCEC_BARRIER_MODE_MASK);
    }
 }
 
@@ -619,6 +632,12 @@ brw_upload_state_base_address(struct brw_context *brw)
    }
 
    if (devinfo->gen >= 8) {
+      /* STATE_BASE_ADDRESS has issues with 48-bit address spaces.  If the
+       * address + size as seen by STATE_BASE_ADDRESS overflows 48 bits,
+       * the GPU appears to treat all accesses to the buffer as being out
+       * of bounds and returns zero.  To work around this, we pin all SBAs
+       * to the bottom 4GB.
+       */
       uint32_t mocs_wb = devinfo->gen >= 9 ? SKL_MOCS_WB : BDW_MOCS_WB;
       int pkt_len = devinfo->gen >= 9 ? 19 : 16;
 
@@ -629,15 +648,14 @@ brw_upload_state_base_address(struct brw_context *brw)
       OUT_BATCH(0);
       OUT_BATCH(mocs_wb << 16);
       /* Surface state base address: */
-      OUT_RELOC64(brw->batch.state.bo, 0, mocs_wb << 4 | 1);
+      OUT_RELOC64(brw->batch.state.bo, RELOC_32BIT, mocs_wb << 4 | 1);
       /* Dynamic state base address: */
-      OUT_RELOC64(brw->batch.state.bo, 0, mocs_wb << 4 | 1);
+      OUT_RELOC64(brw->batch.state.bo, RELOC_32BIT, mocs_wb << 4 | 1);
       /* Indirect object base address: MEDIA_OBJECT data */
       OUT_BATCH(mocs_wb << 4 | 1);
       OUT_BATCH(0);
       /* Instruction base address: shader kernels (incl. SIP) */
-      OUT_RELOC64(brw->cache.bo, 0, mocs_wb << 4 | 1);
-
+      OUT_RELOC64(brw->cache.bo, RELOC_32BIT, mocs_wb << 4 | 1);
       /* General state buffer size */
       OUT_BATCH(0xfffff001);
       /* Dynamic state buffer size */

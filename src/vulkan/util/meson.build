@@ -20,6 +20,8 @@
 
 files_vulkan_util = files(
   'vk_alloc.h',
+  'vk_debug_report.c',
+  'vk_debug_report.h',
   'vk_util.c',
   'vk_util.h',
 )
@@ -28,8 +30,10 @@ vk_enum_to_str = custom_target(
   'vk_enum_to_str',
   input : ['gen_enum_to_str.py', vk_api_xml[0]],
   output : ['vk_enum_to_str.c', 'vk_enum_to_str.h'],
-  command : [prog_python2, '@INPUT0@', '--xml', '@INPUT1@',
-             '--outdir', meson.current_build_dir()],
+  command : [
+    prog_python2, '@INPUT0@', '--xml', '@INPUT1@', '--outdir',
+    meson.current_build_dir()
+  ],
 )
 
 libvulkan_util = static_library(

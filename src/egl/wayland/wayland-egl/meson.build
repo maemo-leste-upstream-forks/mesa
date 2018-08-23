@@ -38,6 +38,13 @@ pkg.generate(
 )
 
 if with_tests
-  test('wayland-egl-symbols-check', find_program('wayland-egl-symbols-check'))
-  test('wayland-egl-abi-check', executable('wayland-egl-abi-check', 'wayland-egl-abi-check.c'))
+  test('wayland-egl-symbols-check',
+    find_program('wayland-egl-symbols-check'),
+    env : env_test,
+    args : libwayland_egl
+  )
+  test(
+    'wayland-egl-abi-check',
+    executable('wayland-egl-abi-check', 'wayland-egl-abi-check.c')
+  )
 endif

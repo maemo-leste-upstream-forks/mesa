@@ -110,18 +110,43 @@ static char *loader_get_dri_config_device_id(void)
 
 static char *drm_construct_id_path_tag(drmDevicePtr device)
 {
-/* Length of "pci-xxxx_xx_xx_x\0" */
-#define PCI_ID_PATH_TAG_LENGTH 17
    char *tag = NULL;
 
    if (device->bustype == DRM_BUS_PCI) {
-        tag = calloc(PCI_ID_PATH_TAG_LENGTH, sizeof(char));
-        if (tag == NULL)
-            return NULL;
+      if (asprintf(&tag, "pci-%04x_%02x_%02x_%1u",
+                   device->businfo.pci->domain,
+                   device->businfo.pci->bus,
+                   device->businfo.pci->dev,
+                   device->businfo.pci->func) < 0) {
+         return NULL;
+      }
+   } else if (device->bustype == DRM_BUS_PLATFORM ||
+              device->bustype == DRM_BUS_HOST1X) {
+      char *fullname, *name, *address;
 
-        snprintf(tag, PCI_ID_PATH_TAG_LENGTH, "pci-%04x_%02x_%02x_%1u",
-                 device->businfo.pci->domain, device->businfo.pci->bus,
-                 device->businfo.pci->dev, device->businfo.pci->func);
+      if (device->bustype == DRM_BUS_PLATFORM)
+         fullname = device->businfo.platform->fullname;
+      else
+         fullname = device->businfo.host1x->fullname;
+
+      name = strrchr(fullname, '/');
+      if (!name)
+         name = strdup(fullname);
+      else
+         name = strdup(name + 1);
+
+      address = strchr(name, '@');
+      if (address) {
+         *address++ = '\0';
+
+         if (asprintf(&tag, "platform-%s_%s", address, name) < 0)
+            tag = NULL;
+      } else {
+         if (asprintf(&tag, "platform-%s", name) < 0)
+            tag = NULL;
+      }
+
+      free(name);
    }
    return tag;
 }
@@ -245,29 +270,6 @@ int loader_get_user_preferred_fd(int default_fd, bool *different_device)
 #endif
 
 #if defined(HAVE_LIBDRM)
-static int
-dev_node_from_fd(int fd, unsigned int *maj, unsigned int *min)
-{
-   struct stat buf;
-
-   if (fstat(fd, &buf) < 0) {
-      log_(_LOADER_WARNING, "MESA-LOADER: failed to stat fd %d\n", fd);
-      return -1;
-   }
-
-   if (!S_ISCHR(buf.st_mode)) {
-      log_(_LOADER_WARNING, "MESA-LOADER: fd %d not a character device\n", fd);
-      return -1;
-   }
-
-   *maj = major(buf.st_rdev);
-   *min = minor(buf.st_rdev);
-
-   return 0;
-}
-#endif
-
-#if defined(HAVE_LIBDRM)
 
 static int
 drm_get_pci_id_for_fd(int fd, int *vendor_id, int *chip_id)
@@ -307,35 +309,15 @@ loader_get_pci_id_for_fd(int fd, int *vendor_id, int *chip_id)
    return 0;
 }
 
-
-#if defined(HAVE_LIBDRM)
-static char *
-drm_get_device_name_for_fd(int fd)
-{
-   unsigned int maj, min;
-   char buf[0x40];
-   int n;
-
-   if (dev_node_from_fd(fd, &maj, &min) < 0)
-      return NULL;
-
-   n = snprintf(buf, sizeof(buf), DRM_DEV_NAME, DRM_DIR_NAME, min);
-   if (n == -1 || n >= sizeof(buf))
-      return NULL;
-
-   return strdup(buf);
-}
-#endif
-
 char *
 loader_get_device_name_for_fd(int fd)
 {
    char *result = NULL;
 
 #if HAVE_LIBDRM
-   if ((result = drm_get_device_name_for_fd(fd)))
-      return result;
+   result = drmGetDeviceNameFromFd2(fd);
 #endif
+
    return result;
 }
 

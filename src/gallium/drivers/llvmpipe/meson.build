@@ -98,13 +98,22 @@ libllvmpipe = static_library(
   cpp_args : [cpp_vis_args, cpp_msvc_compat_args],
   include_directories : [inc_gallium, inc_gallium_aux, inc_include, inc_src],
   dependencies : dep_llvm,
-  build_by_default : false,
+)
+
+# This overwrites the softpipe driver dependency, but itself depends on the
+# softpipe dependency.
+driver_swrast = declare_dependency(
+  compile_args : '-DGALLIUM_LLVMPIPE',
+  link_with : libllvmpipe,
+  dependencies : driver_swrast,
 )
 
 if with_tests and with_gallium_softpipe and with_llvm
   foreach t : ['lp_test_format', 'lp_test_arit', 'lp_test_blend',
                'lp_test_conv', 'lp_test_printf']
-    test(t, executable(
+    test(
+      t,
+      executable(
         t,
         ['@0@.c'.format(t), 'lp_test_main.c'],
         dependencies : [dep_llvm, dep_dl, dep_thread, dep_clock],

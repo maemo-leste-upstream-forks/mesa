@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-inc_gbm = include_directories('.', 'backends/dri')
+inc_gbm = include_directories('.', 'main', 'backends/dri')
 
 files_gbm = files(
   'main/backend.c',
@@ -29,17 +29,20 @@ files_gbm = files(
 )
 deps_gbm = []
 args_gbm = []
-links_gbm = []
 deps_gbm = []
+incs_gbm = [
+  include_directories('main'), inc_include, inc_src, inc_loader,
+  inc_wayland_drm,
+]
 
 if with_dri2
   files_gbm += files('backends/dri/gbm_dri.c', 'backends/dri/gbm_driint.h')
-  deps_gbm += [dep_libdrm, dep_thread]
-  args_gbm += '-DDEFAULT_DRIVER_DIR="@0@"'.format(dri_driver_dir)
+  deps_gbm += dep_libdrm # TODO: pthread-stubs
+  args_gbm += '-DDEFAULT_DRIVER_DIR="@0@"'.format(dri_search_path)
 endif
 if with_platform_wayland
   deps_gbm += dep_wayland_server
-  links_gbm += libwayland_drm
+  incs_gbm += inc_wayland_drm
 endif
 
 # TODO: wayland support (requires egl)
@@ -47,14 +50,12 @@ endif
 libgbm = shared_library(
   'gbm',
   files_gbm,
-  include_directories : [
-    include_directories('main'), inc_include, inc_src, inc_loader,
-    include_directories('../egl/wayland/wayland-drm')],
-  c_args : args_gbm,
+  include_directories : incs_gbm,
+  c_args : [c_vis_args, args_gbm],
   link_args : [ld_args_gc_sections],
-  link_with : [links_gbm, libloader, libmesa_util, libxmlconfig],
-  dependencies : [deps_gbm, dep_dl],
-  version : '1.0',
+  link_with : [libloader, libmesa_util, libxmlconfig],
+  dependencies : [deps_gbm, dep_dl, dep_thread],
+  version : '1.0.0',
   install : true,
 )
 
@@ -70,6 +71,10 @@ pkg.generate(
 )
 
 if with_tests
-  gbm_symbols_check = find_program('gbm-symbols-check')
-  test('gbm-symbols-check', gbm_symbols_check)
+  test(
+    'gbm-symbols-check',
+    find_program('gbm-symbols-check'),
+    env : env_test,
+    args : libgbm
+  )
 endif

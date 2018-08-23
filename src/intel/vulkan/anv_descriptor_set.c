@@ -35,6 +35,51 @@
  * Descriptor set layouts.
  */
 
+void anv_GetDescriptorSetLayoutSupport(
+    VkDevice                                    device,
+    const VkDescriptorSetLayoutCreateInfo*      pCreateInfo,
+    VkDescriptorSetLayoutSupport*               pSupport)
+{
+   uint32_t surface_count[MESA_SHADER_STAGES] = { 0, };
+
+   for (uint32_t b = 0; b < pCreateInfo->bindingCount; b++) {
+      const VkDescriptorSetLayoutBinding *binding = &pCreateInfo->pBindings[b];
+
+      switch (binding->descriptorType) {
+      case VK_DESCRIPTOR_TYPE_SAMPLER:
+         /* There is no real limit on samplers */
+         break;
+
+      case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+         if (binding->pImmutableSamplers) {
+            for (uint32_t i = 0; i < binding->descriptorCount; i++) {
+               ANV_FROM_HANDLE(anv_sampler, sampler,
+                               binding->pImmutableSamplers[i]);
+               anv_foreach_stage(s, binding->stageFlags)
+                  surface_count[s] += sampler->n_planes;
+            }
+         }
+         break;
+
+      default:
+         anv_foreach_stage(s, binding->stageFlags)
+            surface_count[s] += binding->descriptorCount;
+         break;
+      }
+   }
+
+   bool supported = true;
+   for (unsigned s = 0; s < MESA_SHADER_STAGES; s++) {
+      /* Our maximum binding table size is 250 and we need to reserve 8 for
+       * render targets.  240 is a nice round number.
+       */
+      if (surface_count[s] >= 240)
+         supported = false;
+   }
+
+   pSupport->supported = supported;
+}
+
 VkResult anv_CreateDescriptorSetLayout(
     VkDevice                                    _device,
     const VkDescriptorSetLayoutCreateInfo*      pCreateInfo,
@@ -57,16 +102,21 @@ VkResult anv_CreateDescriptorSetLayout(
    struct anv_descriptor_set_binding_layout *bindings;
    struct anv_sampler **samplers;
 
+   /* We need to allocate decriptor set layouts off the device allocator
+    * with DEVICE scope because they are reference counted and may not be
+    * destroyed when vkDestroyDescriptorSetLayout is called.
+    */
    ANV_MULTIALLOC(ma);
    anv_multialloc_add(&ma, &set_layout, 1);
    anv_multialloc_add(&ma, &bindings, max_binding + 1);
    anv_multialloc_add(&ma, &samplers, immutable_sampler_count);
 
-   if (!anv_multialloc_alloc2(&ma, &device->alloc, pAllocator,
-                              VK_SYSTEM_ALLOCATION_SCOPE_OBJECT))
+   if (!anv_multialloc_alloc(&ma, &device->alloc,
+                             VK_SYSTEM_ALLOCATION_SCOPE_DEVICE))
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
    memset(set_layout, 0, sizeof(*set_layout));
+   set_layout->ref_cnt = 1;
    set_layout->binding_count = max_binding + 1;
 
    for (uint32_t b = 0; b <= max_binding; b++) {
@@ -204,16 +254,51 @@ void anv_DestroyDescriptorSetLayout(
    if (!set_layout)
       return;
 
-   vk_free2(&device->alloc, pAllocator, set_layout);
+   anv_descriptor_set_layout_unref(device, set_layout);
+}
+
+#define SHA1_UPDATE_VALUE(ctx, x) _mesa_sha1_update(ctx, &(x), sizeof(x));
+
+static void
+sha1_update_immutable_sampler(struct mesa_sha1 *ctx,
+                              const struct anv_sampler *sampler)
+{
+   if (!sampler->conversion)
+      return;
+
+   /* The only thing that affects the shader is ycbcr conversion */
+   _mesa_sha1_update(ctx, sampler->conversion,
+                     sizeof(*sampler->conversion));
+}
+
+static void
+sha1_update_descriptor_set_binding_layout(struct mesa_sha1 *ctx,
+   const struct anv_descriptor_set_binding_layout *layout)
+{
+   SHA1_UPDATE_VALUE(ctx, layout->array_size);
+   SHA1_UPDATE_VALUE(ctx, layout->descriptor_index);
+   SHA1_UPDATE_VALUE(ctx, layout->dynamic_offset_index);
+   SHA1_UPDATE_VALUE(ctx, layout->buffer_index);
+   _mesa_sha1_update(ctx, layout->stage, sizeof(layout->stage));
+
+   if (layout->immutable_samplers) {
+      for (uint16_t i = 0; i < layout->array_size; i++)
+         sha1_update_immutable_sampler(ctx, layout->immutable_samplers[i]);
+   }
 }
 
 static void
 sha1_update_descriptor_set_layout(struct mesa_sha1 *ctx,
                                   const struct anv_descriptor_set_layout *layout)
 {
-   size_t size = sizeof(*layout) +
-                 sizeof(layout->binding[0]) * layout->binding_count;
-   _mesa_sha1_update(ctx, layout, size);
+   SHA1_UPDATE_VALUE(ctx, layout->binding_count);
+   SHA1_UPDATE_VALUE(ctx, layout->size);
+   SHA1_UPDATE_VALUE(ctx, layout->shader_stages);
+   SHA1_UPDATE_VALUE(ctx, layout->buffer_count);
+   SHA1_UPDATE_VALUE(ctx, layout->dynamic_offset_count);
+
+   for (uint16_t i = 0; i < layout->binding_count; i++)
+      sha1_update_descriptor_set_binding_layout(ctx, &layout->binding[i]);
 }
 
 /*
@@ -246,6 +331,7 @@ VkResult anv_CreatePipelineLayout(
       ANV_FROM_HANDLE(anv_descriptor_set_layout, set_layout,
                       pCreateInfo->pSetLayouts[set]);
       layout->set[set].layout = set_layout;
+      anv_descriptor_set_layout_ref(set_layout);
 
       layout->set[set].dynamic_offset_start = dynamic_offset_count;
       for (uint32_t b = 0; b < set_layout->binding_count; b++) {
@@ -289,6 +375,9 @@ void anv_DestroyPipelineLayout(
 
    if (!pipeline_layout)
       return;
+
+   for (uint32_t i = 0; i < pipeline_layout->num_sets; i++)
+      anv_descriptor_set_layout_unref(device, pipeline_layout->set[i].layout);
 
    vk_free2(&device->alloc, pAllocator, pipeline_layout);
 }
@@ -423,7 +512,7 @@ struct surface_state_free_list_entry {
 VkResult
 anv_descriptor_set_create(struct anv_device *device,
                           struct anv_descriptor_pool *pool,
-                          const struct anv_descriptor_set_layout *layout,
+                          struct anv_descriptor_set_layout *layout,
                           struct anv_descriptor_set **out_set)
 {
    struct anv_descriptor_set *set;
@@ -451,12 +540,14 @@ anv_descriptor_set_create(struct anv_device *device,
       if (pool->free_list != EMPTY) {
          return vk_error(VK_ERROR_FRAGMENTED_POOL);
       } else {
-         return vk_error(VK_ERROR_OUT_OF_POOL_MEMORY_KHR);
+         return vk_error(VK_ERROR_OUT_OF_POOL_MEMORY);
       }
    }
 
-   set->size = size;
    set->layout = layout;
+   anv_descriptor_set_layout_ref(layout);
+
+   set->size = size;
    set->buffer_views =
       (struct anv_buffer_view *) &set->descriptors[layout->size];
    set->buffer_count = layout->buffer_count;
@@ -512,6 +603,8 @@ anv_descriptor_set_destroy(struct anv_device *device,
                            struct anv_descriptor_pool *pool,
                            struct anv_descriptor_set *set)
 {
+   anv_descriptor_set_layout_unref(device, set->layout);
+
    /* Put the buffer view surface state back on the free list. */
    for (uint32_t b = 0; b < set->buffer_count; b++) {
       struct surface_state_free_list_entry *entry =
@@ -877,11 +970,11 @@ anv_descriptor_set_write_template(struct anv_descriptor_set *set,
    }
 }
 
-VkResult anv_CreateDescriptorUpdateTemplateKHR(
+VkResult anv_CreateDescriptorUpdateTemplate(
     VkDevice                                    _device,
-    const VkDescriptorUpdateTemplateCreateInfoKHR* pCreateInfo,
+    const VkDescriptorUpdateTemplateCreateInfo* pCreateInfo,
     const VkAllocationCallbacks*                pAllocator,
-    VkDescriptorUpdateTemplateKHR*              pDescriptorUpdateTemplate)
+    VkDescriptorUpdateTemplate*                 pDescriptorUpdateTemplate)
 {
    ANV_FROM_HANDLE(anv_device, device, _device);
    struct anv_descriptor_update_template *template;
@@ -893,7 +986,9 @@ VkResult anv_CreateDescriptorUpdateTemplateKHR(
    if (template == NULL)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   if (pCreateInfo->templateType == VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_DESCRIPTOR_SET_KHR)
+   template->bind_point = pCreateInfo->pipelineBindPoint;
+
+   if (pCreateInfo->templateType == VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_DESCRIPTOR_SET)
       template->set = pCreateInfo->set;
 
    template->entry_count = pCreateInfo->descriptorUpdateEntryCount;
@@ -917,9 +1012,9 @@ VkResult anv_CreateDescriptorUpdateTemplateKHR(
    return VK_SUCCESS;
 }
 
-void anv_DestroyDescriptorUpdateTemplateKHR(
+void anv_DestroyDescriptorUpdateTemplate(
     VkDevice                                    _device,
-    VkDescriptorUpdateTemplateKHR               descriptorUpdateTemplate,
+    VkDescriptorUpdateTemplate                  descriptorUpdateTemplate,
     const VkAllocationCallbacks*                pAllocator)
 {
    ANV_FROM_HANDLE(anv_device, device, _device);
@@ -929,10 +1024,10 @@ void anv_DestroyDescriptorUpdateTemplateKHR(
    vk_free2(&device->alloc, pAllocator, template);
 }
 
-void anv_UpdateDescriptorSetWithTemplateKHR(
+void anv_UpdateDescriptorSetWithTemplate(
     VkDevice                                    _device,
     VkDescriptorSet                             descriptorSet,
-    VkDescriptorUpdateTemplateKHR               descriptorUpdateTemplate,
+    VkDescriptorUpdateTemplate                  descriptorUpdateTemplate,
     const void*                                 pData)
 {
    ANV_FROM_HANDLE(anv_device, device, _device);

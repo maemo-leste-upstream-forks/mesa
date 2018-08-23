@@ -1500,8 +1500,7 @@ generate_code(struct brw_codegen *p,
    const char *stage_abbrev = _mesa_shader_stage_to_abbrev(nir->info.stage);
    bool debug_flag = INTEL_DEBUG &
       intel_debug_flag_for_shader_stage(nir->info.stage);
-   struct annotation_info annotation;
-   memset(&annotation, 0, sizeof(annotation));
+   struct disasm_info *disasm_info = disasm_initialize(devinfo, cfg);
    int spill_count = 0, fill_count = 0;
    int loop_count = 0;
 
@@ -1509,7 +1508,7 @@ generate_code(struct brw_codegen *p,
       struct brw_reg src[3], dst;
 
       if (unlikely(debug_flag))
-         annotate(p->devinfo, &annotation, cfg, inst, p->next_insn_offset);
+         disasm_annotate(disasm_info, inst, p->next_insn_offset);
 
       for (unsigned int i = 0; i < 3; i++) {
          src[i] = inst->src[i].as_brw_reg();
@@ -1518,7 +1517,7 @@ generate_code(struct brw_codegen *p,
 
       brw_set_default_predicate_control(p, inst->predicate);
       brw_set_default_predicate_inverse(p, inst->predicate_inverse);
-      brw_set_default_flag_reg(p, 0, inst->flag_subreg);
+      brw_set_default_flag_reg(p, inst->flag_subreg / 2, inst->flag_subreg % 2);
       brw_set_default_saturate(p, inst->saturate);
       brw_set_default_mask_control(p, inst->force_writemask_all);
       brw_set_default_acc_write_control(p, inst->writes_accumulator);
@@ -1774,6 +1773,10 @@ generate_code(struct brw_codegen *p,
                       inst, dst, src[0], src[1], src[2]);
          break;
 
+      case SHADER_OPCODE_GET_BUFFER_SIZE:
+         generate_get_buffer_size(p, prog_data, inst, dst, src[0], src[1]);
+         break;
+
       case VS_OPCODE_URB_WRITE:
          generate_vs_urb_write(p, inst);
          break;
@@ -1798,11 +1801,6 @@ generate_code(struct brw_codegen *p,
 
       case VS_OPCODE_SET_SIMD4X2_HEADER_GEN9:
          generate_set_simd4x2_header_gen9(p, inst, dst);
-         break;
-
-
-      case VS_OPCODE_GET_BUFFER_SIZE:
-         generate_get_buffer_size(p, prog_data, inst, dst, src[0], src[1]);
          break;
 
       case GS_OPCODE_URB_WRITE:
@@ -1871,10 +1869,11 @@ generate_code(struct brw_codegen *p,
       case SHADER_OPCODE_UNTYPED_ATOMIC:
          assert(src[2].file == BRW_IMMEDIATE_VALUE);
          brw_untyped_atomic(p, dst, src[0], src[1], src[2].ud, inst->mlen,
-                            !inst->dst.is_null());
+                            !inst->dst.is_null(), inst->header_size);
          break;
 
       case SHADER_OPCODE_UNTYPED_SURFACE_READ:
+         assert(!inst->header_size);
          assert(src[2].file == BRW_IMMEDIATE_VALUE);
          brw_untyped_surface_read(p, dst, src[0], src[1], inst->mlen,
                                   src[2].ud);
@@ -1883,25 +1882,25 @@ generate_code(struct brw_codegen *p,
       case SHADER_OPCODE_UNTYPED_SURFACE_WRITE:
          assert(src[2].file == BRW_IMMEDIATE_VALUE);
          brw_untyped_surface_write(p, src[0], src[1], inst->mlen,
-                                   src[2].ud);
+                                   src[2].ud, inst->header_size);
          break;
 
       case SHADER_OPCODE_TYPED_ATOMIC:
          assert(src[2].file == BRW_IMMEDIATE_VALUE);
          brw_typed_atomic(p, dst, src[0], src[1], src[2].ud, inst->mlen,
-                          !inst->dst.is_null());
+                          !inst->dst.is_null(), inst->header_size);
          break;
 
       case SHADER_OPCODE_TYPED_SURFACE_READ:
          assert(src[2].file == BRW_IMMEDIATE_VALUE);
          brw_typed_surface_read(p, dst, src[0], src[1], inst->mlen,
-                                src[2].ud);
+                                src[2].ud, inst->header_size);
          break;
 
       case SHADER_OPCODE_TYPED_SURFACE_WRITE:
          assert(src[2].file == BRW_IMMEDIATE_VALUE);
          brw_typed_surface_write(p, src[0], src[1], inst->mlen,
-                                 src[2].ud);
+                                 src[2].ud, inst->header_size);
          break;
 
       case SHADER_OPCODE_MEMORY_FENCE:
@@ -2175,21 +2174,21 @@ generate_code(struct brw_codegen *p,
    }
 
    brw_set_uip_jip(p, 0);
-   annotation_finalize(&annotation, p->next_insn_offset);
+
+   /* end of program sentinel */
+   disasm_new_inst_group(disasm_info, p->next_insn_offset);
 
 #ifndef NDEBUG
-   bool validated = brw_validate_instructions(devinfo, p->store,
-                                              0, p->next_insn_offset,
-                                              &annotation);
+   bool validated =
 #else
    if (unlikely(debug_flag))
+#endif
       brw_validate_instructions(devinfo, p->store,
                                 0, p->next_insn_offset,
-                                &annotation);
-#endif
+                                disasm_info);
 
    int before_size = p->next_insn_offset;
-   brw_compact_instructions(p, 0, annotation.ann_count, annotation.ann);
+   brw_compact_instructions(p, 0, disasm_info);
    int after_size = p->next_insn_offset;
 
    if (unlikely(debug_flag)) {
@@ -2203,10 +2202,9 @@ generate_code(struct brw_codegen *p,
               spill_count, fill_count, before_size, after_size,
               100.0f * (before_size - after_size) / before_size);
 
-      dump_assembly(p->store, annotation.ann_count, annotation.ann,
-                    p->devinfo);
-      ralloc_free(annotation.mem_ctx);
+      dump_assembly(p->store, disasm_info);
    }
+   ralloc_free(disasm_info);
    assert(validated);
 
    compiler->shader_debug_log(log_data,
@@ -2224,8 +2222,7 @@ brw_vec4_generate_assembly(const struct brw_compiler *compiler,
                            void *mem_ctx,
                            const nir_shader *nir,
                            struct brw_vue_prog_data *prog_data,
-                           const struct cfg_t *cfg,
-                           unsigned *out_assembly_size)
+                           const struct cfg_t *cfg)
 {
    struct brw_codegen *p = rzalloc(mem_ctx, struct brw_codegen);
    brw_init_codegen(compiler->devinfo, p, mem_ctx);
@@ -2233,5 +2230,5 @@ brw_vec4_generate_assembly(const struct brw_compiler *compiler,
 
    generate_code(p, compiler, log_data, nir, prog_data, cfg);
 
-   return brw_get_program(p, out_assembly_size);
+   return brw_get_program(p, &prog_data->base.program_size);
 }

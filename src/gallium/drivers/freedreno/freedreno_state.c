@@ -162,6 +162,53 @@ fd_set_shader_buffers(struct pipe_context *pctx,
 }
 
 static void
+fd_set_shader_images(struct pipe_context *pctx,
+		enum pipe_shader_type shader,
+		unsigned start, unsigned count,
+		const struct pipe_image_view *images)
+{
+	struct fd_context *ctx = fd_context(pctx);
+	struct fd_shaderimg_stateobj *so = &ctx->shaderimg[shader];
+
+	unsigned mask = 0;
+
+	if (images) {
+		for (unsigned i = 0; i < count; i++) {
+			unsigned n = i + start;
+			struct pipe_image_view *buf = &so->si[n];
+
+			if ((buf->resource == images[i].resource) &&
+					(buf->format == images[i].format) &&
+					(buf->access == images[i].access) &&
+					!memcmp(&buf->u, &images[i].u, sizeof(buf->u)))
+				continue;
+
+			mask |= BIT(n);
+			util_copy_image_view(buf, &images[i]);
+
+			if (buf->resource)
+				so->enabled_mask |= BIT(n);
+			else
+				so->enabled_mask &= ~BIT(n);
+		}
+	} else {
+		mask = (BIT(count) - 1) << start;
+
+		for (unsigned i = 0; i < count; i++) {
+			unsigned n = i + start;
+			struct pipe_image_view *img = &so->si[n];
+
+			pipe_resource_reference(&img->resource, NULL);
+		}
+
+		so->enabled_mask &= ~mask;
+	}
+
+	so->dirty_mask |= mask;
+	ctx->dirty_shader[shader] |= FD_DIRTY_SHADER_IMAGE;
+}
+
+static void
 fd_set_framebuffer_state(struct pipe_context *pctx,
 		const struct pipe_framebuffer_state *framebuffer)
 {
@@ -188,14 +235,14 @@ fd_set_framebuffer_state(struct pipe_context *pctx,
 			 * multiple times to the same surface), so we might as
 			 * well go ahead and flush this one:
 			 */
-			fd_batch_flush(old_batch, false);
+			fd_batch_flush(old_batch, false, false);
 		}
 
 		fd_batch_reference(&old_batch, NULL);
 	} else {
 		DBG("%d: cbufs[0]=%p, zsbuf=%p", ctx->batch->needs_flush,
 				framebuffer->cbufs[0], framebuffer->zsbuf);
-		fd_batch_flush(ctx->batch, false);
+		fd_batch_flush(ctx->batch, false, false);
 	}
 
 	cso = &ctx->batch->framebuffer;
@@ -385,7 +432,7 @@ fd_create_stream_output_target(struct pipe_context *pctx,
 	target->buffer_offset = buffer_offset;
 	target->buffer_size = buffer_size;
 
-	assert(rsc->base.b.target == PIPE_BUFFER);
+	assert(rsc->base.target == PIPE_BUFFER);
 	util_range_add(&rsc->valid_buffer_range,
 		buffer_offset, buffer_offset + buffer_size);
 
@@ -448,15 +495,53 @@ fd_set_compute_resources(struct pipe_context *pctx,
 	// TODO
 }
 
+/* used by clover to bind global objects, returning the bo address
+ * via handles[n]
+ */
 static void
 fd_set_global_binding(struct pipe_context *pctx,
 		unsigned first, unsigned count, struct pipe_resource **prscs,
 		uint32_t **handles)
 {
-	/* TODO only used by clover.. seems to need us to return the actual
-	 * gpuaddr of the buffer.. which isn't really exposed to mesa atm.
-	 * How is this used?
-	 */
+	struct fd_context *ctx = fd_context(pctx);
+	struct fd_global_bindings_stateobj *so = &ctx->global_bindings;
+	unsigned mask = 0;
+
+	if (prscs) {
+		for (unsigned i = 0; i < count; i++) {
+			unsigned n = i + first;
+
+			mask |= BIT(n);
+
+			pipe_resource_reference(&so->buf[n], prscs[i]);
+
+			if (so->buf[n]) {
+				struct fd_resource *rsc = fd_resource(so->buf[n]);
+				uint64_t iova = fd_bo_get_iova(rsc->bo);
+				// TODO need to scream if iova > 32b or fix gallium API..
+				*handles[i] += iova;
+			}
+
+			if (prscs[i])
+				so->enabled_mask |= BIT(n);
+			else
+				so->enabled_mask &= ~BIT(n);
+		}
+	} else {
+		mask = (BIT(count) - 1) << first;
+
+		for (unsigned i = 0; i < count; i++) {
+			unsigned n = i + first;
+			if (so->buf[n]) {
+				struct fd_resource *rsc = fd_resource(so->buf[n]);
+				fd_bo_put_iova(rsc->bo);
+			}
+			pipe_resource_reference(&so->buf[n], NULL);
+		}
+
+		so->enabled_mask &= ~mask;
+	}
+
 }
 
 void
@@ -468,6 +553,7 @@ fd_state_init(struct pipe_context *pctx)
 	pctx->set_sample_mask = fd_set_sample_mask;
 	pctx->set_constant_buffer = fd_set_constant_buffer;
 	pctx->set_shader_buffers = fd_set_shader_buffers;
+	pctx->set_shader_images = fd_set_shader_images;
 	pctx->set_framebuffer_state = fd_set_framebuffer_state;
 	pctx->set_polygon_stipple = fd_set_polygon_stipple;
 	pctx->set_scissor_states = fd_set_scissor_states;

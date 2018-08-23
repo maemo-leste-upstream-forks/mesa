@@ -24,10 +24,6 @@
  * next paragraph) shall be included in all copies or substantial portions
  * of the Software.
  */
-/*
- * Authors:
- *      Marek Olšák <maraeo@gmail.com>
- */
 
 #ifndef AMDGPU_CS_H
 #define AMDGPU_CS_H
@@ -108,6 +104,10 @@ struct amdgpu_cs_context {
    unsigned                    num_fence_dependencies;
    unsigned                    max_fence_dependencies;
 
+   struct pipe_fence_handle    **syncobj_to_signal;
+   unsigned                    num_syncobj_to_signal;
+   unsigned                    max_syncobj_to_signal;
+
    struct pipe_fence_handle    *fence;
 
    /* the error returned from cs_flush for non-async submissions */
@@ -148,9 +148,11 @@ struct amdgpu_fence {
    struct amdgpu_cs_fence fence;
    uint64_t *user_fence_cpu_address;
 
-   /* If the fence is unknown due to an IB still being submitted
-    * in the other thread. */
-   volatile int submission_in_progress; /* bool (int for atomicity) */
+   /* If the fence has been submitted. This is unsignalled for deferred fences
+    * (cs->next_fence) and while an IB is still being submitted in the submit
+    * thread. */
+   struct util_queue_fence submitted;
+
    volatile int signalled;              /* bool (int for atomicity) */
 };
 
@@ -182,6 +184,7 @@ static inline void amdgpu_fence_reference(struct pipe_fence_handle **dst,
       else
          amdgpu_ctx_unref(fence->ctx);
 
+      util_queue_fence_destroy(&fence->submitted);
       FREE(fence);
    }
    *rdst = rsrc;

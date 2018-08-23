@@ -46,12 +46,12 @@ struct INPUT_ELEMENT_DESC
             uint32_t            StreamIndex : 6;
             uint32_t            InstanceEnable : 1;
             uint32_t            InstanceStrideEnable : 1;
-            uint32_t            ComponentControl0 : 3;
-            uint32_t            ComponentControl1 : 3;
-            uint32_t            ComponentControl2 : 3;
-            uint32_t            ComponentControl3 : 3;
+            uint32_t            ComponentControl0 : 4;
+            uint32_t            ComponentControl1 : 4;
+            uint32_t            ComponentControl2 : 4;
+            uint32_t            ComponentControl3 : 4;
             uint32_t            ComponentPacking : 4;
-            uint32_t            _reserved : 18;
+            uint32_t            _reserved : 14;
         };
         uint64_t bits;
     };
@@ -87,7 +87,7 @@ enum ComponentControl
     Store1Fp        = 3,
     Store1Int       = 4,
     StoreVertexId   = 5,
-    StoreInstanceId = 6
+    StoreInstanceId = 6,
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -101,7 +101,6 @@ struct FETCH_COMPILE_STATE
     uint32_t cutIndex{ 0xffffffff };
 
     // Options that effect the JIT'd code
-    bool bDisableVGATHER;                   // If enabled, FetchJit will generate loads/shuffles instead of VGATHERs
     bool bDisableIndexOOBCheck;             // If enabled, FetchJit will exclude index OOB check
     bool bEnableCutIndex{ false };          // Compares indices with the cut index and returns a cut mask
     bool bVertexIDOffsetEnable{ false };    // Offset vertexID by StartVertex for non-indexed draws or BaseVertex for indexed draws
@@ -110,14 +109,13 @@ struct FETCH_COMPILE_STATE
     bool bForceSequentialAccessEnable{ false };
     bool bInstanceIDOffsetEnable{ false };
 
-    FETCH_COMPILE_STATE(bool disableVGATHER = false, bool diableIndexOOBCheck = false):
-        bDisableVGATHER(disableVGATHER), bDisableIndexOOBCheck(diableIndexOOBCheck){ };
+    FETCH_COMPILE_STATE(bool diableIndexOOBCheck = false):
+        bDisableIndexOOBCheck(diableIndexOOBCheck){ };
 
     bool operator==(const FETCH_COMPILE_STATE &other) const
     {
         if (numAttribs != other.numAttribs) return false;
         if (indexType != other.indexType) return false;
-        if (bDisableVGATHER != other.bDisableVGATHER) return false;
         if (bDisableIndexOOBCheck != other.bDisableIndexOOBCheck) return false;
         if (bEnableCutIndex != other.bEnableCutIndex) return false;
         if (cutIndex != other.cutIndex) return false;
@@ -126,9 +124,9 @@ struct FETCH_COMPILE_STATE
         if (bForceSequentialAccessEnable != other.bForceSequentialAccessEnable) return false;
         if (bInstanceIDOffsetEnable != other.bInstanceIDOffsetEnable) return false;
 
-        for(uint32_t i = 0; i < numAttribs; ++i)
+        for (uint32_t i = 0; i < numAttribs; ++i)
         {
-            if((layout[i].bits != other.layout[i].bits) ||
+            if ((layout[i].bits != other.layout[i].bits) ||
                (((layout[i].InstanceEnable == 1) || (layout[i].InstanceStrideEnable == 1)) &&
                 (layout[i].InstanceAdvancementState != other.layout[i].InstanceAdvancementState))){
                 return false;

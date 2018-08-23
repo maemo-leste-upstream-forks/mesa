@@ -59,6 +59,7 @@ struct backend_reg : private brw_reg
    }
 
    bool equals(const backend_reg &r) const;
+   bool negative_equals(const backend_reg &r) const;
 
    bool is_zero() const;
    bool is_one() const;
@@ -169,10 +170,10 @@ struct backend_instruction {
    bool shadow_compare:1;
    bool eot:1;
 
-   /* Chooses which flag subregister (f0.0 or f0.1) is used for conditional
+   /* Chooses which flag subregister (f0.0 to f1.1) is used for conditional
     * mod and predication.
     */
-   unsigned flag_subreg:1;
+   unsigned flag_subreg:2;
 
    /** The number of hardware registers used for a message header. */
    uint8_t header_size;
@@ -197,6 +198,7 @@ protected:
                   struct brw_stage_prog_data *stage_prog_data);
 
 public:
+   virtual ~backend_shader();
 
    const struct brw_compiler *compiler;
    void *log_data; /* Passed to compiler->*_log functions */
@@ -284,8 +286,6 @@ struct brw_gs_compile
    unsigned control_data_bits_per_vertex;
    unsigned control_data_header_size_bits;
 };
-
-unsigned get_atomic_counter_op(nir_intrinsic_op op);
 
 #ifdef __cplusplus
 }

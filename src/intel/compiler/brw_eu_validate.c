@@ -261,6 +261,17 @@ send_restrictions(const struct gen_device_info *devinfo,
                   brw_inst_src0_da_reg_nr(devinfo, inst) < 112,
                   "send with EOT must use g112-g127");
       }
+
+      if (devinfo->gen >= 8) {
+         ERROR_IF(!dst_is_null(devinfo, inst) &&
+                  (brw_inst_dst_da_reg_nr(devinfo, inst) +
+                   brw_inst_rlen(devinfo, inst) > 127) &&
+                  (brw_inst_src0_da_reg_nr(devinfo, inst) +
+                   brw_inst_mlen(devinfo, inst) >
+                   brw_inst_dst_da_reg_nr(devinfo, inst)),
+                  "r127 must not be used for return address when there is "
+                  "a src and dest overlap");
+      }
    }
 
    return error_msg;
@@ -277,6 +288,7 @@ static enum brw_reg_type
 execution_type_for_type(enum brw_reg_type type)
 {
    switch (type) {
+   case BRW_REGISTER_TYPE_NF:
    case BRW_REGISTER_TYPE_DF:
    case BRW_REGISTER_TYPE_F:
    case BRW_REGISTER_TYPE_HF:
@@ -1257,8 +1269,8 @@ special_requirements_for_handling_double_precision_data_types(
 
 bool
 brw_validate_instructions(const struct gen_device_info *devinfo,
-                          void *assembly, int start_offset, int end_offset,
-                          struct annotation_info *annotation)
+                          const void *assembly, int start_offset, int end_offset,
+                          struct disasm_info *disasm)
 {
    bool valid = true;
 
@@ -1286,8 +1298,8 @@ brw_validate_instructions(const struct gen_device_info *devinfo,
          CHECK(special_requirements_for_handling_double_precision_data_types);
       }
 
-      if (error_msg.str && annotation) {
-         annotation_insert_error(annotation, src_offset, error_msg.str);
+      if (error_msg.str && disasm) {
+         disasm_insert_error(disasm, src_offset, error_msg.str);
       }
       valid = valid && error_msg.len == 0;
       free(error_msg.str);

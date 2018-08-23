@@ -57,16 +57,12 @@ extern const struct brw_tracked_state brw_recalculate_urb_fence;
 extern const struct brw_tracked_state brw_sf_vp;
 extern const struct brw_tracked_state brw_cs_texture_surfaces;
 extern const struct brw_tracked_state brw_vs_ubo_surfaces;
-extern const struct brw_tracked_state brw_vs_abo_surfaces;
 extern const struct brw_tracked_state brw_vs_image_surfaces;
 extern const struct brw_tracked_state brw_tcs_ubo_surfaces;
-extern const struct brw_tracked_state brw_tcs_abo_surfaces;
 extern const struct brw_tracked_state brw_tcs_image_surfaces;
 extern const struct brw_tracked_state brw_tes_ubo_surfaces;
-extern const struct brw_tracked_state brw_tes_abo_surfaces;
 extern const struct brw_tracked_state brw_tes_image_surfaces;
 extern const struct brw_tracked_state brw_gs_ubo_surfaces;
-extern const struct brw_tracked_state brw_gs_abo_surfaces;
 extern const struct brw_tracked_state brw_gs_image_surfaces;
 extern const struct brw_tracked_state brw_renderbuffer_surfaces;
 extern const struct brw_tracked_state brw_renderbuffer_read_surfaces;
@@ -77,10 +73,8 @@ extern const struct brw_tracked_state brw_tes_binding_table;
 extern const struct brw_tracked_state brw_tcs_binding_table;
 extern const struct brw_tracked_state brw_vs_binding_table;
 extern const struct brw_tracked_state brw_wm_ubo_surfaces;
-extern const struct brw_tracked_state brw_wm_abo_surfaces;
 extern const struct brw_tracked_state brw_wm_image_surfaces;
 extern const struct brw_tracked_state brw_cs_ubo_surfaces;
-extern const struct brw_tracked_state brw_cs_abo_surfaces;
 extern const struct brw_tracked_state brw_cs_image_surfaces;
 
 extern const struct brw_tracked_state brw_psp_urb_cbs;
@@ -129,6 +123,13 @@ void brw_upload_state_base_address(struct brw_context *brw);
 /* gen8_depth_state.c */
 void gen8_write_pma_stall_bits(struct brw_context *brw,
                                uint32_t pma_stall_bits);
+
+/* brw_disk_cache.c */
+void brw_disk_cache_init(struct intel_screen *screen);
+bool brw_disk_cache_upload_program(struct brw_context *brw,
+                                   gl_shader_stage stage);
+void brw_disk_cache_write_compute_program(struct brw_context *brw);
+void brw_disk_cache_write_render_programs(struct brw_context *brw);
 
 /***********************************************************************
  * brw_state.c
@@ -333,6 +334,7 @@ void gen75_init_atoms(struct brw_context *brw);
 void gen8_init_atoms(struct brw_context *brw);
 void gen9_init_atoms(struct brw_context *brw);
 void gen10_init_atoms(struct brw_context *brw);
+void gen11_init_atoms(struct brw_context *brw);
 
 /* Memory Object Control State:
  * Specifying zero for L3 means "uncached in L3", at least on Haswell
@@ -383,6 +385,12 @@ void gen10_init_atoms(struct brw_context *brw);
 #define CNL_MOCS_WB  (2 << 1)
 /* TC=LLC/eLLC, LeCC=PTE, LRUM=3, L3CC=WB */
 #define CNL_MOCS_PTE (1 << 1)
+
+/* Ice Lake uses same MOCS settings as Cannonlake */
+/* TC=LLC/eLLC, LeCC=WB, LRUM=3, L3CC=WB */
+#define ICL_MOCS_WB  (2 << 1)
+/* TC=LLC/eLLC, LeCC=PTE, LRUM=3, L3CC=WB */
+#define ICL_MOCS_PTE (1 << 1)
 
 uint32_t brw_get_bo_mocs(const struct gen_device_info *devinfo,
                          struct brw_bo *bo);

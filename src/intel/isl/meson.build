@@ -51,18 +51,15 @@ isl_gen9_files = files(
 isl_gen_libs = []
 foreach g : [['40', isl_gen4_files], ['50', []], ['60', isl_gen6_files],
              ['70', isl_gen7_files], ['75', []], ['80', isl_gen8_files],
-             ['90', isl_gen9_files], ['100', []]]
+             ['90', isl_gen9_files], ['100', []], ['110', []]]
   _gen = g[0]
-  _sources = g[1]
-  _lib = static_library(
-    'libisl_gen@0@'.format(_gen),
-    [_sources, isl_gen_files, gen_xml_pack],
+  isl_gen_libs += static_library(
+    'isl_gen@0@'.format(_gen),
+    [g[1], isl_gen_files, gen_xml_pack],
     include_directories : [inc_common, inc_intel],
     c_args : [c_vis_args, no_override_init_args,
               '-DGEN_VERSIONx10=@0@'.format(_gen)],
-    build_by_default : false,
   )
-  isl_gen_libs += _lib
 endforeach
 
 isl_format_layout_c = custom_target(
@@ -88,18 +85,17 @@ libisl = static_library(
   include_directories : [inc_common, inc_intel, inc_drm_uapi],
   link_with : isl_gen_libs,
   c_args : [c_vis_args, no_override_init_args],
-  build_by_default : false,
 )
 
 if with_tests
-  isl_surf_get_image_offset_test = executable(
-    'isl_surf_get_image_offset_test',
-    'tests/isl_surf_get_image_offset_test.c',
-    dependencies : dep_m,
-    include_directories : [inc_common, inc_intel],
-    link_with : [libisl, libintel_common],
-    build_by_default : false,
+  test(
+    'isl_surf_get_image_offset',
+    executable(
+      'isl_surf_get_image_offset_test',
+      'tests/isl_surf_get_image_offset_test.c',
+      dependencies : dep_m,
+      include_directories : [inc_common, inc_intel],
+      link_with : [libisl, libintel_dev],
+    )
   )
-
-  test('isl_surf_get_image_offset', isl_surf_get_image_offset_test)
 endif

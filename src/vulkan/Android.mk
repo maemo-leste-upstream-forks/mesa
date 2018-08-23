@@ -36,27 +36,30 @@ LOCAL_MODULE_CLASS := STATIC_LIBRARIES
 intermediates := $(call local-generated-sources-dir)
 
 LOCAL_C_INCLUDES := \
-	$(MESA_TOP)/include/vulkan
+	$(MESA_TOP)/include/vulkan \
+	$(MESA_TOP)/src/vulkan/util
 
 LOCAL_GENERATED_SOURCES := $(addprefix $(intermediates)/, \
 	$(VULKAN_UTIL_GENERATED_FILES))
 
-LOCAL_SRC_FILES := $(VULKAN_UTIL_FILES)
+LOCAL_SRC_FILES := $(VULKAN_UTIL_FILES) $(VULKAN_WSI_FILES)
 
 vulkan_api_xml = $(MESA_TOP)/src/vulkan/registry/vk.xml
-vk_android_native_buffer_xml = $(MESA_TOP)/src/vulkan/registry/vk_android_native_buffer.xml
 
 $(LOCAL_GENERATED_SOURCES): $(MESA_TOP)/src/vulkan/util/gen_enum_to_str.py \
-		$(vulkan_api_xml) $(vk_android_native_buffer_xml)
+		$(vulkan_api_xml)
 	@echo "target Generated: $(PRIVATE_MODULE) <= $(notdir $(@))"
 	@mkdir -p $(dir $@)
 	$(hide) $(MESA_PYTHON2) $(MESA_TOP)/src/vulkan/util/gen_enum_to_str.py \
 	    --xml $(vulkan_api_xml) \
-	    --xml $(vk_android_native_buffer_xml) \
 	    --outdir $(dir $@)
 
 LOCAL_EXPORT_C_INCLUDE_DIRS := \
         $(intermediates)
+
+ifeq ($(filter $(MESA_ANDROID_MAJOR_VERSION), 4 5 6 7),)
+LOCAL_SHARED_LIBRARIES += libnativewindow
+endif
 
 include $(MESA_COMMON_MK)
 include $(BUILD_STATIC_LIBRARY)

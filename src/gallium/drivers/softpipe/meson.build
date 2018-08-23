@@ -81,5 +81,9 @@ libsoftpipe = static_library(
   files_softpipe,
   include_directories : [inc_gallium_aux, inc_gallium, inc_include, inc_src],
   c_args : [c_vis_args, c_msvc_compat_args],
-  build_by_default : false,
+)
+
+driver_swrast = declare_dependency(
+  compile_args : '-DGALLIUM_SOFTPIPE',
+  link_with : libsoftpipe
 )

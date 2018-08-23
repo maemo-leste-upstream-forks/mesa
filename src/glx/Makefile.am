@@ -19,13 +19,10 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-if HAVE_SHARED_GLAPI
-SHARED_GLAPI_LIB = $(top_builddir)/src/mapi/shared-glapi/libglapi.la
-endif
 
 SUBDIRS =
 
-EXTRA_DIST = SConscript
+EXTRA_DIST = SConscript meson.build
 
 if HAVE_XF86VIDMODE
 EXTRA_DEFINES_XF86VIDMODE = -DXF86VIDMODE
@@ -181,7 +178,7 @@ GL_LIBS = \
 	$(LIBDRM_LIBS) \
 	libglx.la \
 	$(top_builddir)/src/mapi/glapi/libglapi.la \
-	$(SHARED_GLAPI_LIB) \
+	$(top_builddir)/src/mapi/shared-glapi/libglapi.la \
 	$(GL_LIB_DEPS)
 
 GL_LDFLAGS = \

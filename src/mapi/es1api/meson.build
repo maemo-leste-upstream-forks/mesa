@@ -20,7 +20,7 @@
 
 es1_glapi_mapi_tmp_h = custom_target(
   'es1_glapi_mapi_tmp.h',
-  input : ['../mapi_abi.py', gl_and_es_api_files],
+  input : [mapi_abi_py, gl_and_es_api_files],
   output : 'glapi_mapi_tmp.h',
   command : [prog_python2, '@INPUT0@', '--printer', 'es1api', '@INPUT1@'],
   depend_files : api_xml_files,
@@ -30,13 +30,15 @@ es1_glapi_mapi_tmp_h = custom_target(
 libglesv1_cm = shared_library(
   'GLESv1_CM',
   ['../entry.c', es1_glapi_mapi_tmp_h],
-  c_args : [c_msvc_compat_args, c_vis_args, '-DMAPI_MODE_BRIDGE',
-            '-DMAPI_ABI_HEADER="@0@"'.format(es1_glapi_mapi_tmp_h.full_path())],
+  c_args : [
+    c_msvc_compat_args, c_vis_args, '-DMAPI_MODE_BRIDGE',
+    '-DMAPI_ABI_HEADER="@0@"'.format(es1_glapi_mapi_tmp_h.full_path()),
+  ],
   link_args : [ld_args_gc_sections],
   include_directories : [inc_src, inc_include, inc_mapi],
   link_with : libglapi,
   dependencies : [dep_thread, dep_libdrm, dep_m, dep_dl],
-  version : '1.1',
+  version : '1.0.0',
   install : true,
 )
 
@@ -46,9 +48,14 @@ pkg.generate(
   description : 'Mesa OpenGL ES 1.1 CM library',
   version : meson.project_version(),
   libraries : libglesv1_cm,
-  libraries_private : '-lm -ldl -lpthread -pthread',
+  libraries_private : gl_priv_libs,
 )
 
 if with_tests
-  test('es1-ABI-check', find_program('ABI-check'))
+  test(
+    'es1-ABI-check',
+    find_program('ABI-check'),
+    env : env_test,
+    args : libglesv1_cm
+  )
 endif
