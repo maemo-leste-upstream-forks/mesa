@@ -1279,6 +1279,7 @@ struct __DRIdri2ExtensionRec {
 #define __DRI_IMAGE_FORMAT_YV12         0x101f
 #define __DRI_IMAGE_FORMAT_YVYU         0x1020
 #define __DRI_IMAGE_FORMAT_VYUY         0x1021
+#define __DRI_IMAGE_FORMAT_AXBXGXRX106106106106 0x1022
 
 #define __DRI_IMAGE_USE_SHARE		0x0001
 #define __DRI_IMAGE_USE_SCANOUT		0x0002
