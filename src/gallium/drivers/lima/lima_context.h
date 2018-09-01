@@ -153,6 +153,12 @@ struct lima_ctx_plb_pp_stream {
    uint32_t offset[4];
 };
 
+struct lima_damage_state {
+   struct pipe_scissor_state *region;
+   unsigned num_region;
+   bool aligned;
+};
+
 struct lima_context {
    struct pipe_context base;
 
@@ -194,8 +200,7 @@ struct lima_context {
    struct pipe_stencil_ref stencil_ref;
    struct lima_context_constant_buffer const_buffer[PIPE_SHADER_TYPES];
    struct lima_texture_stateobj tex_stateobj;
-   struct pipe_scissor_state *damage_region;
-   unsigned num_damage;
+   struct lima_damage_state damage;
 
    #define LIMA_CTX_PLB_MIN_NUM  1
    #define LIMA_CTX_PLB_MAX_NUM  4
