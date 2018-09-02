@@ -500,8 +500,8 @@ lima_set_damage_region(struct pipe_context *pctx, unsigned num_rects, int *rects
       /* region in tile unit */
       r->minx = rects[i * 4] >> 4;
       r->miny = rects[i * 4 + 1] >> 4;
-      r->maxx = (rects[i * 4 + 2] + 0xf) >> 4;
-      r->maxy = (rects[i * 4 + 3] + 0xf) >> 4;
+      r->maxx = (rects[i * 4] + rects[i * 4 + 2] + 0xf) >> 4;
+      r->maxy = (rects[i * 4 + 1] + rects[i * 4 + 3] + 0xf) >> 4;
    }
 
    /* is region aligned to tiles? */
