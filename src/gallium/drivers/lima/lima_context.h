@@ -159,6 +159,12 @@ struct lima_damage_state {
    bool aligned;
 };
 
+struct lima_pp_stream_state {
+   struct lima_bo *bo;
+   uint32_t bo_offset;
+   uint32_t offset[8];
+};
+
 struct lima_context {
    struct pipe_context base;
 
@@ -201,6 +207,7 @@ struct lima_context {
    struct lima_context_constant_buffer const_buffer[PIPE_SHADER_TYPES];
    struct lima_texture_stateobj tex_stateobj;
    struct lima_damage_state damage;
+   struct lima_pp_stream_state pp_stream;
 
    #define LIMA_CTX_PLB_MIN_NUM  1
    #define LIMA_CTX_PLB_MAX_NUM  4
@@ -213,7 +220,6 @@ struct lima_context {
    struct lima_bo *plb[LIMA_CTX_PLB_MAX_NUM];
    struct lima_bo *plb_gp_stream;
    struct hash_table *plb_pp_stream;
-   struct lima_ctx_plb_pp_stream *current_plb_pp_stream;
    uint32_t plb_index;
 
    struct lima_ctx_buff_state buffer_state[lima_ctx_buff_num];
