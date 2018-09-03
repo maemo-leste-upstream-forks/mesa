@@ -157,7 +157,7 @@ static ppir_node *ppir_emit_alu(ppir_block *block, nir_instr *ni)
    int op = nir_to_ppir_opcodes[instr->op];
 
    if (op < 0) {
-      ppir_error("unsupported nir_op %d\n", instr->op);
+      ppir_error("unsupported nir_op: %s\n", nir_op_infos[instr->op].name);
       return NULL;
    }
 

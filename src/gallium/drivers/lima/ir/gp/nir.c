@@ -126,7 +126,7 @@ static bool gpir_emit_alu(gpir_block *block, nir_instr *ni)
    int op = nir_to_gpir_opcodes[instr->op];
 
    if (op < 0) {
-      gpir_error("unsupported nir_op %d\n", instr->op);
+      gpir_error("unsupported nir_op: %s\n", nir_op_infos[instr->op].name);
       return false;
    }
 
