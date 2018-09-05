@@ -475,12 +475,21 @@ lima_screen_create(int fd, struct renderonly *ro)
    memcpy(screen->pp_buffer->map + pp_reload_program_offset,
           pp_reload_program, sizeof(pp_reload_program));
 
-   /* 0/1/2 vertex index for reload draw */
-   static const uint32_t pp_reload_index[] = {
+   /* 0/1/2 vertex index for reload/clear draw */
+   static const uint32_t pp_shared_index[] = {
       0x00020100, 0x00000000, 0x00000000, 0x00000000, /* 0x00000000 */
    };
-   memcpy(screen->pp_buffer->map + pp_reload_index_offset,
-          pp_reload_index, sizeof(pp_reload_index));
+   memcpy(screen->pp_buffer->map + pp_shared_index_offset,
+          pp_shared_index, sizeof(pp_shared_index));
+
+   /* 4096x4096 gl pos used for partial clear */
+   static const uint32_t pp_clear_gl_pos[] = {
+      0x45800000, 0x00000000, 0x3f800000, 0x3f800000, /* 0x00000000 */
+      0x00000000, 0x00000000, 0x3f800000, 0x3f800000, /* 0x00000010 */
+      0x00000000, 0x45800000, 0x3f800000, 0x3f800000, /* 0x00000020 */
+   };
+   memcpy(screen->pp_buffer->map + pp_clear_gl_pos_offset,
+          pp_clear_gl_pos, sizeof(pp_clear_gl_pos));
 
    /* is pp frame render state static? */
    uint32_t *pp_frame_rsw = screen->pp_buffer->map + pp_frame_rsw_offset;

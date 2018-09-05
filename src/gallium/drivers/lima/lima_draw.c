@@ -235,7 +235,7 @@ lima_pack_reload_plbu_cmd(struct lima_context *ctx)
    plbu_cmd[i++] = 0x00000000;
    plbu_cmd[i++] = 0x1000010a;
 
-   plbu_cmd[i++] = screen->pp_buffer->va + pp_reload_index_offset;
+   plbu_cmd[i++] = screen->pp_buffer->va + pp_shared_index_offset;
    plbu_cmd[i++] = 0x10000101;
 
    plbu_cmd[i++] = va + lima_reload_gl_pos_offset;
@@ -251,7 +251,88 @@ lima_pack_reload_plbu_cmd(struct lima_context *ctx)
 static void
 lima_pack_clear_plbu_cmd(struct lima_context *ctx)
 {
-   /* not implemented */
+   #define lima_clear_render_state_offset 0x0000
+   #define lima_clear_shader_offset       0x0040
+   #define lima_clear_buffer_size         0x0080
+
+   void *cpu;
+   unsigned offset;
+   struct pipe_resource *pres = NULL;
+   u_upload_alloc(ctx->uploader, 0, lima_clear_buffer_size,
+                  0x40, &offset, &pres, &cpu);
+
+   struct lima_resource *res = lima_resource(pres);
+   lima_bo_update(res->bo, false, true);
+   uint32_t va = res->bo->va + offset;
+
+   struct lima_screen *screen = lima_screen(ctx->base.screen);
+   uint32_t gl_pos_va = screen->pp_buffer->va + pp_clear_gl_pos_offset;
+
+   uint32_t clear_shader[] = {
+      0x00021025, 0x0000000c,
+      (ctx->clear.color_16pc << 12) | 0x000007cf,
+      ctx->clear.color_16pc >> 12,
+      ctx->clear.color_16pc >> 44,
+   };
+   memcpy(cpu + lima_clear_shader_offset, &clear_shader,
+          sizeof(clear_shader));
+
+   uint32_t clear_shader_va = va + lima_clear_shader_offset;
+   uint32_t clear_shader_first_instr_size = clear_shader[0] & 0x1f;
+
+   struct lima_render_state clear_render_state = {
+      .blend_color_bg = 0x00800080,
+      .blend_color_ra = 0x00ff0080,
+      .alpha_blend = 0xfc321892,
+      .depth_test = 0x0000003e,
+      .depth_range = 0xffff0000,
+      .stencil_front = 0x00000007,
+      .stencil_back = 0x00000007,
+      .multi_sample = 0x0000f007,
+      .shader_address = clear_shader_va | clear_shader_first_instr_size,
+   };
+   memcpy(cpu + lima_clear_render_state_offset, &clear_render_state,
+          sizeof(clear_render_state));
+
+   int i = 0, max_n = 22;
+   uint32_t *plbu_cmd = util_dynarray_enlarge(&ctx->plbu_cmd_array, max_n * 4);
+
+   plbu_cmd[i++] = 0x00000000;
+   plbu_cmd[i++] = 0x10000107;
+
+   plbu_cmd[i++] = 0x45800000;
+   plbu_cmd[i++] = 0x10000108;
+
+   plbu_cmd[i++] = 0x00000000;
+   plbu_cmd[i++] = 0x10000105;
+
+   plbu_cmd[i++] = 0x45800000;
+   plbu_cmd[i++] = 0x10000106;
+
+   struct pipe_scissor_state *scissor = &ctx->scissor;
+   plbu_cmd[i++] = (scissor->minx << 30) | (scissor->maxy - 1) << 15 | scissor->miny;
+   plbu_cmd[i++] = 0x70000000 | (scissor->maxx - 1) << 13 | (scissor->minx >> 2);
+
+   plbu_cmd[i++] = va + lima_clear_render_state_offset;
+   plbu_cmd[i++] = 0x80000000 | (gl_pos_va >> 4);
+
+   plbu_cmd[i++] = 0x00000200;
+   plbu_cmd[i++] = 0x1000010b;
+
+   plbu_cmd[i++] = 0x00000000;
+   plbu_cmd[i++] = 0x1000010a;
+
+   plbu_cmd[i++] = screen->pp_buffer->va + pp_shared_index_offset;
+   plbu_cmd[i++] = 0x10000101;
+
+   plbu_cmd[i++] = gl_pos_va;
+   plbu_cmd[i++] = 0x10000100;
+
+   plbu_cmd[i++] = 0x03000000;
+   plbu_cmd[i++] = 0x002f0000;
+
+   assert(i <= max_n);
+   ctx->plbu_cmd_array.size += i * 4;
 }
 
 static void
@@ -334,12 +415,19 @@ lima_clear(struct pipe_context *pctx, unsigned buffers,
    struct lima_context_clear *clear = &ctx->clear;
    clear->buffers = buffers;
 
-   if (buffers & PIPE_CLEAR_COLOR0)
-      clear->color =
+   if (buffers & PIPE_CLEAR_COLOR0) {
+      clear->color_8pc =
          ((uint32_t)float_to_ubyte(color->f[3]) << 24) |
          ((uint32_t)float_to_ubyte(color->f[2]) << 16) |
          ((uint32_t)float_to_ubyte(color->f[1]) << 8) |
          float_to_ubyte(color->f[0]);
+
+      clear->color_16pc =
+         ((uint64_t)float_to_ushort(color->f[3]) << 48) |
+         ((uint64_t)float_to_ushort(color->f[2]) << 32) |
+         ((uint64_t)float_to_ushort(color->f[1]) << 16) |
+         float_to_ubyte(color->f[0]);
+   }
 
    if (buffers & PIPE_CLEAR_DEPTH)
       clear->depth = util_pack_z(PIPE_FORMAT_Z24X8_UNORM, depth);
@@ -1315,10 +1403,10 @@ lima_pack_pp_frame_reg(struct lima_context *ctx, uint32_t *frame_reg,
    frame->flags = 0x02;
    frame->clear_value_depth = ctx->clear.depth;
    frame->clear_value_stencil = ctx->clear.stencil;
-   frame->clear_value_color = ctx->clear.color;
-   frame->clear_value_color_1 = ctx->clear.color;
-   frame->clear_value_color_2 = ctx->clear.color;
-   frame->clear_value_color_3 = ctx->clear.color;
+   frame->clear_value_color = ctx->clear.color_8pc;
+   frame->clear_value_color_1 = ctx->clear.color_8pc;
+   frame->clear_value_color_2 = ctx->clear.color_8pc;
+   frame->clear_value_color_3 = ctx->clear.color_8pc;
    frame->one = 1;
 
    /* related with MSAA and different value when r4p0/r7p0 */
