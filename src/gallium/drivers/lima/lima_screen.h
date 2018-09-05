@@ -75,8 +75,9 @@ struct lima_screen {
    #define pp_frame_rsw_offset       0x0000
    #define pp_clear_program_offset   0x0040
    #define pp_reload_program_offset  0x0080
-   #define pp_reload_index_offset    0x00c0
-   #define pp_stack_offset           0x0100
+   #define pp_shared_index_offset    0x00c0
+   #define pp_clear_gl_pos_offset    0x0100
+   #define pp_stack_offset           0x0140
    #define pp_buffer_size            0x2000
 };
 
