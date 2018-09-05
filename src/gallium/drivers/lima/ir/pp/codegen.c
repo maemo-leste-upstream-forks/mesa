@@ -515,14 +515,14 @@ static void bitcopy(void *dst, int dst_offset, void *src, int src_size)
          *cpy_dst |= *cpy_src << off1;
          cpy_dst++;
 
-         cpy_size += off1;
+         cpy_size += off2;
          if (cpy_size >= src_size)
             break;
 
          *cpy_dst |= *cpy_src >> off2;
          cpy_src++;
 
-         cpy_size += off2;
+         cpy_size += off1;
          if (cpy_size >= src_size)
             break;
       }
