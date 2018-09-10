@@ -124,13 +124,13 @@ lima_context_destroy(struct pipe_context *pctx)
 
    lima_state_fini(ctx);
 
-   slab_destroy_child(&ctx->transfer_pool);
-
    if (ctx->suballocator)
       u_suballocator_destroy(ctx->suballocator);
 
    if (ctx->uploader)
       u_upload_destroy(ctx->uploader);
+
+   slab_destroy_child(&ctx->transfer_pool);
 
    for (int i = 0; i < LIMA_CTX_PLB_MAX_NUM; i++) {
       if (ctx->plb[i])
