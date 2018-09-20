@@ -53,7 +53,7 @@ else
 
 	# Freedreno requires arm in addition
 	ifneq (,$(filter arm arm64,$(DEB_HOST_ARCH_CPU)))
-		GALLIUM_DRIVERS += freedreno
+		GALLIUM_DRIVERS += freedreno exynos sun4i meson rockchip lima
 	endif
 
 	# tegra and vc4 kernel support are only available on armhf and arm64
@@ -114,7 +114,13 @@ else
 
 	confflags_DIRECT_RENDERING = --enable-driglx-direct
 	confflags_GBM = --enable-gbm
+  ifneq (,$(filter arm arm64,$(DEB_HOST_ARCH_CPU)))
+	confflags_GALLIUM += --disable-vdpau
+	confflags += --enable-debug
+	DRI_DRIVERS = 
+  else
 	confflags_GALLIUM += --enable-vdpau
+  endif
 	confflags_GALLIUM += --enable-va
 	confflags_GALLIUM += --enable-gallium-extra-hud
 	confflags_GALLIUM += --enable-lmsensors
