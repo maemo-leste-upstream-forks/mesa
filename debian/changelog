@@ -1,3 +1,9 @@
+mesa (18.2.0~rc5-1) unstable; urgency=medium
+
+  * Build the lima driver for arm.
+
+ -- Ivan J. <parazyd@dyne.org>  Thu, 20 Sep 2018 14:20:51 +0200
+
 mesa (18.2.0~rc4-1) experimental; urgency=medium
 
   * New upstream release candidate.
