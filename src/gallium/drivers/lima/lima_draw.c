@@ -1498,10 +1498,12 @@ _lima_flush(struct lima_context *ctx, bool end_of_frame)
 
    if (lima_dump_command_stream) {
       if (lima_submit_wait(ctx->gp_submit, PIPE_TIMEOUT_INFINITE)) {
-         float *pos = lima_ctx_buff_map(ctx, lima_ctx_buff_sh_gl_pos);
-         lima_dump_command_stream_print(
-            pos, 4 * 4 * 16, true, "gl_pos dump at va %x\n",
-            lima_ctx_buff_va(ctx, lima_ctx_buff_sh_gl_pos));
+         if (ctx->buffer_state[lima_ctx_buff_sh_gl_pos].res) {
+            float *pos = lima_ctx_buff_map(ctx, lima_ctx_buff_sh_gl_pos);
+            lima_dump_command_stream_print(
+               pos, 4 * 4 * 16, true, "gl_pos dump at va %x\n",
+               lima_ctx_buff_va(ctx, lima_ctx_buff_sh_gl_pos));
+         }
 
          lima_bo_update(ctx->plb[ctx->plb_index], true, false);
          uint32_t *plb = ctx->plb[ctx->plb_index]->map;
