@@ -110,7 +110,7 @@ lima_texture_desc_set_res(struct lima_context *ctx, uint32_t *desc,
    lima_bo_update(lima_res->bo, false, true);
 
    /* attach level 0 */
-   desc[6] = layout | (lima_res->bo->va << 24);
+   desc[6] = (lima_res->bo->va << 24) | (layout << 13);
    desc[7] = lima_res->bo->va >> 8;
 }
 
