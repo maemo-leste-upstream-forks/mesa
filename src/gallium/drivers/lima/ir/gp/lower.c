@@ -443,6 +443,39 @@ static bool gpir_lower_abs(gpir_block *block, gpir_node *node)
    return true;
 }
 
+/*
+ * There is no 'not' opcode.
+ * not(a) is lowered to add(1, -a)
+ */
+static bool gpir_lower_not(gpir_block *block, gpir_node *node)
+{
+   gpir_alu_node *alu = gpir_node_to_alu(node);
+
+   assert(alu->node.op == gpir_op_not);
+
+   node->op = gpir_op_add;
+
+   gpir_node *node_const = gpir_node_create(block, gpir_op_const);
+   gpir_const_node *c = gpir_node_to_const(node_const);
+
+   assert(c->node.op == gpir_op_const);
+
+   list_addtail(&c->node.list, &node->list);
+   c->value.f = 1.0f;
+   gpir_node_add_dep(&alu->node, &c->node, GPIR_DEP_INPUT);
+
+   alu->children_negate[1] = !alu->children_negate[0];
+   alu->children[1] = alu->children[0];
+   alu->children[0] = &c->node;
+
+   return true;
+}
+
+
+static bool (*gpir_pre_rsched_lower_funcs[gpir_op_num])(gpir_block *, gpir_node *) = {
+   [gpir_op_not] = gpir_lower_not,
+};
+
 static bool (*gpir_post_rsched_lower_funcs[gpir_op_num])(gpir_block *, gpir_node *) = {
    [gpir_op_neg] = gpir_lower_neg,
    [gpir_op_rcp] = gpir_lower_complex,
@@ -456,6 +489,14 @@ bool gpir_pre_rsched_lower_prog(gpir_compiler *comp)
 {
    if (!gpir_lower_viewport_transform(comp))
       return false;
+
+   list_for_each_entry(gpir_block, block, &comp->block_list, list) {
+      list_for_each_entry_safe(gpir_node, node, &block->node_list, list) {
+         if (gpir_pre_rsched_lower_funcs[node->op] &&
+             !gpir_pre_rsched_lower_funcs[node->op](block, node))
+            return false;
+      }
+   }
 
    if (!gpir_lower_const(comp))
       return false;

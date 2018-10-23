@@ -49,6 +49,7 @@ typedef enum {
    gpir_op_min,
    gpir_op_max,
    gpir_op_abs,
+   gpir_op_not,
 
    /* mul/add ops */
    gpir_op_neg,
