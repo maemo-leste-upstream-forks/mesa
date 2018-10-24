@@ -443,7 +443,7 @@ static bool gpir_lower_abs(gpir_block *block, gpir_node *node)
    return true;
 }
 
-static bool (*gpir_lower_funcs[gpir_op_num])(gpir_block *, gpir_node *) = {
+static bool (*gpir_post_rsched_lower_funcs[gpir_op_num])(gpir_block *, gpir_node *) = {
    [gpir_op_neg] = gpir_lower_neg,
    [gpir_op_rcp] = gpir_lower_complex,
    [gpir_op_rsqrt] = gpir_lower_complex,
@@ -472,8 +472,8 @@ bool gpir_post_rsched_lower_prog(gpir_compiler *comp)
 {
    list_for_each_entry(gpir_block, block, &comp->block_list, list) {
       list_for_each_entry_safe(gpir_node, node, &block->node_list, list) {
-         if (gpir_lower_funcs[node->op] &&
-             !gpir_lower_funcs[node->op](block, node))
+         if (gpir_post_rsched_lower_funcs[node->op] &&
+             !gpir_post_rsched_lower_funcs[node->op](block, node))
             return false;
       }
    }
