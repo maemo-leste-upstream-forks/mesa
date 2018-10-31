@@ -45,22 +45,51 @@
 #include "sid.h"
 #include "gfx9d.h"
 #include "addrlib/gfx9/chip/gfx9_enum.h"
+#include "util/build_id.h"
 #include "util/debug.h"
+#include "util/mesa-sha1.h"
+
+static bool
+radv_get_build_id(void *ptr, struct mesa_sha1 *ctx)
+{
+	uint32_t timestamp;
+
+#ifdef HAVE_DL_ITERATE_PHDR
+	const struct build_id_note *note = NULL;
+	if ((note = build_id_find_nhdr_for_addr(ptr))) {
+		_mesa_sha1_update(ctx, build_id_data(note), build_id_length(note));
+	} else
+#endif
+	if (disk_cache_get_function_timestamp(ptr, &timestamp)) {
+		if (!timestamp) {
+			fprintf(stderr, "radv: The provided filesystem timestamp for the cache is bogus!\n");
+		}
+
+		_mesa_sha1_update(ctx, &timestamp, sizeof(timestamp));
+	} else
+		return false;
+	return true;
+}
 
 static int
 radv_device_get_cache_uuid(enum radeon_family family, void *uuid)
 {
-	uint32_t mesa_timestamp, llvm_timestamp;
-	uint16_t f = family;
+	struct mesa_sha1 ctx;
+	unsigned char sha1[20];
+	unsigned ptr_size = sizeof(void*);
+
 	memset(uuid, 0, VK_UUID_SIZE);
-	if (!disk_cache_get_function_timestamp(radv_device_get_cache_uuid, &mesa_timestamp) ||
-	    !disk_cache_get_function_timestamp(LLVMInitializeAMDGPUTargetInfo, &llvm_timestamp))
+	_mesa_sha1_init(&ctx);
+
+	if (!radv_get_build_id(radv_device_get_cache_uuid, &ctx) ||
+	    !radv_get_build_id(LLVMInitializeAMDGPUTargetInfo, &ctx))
 		return -1;
 
-	memcpy(uuid, &mesa_timestamp, 4);
-	memcpy((char*)uuid + 4, &llvm_timestamp, 4);
-	memcpy((char*)uuid + 8, &f, 2);
-	snprintf((char*)uuid + 10, VK_UUID_SIZE - 10, "radv");
+	_mesa_sha1_update(&ctx, &family, sizeof(family));
+	_mesa_sha1_update(&ctx, &ptr_size, sizeof(ptr_size));
+	_mesa_sha1_final(&ctx, sha1);
+
+	memcpy(uuid, sha1, VK_UUID_SIZE);
 	return 0;
 }
 
@@ -432,6 +461,9 @@ radv_handle_per_app_options(struct radv_instance *instance,
 		 * and it gives few more FPS.
 		 */
 		instance->perftest_flags |= RADV_PERFTEST_SISCHED;
+	} else if (!strcmp(name, "DOOM_VFR")) {
+		/* Work around a Doom VFR game bug */
+		instance->debug_flags |= RADV_DEBUG_NO_DYNAMIC_BOUNDS;
 	}
 }
 
@@ -1857,10 +1889,30 @@ radv_get_hs_offchip_param(struct radv_device *device, uint32_t *max_offchip_buff
 		device->physical_device->rad_info.family != CHIP_CARRIZO &&
 		device->physical_device->rad_info.family != CHIP_STONEY;
 	unsigned max_offchip_buffers_per_se = double_offchip_buffers ? 128 : 64;
-	unsigned max_offchip_buffers = max_offchip_buffers_per_se *
-		device->physical_device->rad_info.max_se;
+	unsigned max_offchip_buffers;
 	unsigned offchip_granularity;
 	unsigned hs_offchip_param;
+
+	/*
+	 * Per RadeonSI:
+	 * This must be one less than the maximum number due to a hw limitation.
+         * Various hardware bugs in SI, CIK, and GFX9 need this.
+	 *
+	 * Per AMDVLK:
+	 * Vega10 should limit max_offchip_buffers to 508 (4 * 127).
+	 * Gfx7 should limit max_offchip_buffers to 508
+	 * Gfx6 should limit max_offchip_buffers to 126 (2 * 63)
+	 *
+	 * Follow AMDVLK here.
+	 */
+	if (device->physical_device->rad_info.family == CHIP_VEGA10 ||
+	    device->physical_device->rad_info.chip_class == CIK ||
+	    device->physical_device->rad_info.chip_class == SI)
+		--max_offchip_buffers_per_se;
+
+	max_offchip_buffers = max_offchip_buffers_per_se *
+		device->physical_device->rad_info.max_se;
+
 	switch (device->tess_offchip_block_dw_size) {
 	default:
 		assert(0);

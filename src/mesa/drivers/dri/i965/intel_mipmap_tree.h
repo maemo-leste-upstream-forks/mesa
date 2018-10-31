@@ -652,13 +652,15 @@ intel_miptree_access_raw(struct brw_context *brw,
 enum isl_aux_usage
 intel_miptree_texture_aux_usage(struct brw_context *brw,
                                 struct intel_mipmap_tree *mt,
-                                enum isl_format view_format);
+                                enum isl_format view_format,
+                                enum gen9_astc5x5_wa_tex_type astc5x5_wa_bits);
 void
 intel_miptree_prepare_texture(struct brw_context *brw,
                               struct intel_mipmap_tree *mt,
                               enum isl_format view_format,
                               uint32_t start_level, uint32_t num_levels,
-                              uint32_t start_layer, uint32_t num_layers);
+                              uint32_t start_layer, uint32_t num_layers,
+                              enum gen9_astc5x5_wa_tex_type astc5x5_wa_bits);
 void
 intel_miptree_prepare_image(struct brw_context *brw,
                             struct intel_mipmap_tree *mt);
@@ -740,6 +742,16 @@ bool
 intel_miptree_set_depth_clear_value(struct brw_context *brw,
                                     struct intel_mipmap_tree *mt,
                                     float clear_value);
+
+
+static inline int
+intel_miptree_blt_pitch(struct intel_mipmap_tree *mt)
+{
+   int pitch = mt->surf.row_pitch;
+   if (mt->surf.tiling != ISL_TILING_LINEAR)
+      pitch /= 4;
+   return pitch;
+}
 
 #ifdef __cplusplus
 }

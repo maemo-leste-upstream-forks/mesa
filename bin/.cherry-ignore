@@ -56,3 +56,74 @@ ccbe33af5b086f4b488ac7ca8a8a45ebc9ac189c
 f2c0d310d6efe560de8192ab468ba02d50c9ac1e
 50a8713d4f90a6c70a23f9f5871420371df283a7
 1561e4984eb03d6946d19b820b83a96bbbd83b98
+66e12451ac4e4e1c05a48b2cd2b0d3186f779f20
+73b342c7a52a93d283799800824311639f372de0
+71d5b2fbf83061a1319141d26942771e8c75ff2b
+011a811652c74dcc9f56506ebb6075e4bdfe6ef9
+f3a78a9da01218df0067b24b52204a4e5f01bc69
+f9e8456c39136aa41f85f82758a00e5aa2aab334
+0aacb5eab6120aa1410966d23101e16eea3fbcd7
+a4a104fc81e93555899050efac23c3cd6ba762ab
+24ee53231da84a1be5ec08abebe8a2ff6aa019ca
+4c43ec461de4f122d5d6566361d064c816e4ef69
+743e11c10b180247488ae0cc24900560e0a74e2b
+4ffb575da59fd3aece02734ca4fd3212d5002d55
+8c048af5890d43578ca41eb9dcfa60cb9cc3fc9c
+c92a463d2341dd7893dd8b54775930ed9be72ac0
+ea1e50cc166ae855f9fa91ca6a4f944123298e4e
+f73f748323ef5a421ffd8fa0f02afd9627e31023
+d4e52281aa9c1acc92619736da8b67d8c02ce380
+a5f35aa742c3f1e2fae6a6c2fb53f92822f0cb70
+f6e09db2e613c215257b80f40957d580165b5ddf
+d4bf954fe61ec231be2bfa5e059f0fb7f6150bd1
+abdf396cbeaec2bfe9da2fd773d42fa3022ca8b5
+b9f6521157ab55073eec528cacc1f3b567e49503
+aa3020592964344c7032396d159e4ab2df743587
+063264db5be2941746fa58f164cdc803362753a9
+748f4cce183007587a6688ef25ad5f9dbea5c33c
+9de062ef207c6062d1fabb70209f4bbc9dc4732d
+7d1d1208c2b38890fe065b6431ef2e3b7166bae4
+0796c3934ebfe3448acf2d63f478f51c08e33046
+864c780566b8782c4fc69b4337db768223717bd8
+
+# These have more than one fixes tag and generate a warning
+#
+24839663a40257e0468406d72c48d431b5ae2bd4
+6ff1c479968819b93c46d24bd898e89ce14ac401
+ac0856ae4100a05dcd1fd932d9fd10200f8f7a7c
+c9f54486959716762e6818dabb0a73a8cd46df67
+
+# This patch requires patches that would require python 3, the thing they're
+# fixing isn't really even a bug, it's more of a style choice, so I'm not going
+# to pull them.
+#
+48820ed8da0ad50d51a58f26e156d82b685492e2
+
+# This patch doesn't apply and either needs to be backported or can just be
+# ignored
+#
+1e40f6948310be07abb2d0198e6602769892cdac
+
+# This patch isn't necessary, since the patch it fixes is not present in 18.1
+#
+a72dbc461bdb7714656e62cd8f4b00a404c2e6e0
+
+# This requires a much more significant patch not present in 18.1
+#
+4dc244eb447b1fa4e39d67a58328ed774395c901
+
+# This patches were dropped since they only fix developer tools, which aren't
+# built by default and should be of no use to end users or distros
+#
+97fcccb25ed5f55139c03ebc1c71742f0f25f683
+4aec44c0d9c4c0649c362199fac97efe0a3b38a4
+
+# This patch was reverted on master shortly after merging.
+#
+90819abb56f6b1a0cd4946b13b6caf24fb46e500
+
+# These were supreceeded by patches backported to 18.1
+#
+3341429d74099b436c3824164837eebd47029ded
+9158e0bd82ffdad4baf46221bccbbb3fe4764c11
+cc3b99bb48769ccd018b781338b548306af5046b

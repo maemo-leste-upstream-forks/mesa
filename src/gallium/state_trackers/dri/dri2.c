@@ -1482,6 +1482,12 @@ dri2_query_dma_buf_formats(__DRIscreen *_screen, int max, int *formats,
 
    for (i = 0, j = 0; (i < ARRAY_SIZE(fourcc_formats)) &&
          (j < max || max == 0); i++) {
+      /* The sRGB format is not a real FourCC as defined by drm_fourcc.h, so we
+       * must not leak it out to clients.
+       */
+      if (fourcc_formats[i] == __DRI_IMAGE_FOURCC_SARGB8888)
+         continue;
+
       if (pscreen->is_format_supported(pscreen,
                                        fourcc_to_pipe_format(
                                           fourcc_formats[i]),
@@ -2209,8 +2215,10 @@ dri_kms_init_screen(__DRIscreen * sPriv)
       dri2ImageExtension.createImageFromFds = dri2_from_fds;
       dri2ImageExtension.createImageFromDmaBufs = dri2_from_dma_bufs;
       dri2ImageExtension.createImageFromDmaBufs2 = dri2_from_dma_bufs2;
-      dri2ImageExtension.queryDmaBufFormats = dri2_query_dma_buf_formats;
-      dri2ImageExtension.queryDmaBufModifiers = dri2_query_dma_buf_modifiers;
+      if (pscreen->query_dmabuf_modifiers) {
+         dri2ImageExtension.queryDmaBufFormats = dri2_query_dma_buf_formats;
+         dri2ImageExtension.queryDmaBufModifiers = dri2_query_dma_buf_modifiers;
+      }
    }
 
    sPriv->extensions = dri_screen_extensions;
