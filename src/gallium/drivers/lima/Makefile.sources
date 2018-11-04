@@ -21,7 +21,8 @@ ppir_SOURCES := \
 	  ir/pp/regalloc.c \
 	  ir/pp/codegen.h \
 	  ir/pp/codegen.c \
-	  ir/pp/node_to_instr.c
+	  ir/pp/node_to_instr.c \
+	  ir/gp/disasm.c
 
 ir_SOURCES := \
 	  ir/lima_ir.h \

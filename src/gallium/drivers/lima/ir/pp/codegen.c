@@ -582,6 +582,7 @@ static int encode_instr(ppir_instr *instr, void *code, void *last_code)
 static void ppir_codegen_print_prog(ppir_compiler *comp)
 {
    uint32_t *prog = comp->prog->shader;
+   unsigned offset = 0;
 
    printf("========ppir codegen========\n");
    list_for_each_entry(ppir_block, block, &comp->block_list, list) {
@@ -594,7 +595,9 @@ static void ppir_codegen_print_prog(ppir_compiler *comp)
             printf("%08x ", prog[i]);
          }
          printf("\n");
+         ppir_disassemble_instr(prog, offset);
          prog += n;
+         offset += n;
       }
    }
    printf("-----------------------\n");
