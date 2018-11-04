@@ -219,7 +219,8 @@ print_varying(void *code, unsigned offset)
       if (varying->imm.perspective)
          printf("gl_FrontFacing");
       else
-         printf("gl_PointCoord"); break;
+         printf("gl_PointCoord");
+      break;
    default:
       switch (varying->imm.alignment) {
       case 0: 
@@ -632,7 +633,7 @@ print_combine(void *code, unsigned offset)
    }
 }
 
-void
+static void
 print_temp_write(void *code, unsigned offset)
 {
    (void) offset;
@@ -672,7 +673,7 @@ print_temp_write(void *code, unsigned offset)
    }
 }
 
-void
+static void
 print_branch(void *code, unsigned offset)
 { 
    ppir_codegen_field_branch *branch = code;

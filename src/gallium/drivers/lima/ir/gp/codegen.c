@@ -580,8 +580,10 @@ bool gpir_codegen_prog(gpir_compiler *comp)
    comp->prog->shader = code;
    comp->prog->shader_size = num_instr * sizeof(gpir_codegen_instr);
 
-   if (lima_shader_debug_gp)
+   if (lima_shader_debug_gp) {
       gpir_codegen_print_prog(comp);
+      gpir_disassemble_program(code, num_instr);
+   }
 
    return true;
 }

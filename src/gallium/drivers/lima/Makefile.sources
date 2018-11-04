@@ -9,7 +9,8 @@ gpir_SOURCES := \
 	  ir/gp/codegen.c \
 	  ir/gp/reduce_scheduler.c \
 	  ir/gp/value_regalloc.c \
-	  ir/gp/physical_regalloc.c
+	  ir/gp/physical_regalloc.c \
+	  ir/gp/disasm.c
 
 ppir_SOURCES := \
 	  ir/pp/ppir.h \
@@ -22,7 +23,7 @@ ppir_SOURCES := \
 	  ir/pp/codegen.h \
 	  ir/pp/codegen.c \
 	  ir/pp/node_to_instr.c \
-	  ir/gp/disasm.c
+	  ir/pp/disasm.c
 
 ir_SOURCES := \
 	  ir/lima_ir.h \
