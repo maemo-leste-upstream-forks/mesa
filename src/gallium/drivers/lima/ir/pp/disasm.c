@@ -140,7 +140,7 @@ static void
 print_dest_scalar(unsigned reg)
 {
    printf("$%u", reg >> 2);
-   printf(".%c", "xyzw"[reg & 3]);
+   printf(".%c ", "xyzw"[reg & 3]);
 }
 
 static void
@@ -436,7 +436,6 @@ print_vec4_acc(void *code, unsigned offset)
 
    if (op.srcs > 1) {
       printf(" ");
-
       print_vector_source(vec4_acc->arg1_source, NULL,
                           vec4_acc->arg1_swizzle,
                           vec4_acc->arg1_absolute,
@@ -552,9 +551,8 @@ print_float_acc(void *code, unsigned offset)
                        float_acc->arg0_absolute,
                        float_acc->arg0_negate);
 
-   printf(" ");
-
    if (op.srcs > 1) {
+      printf(" ");
       print_source_scalar(float_acc->arg1_source, NULL,
                           float_acc->arg1_absolute,
                           float_acc->arg1_negate);
