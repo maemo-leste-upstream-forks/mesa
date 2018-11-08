@@ -734,7 +734,7 @@ bitcopy(char *src, char *dst, unsigned bits, unsigned src_offset)
    for (int b = bits; b > 0; b -= 8, src++, dst++) {
       unsigned char out = ((unsigned char) *src) >> src_offset;
       if (src_offset > 0 && src_offset + b > 8)
-         out |= ((unsigned char) *(src + 1)) >> (8 - src_offset);
+         out |= ((unsigned char) *(src + 1)) << (8 - src_offset);
       *dst = (char) out;
    }
 }
