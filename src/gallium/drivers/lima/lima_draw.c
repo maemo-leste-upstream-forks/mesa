@@ -160,12 +160,9 @@ struct lima_render_state {
 #define PLBU_CMD_INDICES(va) PLBU_CMD(va, 0x10000101)
 #define PLBU_CMD_DRAW_ARRAYS(mode, start, count) \
    PLBU_CMD(((count) << 24) | (start), (((mode) & 0x1F) << 16) | ((count) >> 8))
-/* TODO: check if the 2nd start should be count, otherwise we
- * can only use < 256 index while start doesn't need to be
- * 32 bit big */
 #define PLBU_CMD_DRAW_ELEMENTS(mode, start, count) \
    PLBU_CMD(((count) << 24) | (start), \
-            0x00200000 | (((mode) & 0x1F) << 16) | ((start) >> 8))
+            0x00200000 | (((mode) & 0x1F) << 16) | ((count) >> 8))
 
 /* vs commands */
 #define VS_CMD_BEGIN(max) { \
@@ -909,10 +906,8 @@ lima_pack_plbu_cmd(struct lima_context *ctx, const struct pipe_draw_info *info)
 
    PLBU_CMD_ARRAYS_SEMAPHORE_END();
 
-   if (info->index_size) {
-      unsigned num = info->max_index - info->min_index + 1;
-      PLBU_CMD_DRAW_ELEMENTS(info->mode, info->min_index, num);
-   }
+   if (info->index_size)
+      PLBU_CMD_DRAW_ELEMENTS(info->mode, info->min_index, info->count);
 
    PLBU_CMD_END();
 }
