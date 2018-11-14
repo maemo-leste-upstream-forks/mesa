@@ -467,6 +467,7 @@ static bool gpir_lower_not(gpir_block *block, gpir_node *node)
    alu->children_negate[1] = !alu->children_negate[0];
    alu->children[1] = alu->children[0];
    alu->children[0] = &c->node;
+   alu->num_child = 2;
 
    return true;
 }
