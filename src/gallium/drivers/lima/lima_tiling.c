@@ -83,7 +83,7 @@ lima_store_tiled_image_generic(void *dst, const void *src,
       int block_start_s = block_y * dst_stride;
       int source_start = src_y * src_stride;
 
-      for (int x = box->x, src_x; src_x < box->width; ++x, ++src_x) {
+      for (int x = box->x, src_x = 0; src_x < box->width; ++x, ++src_x) {
          int block_x_s = (x >> 4) * 256;
          int rem_x = x & 0x0F;
 
