@@ -58,6 +58,7 @@ libgallium_dri = shared_library(
     driver_swrast, driver_r300, driver_r600, driver_radeonsi, driver_nouveau,
     driver_pl111, driver_v3d, driver_vc4, driver_freedreno, driver_etnaviv,
     driver_imx, driver_tegra, driver_i915, driver_svga, driver_virgl,
+    driver_lima, driver_exynos, driver_meson, driver_sun4i, driver_rockchip,
     driver_swr,
   ],
 )
@@ -77,7 +78,12 @@ foreach d : [[with_gallium_pl111, 'pl111_dri.so'],
              [with_gallium_r300, 'r300_dri.so'],
              [with_gallium_r600, 'r600_dri.so'],
              [with_gallium_svga, 'vmwgfx_dri.so'],
-             [with_gallium_virgl, 'virtio_gpu_dri.so']]
+             [with_gallium_virgl, 'virtio_gpu_dri.so'],
+             [with_gallium_lima, 'lima_dri.so'],
+             [with_gallium_exynos, 'exynos_dri.so'],
+             [with_gallium_sun4i, 'sun4i-drm_dri.so'],
+             [with_gallium_meson, 'meson_dri.so'],
+             [with_gallium_rockchip, 'rockchip_dri.so']]
   if d[0]
     gallium_dri_drivers += d[1]
   endif

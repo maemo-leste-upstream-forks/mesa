@@ -136,6 +136,32 @@ if with_gallium_virgl
 else
   driver_virgl = declare_dependency()
 endif
+if with_gallium_lima
+  subdir('winsys/lima/drm')
+  subdir('drivers/lima')
+else
+  driver_lima = declare_dependency()
+endif
+if with_gallium_exynos
+  subdir('winsys/exynos/drm')
+else
+  driver_exynos = declare_dependency()
+endif
+if with_gallium_sun4i
+  subdir('winsys/sun4i/drm')
+else
+  driver_sun4i = declare_dependency()
+endif
+if with_gallium_meson
+  subdir('winsys/meson/drm')
+else
+  driver_meson = declare_dependency()
+endif
+if with_gallium_rockchip
+  subdir('winsys/rockchip/drm')
+else
+  driver_rockchip = declare_dependency()
+endif
 if with_gallium_opencl
   # TODO: this isn't really clover specific, but ATM clover is the only
   # consumer
