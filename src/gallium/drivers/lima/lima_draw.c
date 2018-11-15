@@ -144,9 +144,7 @@ struct lima_render_state {
 #define PLBU_CMD_ARRAYS_SEMAPHORE_BEGIN() PLBU_CMD(0x00010002, 0x60000000)
 #define PLBU_CMD_ARRAYS_SEMAPHORE_END() PLBU_CMD(0x00010001, 0x60000000)
 #define PLBU_CMD_PRIMITIVE_SETUP(cull, index_size) \
-   PLBU_CMD( \
-      0x00002000 | 0x00000200 | (cull) | ((index_size) == 2 ? 0x00000400 : 0), \
-      0x1000010B)
+   PLBU_CMD(0x00002000 | 0x00000200 | (cull) | (index_size << 9), 0x1000010B)
 #define PLBU_CMD_RSW_VERTEX_ARRAY(rsw, gl_pos) \
    PLBU_CMD(rsw, 0x80000000 | ((gl_pos) >> 4))
 #define PLBU_CMD_SCISSORS(minx, maxx, miny, maxy) \
