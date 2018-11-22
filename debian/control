@@ -1,5 +1,5 @@
 Source: mesa
-Section: lime2 a33
+Section: lima
 Priority: optional
 Maintainer: Debian X Strike Force <debian-x@lists.debian.org>
 Uploaders: Andreas Boll <aboll@debian.org>
