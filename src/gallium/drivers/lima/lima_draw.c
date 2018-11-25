@@ -32,6 +32,7 @@
 #include "util/u_pack_color.h"
 #include "util/hash_table.h"
 #include "util/u_upload_mgr.h"
+#include "util/u_prim.h"
 
 #include "lima_context.h"
 #include "lima_screen.h"
@@ -1321,6 +1322,13 @@ static void
 lima_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info)
 {
    debug_checkpoint();
+
+   /* check if draw mode and vertex/index count match,
+    * otherwise gp will hang */
+   if (!u_trim_pipe_prim(info->mode, (unsigned*)&info->count)) {
+      debug_printf("draw mode and vertex/index count mismatch\n");
+      return;
+   }
 
    struct lima_context *ctx = lima_context(pctx);
 
