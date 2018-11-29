@@ -800,7 +800,7 @@ lima_pack_vs_cmd(struct lima_context *ctx, const struct pipe_draw_info *info)
       VS_CMD_ARRAYS_SEMAPHORE_BEGIN_2();
    }
 
-   int uniform_size = ctx->const_buffer[PIPE_SHADER_VERTEX].size + ctx->vs->constant_size + 32;
+   int uniform_size = ctx->vs->uniform_pending_offset + ctx->vs->constant_size + 32;
    VS_CMD_UNIFORMS_ADDRESS(
       lima_ctx_buff_va(ctx, lima_ctx_buff_gp_uniform),
       align(uniform_size, 16));
@@ -1212,24 +1212,27 @@ lima_update_gp_uniform(struct lima_context *ctx)
       ctx->const_buffer + PIPE_SHADER_VERTEX;
    struct lima_vs_shader_state *vs = ctx->vs;
 
+   int size = vs->uniform_pending_offset + vs->constant_size + 32;
    void *vs_const_buff =
-      lima_ctx_buff_alloc(ctx, lima_ctx_buff_gp_uniform,
-                          ccb->size + vs->constant_size + 32,
+      lima_ctx_buff_alloc(ctx, lima_ctx_buff_gp_uniform, size,
                           LIMA_CTX_BUFF_SUBMIT_GP, true);
 
    if (ccb->buffer)
       memcpy(vs_const_buff, ccb->buffer, ccb->size);
 
-   memcpy(vs_const_buff + ccb->size, ctx->viewport.transform.scale,
+   memcpy(vs_const_buff + vs->uniform_pending_offset,
+          ctx->viewport.transform.scale,
           sizeof(ctx->viewport.transform.scale));
-   memcpy(vs_const_buff + ccb->size + 16, ctx->viewport.transform.translate,
+   memcpy(vs_const_buff + vs->uniform_pending_offset + 16,
+          ctx->viewport.transform.translate,
           sizeof(ctx->viewport.transform.translate));
 
    if (vs->constant)
-      memcpy(vs_const_buff + ccb->size + 32, vs->constant, vs->constant_size);
+      memcpy(vs_const_buff + vs->uniform_pending_offset + 32,
+             vs->constant, vs->constant_size);
 
    lima_dump_command_stream_print(
-      vs_const_buff, ccb->size + vs->constant_size + 32, true,
+      vs_const_buff, size, true,
       "update gp uniform at va %x\n",
       lima_ctx_buff_va(ctx, lima_ctx_buff_gp_uniform));
 }

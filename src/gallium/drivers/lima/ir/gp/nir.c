@@ -375,6 +375,7 @@ bool gpir_compile_nir(struct lima_vs_shader_state *prog, struct nir_shader *nir)
       return false;
 
    comp->constant_base = nir->num_uniforms;
+   prog->uniform_pending_offset = nir->num_uniforms * 16;
 
    if (!gpir_emit_cf_list(comp, &func->body))
       goto err_out0;
