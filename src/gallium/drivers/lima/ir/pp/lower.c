@@ -365,6 +365,7 @@ static bool (*ppir_lower_funcs[ppir_op_num])(ppir_block *, ppir_node *) = {
    [ppir_op_rsqrt] = ppir_lower_vec_to_scalar,
    [ppir_op_log2] = ppir_lower_vec_to_scalar,
    [ppir_op_exp2] = ppir_lower_vec_to_scalar,
+   [ppir_op_sqrt] = ppir_lower_vec_to_scalar,
    [ppir_op_lt] = ppir_lower_swap_args,
    [ppir_op_le] = ppir_lower_swap_args,
    [ppir_op_load_texture] = ppir_lower_texture,
