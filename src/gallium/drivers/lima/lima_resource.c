@@ -403,7 +403,8 @@ static void
 lima_surface_destroy(struct pipe_context *pctx, struct pipe_surface *psurf)
 {
    struct lima_surface *surf = lima_surface(psurf);
-   struct lima_context *ctx = lima_context(pctx);
+   /* psurf->context may be not equal with pctx (i.e. glxinfo) */
+   struct lima_context *ctx = lima_context(psurf->context);
 
    if (ctx->plb_pp_stream) {
       struct lima_ctx_plb_pp_stream_key key = {
