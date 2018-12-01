@@ -26,7 +26,6 @@
 #include "util/u_upload_mgr.h"
 #include "util/u_math.h"
 #include "util/u_debug.h"
-#include "util/u_transfer.h"
 #include "util/ralloc.h"
 #include "util/u_inlines.h"
 #include "util/u_suballoc.h"
@@ -193,7 +192,6 @@ lima_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
       goto err_out;
    ctx->base.stream_uploader = ctx->uploader;
    ctx->base.const_uploader = ctx->uploader;
-   ctx->base.texture_subdata = u_default_texture_subdata;
 
    /* for varying output which need not mmap */
    ctx->suballocator =

@@ -561,6 +561,7 @@ lima_resource_context_init(struct lima_context *ctx)
    ctx->base.surface_destroy = lima_surface_destroy;
 
    ctx->base.buffer_subdata = u_default_buffer_subdata;
+   ctx->base.texture_subdata = u_default_texture_subdata;
 
    ctx->base.transfer_map = lima_transfer_map;
    ctx->base.transfer_flush_region = lima_transfer_flush_region;
