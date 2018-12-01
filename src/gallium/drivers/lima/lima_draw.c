@@ -144,8 +144,8 @@ struct lima_render_state {
 #define PLBU_CMD_VIEWPORT_H(v) PLBU_CMD(v, 0x10000106)
 #define PLBU_CMD_ARRAYS_SEMAPHORE_BEGIN() PLBU_CMD(0x00010002, 0x60000000)
 #define PLBU_CMD_ARRAYS_SEMAPHORE_END() PLBU_CMD(0x00010001, 0x60000000)
-#define PLBU_CMD_PRIMITIVE_SETUP(cull, index_size) \
-   PLBU_CMD(0x00002000 | 0x00000200 | (cull) | ((index_size) << 9), 0x1000010B)
+#define PLBU_CMD_PRIMITIVE_SETUP(low_prim, cull, index_size) \
+   PLBU_CMD(((low_prim) ? 0x00003200 : 0x00002200) | (cull) | ((index_size) << 9), 0x1000010B)
 #define PLBU_CMD_RSW_VERTEX_ARRAY(rsw, gl_pos) \
    PLBU_CMD(rsw, 0x80000000 | ((gl_pos) >> 4))
 #define PLBU_CMD_SCISSORS(minx, maxx, miny, maxy) \
@@ -153,6 +153,7 @@ struct lima_render_state {
             0x70000000 | ((maxx) - 1) << 13 | ((minx) >> 2))
 #define PLBU_CMD_UNKNOWN1() PLBU_CMD(0x00000000, 0x1000010A)
 #define PLBU_CMD_UNKNOWN2() PLBU_CMD(0x00000200, 0x1000010B)
+#define PLBU_CMD_LOW_PRIM_SIZE(v) PLBU_CMD(v, 0x1000010D)
 #define PLBU_CMD_DEPTH_RANGE_NEAR(v) PLBU_CMD(v, 0x1000010E)
 #define PLBU_CMD_DEPTH_RANGE_FAR(v) PLBU_CMD(v, 0x1000010F)
 #define PLBU_CMD_INDEXED_DEST(gl_pos) PLBU_CMD(gl_pos, 0x10000100)
@@ -849,6 +850,7 @@ lima_pack_plbu_cmd(struct lima_context *ctx, const struct pipe_draw_info *info)
    if (!info->index_size)
       PLBU_CMD_ARRAYS_SEMAPHORE_BEGIN();
 
+   bool low_prim = info->mode < PIPE_PRIM_TRIANGLES;
    int cf = ctx->rasterizer->base.cull_face;
    int ccw = ctx->rasterizer->base.front_ccw;
    uint32_t cull = 0;
@@ -858,7 +860,7 @@ lima_pack_plbu_cmd(struct lima_context *ctx, const struct pipe_draw_info *info)
       if (cf & PIPE_FACE_BACK)
          cull |= ccw ? 0x00020000 : 0x00040000;
    }
-   PLBU_CMD_PRIMITIVE_SETUP(cull, info->index_size);
+   PLBU_CMD_PRIMITIVE_SETUP(low_prim, cull, info->index_size);
 
    uint32_t gl_position_va = lima_ctx_buff_va(ctx, lima_ctx_buff_sh_gl_pos);
    PLBU_CMD_RSW_VERTEX_ARRAY(
@@ -877,6 +879,12 @@ lima_pack_plbu_cmd(struct lima_context *ctx, const struct pipe_draw_info *info)
 
    PLBU_CMD_DEPTH_RANGE_NEAR(fui(ctx->viewport.near));
    PLBU_CMD_DEPTH_RANGE_FAR(fui(ctx->viewport.far));
+
+   if (low_prim) {
+      uint32_t v = info->mode == PIPE_PRIM_POINTS ?
+         fui(ctx->rasterizer->base.point_size) : fui(ctx->rasterizer->base.line_width);
+      PLBU_CMD_LOW_PRIM_SIZE(v);
+   }
 
    if (info->index_size) {
       PLBU_CMD_INDEXED_DEST(gl_position_va);
@@ -1037,7 +1045,7 @@ lima_calculate_depth_test(struct pipe_depth_state *depth, struct pipe_rasterizer
 }
 
 static void
-lima_pack_render_state(struct lima_context *ctx)
+lima_pack_render_state(struct lima_context *ctx, const struct pipe_draw_info *info)
 {
    struct lima_render_state *render =
       lima_ctx_buff_alloc(ctx, lima_ctx_buff_pp_plb_rsw,
@@ -1107,7 +1115,12 @@ lima_pack_render_state(struct lima_context *ctx)
    //(stencil->enabled ? 0xFF : 0x00) | (float_to_ubyte(alpha->ref_value) << 16)
 
    /* need more investigation */
-   render->multi_sample = 0x0000F807;
+   if (info->mode == PIPE_PRIM_POINTS)
+      render->multi_sample = 0x0000F007;
+   else if (info->mode < PIPE_PRIM_TRIANGLES)
+      render->multi_sample = 0x0000F407;
+   else
+      render->multi_sample = 0x0000F807;
    if (ctx->framebuffer.samples)
       render->multi_sample |= 0x68;
 
@@ -1381,7 +1394,7 @@ lima_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info)
    if (ctx->dirty & LIMA_CONTEXT_DIRTY_TEXTURES)
       lima_update_textures(ctx);
 
-   lima_pack_render_state(ctx);
+   lima_pack_render_state(ctx, info);
    lima_pack_plbu_cmd(ctx, info);
 
    ctx->dirty = 0;
