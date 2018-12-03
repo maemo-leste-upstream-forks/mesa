@@ -42,35 +42,31 @@
 #define LIMA_TEXEL_FORMAT_BGR_565      0x0e
 #define LIMA_TEXEL_FORMAT_RGB_888      0x15
 #define LIMA_TEXEL_FORMAT_RGBA_8888    0x16
+#define LIMA_TEXEL_FORMAT_RGBX_8888    0x17
 
 #define lima_tex_desc_size 64
 #define lima_tex_list_size 64
 
 static uint32_t pipe_format_to_lima(enum pipe_format pformat)
 {
-   unsigned swap_chans, flag1, format;
+   unsigned swap_chans = 0, flag1 = 0, format;
 
    switch (pformat) {
    case PIPE_FORMAT_R8G8B8A8_UNORM:
-   case PIPE_FORMAT_R8G8B8X8_UNORM:
       swap_chans = 1;
-      flag1 = 0;
+   case PIPE_FORMAT_B8G8R8A8_UNORM:
       format = LIMA_TEXEL_FORMAT_RGBA_8888;
       break;
-   case PIPE_FORMAT_B8G8R8A8_UNORM:
+   case PIPE_FORMAT_R8G8B8X8_UNORM:
+      swap_chans = 1;
    case PIPE_FORMAT_B8G8R8X8_UNORM:
-      swap_chans = 0;
-      flag1 = 0;
-      format = LIMA_TEXEL_FORMAT_RGBA_8888;
+      format = LIMA_TEXEL_FORMAT_RGBX_8888;
       break;
    case PIPE_FORMAT_R8G8B8_UNORM:
       swap_chans = 1;
-      flag1 = 0;
       format = LIMA_TEXEL_FORMAT_RGB_888;
       break;
    case PIPE_FORMAT_B5G6R5_UNORM:
-      swap_chans = 0;
-      flag1 = 0;
       format = LIMA_TEXEL_FORMAT_BGR_565;
       break;
    default:
