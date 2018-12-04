@@ -61,6 +61,10 @@ lima_set_framebuffer_state(struct pipe_context *pctx,
    fb->width = framebuffer->width;
    fb->height = framebuffer->height;
 
+   fb->shift_h = 0;
+   fb->shift_w = 0;
+   fb->shift_max = 0;
+
    int width = align(framebuffer->width, 16) >> 4;
    int height = align(framebuffer->height, 16) >> 4;
    if (fb->tiled_w != width || fb->tiled_h != height) {
