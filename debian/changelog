@@ -1,3 +1,9 @@
+mesa (18.2.0~rc5-2) unstable; urgency=medium
+
+  * lima cea7264d8f97545ba5bc1a7c98245d507de8093c
+
+ -- Merlijn B. W. Wajer <merlijn@wizzup.org>  Wed, 05 Dec 2018 21:41:35 +0100
+
 mesa (18.2.0~rc5-1) unstable; urgency=medium
 
   * Build the lima driver for arm.
