@@ -1528,8 +1528,10 @@ _lima_flush(struct lima_context *ctx, bool end_of_frame)
             plb, LIMA_CTX_PLB_BLK_SIZE, false, "plb dump at va %x\n",
             ctx->plb[ctx->plb_index]->va);
       }
-      else
+      else {
          fprintf(stderr, "gp submit wait error\n");
+         exit(1);
+      }
    }
 
    struct lima_pp_stream_state *ps = &ctx->pp_stream;
@@ -1572,6 +1574,13 @@ _lima_flush(struct lima_context *ctx, bool end_of_frame)
 
       if (!lima_submit_start(ctx->pp_submit, &pp_frame, sizeof(pp_frame)))
          fprintf(stderr, "pp submit error\n");
+   }
+
+   if (lima_dump_command_stream) {
+      if (!lima_submit_wait(ctx->pp_submit, PIPE_TIMEOUT_INFINITE)) {
+         fprintf(stderr, "pp wait error\n");
+         exit(1);
+      }
    }
 
    ctx->plb_index = (ctx->plb_index + 1) % lima_ctx_num_plb;

@@ -196,7 +196,7 @@ bool lima_submit_wait(struct lima_submit *submit, uint64_t timeout_ns)
       .ctx = submit->ctx,
    };
 
-   bool ret = drmIoctl(submit->screen->fd, DRM_IOCTL_LIMA_WAIT_FENCE, &req) == 0;
+   bool ret = drmIoctl(submit->screen->fd, DRM_IOCTL_LIMA_WAIT_FENCE, &req) == 0 && !req.error;
    if (ret) {
       list_for_each_entry_safe(struct lima_submit_job, j,
                                &submit->busy_job_list, list) {
