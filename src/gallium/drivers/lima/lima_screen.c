@@ -26,6 +26,7 @@
 
 #include "util/ralloc.h"
 #include "util/u_debug.h"
+#include "util/u_screen.h"
 #include "renderonly/renderonly.h"
 
 #include "drm_fourcc.h"
@@ -100,12 +101,9 @@ lima_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 {
    switch (param) {
    case PIPE_CAP_NPOT_TEXTURES:
-   case PIPE_CAP_MAX_RENDER_TARGETS:
    case PIPE_CAP_BLEND_EQUATION_SEPARATE:
-   case PIPE_CAP_MAX_VIEWPORTS:
    case PIPE_CAP_ACCELERATED:
    case PIPE_CAP_UMA:
-   case PIPE_CAP_ALLOW_MAPPED_BUFFERS_DURING_EXECUTION:
    case PIPE_CAP_FORCE_COMPUTE_MINMAX_INDICES:
    case PIPE_CAP_NATIVE_FENCE_FD:
    case PIPE_CAP_SET_DAMAGE:
@@ -124,18 +122,24 @@ lima_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 1;
 
    case PIPE_CAP_MAX_TEXTURE_2D_LEVELS:
+   case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
+   case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
       return LIMA_MAX_MIP_LEVELS;
-
-   case PIPE_CAP_GLSL_FEATURE_LEVEL:
-      return 120;
 
    case PIPE_CAP_VENDOR_ID:
       return 0x13B5;
-   case PIPE_CAP_DEVICE_ID:
-      return 0xFFFFFFFF;
+
+   case PIPE_CAP_VIDEO_MEMORY:
+      return 0;
+
+   case PIPE_CAP_PCI_GROUP:
+   case PIPE_CAP_PCI_BUS:
+   case PIPE_CAP_PCI_DEVICE:
+   case PIPE_CAP_PCI_FUNCTION:
+      return 0;
 
    default:
-      return 0;
+      return u_pipe_screen_get_param_defaults(pscreen, param);
    }
 }
 
