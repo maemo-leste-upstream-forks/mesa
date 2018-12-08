@@ -66,7 +66,7 @@ lima_resource_create_scanout(struct pipe_screen *pscreen,
 
    assert(handle.type == WINSYS_HANDLE_TYPE_FD);
    pres = pscreen->resource_from_handle(pscreen, templat, &handle,
-                                        PIPE_HANDLE_USAGE_WRITE);
+                                        PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE);
 
    close(handle.handle);
    if (!pres) {
