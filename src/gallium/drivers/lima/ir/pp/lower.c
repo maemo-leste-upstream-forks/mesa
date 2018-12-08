@@ -29,8 +29,41 @@
 
 static bool ppir_lower_const(ppir_block *block, ppir_node *node)
 {
-   if (ppir_node_is_root(node))
+   if (ppir_node_is_root(node)) {
       ppir_node_delete(node);
+      return true;
+   }
+
+   ppir_node *move = NULL;
+   ppir_dest *dest = ppir_node_get_dest(node);
+
+   /* const (register) can only be used in alu node, create a move
+    * node for other types of node */
+   ppir_node_foreach_succ_safe(node, dep) {
+      ppir_node *succ = dep->succ;
+
+      if (succ->type != ppir_node_type_alu) {
+         if (!move) {
+            move = ppir_node_create(block, ppir_op_mov, -1, 0);
+            if (unlikely(!move))
+               return false;
+
+            ppir_debug("lower const create move %d for %d\n",
+                       move->index, node->index);
+
+            ppir_alu_node *alu = ppir_node_to_alu(move);
+            alu->dest = *dest;
+            alu->num_src = 1;
+            ppir_node_target_assign(alu->src, dest);
+            for (int i = 0; i < 4; i++)
+               alu->src->swizzle[i] = i;
+         }
+
+         ppir_node_replace_pred(dep, move);
+         ppir_node_replace_child(succ, node, move);
+      }
+   }
+
    return true;
 }
 
