@@ -421,7 +421,7 @@ static void ppir_codegen_encode_combine(ppir_node *node, void *code)
       int dest_component = ffs(dest->write_mask) - 1;
       assert(dest_component >= 0);
       f->scalar.dest = ppir_target_get_dest_reg_index(dest) + dest_component;
-      f->scalar.dest = dest->modifier;
+      f->scalar.dest_modifier = dest->modifier;
 
       ppir_src *src = alu->src;
       f->scalar.arg0_src = get_scl_reg_index(src, dest_component);
