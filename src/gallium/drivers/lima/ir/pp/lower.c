@@ -64,6 +64,11 @@ static bool ppir_lower_const(ppir_block *block, ppir_node *node)
       }
    }
 
+   if (move) {
+      ppir_node_add_dep(move, node);
+      list_addtail(&move->list, &node->list);
+   }
+
    return true;
 }
 
