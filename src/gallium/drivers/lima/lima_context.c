@@ -49,7 +49,14 @@ lima_ctx_buff_va(struct lima_context *ctx, enum lima_ctx_buff buff)
 {
    struct lima_ctx_buff_state *cbs = ctx->buffer_state + buff;
    struct lima_resource *res = lima_resource(cbs->res);
+
    lima_bo_update(res->bo, false, true);
+
+   if (cbs->submit & LIMA_CTX_BUFF_SUBMIT_GP)
+      lima_submit_add_bo(ctx->gp_submit, res->bo, LIMA_SUBMIT_BO_READ);
+   if (cbs->submit & LIMA_CTX_BUFF_SUBMIT_PP)
+      lima_submit_add_bo(ctx->pp_submit, res->bo, LIMA_SUBMIT_BO_READ);
+
    return res->bo->va + cbs->offset;
 }
 
@@ -70,6 +77,7 @@ lima_ctx_buff_alloc(struct lima_context *ctx, enum lima_ctx_buff buff,
    void *ret = NULL;
 
    cbs->size = align(size, 0x40);
+   cbs->submit = submit;
 
    if (uploader)
       u_upload_alloc(ctx->uploader, 0, cbs->size, 0x40, &cbs->offset,
@@ -77,12 +85,6 @@ lima_ctx_buff_alloc(struct lima_context *ctx, enum lima_ctx_buff buff,
    else
       u_suballocator_alloc(ctx->suballocator, cbs->size, 0x10,
                            &cbs->offset, &cbs->res);
-
-   struct lima_resource *res = lima_resource(cbs->res);
-   if (submit & LIMA_CTX_BUFF_SUBMIT_GP)
-      lima_submit_add_bo(ctx->gp_submit, res->bo, LIMA_SUBMIT_BO_READ);
-   if (submit & LIMA_CTX_BUFF_SUBMIT_PP)
-      lima_submit_add_bo(ctx->pp_submit, res->bo, LIMA_SUBMIT_BO_READ);
 
    return ret;
 }

@@ -137,6 +137,7 @@ struct lima_ctx_buff_state {
    struct pipe_resource *res;
    unsigned offset;
    unsigned size;
+   unsigned submit;
 };
 
 struct lima_texture_stateobj {
