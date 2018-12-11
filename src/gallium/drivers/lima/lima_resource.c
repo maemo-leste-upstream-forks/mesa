@@ -545,6 +545,8 @@ static void
 lima_blit(struct pipe_context *pctx, const struct pipe_blit_info *blit_info)
 {
    debug_checkpoint();
+
+   debug_error("lima_blit not implemented\n");
 }
 
 static void
@@ -561,15 +563,19 @@ lima_resource_context_init(struct lima_context *ctx)
    ctx->base.create_surface = lima_surface_create;
    ctx->base.surface_destroy = lima_surface_destroy;
 
+   /* TODO: optimize these functions to read/write data directly
+    * from/to target instead of creating a staging memory for tiled
+    * buffer indirectly
+    */
    ctx->base.buffer_subdata = u_default_buffer_subdata;
    ctx->base.texture_subdata = u_default_texture_subdata;
+   ctx->base.resource_copy_region = util_resource_copy_region;
+
+   ctx->base.blit = lima_blit;
 
    ctx->base.transfer_map = lima_transfer_map;
    ctx->base.transfer_flush_region = lima_transfer_flush_region;
    ctx->base.transfer_unmap = lima_transfer_unmap;
-
-   ctx->base.resource_copy_region = util_resource_copy_region;
-   ctx->base.blit = lima_blit;
 
    ctx->base.flush_resource = lima_flush_resource;
 }
