@@ -67,6 +67,7 @@ libradv_files = files(
   'radv_descriptor_set.h',
   'radv_formats.c',
   'radv_image.c',
+  'radv_llvm_helper.cpp',
   'radv_meta.c',
   'radv_meta.h',
   'radv_meta_blit.c',
@@ -88,6 +89,7 @@ libradv_files = files(
   'radv_radeon_winsys.h',
   'radv_shader.c',
   'radv_shader.h',
+  'radv_shader_helper.h',
   'radv_shader_info.c',
   'radv_query.c',
   'radv_util.c',
@@ -115,6 +117,16 @@ if with_platform_wayland
   libradv_files += files('radv_wsi_wayland.c')
 endif
 
+if with_platform_drm
+  radv_flags += '-DVK_USE_PLATFORM_DISPLAY_KHR'
+  libradv_files += files('radv_wsi_display.c')
+endif
+
+if with_xlib_lease
+  radv_deps += [dep_xcb_xrandr, dep_xlib_xrandr]
+  radv_flags += '-DVK_USE_PLATFORM_XLIB_XRANDR_EXT'
+endif
+
 libvulkan_radeon = shared_library(
   'vulkan_radeon',
   [libradv_files, radv_entrypoints, radv_extensions_c, vk_format_table_c],
@@ -132,6 +144,7 @@ libvulkan_radeon = shared_library(
     idep_nir,
   ],
   c_args : [c_vis_args, no_override_init_args, radv_flags],
+  cpp_args : [cpp_vis_args, radv_flags],
   link_args : [ld_args_bsymbolic, ld_args_gc_sections],
   install : true,
 )

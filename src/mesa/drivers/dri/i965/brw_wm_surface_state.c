@@ -155,6 +155,8 @@ brw_emit_surface_state(struct brw_context *brw,
    struct brw_bo *aux_bo = NULL;
    struct isl_surf *aux_surf = NULL;
    uint64_t aux_offset = 0;
+   struct brw_bo *clear_bo = NULL;
+   uint32_t clear_offset = 0;
 
    if (aux_usage != ISL_AUX_USAGE_NONE) {
       aux_surf = &mt->aux_buf->surf;
@@ -164,22 +166,16 @@ brw_emit_surface_state(struct brw_context *brw,
       /* We only really need a clear color if we also have an auxiliary
        * surface.  Without one, it does nothing.
        */
-      clear_color = mt->fast_clear_color;
+      clear_color =
+         intel_miptree_get_clear_color(devinfo, mt, view.format,
+                                       view.usage & ISL_SURF_USAGE_TEXTURE_BIT,
+                                       &clear_bo, &clear_offset);
    }
 
    void *state = brw_state_batch(brw,
                                  brw->isl_dev.ss.size,
                                  brw->isl_dev.ss.align,
                                  surf_offset);
-
-   bool use_clear_address = devinfo->gen >= 10 && aux_surf;
-
-   struct brw_bo *clear_bo = NULL;
-   uint32_t clear_offset = 0;
-   if (use_clear_address) {
-      clear_bo = mt->aux_buf->clear_color_bo;
-      clear_offset = mt->aux_buf->clear_color_offset;
-   }
 
    isl_surf_fill_state(&brw->isl_dev, state, .surf = &surf, .view = &view,
                        .address = brw_state_reloc(&brw->batch,
@@ -189,7 +185,7 @@ brw_emit_surface_state(struct brw_context *brw,
                        .aux_address = aux_offset,
                        .mocs = brw_get_bo_mocs(devinfo, mt->bo),
                        .clear_color = clear_color,
-                       .use_clear_address = use_clear_address,
+                       .use_clear_address = clear_bo != NULL,
                        .clear_address = clear_offset,
                        .x_offset_sa = tile_x, .y_offset_sa = tile_y);
    if (aux_surf) {
@@ -221,7 +217,7 @@ brw_emit_surface_state(struct brw_context *brw,
       }
    }
 
-   if (use_clear_address) {
+   if (clear_bo != NULL) {
       /* Make sure the offset is aligned with a cacheline. */
       assert((clear_offset & 0x3f) == 0);
       uint64_t *clear_address =
@@ -595,6 +591,12 @@ static void brw_update_texture_surface(struct gl_context *ctx,
          },
          .usage = ISL_SURF_USAGE_TEXTURE_BIT,
       };
+
+      /* On Ivy Bridge and earlier, we handle texture swizzle with shader
+       * code.  The actual surface swizzle should be identity.
+       */
+      if (devinfo->gen <= 7 && !devinfo->is_haswell)
+         view.swizzle = ISL_SWIZZLE_IDENTITY;
 
       if (obj->Target == GL_TEXTURE_CUBE_MAP ||
           obj->Target == GL_TEXTURE_CUBE_MAP_ARRAY)
@@ -1495,18 +1497,6 @@ update_buffer_image_param(struct brw_context *brw,
    param->stride[0] = _mesa_get_format_bytes(u->_ActualFormat);
 }
 
-static unsigned
-get_image_num_layers(const struct intel_mipmap_tree *mt, GLenum target,
-                     unsigned level)
-{
-   if (target == GL_TEXTURE_CUBE_MAP)
-      return 6;
-
-   return target == GL_TEXTURE_3D ?
-      minify(mt->surf.logical_level0_px.depth, level) :
-      mt->surf.logical_level0_px.array_len;
-}
-
 static void
 update_image_surface(struct brw_context *brw,
                      struct gl_image_unit *u,
@@ -1538,14 +1528,29 @@ update_image_surface(struct brw_context *brw,
       } else {
          struct intel_texture_object *intel_obj = intel_texture_object(obj);
          struct intel_mipmap_tree *mt = intel_obj->mt;
-         const unsigned num_layers = u->Layered ?
-            get_image_num_layers(mt, obj->Target, u->Level) : 1;
+
+         unsigned base_layer, num_layers;
+         if (u->Layered) {
+            if (obj->Target == GL_TEXTURE_3D) {
+               base_layer = 0;
+               num_layers = minify(mt->surf.logical_level0_px.depth, u->Level);
+            } else {
+               assert(obj->Immutable || obj->MinLayer == 0);
+               base_layer = obj->MinLayer;
+               num_layers = obj->Immutable ?
+                                obj->NumLayers :
+                                mt->surf.logical_level0_px.array_len;
+            }
+         } else {
+            base_layer = obj->MinLayer + u->_Layer;
+            num_layers = 1;
+         }
 
          struct isl_view view = {
             .format = format,
             .base_level = obj->MinLevel + u->Level,
             .levels = 1,
-            .base_array_layer = obj->MinLayer + u->_Layer,
+            .base_array_layer = base_layer,
             .array_len = num_layers,
             .swizzle = ISL_SWIZZLE_IDENTITY,
             .usage = ISL_SURF_USAGE_STORAGE_BIT,

@@ -1,129 +1,33 @@
-d89f58a6b8436b59dcf3b896c0ccddabed3f78fd
-a7d0c53ab89ca86b705014925214101f5bc4187f
-
-# These patches are ignored becuase Jason provided a version rebased on the 18.1
-# branch that was pulled instead
-#
-778e2881a04817e8c10c7a400bf1e37414420194
-3b54dd87f707a0fa40a1555bee64aeb06a381c27
-eeae4851494c16d2a6591550bfa6ef77d887ebe3
-a26693493570a9d0f0fba1be617e01ee7bfff4db
-0e7f3febf7e739c075a139ae641d65a0618752f3
-
-# This has a warning that it fixes more than one commit, but isn't needed in
-# 18.1
-#
-a1220e73116bad74f39c1792a0b0cf0e4e5031db
-
-# This doesn't apply and isn't necessary since
-# 1cc2e0cc6b47bd5efbf2af266405060785085e6b isn't in the 18.1 branch
-#
-587e712eda95c31d88ea9d20e59ad0ae59afef4f
-
-# This requires too many previous patch, and Marek (the author) decided to
-# to drop it from stable
-# 
-cac7ab1192eefdd8d8b3f25053fb006b5c330eb8
-
-# This patch is excluded since it requires additional patches to be pulled,
-# and is mainly aimed at developers, who rarely (if ever) work in the
-# stable branch
-#
-a2f5292c82ad07731d633b36a663e46adc181db9
-
-# This patch required manual backport, which was provided as
-# 3953467ee7851792c1d4b1c9435499545a7da9fc
-#
-4a67ce886a7b3def5f66c1aedf9e5436d157a03c
-
-# This patch required manual backport, which was provided as
-# 31677c5aa867e457cd06ae25150be2155e8da3c6
-#
-1f616a840eac02241c585d28e9dac8f19a297f39
-
-# Jason de-nominated this because it "a) shouldn't be needed and b) is horribly
-# broken"
-#
-11712b9ca17e4e1a819dcb7d020e19c6da77bc90
-
-# None of these are tagged for 18.1, they're for 18.2, but get-pick-list
-# still finds them for some reason
-#
-1c7a2433b270afb65f044d0cf49cb67715f50b5b
-0f79b2015bc0c44a8ed470684b6789f0e2e6aa6c
-ccbe33af5b086f4b488ac7ca8a8a45ebc9ac189c
-3f9cb2eb05152f4f0269e97893a16f23261f095b
-f2c0d310d6efe560de8192ab468ba02d50c9ac1e
-50a8713d4f90a6c70a23f9f5871420371df283a7
-1561e4984eb03d6946d19b820b83a96bbbd83b98
-66e12451ac4e4e1c05a48b2cd2b0d3186f779f20
-73b342c7a52a93d283799800824311639f372de0
-71d5b2fbf83061a1319141d26942771e8c75ff2b
-011a811652c74dcc9f56506ebb6075e4bdfe6ef9
-f3a78a9da01218df0067b24b52204a4e5f01bc69
-f9e8456c39136aa41f85f82758a00e5aa2aab334
-0aacb5eab6120aa1410966d23101e16eea3fbcd7
-a4a104fc81e93555899050efac23c3cd6ba762ab
-24ee53231da84a1be5ec08abebe8a2ff6aa019ca
-4c43ec461de4f122d5d6566361d064c816e4ef69
-743e11c10b180247488ae0cc24900560e0a74e2b
-4ffb575da59fd3aece02734ca4fd3212d5002d55
-8c048af5890d43578ca41eb9dcfa60cb9cc3fc9c
-c92a463d2341dd7893dd8b54775930ed9be72ac0
-ea1e50cc166ae855f9fa91ca6a4f944123298e4e
-f73f748323ef5a421ffd8fa0f02afd9627e31023
-d4e52281aa9c1acc92619736da8b67d8c02ce380
-a5f35aa742c3f1e2fae6a6c2fb53f92822f0cb70
-f6e09db2e613c215257b80f40957d580165b5ddf
-d4bf954fe61ec231be2bfa5e059f0fb7f6150bd1
-abdf396cbeaec2bfe9da2fd773d42fa3022ca8b5
-b9f6521157ab55073eec528cacc1f3b567e49503
-aa3020592964344c7032396d159e4ab2df743587
-063264db5be2941746fa58f164cdc803362753a9
-748f4cce183007587a6688ef25ad5f9dbea5c33c
-9de062ef207c6062d1fabb70209f4bbc9dc4732d
-7d1d1208c2b38890fe065b6431ef2e3b7166bae4
-0796c3934ebfe3448acf2d63f478f51c08e33046
-864c780566b8782c4fc69b4337db768223717bd8
-
-# These have more than one fixes tag and generate a warning
-#
-24839663a40257e0468406d72c48d431b5ae2bd4
-6ff1c479968819b93c46d24bd898e89ce14ac401
-ac0856ae4100a05dcd1fd932d9fd10200f8f7a7c
-c9f54486959716762e6818dabb0a73a8cd46df67
-
-# This patch requires patches that would require python 3, the thing they're
-# fixing isn't really even a bug, it's more of a style choice, so I'm not going
-# to pull them.
-#
-48820ed8da0ad50d51a58f26e156d82b685492e2
-
-# This patch doesn't apply and either needs to be backported or can just be
-# ignored
-#
-1e40f6948310be07abb2d0198e6602769892cdac
-
-# This patch isn't necessary, since the patch it fixes is not present in 18.1
-#
-a72dbc461bdb7714656e62cd8f4b00a404c2e6e0
-
-# This requires a much more significant patch not present in 18.1
-#
-4dc244eb447b1fa4e39d67a58328ed774395c901
-
-# This patches were dropped since they only fix developer tools, which aren't
-# built by default and should be of no use to end users or distros
-#
-97fcccb25ed5f55139c03ebc1c71742f0f25f683
-4aec44c0d9c4c0649c362199fac97efe0a3b38a4
-
-# This patch was reverted on master shortly after merging.
-#
-90819abb56f6b1a0cd4946b13b6caf24fb46e500
-
-# These were supreceeded by patches backported to 18.1
-#
-3341429d74099b436c3824164837eebd47029ded
-9158e0bd82ffdad4baf46221bccbbb3fe4764c11
-cc3b99bb48769ccd018b781338b548306af5046b
+# fixes:  This commit has more than one Fixes tag but the commit it
+#         addresses didn't land in branch.
+6ff1c479968819b93c46d24bd898e89ce14ac401 autotools: don't ship the git_sha1.h generated in git in the tarballs
+# pick:   This commit addresses a regression introduced by previous
+#         commit fa9e6c235da, which didn't make it for 18.2.
+a72dbc461bdb7714656e62cd8f4b00a404c2e6e0 mesa: allow GL_UNSIGNED_BYTE type for SNORM reads
+# fixes:  This commit has more than one Fixes tag but the commit it
+#         addresses didn't land in branch.
+c9f54486959716762e6818dabb0a73a8cd46df67 radeonsi: fix regression in indirect input swizzles.
+# extra:  Just some comments update.
+2ad9917e187c1e9dbb053d3c98aa0e39fa374059 anv/blorp: Fix a comment as per Nanley's review feedback
+# fixes:  This commit was immediately reverted by commit 2dce1175c1c.
+4aec44c0d9c4c0649c362199fac97efe0a3b38a4 i965/tools: 32bit compilation with meson
+# pick:   This commit was reverted by commit 95bb7d82ca8.
+90819abb56f6b1a0cd4946b13b6caf24fb46e500 radv: fix descriptor pool allocation size
+# pick:   There is a specific patch for stable branch for this commit.
+0d495bec25bd7584de4e988c2b4528c1996bc1d0 radeonsi: NaN should pass kill_if
+# pick:   This commit reverts 0fa9e6d7b30 which did not land in branch.
+aa02d7e8781c25ee18b6da97606300808c84973a Revert "anv/skylake: disable ForceThreadDispatchEnable"
+# pick:   Explicit 18.3 only nominations.
+b1b2dd06a7b777e862b525302b15bcaf407d3648 radv: add missing TFB queries support to CmdCopyQueryPoolsResults()
+e0c7114eb3c19d4c2653f661698a6baa3bc9bedf st/mesa: disable L3 thread pinning
+b5f213bb1dcde22949dffe9d3a431fecd5d0f33b radv: binding streamout buffers doesn't change context regs
+9367514524f70faad99c721bac92339c8ff8bad9 radeonsi: fix video APIs on Raven2
+ea9f95e2a67eca90bb84eea24e7b4b804b3b1345 radeonsi: go back to using bottom-of-pipe for beginning of TIME_ELAPSED
+# fixes:  This commit was reverted by commit 5f312e95f87.
+a9031bf9b55602d93cccef6c926e2179c23205b4 i965/batch: avoid reverting batch buffer if saved state is an empty
+# extra:  intel/aub_viewer is not present in branch
+ac324a6809c09c54d3b0bfdb00e5e62987ec4ad8 intel/aub_viewer: fix dynamic state printing
+0db898cef2f5a455138e5845689c075aadba1c1f intel/aub_viewer: Print blend states properly
+# fixes: This commit requires commits 854202f70e6 and 84bc5738401 which did not
+#        land in branch.
+c120dbfe4d18240315ecec9b43a61aeb9ab239ac mesa/main: fix incorrect depth-error

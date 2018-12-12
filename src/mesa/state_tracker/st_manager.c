@@ -472,6 +472,7 @@ st_framebuffer_create(struct st_context *st,
           st_pipe_format_to_mesa_format(srgb_format) != MESA_FORMAT_NONE &&
           screen->is_format_supported(screen, srgb_format,
                                       PIPE_TEXTURE_2D, stfbi->visual->samples,
+                                      stfbi->visual->samples,
                                       (PIPE_BIND_DISPLAY_TARGET |
                                        PIPE_BIND_RENDER_TARGET)))
          mode.sRGBCapable = GL_TRUE;
@@ -833,6 +834,7 @@ st_api_create_context(struct st_api *stapi, struct st_manager *smapi,
    struct st_context *shared_ctx = (struct st_context *) shared_stctxi;
    struct st_context *st;
    struct pipe_context *pipe;
+   struct gl_config* mode_ptr;
    struct gl_config mode;
    gl_api api;
    bool no_error = false;
@@ -892,7 +894,13 @@ st_api_create_context(struct st_api *stapi, struct st_manager *smapi,
    }
 
    st_visual_to_context_mode(&attribs->visual, &mode);
-   st = st_create_context(api, pipe, &mode, shared_ctx,
+
+   if (attribs->visual.no_config)
+      mode_ptr = NULL;
+   else
+      mode_ptr = &mode;
+
+   st = st_create_context(api, pipe, mode_ptr, shared_ctx,
                           &attribs->options, no_error);
    if (!st) {
       *error = ST_CONTEXT_ERROR_NO_MEMORY;

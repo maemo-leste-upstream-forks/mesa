@@ -57,15 +57,16 @@ glcpp = executable(
 
 if with_tests
   modes = ['unix', 'windows', 'oldmac', 'bizarro']
-  if dep_valgrind != [] and dep_valgrind.found()
+  if dep_valgrind.found()
     modes += ['valgrind']
   endif
 
   foreach m : modes
     test(
       'glcpp test (@0@)'.format(m),
-      find_program('tests/glcpp_test.py'),
+      prog_python2,
       args : [
+        join_paths(meson.current_source_dir(), 'tests/glcpp_test.py'),
         glcpp, join_paths(meson.current_source_dir(), 'tests'),
         '--@0@'.format(m),
       ],

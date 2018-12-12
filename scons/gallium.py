@@ -282,7 +282,7 @@ def generate(env):
         if env['build'] == 'profile':
             env['debug'] = False
             env['profile'] = True
-        if env['build'] in ('release', 'opt'):
+        if env['build'] == 'release':
             env['debug'] = False
             env['profile'] = False
 
@@ -328,8 +328,6 @@ def generate(env):
         cppdefines += ['NDEBUG']
     if env['build'] == 'profile':
         cppdefines += ['PROFILE']
-    if env['build'] in ('opt', 'profile'):
-        cppdefines += ['VMX86_STATS']
     if env['platform'] in ('posix', 'linux', 'freebsd', 'darwin'):
         cppdefines += [
             '_POSIX_SOURCE',
@@ -392,10 +390,6 @@ def generate(env):
         cppdefines += ['PIPE_SUBSYSTEM_WINDOWS_USER']
     if env['embedded']:
         cppdefines += ['PIPE_SUBSYSTEM_EMBEDDED']
-    if env['texture_float']:
-        print('warning: Floating-point textures enabled.')
-        print('warning: Please consult docs/patents.txt with your lawyer before building Mesa.')
-        cppdefines += ['TEXTURE_FLOAT_ENABLED']
     env.Append(CPPDEFINES = cppdefines)
 
     # C compiler options
@@ -484,7 +478,7 @@ def generate(env):
             ccflags += [
                 '/O2', # optimize for speed
             ]
-        if env['build'] in ('release', 'opt'):
+        if env['build'] == 'release':
             if not env['clang']:
                 ccflags += [
                     '/GL', # enable whole program optimization
@@ -595,7 +589,7 @@ def generate(env):
             shlinkflags += ['-Wl,--enable-stdcall-fixup']
             #shlinkflags += ['-Wl,--kill-at']
     if msvc:
-        if env['build'] in ('release', 'opt') and not env['clang']:
+        if env['build'] == 'release' and not env['clang']:
             # enable Link-time Code Generation
             linkflags += ['/LTCG']
             env.Append(ARFLAGS = ['/LTCG'])

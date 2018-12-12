@@ -948,11 +948,11 @@ x11_present_to_x11(struct x11_swapchain *chain, uint32_t image_index,
 
 static VkResult
 x11_acquire_next_image(struct wsi_swapchain *anv_chain,
-                       uint64_t timeout,
-                       VkSemaphore semaphore,
+                       const VkAcquireNextImageInfoKHR *info,
                        uint32_t *image_index)
 {
    struct x11_swapchain *chain = (struct x11_swapchain *)anv_chain;
+   uint64_t timeout = info->timeout;
 
    if (chain->threaded) {
       return x11_acquire_next_image_from_queue(chain, image_index, timeout);
@@ -1469,7 +1469,6 @@ wsi_x11_init_wsi(struct wsi_device *wsi_device,
    }
 
    wsi->base.get_support = x11_surface_get_support;
-   wsi->base.get_capabilities = x11_surface_get_capabilities;
    wsi->base.get_capabilities2 = x11_surface_get_capabilities2;
    wsi->base.get_formats = x11_surface_get_formats;
    wsi->base.get_formats2 = x11_surface_get_formats2;

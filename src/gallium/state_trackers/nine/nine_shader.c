@@ -378,7 +378,7 @@ struct sm1_instruction
     struct sm1_src_param dst_rel[1];
     struct sm1_dst_param dst[1];
 
-    struct sm1_op_info *info;
+    const struct sm1_op_info *info;
 };
 
 static void
@@ -483,7 +483,7 @@ struct shader_translator
         struct ureg_dst a0;
         struct ureg_dst tS[8]; /* texture stage registers */
         struct ureg_dst tdst; /* scratch dst if we need extra modifiers */
-        struct ureg_dst t[5]; /* scratch TEMPs */
+        struct ureg_dst t[8]; /* scratch TEMPs */
         struct ureg_src vC[2]; /* PS color in */
         struct ureg_src vT[8]; /* PS texcoord in */
         struct ureg_dst rL[NINE_MAX_LOOP_DEPTH]; /* loop ctr */
@@ -2273,6 +2273,18 @@ DECL_SPECIAL(POW)
     return D3D_OK;
 }
 
+DECL_SPECIAL(RCP)
+{
+    struct ureg_program *ureg = tx->ureg;
+    struct ureg_dst dst = tx_dst_param(tx, &tx->insn.dst[0]);
+    struct ureg_src src = tx_src_param(tx, &tx->insn.src[0]);
+    struct ureg_dst tmp = tx_scratch(tx);
+    ureg_RCP(ureg, tmp, src);
+    ureg_MIN(ureg, tmp, ureg_imm1f(ureg, FLT_MAX), ureg_src(tmp));
+    ureg_MAX(ureg, dst, ureg_imm1f(ureg, -FLT_MAX), ureg_src(tmp));
+    return D3D_OK;
+}
+
 DECL_SPECIAL(RSQ)
 {
     struct ureg_program *ureg = tx->ureg;
@@ -2901,7 +2913,7 @@ DECL_SPECIAL(COMMENT)
 #define _OPI(o,t,vv1,vv2,pv1,pv2,d,s,h) \
     { D3DSIO_##o, TGSI_OPCODE_##t, { vv1, vv2 }, { pv1, pv2, }, d, s, h }
 
-struct sm1_op_info inst_table[] =
+static const struct sm1_op_info inst_table[] =
 {
     _OPI(NOP, NOP, V(0,0), V(3,0), V(0,0), V(3,0), 0, 0, SPECIAL(NOP)), /* 0 */
     _OPI(MOV, MOV, V(0,0), V(3,0), V(0,0), V(3,0), 1, 1, NULL),
@@ -2909,7 +2921,7 @@ struct sm1_op_info inst_table[] =
     _OPI(SUB, NOP, V(0,0), V(3,0), V(0,0), V(3,0), 1, 2, SPECIAL(SUB)), /* 3 */
     _OPI(MAD, MAD, V(0,0), V(3,0), V(0,0), V(3,0), 1, 3, NULL), /* 4 */
     _OPI(MUL, MUL, V(0,0), V(3,0), V(0,0), V(3,0), 1, 2, NULL), /* 5 */
-    _OPI(RCP, RCP, V(0,0), V(3,0), V(0,0), V(3,0), 1, 1, NULL), /* 6 */
+    _OPI(RCP, RCP, V(0,0), V(3,0), V(0,0), V(3,0), 1, 1, SPECIAL(RCP)), /* 6 */
     _OPI(RSQ, RSQ, V(0,0), V(3,0), V(0,0), V(3,0), 1, 1, SPECIAL(RSQ)), /* 7 */
     _OPI(DP3, DP3, V(0,0), V(3,0), V(0,0), V(3,0), 1, 2, NULL), /* 8 */
     _OPI(DP4, DP4, V(0,0), V(3,0), V(0,0), V(3,0), 1, 2, NULL), /* 9 */
@@ -3008,10 +3020,10 @@ struct sm1_op_info inst_table[] =
     _OPI(BREAKP, BRK,  V(0,0), V(3,0), V(2,1), V(3,0), 0, 1, SPECIAL(BREAKP))
 };
 
-struct sm1_op_info inst_phase =
+static const struct sm1_op_info inst_phase =
     _OPI(PHASE, NOP, V(0,0), V(0,0), V(1,4), V(1,4), 0, 0, SPECIAL(PHASE));
 
-struct sm1_op_info inst_comment =
+static const struct sm1_op_info inst_comment =
     _OPI(COMMENT, NOP, V(0,0), V(3,0), V(0,0), V(3,0), 0, 0, SPECIAL(COMMENT));
 
 static void
@@ -3279,7 +3291,7 @@ sm1_parse_instruction(struct shader_translator *tx)
     struct sm1_instruction *insn = &tx->insn;
     HRESULT hr;
     DWORD tok;
-    struct sm1_op_info *info = NULL;
+    const struct sm1_op_info *info = NULL;
     unsigned i;
 
     sm1_parse_comments(tx, TRUE);

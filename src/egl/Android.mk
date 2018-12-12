@@ -44,6 +44,7 @@ LOCAL_CFLAGS := \
 	-DHAVE_ANDROID_PLATFORM
 
 LOCAL_C_INCLUDES := \
+	$(MESA_TOP)/include/drm-uapi \
 	$(MESA_TOP)/src/egl/main \
 	$(MESA_TOP)/src/egl/drivers/dri2
 
@@ -57,8 +58,12 @@ LOCAL_SHARED_LIBRARIES := \
 	libhardware \
 	liblog \
 	libcutils \
-	libgralloc_drm \
 	libsync
+
+ifeq ($(BOARD_USES_DRM_GRALLOC),true)
+	LOCAL_CFLAGS += -DHAVE_DRM_GRALLOC
+	LOCAL_SHARED_LIBRARIES += libgralloc_drm
+endif
 
 ifeq ($(filter $(MESA_ANDROID_MAJOR_VERSION), 4 5 6 7),)
 LOCAL_SHARED_LIBRARIES += libnativewindow

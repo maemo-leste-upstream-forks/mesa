@@ -455,10 +455,11 @@ wsi_wl_get_presentation_support(struct wsi_device *wsi_device,
       (struct wsi_wayland *)wsi_device->wsi[VK_ICD_WSI_PLATFORM_WAYLAND];
 
    struct wsi_wl_display display;
-   int ret = wsi_wl_display_init(wsi, &display, wl_display, false);
-   wsi_wl_display_finish(&display);
+   VkResult ret = wsi_wl_display_init(wsi, &display, wl_display, false);
+   if (ret == VK_SUCCESS)
+      wsi_wl_display_finish(&display);
 
-   return ret == 0;
+   return ret == VK_SUCCESS;
 }
 
 static VkResult
@@ -658,8 +659,7 @@ wsi_wl_swapchain_get_wsi_image(struct wsi_swapchain *wsi_chain,
 
 static VkResult
 wsi_wl_swapchain_acquire_next_image(struct wsi_swapchain *wsi_chain,
-                                    uint64_t timeout,
-                                    VkSemaphore semaphore,
+                                    const VkAcquireNextImageInfoKHR *info,
                                     uint32_t *image_index)
 {
    struct wsi_wl_swapchain *chain = (struct wsi_wl_swapchain *)wsi_chain;
@@ -1010,7 +1010,6 @@ wsi_wl_init_wsi(struct wsi_device *wsi_device,
    wsi->wsi = wsi_device;
 
    wsi->base.get_support = wsi_wl_surface_get_support;
-   wsi->base.get_capabilities = wsi_wl_surface_get_capabilities;
    wsi->base.get_capabilities2 = wsi_wl_surface_get_capabilities2;
    wsi->base.get_formats = wsi_wl_surface_get_formats;
    wsi->base.get_formats2 = wsi_wl_surface_get_formats2;

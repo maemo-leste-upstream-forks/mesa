@@ -62,29 +62,30 @@ static void
 tcs_add_output_reads(nir_shader *shader, uint64_t *read, uint64_t *patches_read)
 {
    nir_foreach_function(function, shader) {
-      if (function->impl) {
-         nir_foreach_block(block, function->impl) {
-            nir_foreach_instr(instr, block) {
-               if (instr->type != nir_instr_type_intrinsic)
-                  continue;
+      if (!function->impl)
+         continue;
 
-               nir_intrinsic_instr *intrin_instr =
-                  nir_instr_as_intrinsic(instr);
-               if (intrin_instr->intrinsic == nir_intrinsic_load_var &&
-                   intrin_instr->variables[0]->var->data.mode ==
-                   nir_var_shader_out) {
+      nir_foreach_block(block, function->impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
 
-                  nir_variable *var = intrin_instr->variables[0]->var;
-                  if (var->data.patch) {
-                     patches_read[var->data.location_frac] |=
-                        get_variable_io_mask(intrin_instr->variables[0]->var,
-                                             shader->info.stage);
-                  } else {
-                     read[var->data.location_frac] |=
-                        get_variable_io_mask(intrin_instr->variables[0]->var,
-                                             shader->info.stage);
-                  }
-               }
+            nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
+            if (intrin->intrinsic != nir_intrinsic_load_deref)
+               continue;
+
+            nir_variable *var =
+               nir_deref_instr_get_variable(nir_src_as_deref(intrin->src[0]));
+
+            if (var->data.mode != nir_var_shader_out)
+               continue;
+
+            if (var->data.patch) {
+               patches_read[var->data.location_frac] |=
+                  get_variable_io_mask(var, shader->info.stage);
+            } else {
+               read[var->data.location_frac] |=
+                  get_variable_io_mask(var, shader->info.stage);
             }
          }
       }
@@ -175,9 +176,12 @@ nir_remove_unused_varyings(nir_shader *producer, nir_shader *consumer)
 }
 
 static uint8_t
-get_interp_type(nir_variable *var, bool default_to_smooth_interp)
+get_interp_type(nir_variable *var, const struct glsl_type *type,
+                bool default_to_smooth_interp)
 {
-   if (var->data.interpolation != INTERP_MODE_NONE)
+   if (glsl_type_is_integer(type))
+      return INTERP_MODE_FLAT;
+   else if (var->data.interpolation != INTERP_MODE_NONE)
       return var->data.interpolation;
    else if (default_to_smooth_interp)
       return INTERP_MODE_SMOOTH;
@@ -232,7 +236,7 @@ get_slot_component_masks_and_interp_types(struct exec_list *var_list,
          unsigned comps_slot2 = 0;
          for (unsigned i = 0; i < slots; i++) {
             interp_type[location + i] =
-               get_interp_type(var, default_to_smooth_interp);
+               get_interp_type(var, type, default_to_smooth_interp);
             interp_loc[location + i] = get_interp_loc(var);
 
             if (dual_slot) {
@@ -404,7 +408,7 @@ compact_components(nir_shader *producer, nir_shader *consumer, uint8_t *comps,
             continue;
 
          bool found_new_offset = false;
-         uint8_t interp = get_interp_type(var, default_to_smooth_interp);
+         uint8_t interp = get_interp_type(var, type, default_to_smooth_interp);
          for (; cursor[interp] < 32; cursor[interp]++) {
             uint8_t cursor_used_comps = comps[cursor[interp]];
 

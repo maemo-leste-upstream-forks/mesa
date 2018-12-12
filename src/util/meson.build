@@ -48,12 +48,16 @@ files_mesa_util = files(
   'mesa-sha1.h',
   'os_time.c',
   'os_time.h',
+  'u_process.c',
+  'u_process.h',
   'sha1/sha1.c',
   'sha1/sha1.h',
   'ralloc.c',
   'ralloc.h',
   'rand_xor.c',
   'rand_xor.h',
+  'rb_tree.c',
+  'rb_tree.h',
   'register_allocate.c',
   'register_allocate.h',
   'rgtc.c',
@@ -81,6 +85,8 @@ files_mesa_util = files(
   'u_thread.h',
   'u_vector.c',
   'u_vector.h',
+  'vma.c',
+  'vma.h',
 )
 
 install_data('drirc', install_dir : get_option('sysconfdir'))
@@ -102,7 +108,7 @@ libmesa_util = static_library(
   'mesa_util',
   [files_mesa_util, format_srgb],
   include_directories : inc_common,
-  dependencies : [dep_zlib, dep_clock, dep_thread, dep_atomic],
+  dependencies : [dep_zlib, dep_clock, dep_thread, dep_atomic, dep_m],
   c_args : [c_msvc_compat_args, c_vis_args],
   build_by_default : false
 )
@@ -111,6 +117,7 @@ libxmlconfig = static_library(
   'xmlconfig',
   files_xmlconfig,
   include_directories : inc_common,
+  link_with : libmesa_util,
   dependencies : [dep_expat, dep_m],
   c_args : [
     c_msvc_compat_args, c_vis_args,
@@ -157,4 +164,6 @@ if with_tests
 
   subdir('tests/hash_table')
   subdir('tests/string_buffer')
+  subdir('tests/vma')
+  subdir('tests/set')
 endif

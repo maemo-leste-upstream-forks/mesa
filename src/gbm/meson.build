@@ -32,7 +32,6 @@ args_gbm = []
 deps_gbm = []
 incs_gbm = [
   include_directories('main'), inc_include, inc_src, inc_loader,
-  inc_wayland_drm,
 ]
 
 if with_dri2
@@ -44,8 +43,6 @@ if with_platform_wayland
   deps_gbm += dep_wayland_server
   incs_gbm += inc_wayland_drm
 endif
-
-# TODO: wayland support (requires egl)
 
 libgbm = shared_library(
   'gbm',

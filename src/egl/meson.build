@@ -24,7 +24,7 @@ inc_egl_dri2 = include_directories('drivers/dri2')
 c_args_for_egl = []
 link_for_egl = []
 deps_for_egl = []
-incs_for_egl = [inc_include, inc_src, inc_egl]
+incs_for_egl = [inc_include, inc_drm_uapi, inc_src, inc_egl]
 
 files_egl = files(
   'main/eglapi.c',
@@ -117,7 +117,7 @@ if with_platform_surfaceless
   incs_for_egl += [inc_loader]
 endif
 if with_platform_wayland
-  deps_for_egl += [dep_wayland_client, dep_wayland_server]
+  deps_for_egl += [dep_wayland_client, dep_wayland_server, dep_wayland_egl_headers]
   link_for_egl += libwayland_drm
   files_egl += files('drivers/dri2/platform_wayland.c')
   files_egl += [
@@ -125,9 +125,7 @@ if with_platform_wayland
     linux_dmabuf_unstable_v1_client_protocol_h,
     wayland_drm_client_protocol_h,
   ]
-  incs_for_egl += include_directories(
-    'wayland/wayland-egl', 'wayland/wayland-drm',
-  )
+  incs_for_egl += include_directories('wayland/wayland-drm')
 endif
 if with_platform_android
   deps_for_egl += dep_android
@@ -143,8 +141,6 @@ if with_platform_haiku
   link_for_egl += libgl
   deps_for_egl += cpp.find_library('be')
 endif
-
-# TODO: glvnd
 
 if cc.has_function('mincore')
   c_args_for_egl += '-DHAVE_MINCORE'
@@ -199,10 +195,6 @@ pkg.generate(
   requires_private : gl_priv_reqs,
   extra_cflags : gl_pkgconfig_c_flags,
 )
-
-if with_platform_wayland
-  subdir('wayland/wayland-egl')
-endif
 
 if with_tests
   if with_glvnd

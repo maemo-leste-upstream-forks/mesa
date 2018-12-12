@@ -115,6 +115,16 @@ DRI_CONF_OPT_BEGIN_B(allow_glsl_extension_directive_midshader, def) \
         DRI_CONF_DESC(en,gettext("Allow GLSL #extension directives in the middle of shaders")) \
 DRI_CONF_OPT_END
 
+#define DRI_CONF_ALLOW_GLSL_BUILTIN_CONST_EXPRESSION(def) \
+DRI_CONF_OPT_BEGIN_B(allow_glsl_builtin_const_expression, def) \
+        DRI_CONF_DESC(en,gettext("Allow builtins as part of constant expressions")) \
+DRI_CONF_OPT_END
+
+#define DRI_CONF_ALLOW_GLSL_RELAXED_ES(def) \
+DRI_CONF_OPT_BEGIN_B(allow_glsl_relaxed_es, def) \
+        DRI_CONF_DESC(en,gettext("Allow some relaxation of GLSL ES shader restrictions")) \
+DRI_CONF_OPT_END
+
 #define DRI_CONF_ALLOW_GLSL_BUILTIN_VARIABLE_REDECLARATION(def) \
 DRI_CONF_OPT_BEGIN_B(allow_glsl_builtin_variable_redeclaration, def) \
         DRI_CONF_DESC(en,gettext("Allow GLSL built-in variables to be redeclared verbatim")) \
@@ -138,6 +148,11 @@ DRI_CONF_OPT_END
 #define DRI_CONF_ALLOW_GLSL_CROSS_STAGE_INTERPOLATION_MISMATCH(def) \
 DRI_CONF_OPT_BEGIN_B(allow_glsl_cross_stage_interpolation_mismatch, def) \
         DRI_CONF_DESC(en,gettext("Allow interpolation qualifier mismatch across shader stages")) \
+DRI_CONF_OPT_END
+
+#define DRI_CONF_FORCE_COMPAT_PROFILE(def) \
+DRI_CONF_OPT_BEGIN_B(force_compat_profile, def) \
+        DRI_CONF_DESC(en,gettext("Force an OpenGL compatibility context")) \
 DRI_CONF_OPT_END
 
 /**

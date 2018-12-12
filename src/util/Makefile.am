@@ -22,7 +22,12 @@
 SUBDIRS = . \
 	xmlpool \
 	tests/hash_table \
-	tests/string_buffer
+	tests/string_buffer \
+	tests/set
+
+if HAVE_STD_CXX11
+SUBDIRS += tests/vma
+endif
 
 include Makefile.sources
 
@@ -54,7 +59,8 @@ libmesautil_la_LIBADD = \
 	$(PTHREAD_LIBS) \
 	$(CLOCK_LIB) \
 	$(ZLIB_LIBS) \
-	$(LIBATOMIC_LIBS)
+	$(LIBATOMIC_LIBS) \
+	-lm
 
 libxmlconfig_la_SOURCES = $(XMLCONFIG_FILES)
 libxmlconfig_la_CFLAGS = \

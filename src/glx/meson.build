@@ -137,10 +137,6 @@ gl_lib_cargs = [
   '-DDEFAULT_DRIVER_DIR="@0@"'.format(dri_search_path),
 ]
 
-if dep_xxf86vm.found()
-  gl_lib_cargs += '-DHAVE_XF86VIDMODE'
-endif
-
 libglx = static_library(
   'glx',
   [files_libglx, glx_generated],
@@ -157,24 +153,17 @@ libglx = static_library(
   build_by_default : false,
 )
 
-# workaround for bug #2180
-dummy_c = custom_target(
-  'dummy_c',
-  output : 'dummy.c',
-  command : [prog_touch, '@OUTPUT@'],
-)
-
 if with_glx == 'dri'
   libgl = shared_library(
     gl_lib_name,
-    dummy_c,  # workaround for bug #2180
+    [],
     include_directories : [inc_common, inc_glapi, inc_loader, inc_gl_internal],
     link_with : [libglapi_static, libglapi],
     link_whole : libglx,
     link_args : [ld_args_bsymbolic, ld_args_gc_sections, extra_ld_args_libgl],
     dependencies : [
       dep_libdrm, dep_dl, dep_m, dep_thread, dep_x11, dep_xcb_glx, dep_xcb,
-      dep_x11_xcb, dep_xcb_dri2, dep_xext, dep_xfixes, dep_xdamage,
+      dep_x11_xcb, dep_xcb_dri2, dep_xext, dep_xfixes, dep_xdamage, dep_xxf86vm,
       extra_deps_libgl,
     ],
     version : gl_lib_version,

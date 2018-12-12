@@ -97,7 +97,7 @@ struct ac_llvm_context {
 };
 
 void
-ac_llvm_context_init(struct ac_llvm_context *ctx, LLVMContextRef context,
+ac_llvm_context_init(struct ac_llvm_context *ctx,
 		     enum chip_class chip_class, enum radeon_family family);
 
 void
@@ -161,6 +161,9 @@ LLVMValueRef
 ac_build_gather_values(struct ac_llvm_context *ctx,
 		       LLVMValueRef *values,
 		       unsigned value_count);
+LLVMValueRef ac_build_expand(struct ac_llvm_context *ctx,
+			     LLVMValueRef value,
+			     unsigned src_channels, unsigned dst_channels);
 LLVMValueRef ac_build_expand_to_vec4(struct ac_llvm_context *ctx,
 				     LLVMValueRef value,
 				     unsigned num_channels);
@@ -251,6 +254,14 @@ LLVMValueRef ac_build_buffer_load_format_gfx9_safe(struct ac_llvm_context *ctx,
                                                   unsigned num_channels,
                                                   bool glc,
                                                   bool can_speculate);
+
+LLVMValueRef
+ac_build_tbuffer_load_short(struct ac_llvm_context *ctx,
+			    LLVMValueRef rsrc,
+			    LLVMValueRef vindex,
+			    LLVMValueRef voffset,
+				LLVMValueRef soffset,
+				LLVMValueRef immoffset);
 
 LLVMValueRef
 ac_get_thread_id(struct ac_llvm_context *ctx);

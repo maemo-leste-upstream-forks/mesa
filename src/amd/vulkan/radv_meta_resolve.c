@@ -358,7 +358,8 @@ static void radv_pick_resolve_method_images(struct radv_image *src_image,
 		*method = RESOLVE_COMPUTE;
 	else if (vk_format_is_int(src_image->vk_format))
 		*method = RESOLVE_COMPUTE;
-	else if (src_image->info.array_size > 1)
+	else if (src_image->info.array_size > 1 ||
+		 dest_image->info.array_size > 1)
 		*method = RESOLVE_COMPUTE;
 	
 	if (radv_layout_dcc_compressed(dest_image, dest_image_layout, queue_mask)) {
@@ -613,8 +614,8 @@ radv_cmd_buffer_resolve_subpass(struct radv_cmd_buffer *cmd_buffer)
 		return;
 
 	for (uint32_t i = 0; i < subpass->color_count; ++i) {
-		VkAttachmentReference src_att = subpass->color_attachments[i];
-		VkAttachmentReference dest_att = subpass->resolve_attachments[i];
+		struct radv_subpass_attachment src_att = subpass->color_attachments[i];
+		struct radv_subpass_attachment dest_att = subpass->resolve_attachments[i];
 
 		if (src_att.attachment == VK_ATTACHMENT_UNUSED ||
 		    dest_att.attachment == VK_ATTACHMENT_UNUSED)
@@ -641,8 +642,8 @@ radv_cmd_buffer_resolve_subpass(struct radv_cmd_buffer *cmd_buffer)
 		       RADV_META_SAVE_GRAPHICS_PIPELINE);
 
 	for (uint32_t i = 0; i < subpass->color_count; ++i) {
-		VkAttachmentReference src_att = subpass->color_attachments[i];
-		VkAttachmentReference dest_att = subpass->resolve_attachments[i];
+		struct radv_subpass_attachment src_att = subpass->color_attachments[i];
+		struct radv_subpass_attachment dest_att = subpass->resolve_attachments[i];
 
 		if (src_att.attachment == VK_ATTACHMENT_UNUSED ||
 		    dest_att.attachment == VK_ATTACHMENT_UNUSED)
@@ -657,7 +658,7 @@ radv_cmd_buffer_resolve_subpass(struct radv_cmd_buffer *cmd_buffer)
 
 		struct radv_subpass resolve_subpass = {
 			.color_count = 2,
-			.color_attachments = (VkAttachmentReference[]) { src_att, dest_att },
+			.color_attachments = (struct radv_subpass_attachment[]) { src_att, dest_att },
 			.depth_stencil_attachment = { .attachment = VK_ATTACHMENT_UNUSED },
 		};
 
@@ -684,8 +685,8 @@ radv_decompress_resolve_subpass_src(struct radv_cmd_buffer *cmd_buffer)
 	struct radv_framebuffer *fb = cmd_buffer->state.framebuffer;
 
 	for (uint32_t i = 0; i < subpass->color_count; ++i) {
-		VkAttachmentReference src_att = subpass->color_attachments[i];
-		VkAttachmentReference dest_att = subpass->resolve_attachments[i];
+		struct radv_subpass_attachment src_att = subpass->color_attachments[i];
+		struct radv_subpass_attachment dest_att = subpass->resolve_attachments[i];
 
 		if (src_att.attachment == VK_ATTACHMENT_UNUSED ||
 		    dest_att.attachment == VK_ATTACHMENT_UNUSED)
