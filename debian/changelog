@@ -1,11 +1,11 @@
-mesa (18.2.6-1~bpo9+1) UNRELEASED; urgency=medium
+mesa (18.2.6-1~bpo9+1) stretch-backports; urgency=medium
 
   * Rebuild for stretch-backports.
   * Build with default gcc.
   * Use llvm/clang 6.0.
   * Use old x11proto-*-dev build-deps again.
 
- -- Andreas Boll <aboll@debian.org>  Wed, 12 Dec 2018 14:49:42 +0100
+ -- Andreas Boll <aboll@debian.org>  Wed, 12 Dec 2018 16:04:10 +0100
 
 mesa (18.2.6-1) unstable; urgency=medium
 
