@@ -10,6 +10,7 @@ Build-Depends:
  pkg-config,
  libdrm-dev (>= 2.4.92) [!hurd-any],
  libx11-dev,
+ x11proto-gl-dev (>= 1.4.14),
  libxxf86vm-dev,
  libexpat1-dev,
  libsensors4-dev [!hurd-any],
@@ -22,7 +23,9 @@ Build-Depends:
  autoconf,
  automake,
  libtool,
- x11proto-dev,
+ x11proto-dri2-dev (>= 2.6),
+ x11proto-dri3-dev (>= 1.0),
+ x11proto-present-dev (>= 1.0),
  linux-libc-dev (>= 2.6.31) [linux-any],
  libx11-xcb-dev,
  libxcb-dri2-0-dev (>= 1.8),
@@ -175,6 +178,8 @@ Depends:
  mesa-common-dev (= ${binary:Version}),
  libglvnd-dev,
  libdrm-dev (>= 2.4.92) [!hurd-any],
+ x11proto-dri2-dev (>= 2.6),
+ x11proto-gl-dev (>= 1.4.14),
  libx11-dev,
  libxext-dev,
  libxxf86vm-dev,
@@ -188,7 +193,6 @@ Depends:
  libxshmfence-dev,
  libx11-xcb-dev,
  libwayland-dev (>= 1.15.0) [linux-any],
- x11proto-dev,
  ${misc:Depends},
 Multi-Arch: same
 Description: free implementation of the EGL API -- development files
@@ -333,7 +337,8 @@ Depends:
  libxext-dev,
  libxfixes-dev,
  libxxf86vm-dev,
- x11proto-dev,
+ x11proto-dri2-dev (>= 2.6),
+ x11proto-gl-dev (>= 1.4.14),
  ${misc:Depends},
 Conflicts: libgl-dev
 Replaces: libgl-dev
