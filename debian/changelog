@@ -1,3 +1,9 @@
+mesa (18.2.6-1~bpo9+1) UNRELEASED; urgency=medium
+
+  * Rebuild for stretch-backports.
+
+ -- Andreas Boll <aboll@debian.org>  Wed, 12 Dec 2018 14:49:42 +0100
+
 mesa (18.2.6-1) unstable; urgency=medium
 
   * New upstream release.
