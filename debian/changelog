@@ -1,3 +1,9 @@
+mesa (18.3.0-1) unstable; urgency=medium
+
+  * bump for mesa 18.3 (lima cb4e43e656b7e8829a86b9cbcff1432ebb5fb182)
+
+ -- Merlijn B. W. Wajer <merlijn@wizzup.org>  Thu, 13 Dec 2018 18:08:09 +0100
+
 mesa (18.2.0~rc5-2) unstable; urgency=medium
 
   * lima cea7264d8f97545ba5bc1a7c98245d507de8093c
