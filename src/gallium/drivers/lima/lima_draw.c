@@ -1157,9 +1157,9 @@ lima_pack_render_state(struct lima_context *ctx, const struct pipe_draw_info *in
 
          struct lima_varying_info *v = ctx->vs->varying + i;
          if (v->component_size == 4)
-            val = v->components == 4 ? 0 : 1;
+            val = v->components > 2 ? 0 : 1;
          else
-            val = v->components == 4 ? 2 : 3;
+            val = v->components > 2 ? 2 : 3;
 
          int index = i - 1;
          if (index < 10)
