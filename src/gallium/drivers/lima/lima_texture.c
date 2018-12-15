@@ -145,31 +145,39 @@ lima_update_tex_desc(struct lima_context *ctx, struct lima_sampler_state *sample
       break;
    }
 
-   /* Only clamp to edge and mirror repeat are supported */
+   /* Only clamp, clamp to edge, repeat and mirror repeat are supported */
    desc[2] &= ~0xe000;
    switch (sampler->base.wrap_s) {
    case PIPE_TEX_WRAP_CLAMP:
+      desc[2] |= 0x4000;
+      break;
    case PIPE_TEX_WRAP_CLAMP_TO_EDGE:
    case PIPE_TEX_WRAP_CLAMP_TO_BORDER:
       desc[2] |= 0x2000;
       break;
-   case PIPE_TEX_WRAP_REPEAT:
    case PIPE_TEX_WRAP_MIRROR_REPEAT:
       desc[2] |= 0x8000;
       break;
+   case PIPE_TEX_WRAP_REPEAT:
+   default:
+      break;
    }
 
-   /* Only clamp to edge and mirror repeat are supported */
+   /* Only clamp, clamp to edge, repeat and mirror repeat are supported */
    desc[2] &= ~0x070000;
    switch (sampler->base.wrap_t) {
    case PIPE_TEX_WRAP_CLAMP:
+      desc[2] |= 0x020000;
+      break;
    case PIPE_TEX_WRAP_CLAMP_TO_EDGE:
    case PIPE_TEX_WRAP_CLAMP_TO_BORDER:
       desc[2] |= 0x010000;
       break;
-   case PIPE_TEX_WRAP_REPEAT:
    case PIPE_TEX_WRAP_MIRROR_REPEAT:
       desc[2] |= 0x040000;
+      break;
+   case PIPE_TEX_WRAP_REPEAT:
+   default:
       break;
    }
 }
