@@ -95,8 +95,8 @@ lima_texture_desc_set_res(struct lima_context *ctx, uint32_t *desc,
       layout = 3;
    else {
       /* for padded linear texture */
-      if (lima_res->width != width) {
-         desc[0] |= lima_res->width << 18;
+      if (lima_res->levels[0].width != width) {
+         desc[0] |= lima_res->levels[0].width << 18;
          desc[2] |= 0x100;
       }
       layout = 0;

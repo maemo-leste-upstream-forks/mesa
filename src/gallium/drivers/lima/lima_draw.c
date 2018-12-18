@@ -1465,7 +1465,7 @@ lima_pack_pp_frame_reg(struct lima_context *ctx, uint32_t *frame_reg,
       wb[0].pitch = ctx->framebuffer.tiled_w;
    } else {
       wb[0].pixel_layout = 0x0;
-      wb[0].pitch = res->stride / 8;
+      wb[0].pitch = res->levels[0].stride / 8;
    }
    wb[0].mrt_bits = swap_channels ? 0x4 : 0x0;
 }
