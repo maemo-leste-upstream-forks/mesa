@@ -180,9 +180,9 @@ _lima_resource_create_with_modifiers(struct pipe_screen *pscreen,
          lima_bo_set_modifier(res->bo, DRM_FORMAT_MOD_LINEAR);
 
       debug_printf("%s: pres=%p width=%u height=%u depth=%u target=%d "
-                   "bind=%x usage=%d tile=%d\n", __func__,
+                   "bind=%x usage=%d tile=%d last_level=%d\n", __func__,
                    pres, pres->width0, pres->height0, pres->depth0,
-                   pres->target, pres->bind, pres->usage, should_tile);
+                   pres->target, pres->bind, pres->usage, should_tile, templat->last_level);
    }
    return pres;
 }
@@ -445,7 +445,7 @@ lima_transfer_map(struct pipe_context *pctx,
    struct lima_transfer *trans;
    struct pipe_transfer *ptrans;
 
-   debug_printf("%s: pres=%p\n", __func__, pres);
+   debug_printf("%s: pres=%p, level=%d\n", __func__, pres, level);
 
    /* No direct mappings of tiled, since we need to manually
     * tile/untile.
