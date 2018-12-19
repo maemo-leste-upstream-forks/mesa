@@ -269,7 +269,8 @@ lima_pack_reload_plbu_cmd(struct lima_context *ctx)
 
    struct lima_context_framebuffer *fb = &ctx->framebuffer;
    uint32_t *td = cpu + lima_reload_tex_desc_offset;
-   lima_texture_desc_set_res(ctx, td, fb->cbuf->texture);
+   memset(td, 0, lima_tex_desc_size);
+   lima_texture_desc_set_res(ctx, td, fb->cbuf->texture, 0, 0);
    td[1] = 0x00000480;
    td[2] |= 0x00093800;
    td[4] = 0x00000000;
