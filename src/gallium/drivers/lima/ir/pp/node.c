@@ -102,6 +102,18 @@ const ppir_op_info ppir_op_infos[] = {
          PPIR_INSTR_SLOT_ALU_COMBINE, PPIR_INSTR_SLOT_END
       },
    },
+   [ppir_op_sin] = {
+      .name = "sin",
+      .slots = (int []) {
+         PPIR_INSTR_SLOT_ALU_COMBINE, PPIR_INSTR_SLOT_END
+      },
+   },
+   [ppir_op_cos] = {
+      .name = "cos",
+      .slots = (int []) {
+         PPIR_INSTR_SLOT_ALU_COMBINE, PPIR_INSTR_SLOT_END
+      },
+   },
    [ppir_op_max] = {
       .name = "max",
       .slots = (int []) {
