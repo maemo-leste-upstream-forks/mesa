@@ -1125,6 +1125,14 @@ transition_color_buffer(struct anv_cmd_buffer *cmd_buffer,
                                            level, array_layer, resolve_op,
                                            final_fast_clear);
          } else {
+            /* We only support fast-clear on the first layer so partial
+             * resolves should not be used on other layers as they will use
+             * the clear color stored in memory that is only valid for layer0.
+             */
+            if (resolve_op == ISL_AUX_OP_PARTIAL_RESOLVE &&
+                array_layer != 0)
+               continue;
+
             anv_cmd_predicated_mcs_resolve(cmd_buffer, image, aspect,
                                            array_layer, resolve_op,
                                            final_fast_clear);
@@ -1738,6 +1746,12 @@ genX(cmd_buffer_apply_pipe_flushes)(struct anv_cmd_buffer *cmd_buffer)
                        ANV_PIPE_STALL_AT_SCOREBOARD_BIT)))
             pipe.StallAtPixelScoreboard = true;
       }
+
+      /* If a render target flush was emitted, then we can toggle off the bit
+       * saying that render target writes are ongoing.
+       */
+      if (bits & ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT)
+         bits &= ~(ANV_PIPE_RENDER_TARGET_WRITES);
 
       bits &= ~(ANV_PIPE_FLUSH_BITS | ANV_PIPE_CS_STALL_BIT);
    }
@@ -2727,6 +2741,8 @@ void genX(CmdDraw)(
       prim.StartInstanceLocation    = firstInstance;
       prim.BaseVertexLocation       = 0;
    }
+
+   cmd_buffer->state.pending_pipe_bits |= ANV_PIPE_RENDER_TARGET_WRITES;
 }
 
 void genX(CmdDrawIndexed)(
@@ -2766,6 +2782,8 @@ void genX(CmdDrawIndexed)(
       prim.StartInstanceLocation    = firstInstance;
       prim.BaseVertexLocation       = vertexOffset;
    }
+
+   cmd_buffer->state.pending_pipe_bits |= ANV_PIPE_RENDER_TARGET_WRITES;
 }
 
 /* Auto-Draw / Indirect Registers */
@@ -2899,6 +2917,8 @@ void genX(CmdDrawIndirect)(
 
       offset += stride;
    }
+
+   cmd_buffer->state.pending_pipe_bits |= ANV_PIPE_RENDER_TARGET_WRITES;
 }
 
 void genX(CmdDrawIndexedIndirect)(
@@ -2938,6 +2958,8 @@ void genX(CmdDrawIndexedIndirect)(
 
       offset += stride;
    }
+
+   cmd_buffer->state.pending_pipe_bits |= ANV_PIPE_RENDER_TARGET_WRITES;
 }
 
 static VkResult
