@@ -1,3 +1,9 @@
+mesa (18.2.8-2~bpo9+1) stretch-backports; urgency=medium
+
+  * Rebuild for stretch-backports.
+
+ -- Andreas Boll <aboll@debian.org>  Thu, 17 Jan 2019 17:03:56 +0100
+
 mesa (18.2.8-2) unstable; urgency=medium
 
   * Actually merge the upstream version. (Closes: #917556)
