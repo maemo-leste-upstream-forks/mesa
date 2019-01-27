@@ -31,6 +31,7 @@
 
 
 #include <stdbool.h>
+#include <stddef.h>
 #include "egltypedefs.h"
 
 
