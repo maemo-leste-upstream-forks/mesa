@@ -1,3 +1,12 @@
+mesa (18.3.0-2) unstable; urgency=medium
+
+  * mesa-lima 8e713e4781982c700bfc7b09279146189d525a86
+  * Disable vulkan
+  * Set Section: lima
+  * Update gbp.conf
+
+ -- Ivan J. <parazyd@dyne.org>  Mon, 28 Jan 2019 15:58:54 +0100
+
 mesa (18.3.0-1) experimental; urgency=medium
 
   [ Timo Aaltonen ]
