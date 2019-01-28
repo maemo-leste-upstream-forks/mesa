@@ -36,9 +36,6 @@
 extern FILE *lima_dump_command_stream;
 extern int lima_ctx_num_plb;
 
-/* max texture size is 4096x4096 */
-#define LIMA_MAX_MIP_LEVELS 13
-
 struct ra_regs;
 
 struct lima_screen {

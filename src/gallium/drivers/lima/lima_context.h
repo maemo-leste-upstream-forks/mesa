@@ -137,7 +137,6 @@ struct lima_ctx_buff_state {
    struct pipe_resource *res;
    unsigned offset;
    unsigned size;
-   unsigned submit;
 };
 
 struct lima_texture_stateobj {
@@ -269,10 +268,11 @@ lima_sampler_view(struct pipe_sampler_view *psview)
 #define LIMA_CTX_BUFF_SUBMIT_GP (1 << 0)
 #define LIMA_CTX_BUFF_SUBMIT_PP (1 << 1)
 
-uint32_t lima_ctx_buff_va(struct lima_context *ctx, enum lima_ctx_buff buff);
+uint32_t lima_ctx_buff_va(struct lima_context *ctx, enum lima_ctx_buff buff,
+                          unsigned submit);
 void *lima_ctx_buff_map(struct lima_context *ctx, enum lima_ctx_buff buff);
 void *lima_ctx_buff_alloc(struct lima_context *ctx, enum lima_ctx_buff buff,
-                          unsigned size, unsigned submit, bool uploader);
+                          unsigned size, bool uploader);
 
 void lima_state_init(struct lima_context *ctx);
 void lima_state_fini(struct lima_context *ctx);

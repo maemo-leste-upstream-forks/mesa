@@ -80,10 +80,67 @@ lima_resource_create_scanout(struct pipe_screen *pscreen,
    return pres;
 }
 
+static uint32_t
+setup_miptree(struct lima_resource *res,
+              unsigned width0, unsigned height0,
+              bool should_align_dimensions)
+{
+   struct pipe_resource *pres = &res->base;
+   unsigned level;
+   unsigned width = width0;
+   unsigned height = height0;
+   unsigned depth = pres->depth0;
+   uint32_t size = 0;
+
+   for (level = 0; level <= pres->last_level; level++) {
+      uint32_t actual_level_size;
+      uint32_t stride;
+      unsigned aligned_width;
+      unsigned aligned_height;
+
+      if (should_align_dimensions) {
+         aligned_width = align(width, 16);
+         aligned_height = align(height, 16);
+      } else {
+         aligned_width = width;
+         aligned_height = height;
+      }
+
+      stride = util_format_get_stride(pres->format, aligned_width);
+      actual_level_size = stride *
+         util_format_get_nblocksy(pres->format, aligned_height) *
+         pres->array_size * depth;
+
+      res->levels[level].width = aligned_width;
+      res->levels[level].stride = stride;
+      res->levels[level].offset = size;
+
+      /* The start address of each level <= 10 must be 64-aligned
+       * in order to be able to pass the addresses
+       * to the hardware.
+       * The start addresses of level 11 and level 12 are passed
+       * implicitely: they start at an offset of respectively
+       * 0x0400 and 0x0800 from the start address of level 10 */
+      if (level < 10)
+         size += align(actual_level_size, 64);
+      else if (level != pres->last_level)
+         size += 0x0400;
+      else
+         size += actual_level_size;  /* Save some memory */
+
+      width = u_minify(width, 1);
+      height = u_minify(height, 1);
+      depth = u_minify(depth, 1);
+   }
+
+   return size;
+}
+
 static struct pipe_resource *
 lima_resource_create_bo(struct pipe_screen *pscreen,
                         const struct pipe_resource *templat,
-                        unsigned width, unsigned height)
+                        unsigned width, unsigned height,
+                        bool should_align_dimensions)
 {
    struct lima_screen *screen = lima_screen(pscreen);
    struct lima_resource *res;
@@ -97,14 +154,9 @@ lima_resource_create_bo(struct pipe_screen *pscreen,
    res->base.screen = pscreen;
    pipe_reference_init(&res->base.reference, 1);
 
-   /* TODO: mipmap */
    pres = &res->base;
-   res->width = width;
-   res->stride = util_format_get_stride(pres->format, width);
 
-   uint32_t size = res->stride *
-      util_format_get_nblocksy(pres->format, height) *
-      pres->array_size * pres->depth0;
+   uint32_t size = setup_miptree(res, width, height, should_align_dimensions);
    size = align(size, LIMA_PAGE_SIZE);
 
    res->bo = lima_bo_create(screen, size, 0, false, false);
@@ -139,6 +191,7 @@ _lima_resource_create_with_modifiers(struct pipe_screen *pscreen,
    struct lima_screen *screen = lima_screen(pscreen);
    bool should_tile = true;
    unsigned width, height;
+   bool should_align_dimensions;
 
    /* VBOs/PBOs are untiled (and 1 height). */
    if (templat->target == PIPE_BUFFER)
@@ -156,10 +209,12 @@ _lima_resource_create_with_modifiers(struct pipe_screen *pscreen,
       return NULL;
 
    if (should_tile || (templat->bind & PIPE_BIND_RENDER_TARGET)) {
+      should_align_dimensions = true;
       width = align(templat->width0, 16);
       height = align(templat->height0, 16);
    }
    else {
+      should_align_dimensions = false;
       width = templat->width0;
       height = templat->height0;
    }
@@ -168,7 +223,8 @@ _lima_resource_create_with_modifiers(struct pipe_screen *pscreen,
    if (screen->ro && (templat->bind & PIPE_BIND_SCANOUT))
       pres = lima_resource_create_scanout(pscreen, templat, width, height);
    else
-      pres = lima_resource_create_bo(pscreen, templat, width, height);
+      pres = lima_resource_create_bo(pscreen, templat, width, height,
+                                     should_align_dimensions);
 
    if (pres) {
       struct lima_resource *res = lima_resource(pres);
@@ -180,9 +236,9 @@ _lima_resource_create_with_modifiers(struct pipe_screen *pscreen,
          lima_bo_set_modifier(res->bo, DRM_FORMAT_MOD_LINEAR);
 
       debug_printf("%s: pres=%p width=%u height=%u depth=%u target=%d "
-                   "bind=%x usage=%d tile=%d\n", __func__,
+                   "bind=%x usage=%d tile=%d last_level=%d\n", __func__,
                    pres, pres->width0, pres->height0, pres->depth0,
-                   pres->target, pres->bind, pres->usage, should_tile);
+                   pres->target, pres->bind, pres->usage, should_tile, templat->last_level);
    }
    return pres;
 }
@@ -244,7 +300,8 @@ lima_resource_from_handle(struct pipe_screen *pscreen,
    *pres = *templat;
    pres->screen = pscreen;
    pipe_reference_init(&pres->reference, 1);
-   res->stride = handle->stride;
+   res->levels[0].offset = 0;
+   res->levels[0].stride = handle->stride;
 
    res->bo = lima_bo_import(screen, handle);
    if (!res->bo) {
@@ -261,15 +318,15 @@ lima_resource_from_handle(struct pipe_screen *pscreen,
       stride = util_format_get_stride(pres->format, width);
       size = util_format_get_2d_size(pres->format, stride, height);
 
-      if (res->stride != stride || res->bo->size < size) {
+      if (res->levels[0].stride != stride || res->bo->size < size) {
          debug_error("import buffer not properly aligned\n");
          goto err_out;
       }
 
-      res->width = width;
+      res->levels[0].width = width;
    }
    else
-      res->width = pres->width0;
+      res->levels[0].width = pres->width0;
 
    uint64_t modifier = DRM_FORMAT_MOD_INVALID;
    lima_bo_get_modifier(res->bo, &modifier);
@@ -322,7 +379,7 @@ lima_resource_get_handle(struct pipe_screen *pscreen,
    if (!lima_bo_export(res->bo, handle))
       return FALSE;
 
-   handle->stride = res->stride;
+   handle->stride = res->levels[0].stride;
    return TRUE;
 }
 
@@ -445,7 +502,7 @@ lima_transfer_map(struct pipe_context *pctx,
    struct lima_transfer *trans;
    struct pipe_transfer *ptrans;
 
-   debug_printf("%s: pres=%p\n", __func__, pres);
+   debug_printf("%s: pres=%p, level=%d\n", __func__, pres, level);
 
    /* No direct mappings of tiled, since we need to manually
     * tile/untile.
@@ -490,18 +547,19 @@ lima_transfer_map(struct pipe_context *pctx,
       trans->staging = malloc(ptrans->stride * ptrans->box.height * ptrans->box.depth);
 
       if (usage & PIPE_TRANSFER_READ)
-         lima_load_tiled_image(trans->staging, bo->map,
+         lima_load_tiled_image(trans->staging, bo->map + res->levels[level].offset,
                               &ptrans->box,
                               ptrans->stride,
-                              res->stride,
+                              res->levels[level].stride,
                               util_format_get_blocksize(pres->format));
 
       return trans->staging;
    } else {
-      ptrans->stride = res->stride;
+      ptrans->stride = res->levels[level].stride;
       ptrans->layer_stride = ptrans->stride * box->height;
 
-      return bo->map + box->z * ptrans->layer_stride +
+      return bo->map + res->levels[level].offset +
+         box->z * ptrans->layer_stride +
          box->y / util_format_get_blockheight(pres->format) * ptrans->stride +
          box->x / util_format_get_blockwidth(pres->format) *
          util_format_get_blocksize(pres->format);
@@ -529,9 +587,9 @@ lima_transfer_unmap(struct pipe_context *pctx,
    if (trans->staging) {
       pres = &res->base;
       if (ptrans->usage & PIPE_TRANSFER_WRITE)
-         lima_store_tiled_image(bo->map, trans->staging,
+         lima_store_tiled_image(bo->map + res->levels[ptrans->level].offset, trans->staging,
                               &ptrans->box,
-                              res->stride,
+                              res->levels[ptrans->level].stride,
                               ptrans->stride,
                               util_format_get_blocksize(pres->format));
       free(trans->staging);

@@ -27,16 +27,25 @@
 
 #include "pipe/p_state.h"
 
+/* max texture size is 4096x4096 */
+#define LIMA_MAX_MIP_LEVELS 13
+
 struct lima_screen;
+
+struct lima_resource_level {
+   uint32_t width;
+   uint32_t stride;
+   uint32_t offset;
+};
 
 struct lima_resource {
    struct pipe_resource base;
 
    struct renderonly_scanout *scanout;
    struct lima_bo *bo;
-   uint32_t width;
-   uint32_t stride;
    bool tiled;
+
+   struct lima_resource_level levels[LIMA_MAX_MIP_LEVELS];
 };
 
 struct lima_surface {
