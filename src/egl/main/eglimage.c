@@ -46,6 +46,18 @@ _eglParseKHRImageAttribs(_EGLImageAttribs *attrs, _EGLDisplay *disp,
       attrs->ImagePreserved = val;
       break;
 
+   case EGL_GL_COLORSPACE_KHR:
+      if (!disp->Extensions.EXT_image_gl_colorspace)
+         return EGL_BAD_PARAMETER;
+
+      if (val != EGL_GL_COLORSPACE_SRGB_KHR &&
+          val != EGL_GL_COLORSPACE_LINEAR_KHR &&
+          val != EGL_GL_COLORSPACE_DEFAULT_EXT)
+         return EGL_BAD_PARAMETER;
+
+      attrs->GLColorspace = val;
+      break;
+
    case EGL_GL_TEXTURE_LEVEL_KHR:
       if (!disp->Extensions.KHR_gl_texture_2D_image)
          return EGL_BAD_PARAMETER;
@@ -285,6 +297,8 @@ _eglParseImageAttribList(_EGLImageAttribs *attrs, _EGLDisplay *disp,
    EGLint i, err;
 
    memset(attrs, 0, sizeof(*attrs));
+
+   attrs->GLColorspace = EGL_GL_COLORSPACE_DEFAULT_EXT;
 
    if (!attrib_list)
       return EGL_TRUE;

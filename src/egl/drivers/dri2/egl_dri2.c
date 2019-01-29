@@ -1109,6 +1109,9 @@ dri2_setup_screen(_EGLDisplay *disp)
           dri2_dpy->image->createImageFromBuffer) {
          disp->Extensions.IMG_cl_image = EGL_TRUE;
       }
+
+      if (disp->Extensions.KHR_gl_colorspace)
+         disp->Extensions.EXT_image_gl_colorspace = EGL_TRUE;
    }
 
    if (dri2_dpy->flush_control)
@@ -2516,6 +2519,11 @@ dri2_create_image_wayland_wl_buffer(_EGLDisplay *disp, _EGLContext *ctx,
    if (!_eglParseImageAttribList(&attrs, disp, attr_list))
       return NULL;
 
+   if (attrs.GLColorspace != EGL_GL_COLORSPACE_DEFAULT_EXT) {
+      _eglError(EGL_BAD_MATCH, "unsupported colorspace");
+      return NULL;
+   }
+
    plane = attrs.PlaneWL;
    f = buffer->driver_format;
    if (plane < 0 || plane >= f->nplanes) {
@@ -2591,6 +2599,11 @@ dri2_create_image_khr_texture(_EGLDisplay *disp, _EGLContext *ctx,
 
    if (!_eglParseImageAttribList(&attrs, disp, attr_list))
       return EGL_NO_IMAGE_KHR;
+
+   if (attrs.GLColorspace != EGL_GL_COLORSPACE_DEFAULT_EXT) {
+      _eglError(EGL_BAD_MATCH, "unsupported colorspace");
+      return EGL_NO_IMAGE_KHR;
+   }
 
    switch (target) {
    case EGL_GL_TEXTURE_2D_KHR:
@@ -2745,6 +2758,11 @@ dri2_create_image_mesa_drm_buffer(_EGLDisplay *disp, _EGLContext *ctx,
        attrs.DRMBufferStrideMESA <= 0) {
       _eglError(EGL_BAD_PARAMETER,
                 "bad width, height or stride");
+      return NULL;
+   }
+
+   if (attrs.GLColorspace != EGL_GL_COLORSPACE_DEFAULT_EXT) {
+      _eglError(EGL_BAD_MATCH, "unsupported colorspace");
       return NULL;
    }
 
@@ -2933,6 +2951,23 @@ dri2_num_fourcc_format_planes(EGLint format)
    }
 }
 
+static int
+dri2_get_srgb_fourcc(int drm_fourcc)
+{
+   switch (drm_fourcc) {
+   case DRM_FORMAT_ARGB8888:
+      return __DRI_IMAGE_FOURCC_SARGB8888;
+   case DRM_FORMAT_ABGR8888:
+      return __DRI_IMAGE_FOURCC_SABGR8888;
+   case DRM_FORMAT_BGR888:
+      return __DRI_IMAGE_FOURCC_SBGR888;
+   default:
+      _eglLog(_EGL_DEBUG, "%s: no matching sRGB FourCC for %#x",
+              __func__, drm_fourcc);
+      return 0;
+   }
+}
+
 /* Returns the total number of file descriptors. Zero indicates an error. */
 static unsigned
 dri2_check_dma_buf_format(const _EGLImageAttribs *attrs)
@@ -3090,6 +3125,7 @@ dri2_create_image_dma_buf(_EGLDisplay *disp, _EGLContext *ctx,
    int fds[DMA_BUF_MAX_PLANES];
    int pitches[DMA_BUF_MAX_PLANES];
    int offsets[DMA_BUF_MAX_PLANES];
+   int fourcc;
    uint64_t modifier;
    bool has_modifier = false;
    unsigned error;
@@ -3115,6 +3151,18 @@ dri2_create_image_dma_buf(_EGLDisplay *disp, _EGLContext *ctx,
    num_fds = dri2_check_dma_buf_format(&attrs);
    if (!num_fds)
       return NULL;
+
+   if (attrs.GLColorspace == EGL_GL_COLORSPACE_SRGB_KHR) {
+      fourcc = dri2_get_srgb_fourcc(attrs.DMABufFourCC.Value);
+      if (fourcc == 0) {
+         _eglError(EGL_BAD_MATCH, "unsupported colorspace");
+         return NULL;
+      }
+   } else {
+      assert(attrs.GLColorspace == EGL_GL_COLORSPACE_LINEAR_KHR ||
+             attrs.GLColorspace == EGL_GL_COLORSPACE_DEFAULT_EXT);
+      fourcc = attrs.DMABufFourCC.Value;
+   }
 
    for (unsigned i = 0; i < num_fds; ++i) {
       fds[i] = attrs.DMABufPlaneFds[i].Value;
@@ -3160,7 +3208,7 @@ dri2_create_image_dma_buf(_EGLDisplay *disp, _EGLContext *ctx,
       }
       dri_image =
          dri2_dpy->image->createImageFromDmaBufs2(dri2_dpy->dri_screen,
-            attrs.Width, attrs.Height, attrs.DMABufFourCC.Value,
+            attrs.Width, attrs.Height, fourcc,
             modifier, fds, num_fds, pitches, offsets,
             attrs.DMABufYuvColorSpaceHint.Value,
             attrs.DMABufSampleRangeHint.Value,
@@ -3172,7 +3220,7 @@ dri2_create_image_dma_buf(_EGLDisplay *disp, _EGLContext *ctx,
    else {
       dri_image =
          dri2_dpy->image->createImageFromDmaBufs(dri2_dpy->dri_screen,
-            attrs.Width, attrs.Height, attrs.DMABufFourCC.Value,
+            attrs.Width, attrs.Height, fourcc,
             fds, num_fds, pitches, offsets,
             attrs.DMABufYuvColorSpaceHint.Value,
             attrs.DMABufSampleRangeHint.Value,
