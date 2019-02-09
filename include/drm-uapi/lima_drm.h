@@ -51,27 +51,6 @@ struct drm_lima_gem_submit_bo {
 	__u32 flags;   /* in */
 };
 
-#define LIMA_SUBMIT_DEP_FENCE   0x00
-#define LIMA_SUBMIT_DEP_SYNC_FD 0x01
-
-struct drm_lima_gem_submit_dep_fence {
-	__u32 type;
-	__u32 ctx;
-	__u32 pipe;
-	__u32 seq;
-};
-
-struct drm_lima_gem_submit_dep_sync_fd {
-	__u32 type;
-	__u32 fd;
-};
-
-union drm_lima_gem_submit_dep {
-	__u32 type;
-	struct drm_lima_gem_submit_dep_fence fence;
-	struct drm_lima_gem_submit_dep_sync_fd sync_fd;
-};
-
 #define LIMA_GP_FRAME_REG_NUM 6
 
 struct drm_lima_gp_frame {
@@ -106,38 +85,19 @@ struct drm_lima_m450_pp_frame {
 #define LIMA_PIPE_PP  0x01
 
 #define LIMA_SUBMIT_FLAG_EXPLICIT_FENCE (1 << 0)
-#define LIMA_SUBMIT_FLAG_SYNC_FD_OUT    (1 << 1)
 
-struct drm_lima_gem_submit_in {
-	__u32 ctx;
-	__u32 pipe;
-	__u32 nr_bos;
-	__u32 frame_size;
-	__u64 bos;
-	__u64 frame;
-	__u64 deps;
-	__u32 nr_deps;
-	__u32 flags;
-};
-
-struct drm_lima_gem_submit_out {
-	__u32 fence;
-	__u32 done;
-	__u32 sync_fd;
-	__u32 _pad;
-};
-
-union drm_lima_gem_submit {
-	struct drm_lima_gem_submit_in in;
-	struct drm_lima_gem_submit_out out;
-};
-
-struct drm_lima_wait_fence {
+struct drm_lima_gem_submit {
 	__u32 ctx;         /* in */
 	__u32 pipe;        /* in */
-	__u64 timeout_ns;  /* in */
-	__u32 seq;         /* in */
-	__u32 error;       /* out */
+	__u32 nr_bos;      /* in */
+	__u32 frame_size;  /* in */
+	__u64 bos;         /* in */
+	__u64 frame;       /* in */
+	__u32 flags;       /* in */
+	__u32 out_sync;    /* in */
+	__u32 in_sync[2];  /* in */
+	__u32 done;        /* out */
+	__u32 _pad;
 };
 
 #define LIMA_GEM_WAIT_READ   0x01
@@ -171,17 +131,15 @@ struct drm_lima_gem_mod {
 #define DRM_LIMA_GEM_INFO    0x02
 #define DRM_LIMA_GEM_VA      0x03
 #define DRM_LIMA_GEM_SUBMIT  0x04
-#define DRM_LIMA_WAIT_FENCE  0x05
-#define DRM_LIMA_GEM_WAIT    0x06
-#define DRM_LIMA_CTX         0x07
-#define DRM_LIMA_GEM_MOD     0x08
+#define DRM_LIMA_GEM_WAIT    0x05
+#define DRM_LIMA_CTX         0x06
+#define DRM_LIMA_GEM_MOD     0x07
 
 #define DRM_IOCTL_LIMA_INFO DRM_IOR(DRM_COMMAND_BASE + DRM_LIMA_INFO, struct drm_lima_info)
 #define DRM_IOCTL_LIMA_GEM_CREATE DRM_IOWR(DRM_COMMAND_BASE + DRM_LIMA_GEM_CREATE, struct drm_lima_gem_create)
 #define DRM_IOCTL_LIMA_GEM_INFO DRM_IOWR(DRM_COMMAND_BASE + DRM_LIMA_GEM_INFO, struct drm_lima_gem_info)
 #define DRM_IOCTL_LIMA_GEM_VA DRM_IOW(DRM_COMMAND_BASE + DRM_LIMA_GEM_VA, struct drm_lima_gem_va)
-#define DRM_IOCTL_LIMA_GEM_SUBMIT DRM_IOWR(DRM_COMMAND_BASE + DRM_LIMA_GEM_SUBMIT, union drm_lima_gem_submit)
-#define DRM_IOCTL_LIMA_WAIT_FENCE DRM_IOWR(DRM_COMMAND_BASE + DRM_LIMA_WAIT_FENCE, struct drm_lima_wait_fence)
+#define DRM_IOCTL_LIMA_GEM_SUBMIT DRM_IOWR(DRM_COMMAND_BASE + DRM_LIMA_GEM_SUBMIT, struct drm_lima_gem_submit)
 #define DRM_IOCTL_LIMA_GEM_WAIT DRM_IOW(DRM_COMMAND_BASE + DRM_LIMA_GEM_WAIT, struct drm_lima_gem_wait)
 #define DRM_IOCTL_LIMA_CTX DRM_IOWR(DRM_COMMAND_BASE + DRM_LIMA_CTX, struct drm_lima_ctx)
 #define DRM_IOCTL_LIMA_GEM_MOD DRM_IOWR(DRM_COMMAND_BASE + DRM_LIMA_GEM_MOD, struct drm_lima_gem_mod)

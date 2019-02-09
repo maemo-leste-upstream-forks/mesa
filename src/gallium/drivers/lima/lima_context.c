@@ -119,6 +119,9 @@ lima_context_destroy(struct pipe_context *pctx)
    struct lima_context *ctx = lima_context(pctx);
    struct lima_screen *screen = lima_screen(pctx->screen);
 
+   lima_submit_free(ctx->pp_submit);
+   lima_submit_free(ctx->gp_submit);
+
    for (int i = 0; i < lima_ctx_buff_num; i++)
       pipe_resource_reference(&ctx->buffer_state[i].res, NULL);
 

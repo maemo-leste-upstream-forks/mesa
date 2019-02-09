@@ -1619,13 +1619,13 @@ lima_pipe_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence,
       return;
    }
 
-   if ((flags & PIPE_FLUSH_FENCE_FD) && fence)
-      lima_submit_need_sync_fd(ctx->pp_submit);
-
    _lima_flush(ctx, flags & PIPE_FLUSH_END_OF_FRAME);
 
-   if (fence)
-      *fence = lima_fence_create(ctx, lima_submit_get_sync_fd(ctx->pp_submit));
+   if (fence) {
+      int fd;
+      if (lima_submit_get_out_sync(ctx->pp_submit, &fd))
+         *fence = lima_fence_create(fd);
+   }
 }
 
 void

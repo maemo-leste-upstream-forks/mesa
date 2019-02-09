@@ -33,16 +33,12 @@ struct lima_bo;
 union drm_lima_gem_submit_dep;
 
 struct lima_submit *lima_submit_create(struct lima_context *ctx, uint32_t pipe);
+void lima_submit_free(struct lima_submit *submit);
 bool lima_submit_add_bo(struct lima_submit *submit, struct lima_bo *bo, uint32_t flags);
 bool lima_submit_start(struct lima_submit *submit, void *frame, uint32_t size);
 bool lima_submit_wait(struct lima_submit *submit, uint64_t timeout_ns);
 bool lima_submit_has_bo(struct lima_submit *submit, struct lima_bo *bo, bool all);
-bool lima_submit_get_fence(struct lima_submit *submit, uint32_t *fence);
-bool lima_submit_wait_fence(struct lima_submit *submit, uint32_t fence,
-                            uint64_t timeout_ns);
-bool lima_submit_add_dep(struct lima_submit *submit,
-                         union drm_lima_gem_submit_dep *dep);
-void lima_submit_need_sync_fd(struct lima_submit *submit);
-int lima_submit_get_sync_fd(struct lima_submit *submit);
+bool lima_submit_add_in_sync(struct lima_submit *submit, int fd);
+bool lima_submit_get_out_sync(struct lima_submit *submit, int *fd);
 
 #endif
