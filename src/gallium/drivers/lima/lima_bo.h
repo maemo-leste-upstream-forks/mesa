@@ -63,7 +63,4 @@ struct lima_bo *lima_bo_import(struct lima_screen *screen,
 
 bool lima_bo_wait(struct lima_bo *bo, uint32_t op, uint64_t timeout_ns);
 
-bool lima_bo_get_modifier(struct lima_bo *bo, uint64_t *modifier);
-bool lima_bo_set_modifier(struct lima_bo *bo, uint64_t modifier);
-
 #endif

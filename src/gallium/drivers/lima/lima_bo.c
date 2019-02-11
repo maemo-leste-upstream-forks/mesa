@@ -333,27 +333,3 @@ bool lima_bo_wait(struct lima_bo *bo, uint32_t op, uint64_t timeout_ns)
 
    return drmIoctl(bo->screen->fd, DRM_IOCTL_LIMA_GEM_WAIT, &req) == 0;
 }
-
-bool lima_bo_get_modifier(struct lima_bo *bo, uint64_t *modifier)
-{
-   struct drm_lima_gem_mod req = {
-      .handle = bo->handle,
-      .op = LIMA_GEM_MOD_OP_GET,
-   };
-
-   bool ret = drmIoctl(bo->screen->fd, DRM_IOCTL_LIMA_GEM_MOD, &req) == 0;
-   if (ret)
-      *modifier = req.modifier;
-   return ret;
-}
-
-bool lima_bo_set_modifier(struct lima_bo *bo, uint64_t modifier)
-{
-   struct drm_lima_gem_mod req = {
-      .handle = bo->handle,
-      .op = LIMA_GEM_MOD_OP_SET,
-      .modifier = modifier,
-   };
-
-   return drmIoctl(bo->screen->fd, DRM_IOCTL_LIMA_GEM_MOD, &req) == 0;
-}

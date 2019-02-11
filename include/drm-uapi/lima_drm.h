@@ -16,6 +16,8 @@ extern "C" {
 struct drm_lima_info {
 	__u32 gpu_id;   /* out */
 	__u32 num_pp;   /* out */
+	__u32 valid;    /* out */
+	__u32 _resv[7];
 };
 
 struct drm_lima_gem_create {
@@ -103,22 +105,12 @@ struct drm_lima_ctx {
 	__u32 id;          /* in/out */
 };
 
-#define LIMA_GEM_MOD_OP_GET 0
-#define LIMA_GEM_MOD_OP_SET 1
-
-struct drm_lima_gem_mod {
-	__u32 handle;      /* in */
-	__u32 op;          /* in */
-	__u64 modifier;    /* in/out */
-};
-
 #define DRM_LIMA_INFO        0x00
 #define DRM_LIMA_GEM_CREATE  0x01
 #define DRM_LIMA_GEM_INFO    0x02
 #define DRM_LIMA_GEM_SUBMIT  0x03
 #define DRM_LIMA_GEM_WAIT    0x04
 #define DRM_LIMA_CTX         0x05
-#define DRM_LIMA_GEM_MOD     0x06
 
 #define DRM_IOCTL_LIMA_INFO DRM_IOR(DRM_COMMAND_BASE + DRM_LIMA_INFO, struct drm_lima_info)
 #define DRM_IOCTL_LIMA_GEM_CREATE DRM_IOWR(DRM_COMMAND_BASE + DRM_LIMA_GEM_CREATE, struct drm_lima_gem_create)
@@ -126,7 +118,6 @@ struct drm_lima_gem_mod {
 #define DRM_IOCTL_LIMA_GEM_SUBMIT DRM_IOWR(DRM_COMMAND_BASE + DRM_LIMA_GEM_SUBMIT, struct drm_lima_gem_submit)
 #define DRM_IOCTL_LIMA_GEM_WAIT DRM_IOW(DRM_COMMAND_BASE + DRM_LIMA_GEM_WAIT, struct drm_lima_gem_wait)
 #define DRM_IOCTL_LIMA_CTX DRM_IOWR(DRM_COMMAND_BASE + DRM_LIMA_CTX, struct drm_lima_ctx)
-#define DRM_IOCTL_LIMA_GEM_MOD DRM_IOWR(DRM_COMMAND_BASE + DRM_LIMA_GEM_MOD, struct drm_lima_gem_mod)
 
 #if defined(__cplusplus)
 }
