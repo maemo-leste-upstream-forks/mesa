@@ -159,7 +159,7 @@ lima_resource_create_bo(struct pipe_screen *pscreen,
    uint32_t size = setup_miptree(res, width, height, should_align_dimensions);
    size = align(size, LIMA_PAGE_SIZE);
 
-   res->bo = lima_bo_create(screen, size, 0, false, false);
+   res->bo = lima_bo_create(screen, size, 0);
    if (!res->bo) {
       FREE(res);
       return NULL;
@@ -523,7 +523,7 @@ lima_transfer_map(struct pipe_context *pctx,
       }
    }
 
-   if (!lima_bo_update(bo, true, false))
+   if (!lima_bo_map(bo))
       return NULL;
 
    trans = slab_alloc(&ctx->transfer_pool);

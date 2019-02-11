@@ -30,7 +30,6 @@
 struct lima_context;
 struct lima_submit;
 struct lima_bo;
-union drm_lima_gem_submit_dep;
 
 struct lima_submit *lima_submit_create(struct lima_context *ctx, uint32_t pipe);
 void lima_submit_free(struct lima_submit *submit);

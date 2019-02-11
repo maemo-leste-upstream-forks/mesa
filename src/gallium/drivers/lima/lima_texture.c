@@ -107,7 +107,6 @@ lima_texture_desc_set_res(struct lima_context *ctx, uint32_t *desc,
    }
 
    lima_submit_add_bo(ctx->pp_submit, lima_res->bo, LIMA_SUBMIT_BO_READ);
-   lima_bo_update(lima_res->bo, false, true);
 
    uint32_t base_va = lima_res->bo->va;
 

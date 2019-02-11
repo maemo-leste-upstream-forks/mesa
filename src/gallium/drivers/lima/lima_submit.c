@@ -28,7 +28,6 @@
 #include "libsync.h"
 #include "lima_drm.h"
 
-#include "util/list.h"
 #include "util/ralloc.h"
 #include "util/u_dynarray.h"
 #include "util/os_time.h"
@@ -38,13 +37,6 @@
 #include "lima_submit.h"
 #include "lima_bo.h"
 #include "lima_util.h"
-
-struct lima_submit_job {
-   struct list_head list;
-   uint32_t fence;
-
-   struct util_dynarray bos;
-};
 
 struct lima_submit {
    struct lima_screen *screen;
@@ -56,10 +48,7 @@ struct lima_submit {
    uint32_t out_sync;
 
    struct util_dynarray gem_bos;
-
-   struct list_head busy_job_list;
-   struct list_head free_job_list;
-   struct lima_submit_job *current_job;
+   struct util_dynarray bos;
 };
 
 
@@ -90,8 +79,6 @@ struct lima_submit *lima_submit_create(struct lima_context *ctx, uint32_t pipe)
 
    util_dynarray_init(&s->gem_bos, s);
 
-   list_inithead(&s->busy_job_list);
-   list_inithead(&s->free_job_list);
    return s;
 
 err_out1:
@@ -109,34 +96,6 @@ void lima_submit_free(struct lima_submit *submit)
    drmSyncobjDestroy(submit->screen->fd, submit->out_sync);
 }
 
-static struct lima_submit_job *lima_submit_job_alloc(struct lima_submit *submit)
-{
-   struct lima_submit_job *job;
-
-   if (list_empty(&submit->free_job_list)) {
-      job = rzalloc(submit, struct lima_submit_job);
-      if (!job)
-         return NULL;
-      util_dynarray_init(&job->bos, job);
-   }
-   else {
-      job = list_first_entry(&submit->free_job_list, struct lima_submit_job, list);
-      list_del(&job->list);
-   }
-
-   return job;
-}
-
-static void lima_submit_job_free(struct lima_submit *submit,
-                                 struct lima_submit_job *job)
-{
-   util_dynarray_foreach(&job->bos, struct lima_bo *, bo) {
-      lima_bo_free(*bo);
-   }
-   util_dynarray_clear(&job->bos);
-   list_add(&job->list, &submit->free_job_list);
-}
-
 bool lima_submit_add_bo(struct lima_submit *submit, struct lima_bo *bo, uint32_t flags)
 {
    util_dynarray_foreach(&submit->gem_bos, struct drm_lima_gem_submit_bo, gem_bo) {
@@ -151,11 +110,7 @@ bool lima_submit_add_bo(struct lima_submit *submit, struct lima_bo *bo, uint32_t
    submit_bo->handle = bo->handle;
    submit_bo->flags = flags;
 
-   if (!submit->current_job)
-      submit->current_job = lima_submit_job_alloc(submit);
-
-   struct lima_submit_job *job = submit->current_job;
-   struct lima_bo **jbo = util_dynarray_grow(&job->bos, sizeof(*jbo));
+   struct lima_bo **jbo = util_dynarray_grow(&submit->bos, sizeof(*jbo));
    *jbo = bo;
 
    /* prevent bo from being freed when submit start */
@@ -188,24 +143,12 @@ bool lima_submit_start(struct lima_submit *submit, void *frame, uint32_t size)
 
    bool ret = drmIoctl(submit->screen->fd, DRM_IOCTL_LIMA_GEM_SUBMIT, &req) == 0;
 
-   struct lima_submit_job *job = submit->current_job;
-   if (ret) {
-      list_add(&job->list, &submit->busy_job_list);
-
-      int i = 0;
-      list_for_each_entry_safe(struct lima_submit_job, j,
-                               &submit->busy_job_list, list) {
-         if (i++ >= req.done) {
-            list_del(&j->list);
-            lima_submit_job_free(submit, j);
-         }
-      }
+   util_dynarray_foreach(&submit->bos, struct lima_bo *, bo) {
+      lima_bo_free(*bo);
    }
-   else
-      lima_submit_job_free(submit, job);
 
    util_dynarray_clear(&submit->gem_bos);
-   submit->current_job = NULL;
+   util_dynarray_clear(&submit->bos);
    return ret;
 }
 
@@ -215,15 +158,7 @@ bool lima_submit_wait(struct lima_submit *submit, uint64_t timeout_ns)
    if (abs_timeout == OS_TIMEOUT_INFINITE)
       abs_timeout = INT64_MAX;
 
-   bool ret = !drmSyncobjWait(submit->screen->fd, &submit->out_sync, 1, abs_timeout, 0, NULL);
-   if (ret) {
-      list_for_each_entry_safe(struct lima_submit_job, j,
-                               &submit->busy_job_list, list) {
-         list_del(&j->list);
-         lima_submit_job_free(submit, j);
-      }
-   }
-   return ret;
+   return !drmSyncobjWait(submit->screen->fd, &submit->out_sync, 1, abs_timeout, 0, NULL);
 }
 
 bool lima_submit_has_bo(struct lima_submit *submit, struct lima_bo *bo, bool all)

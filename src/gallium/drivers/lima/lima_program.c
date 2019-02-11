@@ -217,13 +217,13 @@ lima_update_vs_state(struct lima_context *ctx)
    struct lima_vs_shader_state *vs = ctx->vs;
    if (!vs->bo) {
       struct lima_screen *screen = lima_screen(ctx->base.screen);
-      vs->bo = lima_bo_create(screen, vs->shader_size, 0, true, true);
+      vs->bo = lima_bo_create(screen, vs->shader_size, 0);
       if (!vs->bo) {
          fprintf(stderr, "lima: create vs shader bo fail\n");
          return false;
       }
 
-      memcpy(vs->bo->map, vs->shader, vs->shader_size);
+      memcpy(lima_bo_map(vs->bo), vs->shader, vs->shader_size);
       ralloc_free(vs->shader);
       vs->shader = NULL;
    }
@@ -237,13 +237,13 @@ lima_update_fs_state(struct lima_context *ctx)
    struct lima_fs_shader_state *fs = ctx->fs;
    if (!fs->bo) {
       struct lima_screen *screen = lima_screen(ctx->base.screen);
-      fs->bo = lima_bo_create(screen, fs->shader_size, 0, true, true);
+      fs->bo = lima_bo_create(screen, fs->shader_size, 0);
       if (!fs->bo) {
          fprintf(stderr, "lima: create fs shader bo fail\n");
          return false;
       }
 
-      memcpy(fs->bo->map, fs->shader, fs->shader_size);
+      memcpy(lima_bo_map(fs->bo), fs->shader, fs->shader_size);
       ralloc_free(fs->shader);
       fs->shader = NULL;
    }
