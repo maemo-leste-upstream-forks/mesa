@@ -325,9 +325,9 @@ lima_resource_from_handle(struct pipe_screen *pscreen,
 
    if (handle->modifier == DRM_FORMAT_MOD_ARM_TILED)
       res->tiled = true;
-   else if (handle->modifier != DRM_FORMAT_MOD_LINEAR) {
-      debug_error("import buffer with unsupport modifier\n");
-      goto err_out;
+   else {
+      handle->modifier = DRM_FORMAT_MOD_LINEAR;
+      res->tiled = false;
    }
 
    return pres;
