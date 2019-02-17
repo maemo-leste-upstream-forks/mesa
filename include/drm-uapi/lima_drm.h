@@ -94,7 +94,7 @@ struct drm_lima_gem_submit {
 struct drm_lima_gem_wait {
 	__u32 handle;      /* in */
 	__u32 op;          /* in */
-	__u64 timeout_ns;  /* in */
+	__s64 timeout_ns;  /* in */
 };
 
 #define LIMA_CTX_OP_CREATE 1

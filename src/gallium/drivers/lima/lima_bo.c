@@ -30,6 +30,7 @@
 #include "lima_drm.h"
 
 #include "util/u_hash_table.h"
+#include "util/os_time.h"
 #include "os/os_mman.h"
 
 #include "state_tracker/drm_driver.h"
@@ -325,10 +326,11 @@ struct lima_bo *lima_bo_import(struct lima_screen *screen,
 
 bool lima_bo_wait(struct lima_bo *bo, uint32_t op, uint64_t timeout_ns)
 {
+   int64_t abs_timeout = os_time_get_absolute_timeout(timeout_ns);
    struct drm_lima_gem_wait req = {
       .handle = bo->handle,
       .op = op,
-      .timeout_ns = timeout_ns,
+      .timeout_ns = abs_timeout,
    };
 
    return drmIoctl(bo->screen->fd, DRM_IOCTL_LIMA_GEM_WAIT, &req) == 0;
