@@ -45,9 +45,8 @@ struct lima_bo {
 bool lima_bo_table_init(struct lima_screen *screen);
 void lima_bo_table_fini(struct lima_screen *screen);
 
-struct lima_bo *lima_bo_create(struct lima_screen *screen,
-                               uint32_t size, uint32_t flags,
-                               bool need_map, bool need_va);
+struct lima_bo *lima_bo_create(struct lima_screen *screen, uint32_t size,
+                               uint32_t flags);
 void lima_bo_free(struct lima_bo *bo);
 
 static inline void lima_bo_reference(struct lima_bo *bo)
@@ -58,18 +57,10 @@ static inline void lima_bo_reference(struct lima_bo *bo)
 void *lima_bo_map(struct lima_bo *bo);
 void lima_bo_unmap(struct lima_bo *bo);
 
-bool lima_bo_va_map(struct lima_bo *bo, uint32_t va, uint32_t flags);
-void lima_bo_va_unmap(struct lima_bo *bo, uint32_t va);
-
-bool lima_bo_update(struct lima_bo *bo, bool need_map, bool need_va);
-
 bool lima_bo_export(struct lima_bo *bo, struct winsys_handle *handle);
 struct lima_bo *lima_bo_import(struct lima_screen *screen,
                                struct winsys_handle *handle);
 
 bool lima_bo_wait(struct lima_bo *bo, uint32_t op, uint64_t timeout_ns);
-
-bool lima_bo_get_modifier(struct lima_bo *bo, uint64_t *modifier);
-bool lima_bo_set_modifier(struct lima_bo *bo, uint64_t modifier);
 
 #endif

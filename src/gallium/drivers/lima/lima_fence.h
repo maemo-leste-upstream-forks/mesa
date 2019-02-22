@@ -29,9 +29,7 @@ struct pipe_fence_handle;
 struct lima_context;
 struct lima_screen;
 
-struct pipe_fence_handle *
-lima_fence_create(struct lima_context *ctx, int sync_fd);
-
+struct pipe_fence_handle *lima_fence_create(int fd);
 void lima_fence_screen_init(struct lima_screen *screen);
 void lima_fence_context_init(struct lima_context *ctx);
 

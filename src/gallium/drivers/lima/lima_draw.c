@@ -242,7 +242,6 @@ lima_pack_reload_plbu_cmd(struct lima_context *ctx)
                   0x40, &offset, &pres, &cpu);
 
    struct lima_resource *res = lima_resource(pres);
-   lima_bo_update(res->bo, false, true);
    uint32_t va = res->bo->va + offset;
 
    struct lima_screen *screen = lima_screen(ctx->base.screen);
@@ -334,7 +333,6 @@ lima_pack_clear_plbu_cmd(struct lima_context *ctx)
                   0x40, &offset, &pres, &cpu);
 
    struct lima_resource *res = lima_resource(pres);
-   lima_bo_update(res->bo, false, true);
    uint32_t va = res->bo->va + offset;
 
    struct lima_screen *screen = lima_screen(ctx->base.screen);
@@ -604,7 +602,6 @@ lima_update_damage_pp_stream(struct lima_context *ctx)
    u_upload_alloc(ctx->uploader, 0, size, 0x40, &offset, &pres, &cpu);
 
    struct lima_resource *res = lima_resource(pres);
-   lima_bo_update(res->bo, false, true);
    ctx->pp_stream.bo = res->bo;
    ctx->pp_stream.bo_offset = offset;
 
@@ -637,7 +634,8 @@ lima_update_full_pp_stream(struct lima_context *ctx)
       struct lima_screen *screen = lima_screen(ctx->base.screen);
       int size = lima_get_pp_stream_size(
          screen->num_pp, fb->tiled_w, fb->tiled_h, s->offset);
-      s->bo = lima_bo_create(screen, size, 0, true, true);
+      s->bo = lima_bo_create(screen, size, 0);
+      lima_bo_map(s->bo);
 
       ctx->pp_stream.bo = s->bo;
       ctx->pp_stream.bo_offset = 0;
@@ -905,7 +903,6 @@ lima_pack_plbu_cmd(struct lima_context *ctx, const struct pipe_draw_info *info)
       else
          res = lima_resource(info->index.resource);
 
-      lima_bo_update(res->bo, false, true);
       lima_submit_add_bo(ctx->gp_submit, res->bo, LIMA_SUBMIT_BO_READ);
       PLBU_CMD_INDICES(res->bo->va + info->start * info->index_size + index_offset);
 
@@ -1210,7 +1207,6 @@ lima_update_gp_attribute_info(struct lima_context *ctx, const struct pipe_draw_i
 
       struct pipe_vertex_buffer *pvb = vb->vb + pve->vertex_buffer_index;
       struct lima_resource *res = lima_resource(pvb->buffer.resource);
-      lima_bo_update(res->bo, false, true);
 
       lima_submit_add_bo(ctx->gp_submit, res->bo, LIMA_SUBMIT_BO_READ);
 
@@ -1423,7 +1419,6 @@ lima_pack_pp_frame_reg(struct lima_context *ctx, uint32_t *frame_reg,
                        uint32_t *wb_reg)
 {
    struct lima_resource *res = lima_resource(ctx->framebuffer.cbuf->texture);
-   lima_bo_update(res->bo, false, true);
 
    bool swap_channels = false;
    switch (ctx->framebuffer.cbuf->format) {
@@ -1528,8 +1523,7 @@ _lima_flush(struct lima_context *ctx, bool end_of_frame)
                lima_ctx_buff_va(ctx, lima_ctx_buff_sh_gl_pos, 0));
          }
 
-         lima_bo_update(ctx->plb[ctx->plb_index], true, false);
-         uint32_t *plb = ctx->plb[ctx->plb_index]->map;
+         uint32_t *plb = lima_bo_map(ctx->plb[ctx->plb_index]);
          lima_dump_command_stream_print(
             plb, LIMA_CTX_PLB_BLK_SIZE, false, "plb dump at va %x\n",
             ctx->plb[ctx->plb_index]->va);
@@ -1619,13 +1613,13 @@ lima_pipe_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence,
       return;
    }
 
-   if ((flags & PIPE_FLUSH_FENCE_FD) && fence)
-      lima_submit_need_sync_fd(ctx->pp_submit);
-
    _lima_flush(ctx, flags & PIPE_FLUSH_END_OF_FRAME);
 
-   if (fence)
-      *fence = lima_fence_create(ctx, lima_submit_get_sync_fd(ctx->pp_submit));
+   if (fence) {
+      int fd;
+      if (lima_submit_get_out_sync(ctx->pp_submit, &fd))
+         *fence = lima_fence_create(fd);
+   }
 }
 
 void

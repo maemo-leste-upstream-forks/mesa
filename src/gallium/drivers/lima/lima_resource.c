@@ -159,7 +159,7 @@ lima_resource_create_bo(struct pipe_screen *pscreen,
    uint32_t size = setup_miptree(res, width, height, should_align_dimensions);
    size = align(size, LIMA_PAGE_SIZE);
 
-   res->bo = lima_bo_create(screen, size, 0, false, false);
+   res->bo = lima_bo_create(screen, size, 0);
    if (!res->bo) {
       FREE(res);
       return NULL;
@@ -229,11 +229,6 @@ _lima_resource_create_with_modifiers(struct pipe_screen *pscreen,
    if (pres) {
       struct lima_resource *res = lima_resource(pres);
       res->tiled = should_tile;
-
-      if (should_tile)
-         lima_bo_set_modifier(res->bo, DRM_FORMAT_MOD_ARM_TILED);
-      else
-         lima_bo_set_modifier(res->bo, DRM_FORMAT_MOD_LINEAR);
 
       debug_printf("%s: pres=%p width=%u height=%u depth=%u target=%d "
                    "bind=%x usage=%d tile=%d last_level=%d\n", __func__,
@@ -328,27 +323,11 @@ lima_resource_from_handle(struct pipe_screen *pscreen,
    else
       res->levels[0].width = pres->width0;
 
-   uint64_t modifier = DRM_FORMAT_MOD_INVALID;
-   lima_bo_get_modifier(res->bo, &modifier);
-   if (modifier == DRM_FORMAT_MOD_INVALID) {
-      if (handle->modifier == DRM_FORMAT_MOD_INVALID)
-         handle->modifier = DRM_FORMAT_MOD_LINEAR;
-      lima_bo_set_modifier(res->bo, handle->modifier);
-   }
-   else {
-      if (handle->modifier == DRM_FORMAT_MOD_INVALID)
-         handle->modifier = modifier;
-      else if (handle->modifier != modifier) {
-         debug_error("import buffer modifier mismatch\n");
-         goto err_out;
-      }
-   }
-
    if (handle->modifier == DRM_FORMAT_MOD_ARM_TILED)
       res->tiled = true;
-   else if (handle->modifier != DRM_FORMAT_MOD_LINEAR) {
-      debug_error("import buffer with unsupport modifier\n");
-      goto err_out;
+   else {
+      handle->modifier = DRM_FORMAT_MOD_LINEAR;
+      res->tiled = false;
    }
 
    return pres;
@@ -523,7 +502,7 @@ lima_transfer_map(struct pipe_context *pctx,
       }
    }
 
-   if (!lima_bo_update(bo, true, false))
+   if (!lima_bo_map(bo))
       return NULL;
 
    trans = slab_alloc(&ctx->transfer_pool);

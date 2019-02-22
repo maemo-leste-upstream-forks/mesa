@@ -49,12 +49,6 @@ struct lima_screen {
    int gpu_type;
    int num_pp;
 
-   /* va mgr */
-   mtx_t va_lock;
-   struct list_head va_holes;
-   uint64_t va_start;
-   uint64_t va_end;
-
    /* bo table */
    mtx_t bo_table_lock;
    struct util_hash_table *bo_handles;

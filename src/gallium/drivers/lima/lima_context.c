@@ -50,8 +50,6 @@ lima_ctx_buff_va(struct lima_context *ctx, enum lima_ctx_buff buff, unsigned sub
    struct lima_ctx_buff_state *cbs = ctx->buffer_state + buff;
    struct lima_resource *res = lima_resource(cbs->res);
 
-   lima_bo_update(res->bo, false, true);
-
    if (submit & LIMA_CTX_BUFF_SUBMIT_GP)
       lima_submit_add_bo(ctx->gp_submit, res->bo, LIMA_SUBMIT_BO_READ);
    if (submit & LIMA_CTX_BUFF_SUBMIT_PP)
@@ -65,8 +63,8 @@ lima_ctx_buff_map(struct lima_context *ctx, enum lima_ctx_buff buff)
 {
    struct lima_ctx_buff_state *cbs = ctx->buffer_state + buff;
    struct lima_resource *res = lima_resource(cbs->res);
-   lima_bo_update(res->bo, true, false);
-   return res->bo->map + cbs->offset;
+
+   return lima_bo_map(res->bo) + cbs->offset;
 }
 
 void *
@@ -118,6 +116,11 @@ lima_context_destroy(struct pipe_context *pctx)
 {
    struct lima_context *ctx = lima_context(pctx);
    struct lima_screen *screen = lima_screen(pctx->screen);
+
+   if (ctx->pp_submit)
+      lima_submit_free(ctx->pp_submit);
+   if (ctx->gp_submit)
+      lima_submit_free(ctx->gp_submit);
 
    for (int i = 0; i < lima_ctx_buff_num; i++)
       pipe_resource_reference(&ctx->buffer_state[i].res, NULL);
@@ -212,7 +215,7 @@ lima_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    ctx->plb_gp_size = ctx->plb_max_blk * 4;
 
    for (int i = 0; i < lima_ctx_num_plb; i++) {
-      ctx->plb[i] = lima_bo_create(screen, ctx->plb_size, 0, false, true);
+      ctx->plb[i] = lima_bo_create(screen, ctx->plb_size, 0);
       if (!ctx->plb[i])
          goto err_out;
    }
@@ -220,9 +223,10 @@ lima_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    unsigned plb_gp_stream_size =
       align(ctx->plb_gp_size * lima_ctx_num_plb, LIMA_PAGE_SIZE);
    ctx->plb_gp_stream =
-      lima_bo_create(screen, plb_gp_stream_size, 0, true, true);
+      lima_bo_create(screen, plb_gp_stream_size, 0);
    if (!ctx->plb_gp_stream)
       goto err_out;
+   lima_bo_map(ctx->plb_gp_stream);
 
    /* plb gp stream is static for any framebuffer */
    for (int i = 0; i < lima_ctx_num_plb; i++) {

@@ -30,13 +30,13 @@
 #include "lima_drm.h"
 
 #include "util/u_hash_table.h"
+#include "util/os_time.h"
 #include "os/os_mman.h"
 
 #include "state_tracker/drm_driver.h"
 
 #include "lima_screen.h"
 #include "lima_bo.h"
-#include "lima_vamgr.h"
 
 #define PTR_TO_UINT(x) ((unsigned)((intptr_t)(x)))
 
@@ -84,28 +84,41 @@ static void lima_close_kms_handle(struct lima_screen *screen, uint32_t handle)
    drmIoctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &args);
 }
 
+static bool lima_bo_get_info(struct lima_bo *bo)
+{
+   struct drm_lima_gem_info req = {
+      .handle = bo->handle,
+   };
+
+   if(drmIoctl(bo->screen->fd, DRM_IOCTL_LIMA_GEM_INFO, &req))
+      return false;
+
+   bo->offset = req.offset;
+   bo->va = req.va;
+   return true;
+}
+
 struct lima_bo *lima_bo_create(struct lima_screen *screen,
-                               uint32_t size, uint32_t flags,
-                               bool need_map, bool need_va)
+                               uint32_t size, uint32_t flags)
 {
    struct lima_bo *bo;
-   struct drm_lima_gem_create drm_request = {
+   struct drm_lima_gem_create req = {
       .size = size,
       .flags = flags,
    };
 
    if (!(bo = calloc(1, sizeof(*bo))))
-       return NULL;
+      return NULL;
 
-   if (drmIoctl(screen->fd, DRM_IOCTL_LIMA_GEM_CREATE, &drm_request))
+   if (drmIoctl(screen->fd, DRM_IOCTL_LIMA_GEM_CREATE, &req))
       goto err_out0;
 
    bo->screen = screen;
-   bo->size = drm_request.size;
-   bo->handle = drm_request.handle;
+   bo->size = req.size;
+   bo->handle = req.handle;
    p_atomic_set(&bo->refcnt, 1);
 
-   if (!lima_bo_update(bo, need_map, need_va))
+   if (!lima_bo_get_info(bo))
       goto err_out1;
 
    return bo;
@@ -131,11 +144,6 @@ void lima_bo_free(struct lima_bo *bo)
                              (void *)(uintptr_t)bo->flink_name);
    mtx_unlock(&screen->bo_table_lock);
 
-   if (bo->va) {
-      lima_bo_va_unmap(bo, bo->va);
-      lima_va_range_free(bo->screen, bo->size, bo->va);
-   }
-
    if (bo->map)
       lima_bo_unmap(bo);
 
@@ -146,17 +154,6 @@ void lima_bo_free(struct lima_bo *bo)
 void *lima_bo_map(struct lima_bo *bo)
 {
    if (!bo->map) {
-      if (!bo->offset) {
-         struct drm_lima_gem_info req = {
-            .handle = bo->handle,
-         };
-
-         if (drmIoctl(bo->screen->fd, DRM_IOCTL_LIMA_GEM_INFO, &req))
-            return NULL;
-
-         bo->offset = req.offset;
-      }
-
       bo->map = os_mmap(0, bo->size, PROT_READ | PROT_WRITE,
                         MAP_SHARED, bo->screen->fd, bo->offset);
       if (bo->map == MAP_FAILED)
@@ -172,55 +169,6 @@ void lima_bo_unmap(struct lima_bo *bo)
       os_munmap(bo->map, bo->size);
       bo->map = NULL;
    }
-}
-
-bool lima_bo_va_map(struct lima_bo *bo, uint32_t va, uint32_t flags)
-{
-   struct drm_lima_gem_va req = {
-      .handle = bo->handle,
-      .op = LIMA_VA_OP_MAP,
-      .flags = flags,
-      .va = va,
-   };
-
-   return drmIoctl(bo->screen->fd, DRM_IOCTL_LIMA_GEM_VA, &req) == 0;
-}
-
-void lima_bo_va_unmap(struct lima_bo *bo, uint32_t va)
-{
-   struct drm_lima_gem_va req = {
-      .handle = bo->handle,
-      .op = LIMA_VA_OP_UNMAP,
-      .flags = 0,
-      .va = va,
-   };
-
-   drmIoctl(bo->screen->fd, DRM_IOCTL_LIMA_GEM_VA, &req);
-}
-
-bool lima_bo_update(struct lima_bo *bo, bool need_map, bool need_va)
-{
-   if (need_map && !bo->map) {
-      bo->map = lima_bo_map(bo);
-      if (!bo->map)
-         return false;
-   }
-
-   if (need_va && !bo->va) {
-      uint32_t va;
-
-      if (!lima_va_range_alloc(bo->screen, bo->size, &va))
-         return false;
-
-      if (!lima_bo_va_map(bo, va, 0)) {
-         lima_va_range_free(bo->screen, bo->size, va);
-         return false;
-      }
-
-      bo->va = va;
-   }
-
-   return true;
 }
 
 bool lima_bo_export(struct lima_bo *bo, struct winsys_handle *handle)
@@ -348,9 +296,6 @@ struct lima_bo *lima_bo_import(struct lima_screen *screen,
       bo->handle = req.handle;
       bo->flink_name = h;
       bo->size = req.size;
-
-      util_hash_table_set(screen->bo_flink_names,
-                          (void *)(uintptr_t)bo->flink_name, bo);
       break;
    case WINSYS_HANDLE_TYPE_FD:
       bo->handle = h;
@@ -361,8 +306,19 @@ struct lima_bo *lima_bo_import(struct lima_screen *screen,
       assert(0);
    }
 
-   util_hash_table_set(screen->bo_handles,
-                       (void*)(uintptr_t)bo->handle, bo);
+   if (lima_bo_get_info(bo)) {
+      if (handle->type == WINSYS_HANDLE_TYPE_SHARED)
+         util_hash_table_set(screen->bo_flink_names,
+                          (void *)(uintptr_t)bo->flink_name, bo);
+      util_hash_table_set(screen->bo_handles,
+                          (void*)(uintptr_t)bo->handle, bo);
+   }
+   else {
+      lima_close_kms_handle(screen, bo->handle);
+      free(bo);
+      bo = NULL;
+   }
+
    mtx_unlock(&screen->bo_table_lock);
 
    return bo;
@@ -370,35 +326,12 @@ struct lima_bo *lima_bo_import(struct lima_screen *screen,
 
 bool lima_bo_wait(struct lima_bo *bo, uint32_t op, uint64_t timeout_ns)
 {
+   int64_t abs_timeout = os_time_get_absolute_timeout(timeout_ns);
    struct drm_lima_gem_wait req = {
       .handle = bo->handle,
       .op = op,
-      .timeout_ns = timeout_ns,
+      .timeout_ns = abs_timeout,
    };
 
    return drmIoctl(bo->screen->fd, DRM_IOCTL_LIMA_GEM_WAIT, &req) == 0;
-}
-
-bool lima_bo_get_modifier(struct lima_bo *bo, uint64_t *modifier)
-{
-   struct drm_lima_gem_mod req = {
-      .handle = bo->handle,
-      .op = LIMA_GEM_MOD_OP_GET,
-   };
-
-   bool ret = drmIoctl(bo->screen->fd, DRM_IOCTL_LIMA_GEM_MOD, &req) == 0;
-   if (ret)
-      *modifier = req.modifier;
-   return ret;
-}
-
-bool lima_bo_set_modifier(struct lima_bo *bo, uint64_t modifier)
-{
-   struct drm_lima_gem_mod req = {
-      .handle = bo->handle,
-      .op = LIMA_GEM_MOD_OP_SET,
-      .modifier = modifier,
-   };
-
-   return drmIoctl(bo->screen->fd, DRM_IOCTL_LIMA_GEM_MOD, &req) == 0;
 }

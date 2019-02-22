@@ -35,7 +35,6 @@
 #include "lima_context.h"
 #include "lima_resource.h"
 #include "lima_program.h"
-#include "lima_vamgr.h"
 #include "lima_bo.h"
 #include "lima_fence.h"
 #include "ir/lima_ir.h"
@@ -65,7 +64,6 @@ lima_screen_destroy(struct pipe_screen *pscreen)
       lima_bo_free(screen->pp_buffer);
 
    lima_bo_table_fini(screen);
-   lima_vamgr_fini(screen);
    ralloc_free(screen);
 }
 
@@ -139,6 +137,9 @@ lima_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 0;
 
    case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
+      return 0;
+
+   case PIPE_CAP_BUFFER_AGE:
       return 0;
 
    default:
@@ -360,8 +361,6 @@ lima_screen_query_info(struct lima_screen *screen)
    }
 
    screen->num_pp = drm_info.num_pp;
-   screen->va_start = drm_info.va_start;
-   screen->va_end = drm_info.va_end;
    return true;
 }
 
@@ -448,30 +447,27 @@ lima_screen_create(int fd, struct renderonly *ro)
    if (!lima_screen_query_info(screen))
       goto err_out0;
 
-   if (!lima_vamgr_init(screen))
-      goto err_out0;
-
    if (!lima_bo_table_init(screen))
-      goto err_out1;
+      goto err_out0;
 
    screen->pp_ra = ppir_regalloc_init(screen);
    if (!screen->pp_ra)
-      goto err_out2;
+      goto err_out1;
 
-   screen->gp_buffer = lima_bo_create(screen, gp_buffer_size, 0, false, true);
+   screen->gp_buffer = lima_bo_create(screen, gp_buffer_size, 0);
    if (!screen->gp_buffer)
-      goto err_out2;
+      goto err_out1;
 
-   screen->pp_buffer = lima_bo_create(screen, pp_buffer_size, 0, true, true);
+   screen->pp_buffer = lima_bo_create(screen, pp_buffer_size, 0);
    if (!screen->pp_buffer)
-      goto err_out3;
+      goto err_out2;
 
    /* fs program for clear buffer? */
    static const uint32_t pp_clear_program[] = {
       0x00020425, 0x0000000c, 0x01e007cf, 0xb0000000, /* 0x00000000 */
       0x000005f5, 0x00000000, 0x00000000, 0x00000000, /* 0x00000010 */
    };
-   memcpy(screen->pp_buffer->map + pp_clear_program_offset,
+   memcpy(lima_bo_map(screen->pp_buffer) + pp_clear_program_offset,
           pp_clear_program, sizeof(pp_clear_program));
 
    /* copy texture to framebuffer, used to reload gpu tile buffer */
@@ -479,14 +475,14 @@ lima_screen_create(int fd, struct renderonly *ro)
       0x000005e6, 0xf1003c20, 0x00000000, 0x39001000, /* 0x00000000 */
       0x00000e4e, 0x000007cf, 0x00000000, 0x00000000, /* 0x00000010 */
    };
-   memcpy(screen->pp_buffer->map + pp_reload_program_offset,
+   memcpy(lima_bo_map(screen->pp_buffer) + pp_reload_program_offset,
           pp_reload_program, sizeof(pp_reload_program));
 
    /* 0/1/2 vertex index for reload/clear draw */
    static const uint32_t pp_shared_index[] = {
       0x00020100, 0x00000000, 0x00000000, 0x00000000, /* 0x00000000 */
    };
-   memcpy(screen->pp_buffer->map + pp_shared_index_offset,
+   memcpy(lima_bo_map(screen->pp_buffer) + pp_shared_index_offset,
           pp_shared_index, sizeof(pp_shared_index));
 
    /* 4096x4096 gl pos used for partial clear */
@@ -495,11 +491,11 @@ lima_screen_create(int fd, struct renderonly *ro)
       0x00000000, 0x00000000, 0x3f800000, 0x3f800000, /* 0x00000010 */
       0x00000000, 0x45800000, 0x3f800000, 0x3f800000, /* 0x00000020 */
    };
-   memcpy(screen->pp_buffer->map + pp_clear_gl_pos_offset,
+   memcpy(lima_bo_map(screen->pp_buffer) + pp_clear_gl_pos_offset,
           pp_clear_gl_pos, sizeof(pp_clear_gl_pos));
 
    /* is pp frame render state static? */
-   uint32_t *pp_frame_rsw = screen->pp_buffer->map + pp_frame_rsw_offset;
+   uint32_t *pp_frame_rsw = lima_bo_map(screen->pp_buffer) + pp_frame_rsw_offset;
    memset(pp_frame_rsw, 0, 0x40);
    pp_frame_rsw[8] = 0x0000f008;
    pp_frame_rsw[9] = screen->pp_buffer->va + pp_clear_program_offset;
@@ -509,7 +505,7 @@ lima_screen_create(int fd, struct renderonly *ro)
       screen->ro = renderonly_dup(ro);
       if (!screen->ro) {
          fprintf(stderr, "Failed to dup renderonly object\n");
-         goto err_out4;
+         goto err_out3;
       }
    }
 
@@ -536,14 +532,12 @@ lima_screen_create(int fd, struct renderonly *ro)
 
    return &screen->base;
 
-err_out4:
-   lima_bo_free(screen->pp_buffer);
 err_out3:
-   lima_bo_free(screen->gp_buffer);
+   lima_bo_free(screen->pp_buffer);
 err_out2:
-   lima_bo_table_fini(screen);
+   lima_bo_free(screen->gp_buffer);
 err_out1:
-   lima_vamgr_fini(screen);
+   lima_bo_table_fini(screen);
 err_out0:
    ralloc_free(screen);
    return NULL;
