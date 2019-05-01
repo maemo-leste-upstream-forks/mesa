@@ -1,3 +1,9 @@
+mesa (19.1.0-1) unstable; urgency=medium
+
+  * Mesa 19.1.0-devel release for Maemo Leste with Lima support.
+
+ -- Ivan J. <parazyd@dyne.org>  Wed, 01 May 2019 11:57:39 +0200
+
 mesa (19.0.2-1) experimental; urgency=medium
 
   * New upstream release.
