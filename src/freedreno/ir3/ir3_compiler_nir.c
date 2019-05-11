@@ -107,7 +107,8 @@ create_driver_param(struct ir3_context *ctx, enum ir3_driver_param dp)
 {
 	/* first four vec4 sysval's reserved for UBOs: */
 	/* NOTE: dp is in scalar, but there can be >4 dp components: */
-	unsigned n = ctx->so->constbase.driver_param;
+	struct ir3_const_state *const_state = &ctx->so->shader->const_state;
+	unsigned n = const_state->offsets.driver_param;
 	unsigned r = regid(n + dp / 4, dp % 4);
 	return create_uniform(ctx->block, r);
 }
@@ -683,8 +684,9 @@ emit_intrinsic_load_ubo(struct ir3_context *ctx, nir_intrinsic_instr *intr,
 	/* UBO addresses are the first driver params, but subtract 2 here to
 	 * account for nir_lower_uniforms_to_ubo rebasing the UBOs such that UBO 0
 	 * is the uniforms: */
-	unsigned ubo = regid(ctx->so->constbase.ubo, 0) - 2;
-	const unsigned ptrsz = ir3_pointer_size(ctx);
+	struct ir3_const_state *const_state = &ctx->so->shader->const_state;
+	unsigned ubo = regid(const_state->offsets.ubo, 0) - 2;
+	const unsigned ptrsz = ir3_pointer_size(ctx->compiler);
 
 	int off = 0;
 
@@ -751,11 +753,12 @@ emit_intrinsic_ssbo_size(struct ir3_context *ctx, nir_intrinsic_instr *intr,
 		struct ir3_instruction **dst)
 {
 	/* SSBO size stored as a const starting at ssbo_sizes: */
+	struct ir3_const_state *const_state = &ctx->so->shader->const_state;
 	unsigned blk_idx = nir_src_as_uint(intr->src[0]);
-	unsigned idx = regid(ctx->so->constbase.ssbo_sizes, 0) +
-		ctx->so->const_layout.ssbo_size.off[blk_idx];
+	unsigned idx = regid(const_state->offsets.ssbo_sizes, 0) +
+		const_state->ssbo_size.off[blk_idx];
 
-	debug_assert(ctx->so->const_layout.ssbo_size.mask & (1 << blk_idx));
+	debug_assert(const_state->ssbo_size.mask & (1 << blk_idx));
 
 	dst[0] = create_uniform(ctx->block, idx);
 }
@@ -1006,8 +1009,9 @@ emit_intrinsic_image_size(struct ir3_context *ctx, nir_intrinsic_instr *intr,
 		 * bytes-per-pixel should have been emitted in 2nd slot of
 		 * image_dims. See ir3_shader::emit_image_dims().
 		 */
-		unsigned cb = regid(ctx->so->constbase.image_dims, 0) +
-			ctx->so->const_layout.image_dims.off[var->data.driver_location];
+		struct ir3_const_state *const_state = &ctx->so->shader->const_state;
+		unsigned cb = regid(const_state->offsets.image_dims, 0) +
+			const_state->image_dims.off[var->data.driver_location];
 		struct ir3_instruction *aux = create_uniform(b, cb + 1);
 
 		tmp[0] = ir3_SHR_B(b, tmp[0], 0, aux, 0);
@@ -1304,7 +1308,8 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 			idx += nir_src_as_uint(intr->src[1]);
 			for (int i = 0; i < intr->num_components; i++) {
 				unsigned inloc = idx * 4 + i + comp;
-				if (ctx->so->inputs[idx].bary) {
+				if (ctx->so->inputs[idx].bary &&
+						!ctx->so->inputs[idx].use_ldlv) {
 					dst[i] = ir3_BARY_F(b, create_immed(b, inloc), 0, coord, 0);
 				} else {
 					/* for non-varyings use the pre-setup input, since
@@ -1756,12 +1761,9 @@ emit_tex(struct ir3_context *ctx, nir_tex_instr *tex)
 		case 3:              opc = OPC_GATHER4A; break;
 		}
 		break;
+	case nir_texop_txf_ms_fb:
 	case nir_texop_txf_ms:   opc = OPC_ISAMM;    break;
-	case nir_texop_txs:
-	case nir_texop_query_levels:
-	case nir_texop_texture_samples:
-	case nir_texop_samples_identical:
-	case nir_texop_txf_ms_mcs:
+	default:
 		ir3_context_error(ctx, "Unhandled NIR tex type: %d\n", tex->op);
 		return;
 	}
@@ -1838,7 +1840,7 @@ emit_tex(struct ir3_context *ctx, nir_tex_instr *tex)
 	/* NOTE a3xx (and possibly a4xx?) might be different, using isaml
 	 * with scaled x coord according to requested sample:
 	 */
-	if (tex->op == nir_texop_txf_ms) {
+	if (opc == OPC_ISAMM) {
 		if (ctx->compiler->txf_ms_with_isaml) {
 			/* the samples are laid out in x dimension as
 			 *     0 1 2 3
@@ -1897,7 +1899,24 @@ emit_tex(struct ir3_context *ctx, nir_tex_instr *tex)
 	if (opc == OPC_GETLOD)
 		type = TYPE_U32;
 
-	struct ir3_instruction *samp_tex = get_tex_samp_tex_src(ctx, tex);
+	struct ir3_instruction *samp_tex;
+
+	if (tex->op == nir_texop_txf_ms_fb) {
+		/* only expect a single txf_ms_fb per shader: */
+		compile_assert(ctx, !ctx->so->fb_read);
+		compile_assert(ctx, ctx->so->type == MESA_SHADER_FRAGMENT);
+
+		ctx->so->fb_read = true;
+		samp_tex = ir3_create_collect(ctx, (struct ir3_instruction*[]){
+			create_immed_typed(ctx->block, ctx->so->num_samp, TYPE_U16),
+			create_immed_typed(ctx->block, ctx->so->num_samp, TYPE_U16),
+		}, 2);
+
+		ctx->so->num_samp++;
+	} else {
+		samp_tex = get_tex_samp_tex_src(ctx, tex);
+	}
+
 	struct ir3_instruction *col0 = ir3_create_collect(ctx, src0, nsrc0);
 	struct ir3_instruction *col1 = ir3_create_collect(ctx, src1, nsrc1);
 
@@ -2211,7 +2230,6 @@ emit_cf_list(struct ir3_context *ctx, struct exec_list *list)
 static void
 emit_stream_out(struct ir3_context *ctx)
 {
-	struct ir3_shader_variant *v = ctx->so;
 	struct ir3 *ir = ctx->ir;
 	struct ir3_stream_output_info *strmout =
 			&ctx->so->shader->stream_output;
@@ -2269,10 +2287,11 @@ emit_stream_out(struct ir3_context *ctx)
 	 * stripped out in the backend.
 	 */
 	for (unsigned i = 0; i < IR3_MAX_SO_BUFFERS; i++) {
+		struct ir3_const_state *const_state = &ctx->so->shader->const_state;
 		unsigned stride = strmout->stride[i];
 		struct ir3_instruction *base, *off;
 
-		base = create_uniform(ctx->block, regid(v->constbase.tfbo, i));
+		base = create_uniform(ctx->block, regid(const_state->offsets.tfbo, i));
 
 		/* 24-bit should be enough: */
 		off = ir3_MUL_U(ctx->block, vtxcnt, 0,
@@ -2388,8 +2407,6 @@ setup_input(struct ir3_context *ctx, nir_variable *in)
 				so->inputs[n].bary = true;
 				instr = create_frag_input(ctx, false, idx);
 			} else {
-				bool use_ldlv = false;
-
 				/* detect the special case for front/back colors where
 				 * we need to do flat vs smooth shading depending on
 				 * rast state:
@@ -2410,12 +2427,12 @@ setup_input(struct ir3_context *ctx, nir_variable *in)
 				if (ctx->compiler->flat_bypass) {
 					if ((so->inputs[n].interpolate == INTERP_MODE_FLAT) ||
 							(so->inputs[n].rasterflat && ctx->so->key.rasterflat))
-						use_ldlv = true;
+						so->inputs[n].use_ldlv = true;
 				}
 
 				so->inputs[n].bary = true;
 
-				instr = create_frag_input(ctx, use_ldlv, idx);
+				instr = create_frag_input(ctx, so->inputs[n].use_ldlv, idx);
 			}
 
 			compile_assert(ctx, idx < ctx->ir->ninputs);

@@ -119,6 +119,7 @@ static int nir_to_gpir_opcodes[nir_num_opcodes] = {
    [nir_op_fand] = gpir_op_min,
    [nir_op_for] = gpir_op_max,
    [nir_op_fabs] = gpir_op_abs,
+   [nir_op_fmov] = gpir_op_mov,
 };
 
 static bool gpir_emit_alu(gpir_block *block, nir_instr *ni)
@@ -201,7 +202,8 @@ static bool gpir_emit_intrinsic(gpir_block *block, nir_instr *ni)
       return true;
    }
    default:
-      gpir_error("unsupported nir_intrinsic_instr %d\n", instr->intrinsic);
+      gpir_error("unsupported nir_intrinsic_instr %s\n",
+                 nir_intrinsic_infos[instr->intrinsic].name);
       return false;
    }
 }

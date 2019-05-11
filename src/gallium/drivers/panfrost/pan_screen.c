@@ -54,7 +54,6 @@
 
 static const struct debug_named_value debug_options[] = {
 	{"msgs",      PAN_DBG_MSGS,	"Print debug messages"},
-	{"shaders",   PAN_DBG_SHADERS,	"Dump shaders in NIR"},
 	DEBUG_NAMED_VALUE_END
 };
 
@@ -399,6 +398,11 @@ panfrost_get_paramf(struct pipe_screen *screen, enum pipe_capf param)
         case PIPE_CAPF_MAX_TEXTURE_LOD_BIAS:
                 return 16.0; /* arbitrary */
 
+        case PIPE_CAPF_MIN_CONSERVATIVE_RASTER_DILATE:
+        case PIPE_CAPF_MAX_CONSERVATIVE_RASTER_DILATE:
+        case PIPE_CAPF_CONSERVATIVE_RASTER_DILATE_GRANULARITY:
+                return 0.0f;
+
         default:
                 debug_printf("Unexpected PIPE_CAPF %d query\n", param);
                 return 0.0;
@@ -446,11 +450,11 @@ panfrost_is_format_supported( struct pipe_screen *screen,
                 return FALSE;
 
         if (bind & PIPE_BIND_RENDER_TARGET) {
-                /* We don't support rendering into anything but RGBA8 yet. We
-                 * need more formats for spec compliance, but for now, honesty
-                 * is the best policy <3 */
+                /* TODO: Support all the formats! :) */
+                bool supported = util_format_is_rgba8_variant(format_desc);
+                supported |= format == PIPE_FORMAT_B5G6R5_UNORM;
 
-                if (!util_format_is_rgba8_variant(format_desc))
+                if (!supported)
                         return FALSE;
 
                 if (format_desc->colorspace == UTIL_FORMAT_COLORSPACE_ZS)

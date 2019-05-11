@@ -1160,6 +1160,7 @@ void si_write_scissors(struct radeon_cmdbuf *cs, int first,
 		       const VkViewport *viewports, bool can_use_guardband);
 uint32_t si_get_ia_multi_vgt_param(struct radv_cmd_buffer *cmd_buffer,
 				   bool instanced_draw, bool indirect_draw,
+				   bool count_from_stream_output,
 				   uint32_t draw_vertex_count);
 void si_cs_emit_write_event_eop(struct radeon_cmdbuf *cs,
 				enum chip_class chip_class,
@@ -1670,6 +1671,11 @@ void
 radv_init_metadata(struct radv_device *device,
 		   struct radv_image *image,
 		   struct radeon_bo_metadata *metadata);
+
+void
+radv_image_override_offset_stride(struct radv_device *device,
+                                  struct radv_image *image,
+                                  uint64_t offset, uint32_t stride);
 
 union radv_descriptor {
 	struct {

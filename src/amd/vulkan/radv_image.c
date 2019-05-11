@@ -760,6 +760,34 @@ radv_init_metadata(struct radv_device *device,
 	radv_query_opaque_metadata(device, image, metadata);
 }
 
+void
+radv_image_override_offset_stride(struct radv_device *device,
+                                  struct radv_image *image,
+                                  uint64_t offset, uint32_t stride)
+{
+	struct radeon_surf *surface = &image->planes[0].surface;
+	unsigned bpe = vk_format_get_blocksizebits(image->vk_format) / 8;
+
+	if (device->physical_device->rad_info.chip_class >= GFX9) {
+		if (stride) {
+			surface->u.gfx9.surf_pitch = stride;
+			surface->u.gfx9.surf_slice_size =
+				(uint64_t)stride * surface->u.gfx9.surf_height * bpe;
+		}
+		surface->u.gfx9.surf_offset = offset;
+	} else {
+		surface->u.legacy.level[0].nblk_x = stride;
+		surface->u.legacy.level[0].slice_size_dw =
+			((uint64_t)stride * surface->u.legacy.level[0].nblk_y * bpe) / 4;
+
+		if (offset) {
+			for (unsigned i = 0; i < ARRAY_SIZE(surface->u.legacy.level); ++i)
+				surface->u.legacy.level[i].offset += offset;
+		}
+
+	}
+}
+
 /* The number of samples can be specified independently of the texture. */
 static void
 radv_image_get_fmask_info(struct radv_device *device,
@@ -1189,6 +1217,8 @@ radv_get_aspect_format(struct radv_image *image, VkImageAspectFlags mask)
 		return vk_format_stencil_only(image->vk_format);
 	case VK_IMAGE_ASPECT_DEPTH_BIT:
 		return vk_format_depth_only(image->vk_format);
+	case VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT:
+		return vk_format_depth_only(image->vk_format);
 	default:
 		return image->vk_format;
 	}
@@ -1426,7 +1456,19 @@ void radv_GetImageSubresourceLayout(
 
 	if (device->physical_device->rad_info.chip_class >= GFX9) {
 		pLayout->offset = plane->offset + surface->u.gfx9.offset[level] + surface->u.gfx9.surf_slice_size * layer;
-		pLayout->rowPitch = surface->u.gfx9.surf_pitch * surface->bpe;
+		if (image->vk_format == VK_FORMAT_R32G32B32_UINT ||
+		    image->vk_format == VK_FORMAT_R32G32B32_SINT ||
+		    image->vk_format == VK_FORMAT_R32G32B32_SFLOAT) {
+			/* Adjust the number of bytes between each row because
+			 * the pitch is actually the number of components per
+			 * row.
+			 */
+			pLayout->rowPitch = surface->u.gfx9.surf_pitch * surface->bpe / 3;
+		} else {
+			assert(util_is_power_of_two_nonzero(surface->bpe));
+			pLayout->rowPitch = surface->u.gfx9.surf_pitch * surface->bpe;
+		}
+
 		pLayout->arrayPitch = surface->u.gfx9.surf_slice_size;
 		pLayout->depthPitch = surface->u.gfx9.surf_slice_size;
 		pLayout->size = surface->u.gfx9.surf_slice_size;

@@ -58,6 +58,7 @@ struct iris_batch {
    struct iris_screen *screen;
    struct iris_vtable *vtbl;
    struct pipe_debug_callback *dbg;
+   struct pipe_device_reset_callback *reset;
 
    /** What batch is this? (e.g. IRIS_BATCH_RENDER/COMPUTE) */
    enum iris_batch_name name;
@@ -130,6 +131,7 @@ void iris_init_batch(struct iris_batch *batch,
                      struct iris_screen *screen,
                      struct iris_vtable *vtbl,
                      struct pipe_debug_callback *dbg,
+                     struct pipe_device_reset_callback *reset,
                      struct iris_batch *all_batches,
                      enum iris_batch_name name,
                      uint8_t ring,
@@ -147,6 +149,8 @@ bool iris_batch_references(struct iris_batch *batch, struct iris_bo *bo);
 
 void iris_use_pinned_bo(struct iris_batch *batch, struct iris_bo *bo,
                         bool writable);
+
+enum pipe_reset_status iris_batch_check_for_reset(struct iris_batch *batch);
 
 static inline unsigned
 iris_batch_bytes_used(struct iris_batch *batch)

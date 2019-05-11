@@ -503,7 +503,6 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen,
 	sctx->b.set_context_param = si_set_context_param;
 	sctx->b.get_device_reset_status = si_get_reset_status;
 	sctx->b.set_device_reset_callback = si_set_device_reset_callback;
-	sctx->b.memory_barrier = si_memory_barrier;
 
 	si_init_all_descriptors(sctx);
 	si_init_buffer_functions(sctx);
@@ -513,6 +512,7 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen,
 	si_init_compute_blit_functions(sctx);
 	si_init_debug_functions(sctx);
 	si_init_fence_functions(sctx);
+	si_init_state_compute_functions(sctx);
 
 	if (sscreen->debug_flags & DBG(FORCE_DMA))
 		sctx->b.resource_copy_region = sctx->dma_copy;
@@ -950,6 +950,10 @@ struct pipe_screen *radeonsi_screen_create(struct radeon_winsys *ws,
 			   sizeof(struct si_transfer), 64);
 
 	sscreen->force_aniso = MIN2(16, debug_get_num_option("R600_TEX_ANISO", -1));
+	if (sscreen->force_aniso == -1) {
+		sscreen->force_aniso = MIN2(16, debug_get_num_option("AMD_TEX_ANISO", -1));
+	}
+
 	if (sscreen->force_aniso >= 0) {
 		printf("radeonsi: Forcing anisotropy filter to %ix\n",
 		       /* round down to a power of two */

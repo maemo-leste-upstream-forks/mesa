@@ -316,7 +316,7 @@ v_fmov(unsigned src, midgard_vector_alu_src mod, unsigned dest)
                 },
                 .alu = {
                         .op = midgard_alu_op_fmov,
-                        .reg_mode = midgard_reg_mode_full,
+                        .reg_mode = midgard_reg_mode_32,
                         .dest_override = midgard_dest_override_none,
                         .mask = 0xFF,
                         .src1 = vector_alu_srco_unsigned(zero_alu_src),
@@ -715,6 +715,58 @@ midgard_nir_lower_fdot2_body(nir_builder *b, nir_alu_instr *alu)
         nir_ssa_def_rewrite_uses(&alu->dest.dest.ssa, nir_src_for_ssa(sum));
 }
 
+/* Lower csel with mixed condition channels to mulitple csel instructions. For
+ * context, the csel ops on Midgard are vector in *outputs*, but not in
+ * *conditions*. So, if the condition is e.g. yyyy, a single op can select a
+ * vec4. But if the condition is e.g. xyzw, four ops are needed as the ISA
+ * can't cope with the divergent channels.*/
+
+static void
+midgard_nir_lower_mixed_csel_body(nir_builder *b, nir_alu_instr *alu)
+{
+        if (alu->op != nir_op_bcsel)
+                return;
+
+        b->cursor = nir_before_instr(&alu->instr);
+
+        /* Must be run before registering */
+        assert(alu->dest.dest.is_ssa);
+
+        /* Check for mixed condition */
+
+        unsigned comp = alu->src[0].swizzle[0];
+        unsigned nr_components = alu->dest.dest.ssa.num_components;
+
+        bool mixed = false;
+
+        for (unsigned c = 1; c < nr_components; ++c)
+                mixed |= (alu->src[0].swizzle[c] != comp);
+
+        if (!mixed)
+                return;
+
+        /* We're mixed, so lower */
+
+        assert(nr_components <= 4);
+        nir_ssa_def *results[4];
+
+        nir_ssa_def *cond = nir_ssa_for_alu_src(b, alu, 0);
+        nir_ssa_def *choice0 = nir_ssa_for_alu_src(b, alu, 1);
+        nir_ssa_def *choice1 = nir_ssa_for_alu_src(b, alu, 2);
+
+        for (unsigned c = 0; c < nr_components; ++c) {
+                results[c] = nir_bcsel(b,
+                                nir_channel(b, cond, c),
+                                nir_channel(b, choice0, c),
+                                nir_channel(b, choice1, c));
+        }
+
+        /* Replace with our scalarized version */
+
+        nir_ssa_def *result = nir_vec(b, results, nr_components);
+        nir_ssa_def_rewrite_uses(&alu->dest.dest.ssa, nir_src_for_ssa(result));
+}
+
 static int
 midgard_nir_sysval_for_intrinsic(nir_intrinsic_instr *instr)
 {
@@ -799,13 +851,48 @@ midgard_nir_lower_fdot2(nir_shader *shader)
         return progress;
 }
 
+static bool
+midgard_nir_lower_mixed_csel(nir_shader *shader)
+{
+        bool progress = false;
+
+        nir_foreach_function(function, shader) {
+                if (!function->impl) continue;
+
+                nir_builder _b;
+                nir_builder *b = &_b;
+                nir_builder_init(b, function->impl);
+
+                nir_foreach_block(block, function->impl) {
+                        nir_foreach_instr_safe(instr, block) {
+                                if (instr->type != nir_instr_type_alu) continue;
+
+                                nir_alu_instr *alu = nir_instr_as_alu(instr);
+                                midgard_nir_lower_mixed_csel_body(b, alu);
+
+                                progress |= true;
+                        }
+                }
+
+                nir_metadata_preserve(function->impl, nir_metadata_block_index | nir_metadata_dominance);
+
+        }
+
+        return progress;
+}
+
 static void
 optimise_nir(nir_shader *nir)
 {
         bool progress;
+        unsigned lower_flrp =
+                (nir->options->lower_flrp16 ? 16 : 0) |
+                (nir->options->lower_flrp32 ? 32 : 0) |
+                (nir->options->lower_flrp64 ? 64 : 0);
 
         NIR_PASS(progress, nir, nir_lower_regs_to_ssa);
         NIR_PASS(progress, nir, midgard_nir_lower_fdot2);
+        NIR_PASS(progress, nir, midgard_nir_lower_mixed_csel);
 
         nir_lower_tex_options lower_tex_options = {
                 .lower_rect = true
@@ -826,6 +913,27 @@ optimise_nir(nir_shader *nir)
                 NIR_PASS(progress, nir, nir_opt_peephole_select, 64, false, true);
                 NIR_PASS(progress, nir, nir_opt_algebraic);
                 NIR_PASS(progress, nir, nir_opt_constant_folding);
+
+                if (lower_flrp != 0) {
+                        bool lower_flrp_progress = false;
+                        NIR_PASS(lower_flrp_progress,
+                                 nir,
+                                 nir_lower_flrp,
+                                 lower_flrp,
+                                 false /* always_precise */,
+                                 nir->options->lower_ffma);
+                        if (lower_flrp_progress) {
+                                NIR_PASS(progress, nir,
+                                         nir_opt_constant_folding);
+                                progress = true;
+                        }
+
+                        /* Nothing should rematerialize any flrps, so we only
+                         * need to do this lowering once.
+                         */
+                        lower_flrp = 0;
+                }
+
                 NIR_PASS(progress, nir, nir_opt_undef);
                 NIR_PASS(progress, nir, nir_opt_loop_unroll,
                          nir_var_shader_in |
@@ -912,7 +1020,7 @@ emit_load_const(compiler_context *ctx, nir_load_const_instr *instr)
 {
         nir_ssa_def def = instr->def;
 
-        float *v = ralloc_array(NULL, float, 4);
+        float *v = rzalloc_array(NULL, float, 4);
         nir_const_load_to_arr(v, instr, f32);
         _mesa_hash_table_u64_insert(ctx->ssa_constants, def.index + 1, v);
 }
@@ -1038,7 +1146,7 @@ emit_condition(compiler_context *ctx, nir_src *src, bool for_branch, unsigned co
                 },
                 .alu = {
                         .op = midgard_alu_op_iand,
-                        .reg_mode = midgard_reg_mode_full,
+                        .reg_mode = midgard_reg_mode_32,
                         .dest_override = midgard_dest_override_none,
                         .mask = (0x3 << 6), /* w */
                         .src1 = vector_alu_srco_unsigned(alu_src),
@@ -1066,7 +1174,7 @@ emit_indirect_offset(compiler_context *ctx, nir_src *src)
                 },
                 .alu = {
                         .op = midgard_alu_op_imov,
-                        .reg_mode = midgard_reg_mode_full,
+                        .reg_mode = midgard_reg_mode_32,
                         .dest_override = midgard_dest_override_none,
                         .mask = (0x3 << 6), /* w */
                         .src1 = vector_alu_srco_unsigned(zero_alu_src),
@@ -1239,7 +1347,16 @@ emit_alu(compiler_context *ctx, nir_alu_instr *instr)
                         instr->src[1] = instr->src[0];
                         instr->src[0] = instr->src[2];
                 } else {
-                        op = midgard_alu_op_fcsel;
+                        /* Midgard features both fcsel and icsel, depending on
+                         * the type of the arguments/output. However, as long
+                         * as we're careful we can _always_ use icsel and
+                         * _never_ need fcsel, since the latter does additional
+                         * floating-point-specific processing whereas the
+                         * former just moves bits on the wire. It's not obvious
+                         * why these are separate opcodes, save for the ability
+                         * to do things like sat/pos/abs/neg for free */
+
+                        op = midgard_alu_op_icsel;
 
                         /* csel works as a two-arg in Midgard, since the condition is hardcoded in r31.w */
                         nr_inputs = 2;
@@ -1328,7 +1445,7 @@ emit_alu(compiler_context *ctx, nir_alu_instr *instr)
 
         midgard_vector_alu alu = {
                 .op = op,
-                .reg_mode = midgard_reg_mode_full,
+                .reg_mode = midgard_reg_mode_32,
                 .dest_override = midgard_dest_override_none,
                 .outmod = outmod,
 
@@ -1576,7 +1693,7 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
                                         },
                                         .alu = {
                                                 .op = midgard_alu_op_u2f,
-                                                .reg_mode = midgard_reg_mode_half,
+                                                .reg_mode = midgard_reg_mode_16,
                                                 .dest_override = midgard_dest_override_none,
                                                 .mask = 0xF,
                                                 .src1 = vector_alu_srco_unsigned(alu_src),
@@ -1601,7 +1718,7 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
                                         },
                                         .alu = {
                                                 .op = midgard_alu_op_fmul,
-                                                .reg_mode = midgard_reg_mode_full,
+                                                .reg_mode = midgard_reg_mode_32,
                                                 .dest_override = midgard_dest_override_none,
                                                 .outmod = midgard_outmod_sat,
                                                 .mask = 0xFF,
@@ -1922,6 +2039,7 @@ dealias_register(compiler_context *ctx, struct ra_graph *g, int reg, int maxreg)
 
         if (reg >= 0) {
                 assert(reg < maxreg);
+                assert(g);
                 int r = ra_get_node_reg(g, reg);
                 ctx->work_registers = MAX2(ctx->work_registers, r);
                 return r;
@@ -2021,7 +2139,68 @@ is_live_after(compiler_context *ctx, midgard_block *block, midgard_instruction *
         return succ;
 }
 
+/* Once registers have been decided via register allocation
+ * (allocate_registers), we need to rewrite the MIR to use registers instead of
+ * SSA */
+
 static void
+install_registers(compiler_context *ctx, struct ra_graph *g)
+{
+        mir_foreach_block(ctx, block) {
+                mir_foreach_instr_in_block(block, ins) {
+                        if (ins->compact_branch) continue;
+
+                        ssa_args args = ins->ssa_args;
+
+                        switch (ins->type) {
+                        case TAG_ALU_4:
+                                ins->registers.src1_reg = dealias_register(ctx, g, args.src0, ctx->temp_count);
+
+                                ins->registers.src2_imm = args.inline_constant;
+
+                                if (args.inline_constant) {
+                                        /* Encode inline 16-bit constant as a vector by default */
+
+                                        ins->registers.src2_reg = ins->inline_constant >> 11;
+
+                                        int lower_11 = ins->inline_constant & ((1 << 12) - 1);
+
+                                        uint16_t imm = ((lower_11 >> 8) & 0x7) | ((lower_11 & 0xFF) << 3);
+                                        ins->alu.src2 = imm << 2;
+                                } else {
+                                        ins->registers.src2_reg = dealias_register(ctx, g, args.src1, ctx->temp_count);
+                                }
+
+                                ins->registers.out_reg = dealias_register(ctx, g, args.dest, ctx->temp_count);
+
+                                break;
+
+                        case TAG_LOAD_STORE_4: {
+                                if (OP_IS_STORE_VARY(ins->load_store.op)) {
+                                        /* TODO: use ssa_args for store_vary */
+                                        ins->load_store.reg = 0;
+                                } else {
+                                        bool has_dest = args.dest >= 0;
+                                        int ssa_arg = has_dest ? args.dest : args.src0;
+
+                                        ins->load_store.reg = dealias_register(ctx, g, ssa_arg, ctx->temp_count);
+                                }
+
+                                break;
+                        }
+
+                        default:
+                                break;
+                        }
+                }
+        }
+
+}
+
+/* This routine performs the actual register allocation. It should be succeeded
+ * by install_registers */
+
+static struct ra_graph *
 allocate_registers(compiler_context *ctx)
 {
         /* First, initialize the RA */
@@ -2057,6 +2236,11 @@ allocate_registers(compiler_context *ctx)
 		if (midgard_debug & MIDGARD_DBG_SHADERS)
 	                print_mir_block(block);
         }
+
+        /* No register allocation to do with no SSA */
+
+        if (!ctx->temp_count)
+                return NULL;
 
         /* Let's actually do register allocation */
         int nodes = ctx->temp_count;
@@ -2105,6 +2289,13 @@ allocate_registers(compiler_context *ctx)
         mir_foreach_block(ctx, block) {
                 mir_foreach_instr_in_block(block, ins) {
                         if (ins->compact_branch) continue;
+
+                        /* Dest is < 0 for store_vary instructions, which break
+                         * the usual SSA conventions. Liveness analysis doesn't
+                         * make sense on these instructions, so skip them to
+                         * avoid memory corruption */
+
+                        if (ins->ssa_args.dest < 0) continue;
 
                         if (ins->ssa_args.dest < SSA_FIXED_MINIMUM) {
                                 /* If this destination is not yet live, it is now since we just wrote it */
@@ -2167,54 +2358,7 @@ allocate_registers(compiler_context *ctx)
         free(live_start);
         free(live_end);
 
-        mir_foreach_block(ctx, block) {
-                mir_foreach_instr_in_block(block, ins) {
-                        if (ins->compact_branch) continue;
-
-                        ssa_args args = ins->ssa_args;
-
-                        switch (ins->type) {
-                        case TAG_ALU_4:
-                                ins->registers.src1_reg = dealias_register(ctx, g, args.src0, nodes);
-
-                                ins->registers.src2_imm = args.inline_constant;
-
-                                if (args.inline_constant) {
-                                        /* Encode inline 16-bit constant as a vector by default */
-
-                                        ins->registers.src2_reg = ins->inline_constant >> 11;
-
-                                        int lower_11 = ins->inline_constant & ((1 << 12) - 1);
-
-                                        uint16_t imm = ((lower_11 >> 8) & 0x7) | ((lower_11 & 0xFF) << 3);
-                                        ins->alu.src2 = imm << 2;
-                                } else {
-                                        ins->registers.src2_reg = dealias_register(ctx, g, args.src1, nodes);
-                                }
-
-                                ins->registers.out_reg = dealias_register(ctx, g, args.dest, nodes);
-
-                                break;
-
-                        case TAG_LOAD_STORE_4: {
-                                if (OP_IS_STORE_VARY(ins->load_store.op)) {
-                                        /* TODO: use ssa_args for store_vary */
-                                        ins->load_store.reg = 0;
-                                } else {
-                                        bool has_dest = args.dest >= 0;
-                                        int ssa_arg = has_dest ? args.dest : args.src0;
-
-                                        ins->load_store.reg = dealias_register(ctx, g, ssa_arg, nodes);
-                                }
-
-                                break;
-                        }
-
-                        default:
-                                break;
-                        }
-                }
-        }
+        return g;
 }
 
 /* Midgard IR only knows vector ALU types, but we sometimes need to actually
@@ -2794,7 +2938,9 @@ schedule_block(compiler_context *ctx, midgard_block *block)
 static void
 schedule_program(compiler_context *ctx)
 {
-        allocate_registers(ctx);
+        /* We run RA prior to scheduling */
+        struct ra_graph *g = allocate_registers(ctx);
+        install_registers(ctx, g);
 
         mir_foreach_block(ctx, block) {
                 schedule_block(ctx, block);
@@ -3423,7 +3569,7 @@ emit_blend_epilogue(compiler_context *ctx)
                 },
                 .alu = {
                         .op = midgard_alu_op_fmul,
-                        .reg_mode = midgard_reg_mode_full,
+                        .reg_mode = midgard_reg_mode_32,
                         .dest_override = midgard_dest_override_lower,
                         .mask = 0xFF,
                         .src1 = vector_alu_srco_unsigned(blank_alu_src),
@@ -3448,7 +3594,7 @@ emit_blend_epilogue(compiler_context *ctx)
                 },
                 .alu = {
                         .op = midgard_alu_op_f2u8,
-                        .reg_mode = midgard_reg_mode_half,
+                        .reg_mode = midgard_reg_mode_16,
                         .dest_override = midgard_dest_override_lower,
                         .outmod = midgard_outmod_pos,
                         .mask = 0xF,
@@ -3470,7 +3616,7 @@ emit_blend_epilogue(compiler_context *ctx)
                 },
                 .alu = {
                         .op = midgard_alu_op_imov,
-                        .reg_mode = midgard_reg_mode_quarter,
+                        .reg_mode = midgard_reg_mode_8,
                         .dest_override = midgard_dest_override_none,
                         .mask = 0xFF,
                         .src1 = vector_alu_srco_unsigned(blank_alu_src),

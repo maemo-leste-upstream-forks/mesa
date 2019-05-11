@@ -63,6 +63,90 @@ iris_set_debug_callback(struct pipe_context *ctx,
       memset(&ice->dbg, 0, sizeof(ice->dbg));
 }
 
+/**
+ * Called from the batch module when it detects a GPU hang.
+ *
+ * In this case, we've lost our GEM context, and can't rely on any existing
+ * state on the GPU.  We must mark everything dirty and wipe away any saved
+ * assumptions about the last known state of the GPU.
+ */
+void
+iris_lost_context_state(struct iris_batch *batch)
+{
+   /* The batch module doesn't have an iris_context, because we want to
+    * avoid introducing lots of layering violations.  Unfortunately, here
+    * we do need to inform the context of batch catastrophe.  We know the
+    * batch is one of our context's, so hackily claw our way back.
+    */
+   struct iris_context *ice = NULL;
+   struct iris_screen *screen;
+
+   if (batch->name == IRIS_BATCH_RENDER) {
+      ice = container_of(batch, ice, batches[IRIS_BATCH_RENDER]);
+      assert(&ice->batches[IRIS_BATCH_RENDER] == batch);
+      screen = (void *) ice->ctx.screen;
+
+      ice->vtbl.init_render_context(screen, batch, &ice->vtbl, &ice->dbg);
+   } else if (batch->name == IRIS_BATCH_COMPUTE) {
+      ice = container_of(batch, ice, batches[IRIS_BATCH_COMPUTE]);
+      assert(&ice->batches[IRIS_BATCH_COMPUTE] == batch);
+      screen = (void *) ice->ctx.screen;
+
+      ice->vtbl.init_compute_context(screen, batch, &ice->vtbl, &ice->dbg);
+   } else {
+      unreachable("unhandled batch reset");
+   }
+
+   ice->state.dirty = ~0ull;
+   memset(ice->state.last_grid, 0, sizeof(ice->state.last_grid));
+}
+
+static enum pipe_reset_status
+iris_get_device_reset_status(struct pipe_context *ctx)
+{
+   struct iris_context *ice = (struct iris_context *)ctx;
+
+   enum pipe_reset_status worst_reset = PIPE_NO_RESET;
+
+   /* Check the reset status of each batch's hardware context, and take the
+    * worst status (if one was guilty, proclaim guilt).
+    */
+   for (int i = 0; i < IRIS_BATCH_COUNT; i++) {
+      /* This will also recreate the hardware contexts as necessary, so any
+       * future queries will show no resets.  We only want to report once.
+       */
+      enum pipe_reset_status batch_reset =
+         iris_batch_check_for_reset(&ice->batches[i]);
+
+      if (batch_reset == PIPE_NO_RESET)
+         continue;
+
+      if (worst_reset == PIPE_NO_RESET) {
+         worst_reset = batch_reset;
+      } else {
+         /* GUILTY < INNOCENT < UNKNOWN */
+         worst_reset = MIN2(worst_reset, batch_reset);
+      }
+   }
+
+   if (worst_reset != PIPE_NO_RESET && ice->reset.reset)
+      ice->reset.reset(ice->reset.data, worst_reset);
+
+   return worst_reset;
+}
+
+static void
+iris_set_device_reset_callback(struct pipe_context *ctx,
+                               const struct pipe_device_reset_callback *cb)
+{
+   struct iris_context *ice = (struct iris_context *)ctx;
+
+   if (cb)
+      ice->reset = *cb;
+   else
+      memset(&ice->reset, 0, sizeof(ice->reset));
+}
+
 static void
 iris_get_sample_position(struct pipe_context *ctx,
                          unsigned sample_count,
@@ -172,6 +256,8 @@ iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
 
    ctx->destroy = iris_destroy_context;
    ctx->set_debug_callback = iris_set_debug_callback;
+   ctx->set_device_reset_callback = iris_set_device_reset_callback;
+   ctx->get_device_reset_status = iris_get_device_reset_status;
    ctx->get_sample_position = iris_get_sample_position;
 
    ice->shaders.urb_size = devinfo->urb.size;
@@ -212,7 +298,7 @@ iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
 
    for (int i = 0; i < IRIS_BATCH_COUNT; i++) {
       iris_init_batch(&ice->batches[i], screen, &ice->vtbl, &ice->dbg,
-                      ice->batches, (enum iris_batch_name) i,
+                      &ice->reset, ice->batches, (enum iris_batch_name) i,
                       I915_EXEC_RENDER, priority);
    }
 

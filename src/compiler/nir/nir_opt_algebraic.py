@@ -127,11 +127,22 @@ optimizations = [
    (('~flrp', a, b, 1.0), b),
    (('~flrp', a, a, b), a),
    (('~flrp', 0.0, a, b), ('fmul', a, b)),
+
+   # flrp(a, a + b, c) => a + flrp(0, b, c) => a + (b * c)
+   (('~flrp', a, ('fadd(is_used_once)', a, b), c), ('fadd', ('fmul', b, c), a)),
+   (('~flrp@32', a, ('fadd', a, b), c), ('fadd', ('fmul', b, c), a), 'options->lower_flrp32'),
+   (('~flrp@64', a, ('fadd', a, b), c), ('fadd', ('fmul', b, c), a), 'options->lower_flrp64'),
+
+   (('~flrp@32', ('fadd', a, b), ('fadd', a, c), d), ('fadd', ('flrp', b, c, d), a), 'options->lower_flrp32'),
+   (('~flrp@64', ('fadd', a, b), ('fadd', a, c), d), ('fadd', ('flrp', b, c, d), a), 'options->lower_flrp64'),
+
+   (('~flrp@32', a, ('fmul(is_used_once)', a, b), c), ('fmul', ('flrp', 1.0, b, c), a), 'options->lower_flrp32'),
+   (('~flrp@64', a, ('fmul(is_used_once)', a, b), c), ('fmul', ('flrp', 1.0, b, c), a), 'options->lower_flrp64'),
+
+   (('~flrp', ('fmul(is_used_once)', a, b), ('fmul(is_used_once)', a, c), d), ('fmul', ('flrp', b, c, d), a)),
+
    (('~flrp', a, b, ('b2f', 'c@1')), ('bcsel', c, b, a), 'options->lower_flrp32'),
    (('~flrp', a, 0.0, c), ('fadd', ('fmul', ('fneg', a), c), a)),
-   (('flrp@16', a, b, c), ('fadd', ('fmul', c, ('fsub', b, a)), a), 'options->lower_flrp16'),
-   (('flrp@32', a, b, c), ('fadd', ('fmul', c, ('fsub', b, a)), a), 'options->lower_flrp32'),
-   (('flrp@64', a, b, c), ('fadd', ('fmul', c, ('fsub', b, a)), a), 'options->lower_flrp64'),
    (('ftrunc', a), ('bcsel', ('flt', a, 0.0), ('fneg', ('ffloor', ('fabs', a))), ('ffloor', ('fabs', a))), 'options->lower_ftrunc'),
    (('ffloor', a), ('fsub', a, ('ffract', a)), 'options->lower_ffloor'),
    (('fadd', a, ('fneg', ('ffract', a))), ('ffloor', a), '!options->lower_ffloor'),
@@ -1063,6 +1074,10 @@ before_ffma_optimizations = [
    (('iadd', a, ('iadd', ('ineg', a), b)), b),
    (('~fadd', ('fneg', a), ('fadd', a, b)), b),
    (('~fadd', a, ('fadd', ('fneg', a), b)), b),
+
+   (('~flrp@32', ('fadd(is_used_once)', a, -1.0), ('fadd(is_used_once)', a,  1.0), d), ('fadd', ('flrp', -1.0,  1.0, d), a)),
+   (('~flrp@32', ('fadd(is_used_once)', a,  1.0), ('fadd(is_used_once)', a, -1.0), d), ('fadd', ('flrp',  1.0, -1.0, d), a)),
+   (('~flrp@32', ('fadd(is_used_once)', a, '#b'), ('fadd(is_used_once)', a, '#c'), d), ('fadd', ('fmul', d, ('fadd', c, ('fneg', b))), ('fadd', a, b))),
 ]
 
 # This section contains "late" optimizations that should be run after the
@@ -1086,8 +1101,14 @@ late_optimizations = [
    (('fdot4', a, b), ('fdot_replicated4', a, b), 'options->fdot_replicates'),
    (('fdph', a, b), ('fdph_replicated', a, b), 'options->fdot_replicates'),
 
+   (('~flrp@32', ('fadd(is_used_once)', a, b), ('fadd(is_used_once)', a, c), d), ('fadd', ('flrp', b, c, d), a)),
+   (('~flrp@64', ('fadd(is_used_once)', a, b), ('fadd(is_used_once)', a, c), d), ('fadd', ('flrp', b, c, d), a)),
+
    (('b2f(is_used_more_than_once)', ('inot', 'a@1')), ('bcsel', a, 0.0, 1.0)),
    (('fneg(is_used_more_than_once)', ('b2f', ('inot', 'a@1'))), ('bcsel', a, -0.0, -1.0)),
+
+   (('~fadd@32', 1.0, ('fmul(is_used_once)', c , ('fadd', b, -1.0 ))), ('fadd', ('fadd', 1.0, ('fneg', c)), ('fmul', b, c)), 'options->lower_flrp32'),
+   (('~fadd@64', 1.0, ('fmul(is_used_once)', c , ('fadd', b, -1.0 ))), ('fadd', ('fadd', 1.0, ('fneg', c)), ('fmul', b, c)), 'options->lower_flrp64'),
 
    # we do these late so that we don't get in the way of creating ffmas
    (('fmin', ('fadd(is_used_once)', '#c', a), ('fadd(is_used_once)', '#c', b)), ('fadd', c, ('fmin', a, b))),

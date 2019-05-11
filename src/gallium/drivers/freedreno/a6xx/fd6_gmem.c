@@ -63,8 +63,9 @@ emit_mrt(struct fd_ringbuffer *ring, struct pipe_framebuffer_state *pfb,
 		struct fd_resource *rsc = NULL;
 		struct fd_resource_slice *slice = NULL;
 		uint32_t stride = 0;
-		uint32_t offset = 0;
+		uint32_t offset, ubwc_offset;
 		uint32_t tile_mode;
+		bool ubwc_enabled;
 
 		if (!pfb->cbufs[i])
 			continue;
@@ -87,16 +88,13 @@ emit_mrt(struct fd_ringbuffer *ring, struct pipe_framebuffer_state *pfb,
 			srgb_cntl |= (1 << i);
 
 		offset = fd_resource_offset(rsc, psurf->u.tex.level,
-									psurf->u.tex.first_layer);
+				psurf->u.tex.first_layer);
+		ubwc_offset = fd_resource_ubwc_offset(rsc, psurf->u.tex.level,
+				psurf->u.tex.first_layer);
+		ubwc_enabled = fd_resource_ubwc_enabled(rsc, psurf->u.tex.level);
 
 		stride = slice->pitch * rsc->cpp * pfb->samples;
 		swap = rsc->tile_mode ? WZYX : fd6_pipe2swap(pformat);
-
-		if (rsc->tile_mode &&
-			fd_resource_level_linear(psurf->texture, psurf->u.tex.level))
-			tile_mode = TILE6_LINEAR;
-		else
-			tile_mode = rsc->tile_mode;
 
 		if (rsc->tile_mode &&
 			fd_resource_level_linear(psurf->texture, psurf->u.tex.level))
@@ -113,7 +111,7 @@ emit_mrt(struct fd_ringbuffer *ring, struct pipe_framebuffer_state *pfb,
 				A6XX_RB_MRT_BUF_INFO_COLOR_SWAP(swap));
 		OUT_RING(ring, A6XX_RB_MRT_PITCH(stride));
 		OUT_RING(ring, A6XX_RB_MRT_ARRAY_PITCH(slice->size0));
-		OUT_RELOCW(ring, rsc->bo, offset + rsc->offset, 0, 0);	/* BASE_LO/HI */
+		OUT_RELOCW(ring, rsc->bo, offset, 0, 0);	/* BASE_LO/HI */
 		OUT_RING(ring, base);			/* RB_MRT[i].BASE_GMEM */
 		OUT_PKT4(ring, REG_A6XX_SP_FS_MRT_REG(i), 1);
 		OUT_RING(ring, A6XX_SP_FS_MRT_REG_COLOR_FORMAT(format) |
@@ -121,8 +119,8 @@ emit_mrt(struct fd_ringbuffer *ring, struct pipe_framebuffer_state *pfb,
 				COND(uint, A6XX_SP_FS_MRT_REG_COLOR_UINT));
 
 		OUT_PKT4(ring, REG_A6XX_RB_MRT_FLAG_BUFFER(i), 3);
-		if (fd6_ubwc_enabled(rsc, tile_mode)) {
-			OUT_RELOCW(ring, rsc->bo, offset + rsc->ubwc_offset, 0, 0);	/* BASE_LO/HI */
+		if (ubwc_enabled) {
+			OUT_RELOCW(ring, rsc->bo, ubwc_offset, 0, 0);	/* BASE_LO/HI */
 			OUT_RING(ring, A6XX_RB_MRT_FLAG_BUFFER_PITCH_PITCH(rsc->ubwc_pitch) |
 				A6XX_RB_MRT_FLAG_BUFFER_PITCH_ARRAY_PITCH(rsc->ubwc_size));
 		} else {
@@ -171,15 +169,18 @@ emit_zs(struct fd_ringbuffer *ring, struct pipe_surface *zsbuf,
 		uint32_t stride = slice->pitch * rsc->cpp;
 		uint32_t size = slice->size0;
 		uint32_t base = gmem ? gmem->zsbuf_base[0] : 0;
+		uint32_t offset = fd_resource_offset(rsc, zsbuf->u.tex.level,
+				zsbuf->u.tex.first_layer);
+		uint32_t ubwc_offset = fd_resource_ubwc_offset(rsc, zsbuf->u.tex.level,
+				zsbuf->u.tex.first_layer);
 
-		bool ubwc_enabled =
-			!fd_resource_level_linear(zsbuf->texture, zsbuf->u.tex.level) && rsc->ubwc_size;
+		bool ubwc_enabled = fd_resource_ubwc_enabled(rsc, zsbuf->u.tex.level);
 
 		OUT_PKT4(ring, REG_A6XX_RB_DEPTH_BUFFER_INFO, 6);
 		OUT_RING(ring, A6XX_RB_DEPTH_BUFFER_INFO_DEPTH_FORMAT(fmt));
 		OUT_RING(ring, A6XX_RB_DEPTH_BUFFER_PITCH(stride));
 		OUT_RING(ring, A6XX_RB_DEPTH_BUFFER_ARRAY_PITCH(size));
-		OUT_RELOCW(ring, rsc->bo, rsc->offset, 0, 0);  /* RB_DEPTH_BUFFER_BASE_LO/HI */
+		OUT_RELOCW(ring, rsc->bo, offset, 0, 0);  /* RB_DEPTH_BUFFER_BASE_LO/HI */
 		OUT_RING(ring, base); /* RB_DEPTH_BUFFER_BASE_GMEM */
 
 		OUT_PKT4(ring, REG_A6XX_GRAS_SU_DEPTH_BUFFER_INFO, 1);
@@ -187,7 +188,7 @@ emit_zs(struct fd_ringbuffer *ring, struct pipe_surface *zsbuf,
 
 		OUT_PKT4(ring, REG_A6XX_RB_DEPTH_FLAG_BUFFER_BASE_LO, 3);
 		if (ubwc_enabled) {
-			OUT_RELOCW(ring, rsc->bo, rsc->ubwc_offset, 0, 0);	/* BASE_LO/HI */
+			OUT_RELOCW(ring, rsc->bo, ubwc_offset, 0, 0);	/* BASE_LO/HI */
 			OUT_RING(ring, A6XX_RB_MRT_FLAG_BUFFER_PITCH_PITCH(rsc->ubwc_pitch) |
 				A6XX_RB_MRT_FLAG_BUFFER_PITCH_ARRAY_PITCH(rsc->ubwc_size));
 		} else {
@@ -265,6 +266,18 @@ use_hw_binning(struct fd_batch *batch)
 }
 
 static void
+patch_fb_read(struct fd_batch *batch)
+{
+	struct fd_gmem_stateobj *gmem = &batch->ctx->gmem;
+
+	for (unsigned i = 0; i < fd_patch_num_elements(&batch->fb_read_patches); i++) {
+		struct fd_cs_patch *patch = fd_patch_element(&batch->fb_read_patches, i);
+		*patch->cs = patch->val | A6XX_TEX_CONST_2_PITCH(gmem->bin_w * gmem->cbuf_cpp[0]);
+	}
+	util_dynarray_resize(&batch->fb_read_patches, 0);
+}
+
+static void
 patch_draws(struct fd_batch *batch, enum pc_di_vis_cull_mode vismode)
 {
 	unsigned i;
@@ -286,8 +299,7 @@ update_render_cntl(struct fd_batch *batch, struct pipe_framebuffer_state *pfb, b
 
 	if (pfb->zsbuf) {
 		struct fd_resource *rsc = fd_resource(pfb->zsbuf->texture);
-		depth_ubwc_enable =
-			!fd_resource_level_linear(pfb->zsbuf->texture, pfb->zsbuf->u.tex.level) && rsc->ubwc_size;
+		depth_ubwc_enable = fd_resource_ubwc_enabled(rsc, pfb->zsbuf->u.tex.level);
 	}
 
 	for (i = 0; i < pfb->nr_cbufs; i++) {
@@ -299,7 +311,7 @@ update_render_cntl(struct fd_batch *batch, struct pipe_framebuffer_state *pfb, b
 		if (!rsc->bo)
 			continue;
 
-		if (fd6_ubwc_enabled(rsc, rsc->tile_mode))
+		if (fd_resource_ubwc_enabled(rsc, psurf->u.tex.level))
 			mrts_ubwc_enable |= 1 << i;
 	}
 
@@ -518,6 +530,7 @@ fd6_emit_tile_init(struct fd_batch *batch)
 	emit_zs(ring, pfb->zsbuf, &ctx->gmem);
 	emit_mrt(ring, pfb, &ctx->gmem);
 	emit_msaa(ring, pfb->samples);
+	patch_fb_read(batch);
 
 	if (use_hw_binning(batch)) {
 		set_bin_size(ring, gmem->bin_w, gmem->bin_h,
@@ -646,7 +659,8 @@ emit_blit(struct fd_batch *batch,
 	struct fd_resource_slice *slice;
 	struct fd_resource *rsc = fd_resource(psurf->texture);
 	enum pipe_format pfmt = psurf->format;
-	uint32_t offset;
+	uint32_t offset, ubwc_offset;
+	bool ubwc_enabled;
 
 	/* separate stencil case: */
 	if (stencil) {
@@ -656,6 +670,9 @@ emit_blit(struct fd_batch *batch,
 
 	slice = fd_resource_slice(rsc, psurf->u.tex.level);
 	offset = fd_resource_offset(rsc, psurf->u.tex.level,
+			psurf->u.tex.first_layer);
+	ubwc_enabled = fd_resource_ubwc_enabled(rsc, psurf->u.tex.level);
+	ubwc_offset = fd_resource_ubwc_offset(rsc, psurf->u.tex.level,
 			psurf->u.tex.first_layer);
 
 	debug_assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
@@ -680,17 +697,17 @@ emit_blit(struct fd_batch *batch,
 			 A6XX_RB_BLIT_DST_INFO_SAMPLES(samples) |
 			 A6XX_RB_BLIT_DST_INFO_COLOR_FORMAT(format) |
 			 A6XX_RB_BLIT_DST_INFO_COLOR_SWAP(swap) |
-			 COND(fd6_ubwc_enabled(rsc, tile_mode), A6XX_RB_BLIT_DST_INFO_FLAGS));
-	OUT_RELOCW(ring, rsc->bo, offset + rsc->offset, 0, 0);  /* RB_BLIT_DST_LO/HI */
+			 COND(ubwc_enabled, A6XX_RB_BLIT_DST_INFO_FLAGS));
+	OUT_RELOCW(ring, rsc->bo, offset, 0, 0);  /* RB_BLIT_DST_LO/HI */
 	OUT_RING(ring, A6XX_RB_BLIT_DST_PITCH(stride));
 	OUT_RING(ring, A6XX_RB_BLIT_DST_ARRAY_PITCH(size));
 
 	OUT_PKT4(ring, REG_A6XX_RB_BLIT_BASE_GMEM, 1);
 	OUT_RING(ring, base);
 
-	if (fd6_ubwc_enabled(rsc, tile_mode)) {
+	if (ubwc_enabled) {
 		OUT_PKT4(ring, REG_A6XX_RB_BLIT_FLAG_DST_LO, 3);
-		OUT_RELOCW(ring, rsc->bo, offset + rsc->ubwc_offset, 0, 0);
+		OUT_RELOCW(ring, rsc->bo, ubwc_offset, 0, 0);
 		OUT_RING(ring, A6XX_RB_MRT_FLAG_BUFFER_PITCH_PITCH(rsc->ubwc_pitch) |
 				 A6XX_RB_MRT_FLAG_BUFFER_PITCH_ARRAY_PITCH(rsc->ubwc_size));
 	}

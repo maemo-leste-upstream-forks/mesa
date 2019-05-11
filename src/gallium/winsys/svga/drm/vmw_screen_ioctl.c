@@ -107,7 +107,7 @@ vmw_ioctl_extended_context_create(struct vmw_winsys_screen *vws,
 
    VMW_FUNC;
    memset(&c_arg, 0, sizeof(c_arg));
-   c_arg.req = (vgpu10 ? drm_vmw_context_vgpu10 : drm_vmw_context_legacy);
+   c_arg.req = (vgpu10 ? drm_vmw_context_dx : drm_vmw_context_legacy);
    ret = drmCommandWriteRead(vws->ioctl.drm_fd,
                              DRM_VMW_CREATE_EXTENDED_CONTEXT,
                              &c_arg, sizeof(c_arg));
@@ -564,7 +564,9 @@ vmw_ioctl_command(struct vmw_winsys_screen *vws, int32_t cid,
                 offsetof(struct drm_vmw_execbuf_arg, context_handle);
    do {
        ret = drmCommandWrite(vws->ioctl.drm_fd, DRM_VMW_EXECBUF, &arg, argsize);
-   } while(ret == -ERESTART);
+       if (ret == -EBUSY)
+          usleep(1000);
+   } while(ret == -ERESTART || ret == -EBUSY);
    if (ret) {
       vmw_error("%s error %s.\n", __FUNCTION__, strerror(-ret));
       abort();
@@ -967,6 +969,7 @@ vmw_ioctl_init(struct vmw_winsys_screen *vws)
    drmVersionPtr version;
    boolean drm_gb_capable;
    boolean have_drm_2_5;
+   const char *getenv_val;
 
    VMW_FUNC;
 
@@ -1006,17 +1009,21 @@ vmw_ioctl_init(struct vmw_winsys_screen *vws)
       goto out_no_3d;
    }
    vws->ioctl.hwversion = gp_arg.value;
-
-   memset(&gp_arg, 0, sizeof(gp_arg));
-   gp_arg.param = DRM_VMW_PARAM_HW_CAPS;
-   ret = drmCommandWriteRead(vws->ioctl.drm_fd, DRM_VMW_GET_PARAM,
-                             &gp_arg, sizeof(gp_arg));
+   getenv_val = getenv("SVGA_FORCE_HOST_BACKED");
+   if (!getenv_val || strcmp(getenv_val, "0") == 0) {
+      memset(&gp_arg, 0, sizeof(gp_arg));
+      gp_arg.param = DRM_VMW_PARAM_HW_CAPS;
+      ret = drmCommandWriteRead(vws->ioctl.drm_fd, DRM_VMW_GET_PARAM,
+                                &gp_arg, sizeof(gp_arg));
+   } else {
+      ret = -EINVAL;
+   }
    if (ret)
       vws->base.have_gb_objects = FALSE;
    else
       vws->base.have_gb_objects =
          !!(gp_arg.value & (uint64_t) SVGA_CAP_GBOBJECTS);
-   
+
    if (vws->base.have_gb_objects && !drm_gb_capable)
       goto out_no_3d;
 
@@ -1052,7 +1059,7 @@ vmw_ioctl_init(struct vmw_winsys_screen *vws)
 
       if (vws->ioctl.have_drm_2_9) {
          memset(&gp_arg, 0, sizeof(gp_arg));
-         gp_arg.param = DRM_VMW_PARAM_VGPU10;
+         gp_arg.param = DRM_VMW_PARAM_DX;
          ret = drmCommandWriteRead(vws->ioctl.drm_fd, DRM_VMW_GET_PARAM,
                                    &gp_arg, sizeof(gp_arg));
          if (ret == 0 && gp_arg.value != 0) {

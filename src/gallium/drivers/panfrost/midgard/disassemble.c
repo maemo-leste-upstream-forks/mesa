@@ -67,20 +67,41 @@ print_ld_st_opcode(midgard_load_store_op op)
 static bool is_embedded_constant_half = false;
 static bool is_embedded_constant_int = false;
 
+static char
+prefix_for_bits(unsigned bits)
+{
+        switch (bits) {
+                case 8:
+                        return 'q';
+                case 16:
+                        return 'h';
+                case 64:
+                        return 'd';
+                default:
+                        return 0;
+        }
+}
+
 static void
-print_reg(unsigned reg, bool half)
+print_reg(unsigned reg, unsigned bits)
 {
         /* Perform basic static analysis for expanding constants correctly */
 
-        if (half && (reg >> 1) == 26) {
+        if ((bits == 16) && (reg >> 1) == 26) {
                 is_embedded_constant_half = true;
                 is_embedded_constant_int = is_instruction_int;
-        } else if (!half && reg == 26) {
+        } else if ((bits == 32) && reg == 26) {
                 is_embedded_constant_int = is_instruction_int;
+        } else if (bits == 8) {
+                /* TODO */
+        } else if (bits == 64) {
+                /* TODO */
         }
 
-        if (half)
-                printf("h");
+        char prefix = prefix_for_bits(bits);
+
+        if (prefix)
+                putchar(prefix);
 
         printf("r%u", reg);
 }
@@ -88,7 +109,7 @@ print_reg(unsigned reg, bool half)
 static char *outmod_names[4] = {
         "",
         ".pos",
-        "",
+        ".int",
         ".sat"
 };
 
@@ -111,7 +132,7 @@ print_quad_word(uint32_t *words, unsigned tabs)
 
 static void
 print_vector_src(unsigned src_binary, bool out_high,
-                 bool out_half, unsigned reg,
+                 midgard_reg_mode mode, unsigned reg,
                  bool is_int)
 {
         midgard_vector_alu_src *src = (midgard_vector_alu_src *)&src_binary;
@@ -145,43 +166,74 @@ print_vector_src(unsigned src_binary, bool out_high,
 
         //register
 
-        if (out_half) {
+        if (mode == midgard_reg_mode_8) {
                 if (src->half)
                         printf(" /* half */ ");
 
-                unsigned half_reg;
+                unsigned quarter_reg = reg * 2;
 
                 if (out_high) {
-                        if (src->rep_low)
-                                half_reg = reg * 2;
-                        else
-                                half_reg = reg * 2 + 1;
+                        if (!src->rep_low)
+                                quarter_reg++;
 
                         if (src->rep_high)
                                 printf(" /* rep_high */ ");
                 } else {
                         if (src->rep_high)
-                                half_reg = reg * 2 + 1;
-                        else
-                                half_reg = reg * 2;
+                                quarter_reg++;
 
                         if (src->rep_low)
                                 printf(" /* rep_low */ ");
                 }
 
-                print_reg(half_reg, true);
-        } else {
+                print_reg(quarter_reg, 8);
+        } else if (mode == midgard_reg_mode_16) {
+                if (src->half)
+                        printf(" /* half */ ");
+
+                unsigned half_reg = reg * 2;
+
+                if (out_high) {
+                        if (!src->rep_low)
+                                half_reg++;
+
+                        if (src->rep_high)
+                                printf(" /* rep_high */ ");
+                } else {
+                        if (src->rep_high)
+                                half_reg++;
+
+                        if (src->rep_low)
+                                printf(" /* rep_low */ ");
+                }
+
+                print_reg(half_reg, 16);
+        } else if (mode == midgard_reg_mode_32) {
                 if (src->rep_high)
                         printf(" /* rep_high */ ");
 
                 if (src->half)
-                        print_reg(reg * 2 + src->rep_low, true);
+                        print_reg(reg * 2 + src->rep_low, 16);
                 else {
                         if (src->rep_low)
                                 printf(" /* rep_low */ ");
 
-                        print_reg(reg, false);
+                        print_reg(reg, 32);
                 }
+        } else if (mode == midgard_reg_mode_64) {
+                if (src->rep_high)
+                        printf(" /* rep_high */ ");
+
+                if (src->rep_low)
+                        printf(" /* rep_low */ ");
+
+                if (src->half)
+                        printf(" /* half */ ");
+
+                if (out_high)
+                        printf(" /* out_high */ ");
+
+                print_reg(reg, 64);
         }
 
         //swizzle
@@ -222,17 +274,77 @@ print_immediate(uint16_t imm)
                 printf("#%g", _mesa_half_to_float(imm));
 }
 
+static int
+bits_for_mode(midgard_reg_mode mode)
+{
+        switch (mode) {
+                case midgard_reg_mode_8:
+                        return 8;
+                case midgard_reg_mode_16:
+                        return 16;
+                case midgard_reg_mode_32:
+                        return 32;
+                case midgard_reg_mode_64:
+                        return 64;
+                default:
+                        return 0;
+        }
+}
+
+static void
+print_dest(unsigned reg, midgard_reg_mode mode, midgard_dest_override override, bool out_high)
+{
+        bool overriden = override != midgard_dest_override_none;
+        bool overriden_up = override == midgard_dest_override_upper;
+
+        /* Depending on the mode and override, we determine the type of
+         * destination addressed. Absent an override, we address just the
+         * type of the operation itself, directly at the out_reg register
+         * (scaled if necessary to disambiguate, raised if necessary) */
+
+        unsigned bits = bits_for_mode(mode);
+
+        if (overriden)
+                bits /= 2;
+
+        /* Sanity check the override */
+
+        if (overriden) {
+                bool modeable = (mode == midgard_reg_mode_32) || (mode == midgard_reg_mode_16);
+                bool known = override != 0x3; /* Unused value */
+                bool uppable = !overriden_up || (mode == midgard_reg_mode_32);
+
+                if (!(modeable && known && uppable))
+                        printf("/* do%d */ ", override);
+        }
+
+        switch (mode) {
+                case midgard_reg_mode_8:
+                case midgard_reg_mode_16:
+                        reg = reg * 2 + out_high;
+                        break;
+
+                case midgard_reg_mode_32:
+                        if (overriden) {
+                                reg = (reg * 2) + overriden_up;
+                        }
+
+                        break;
+
+                default:
+                        break;
+        }
+
+        print_reg(reg, bits);
+}
+
 static void
 print_vector_field(const char *name, uint16_t *words, uint16_t reg_word,
                    unsigned tabs)
 {
         midgard_reg_info *reg_info = (midgard_reg_info *)&reg_word;
         midgard_vector_alu *alu_field = (midgard_vector_alu *) words;
-
-        if (alu_field->reg_mode != midgard_reg_mode_half &&
-                        alu_field->reg_mode != midgard_reg_mode_full) {
-                printf("unknown reg mode %u\n", alu_field->reg_mode);
-        }
+        midgard_reg_mode mode = alu_field->reg_mode;
 
         /* For now, prefix instruction names with their unit, until we
          * understand how this works on a deeper level */
@@ -242,12 +354,15 @@ print_vector_field(const char *name, uint16_t *words, uint16_t reg_word,
         print_outmod(alu_field->outmod);
         printf(" ");
 
-        bool half, out_half, out_high = false;
+        bool out_high = false;
         unsigned mask;
 
-        half = (alu_field->reg_mode == midgard_reg_mode_half);
+        if (mode == midgard_reg_mode_16
+                || mode == midgard_reg_mode_8) {
 
-        if (half) {
+                /* For partial views, the mask denotes which adjacent register
+                 * is used as the window into the larger register */
+
                 if (alu_field->mask & 0xF) {
                         out_high = false;
 
@@ -260,35 +375,29 @@ print_vector_field(const char *name, uint16_t *words, uint16_t reg_word,
                         mask = alu_field->mask >> 4;
                 }
         } else {
+                /* For full 32-bit, every other bit is duplicated, so we only
+                 * pick every other to find the effective mask */
+
                 mask = alu_field->mask & 1;
                 mask |= (alu_field->mask & 4) >> 1;
                 mask |= (alu_field->mask & 16) >> 2;
                 mask |= (alu_field->mask & 64) >> 3;
+
+                /* ... but verify! */
+
+                unsigned checked = alu_field->mask & 0x55;
+                unsigned opposite = alu_field->mask & 0xAA;
+
+                if ((checked << 1) != opposite)
+                        printf("/* %X */ ", alu_field->mask);
         }
 
-        out_half = half;
+        /* First, print the destination */
+        print_dest(reg_info->out_reg, mode, alu_field->dest_override, out_high);
 
-        if (alu_field->dest_override != midgard_dest_override_none) {
-                if (out_half)
-                        printf("/* half */ ");
-
-                out_half = true;
-
-                if (alu_field->dest_override == midgard_dest_override_lower)
-                        out_high = false;
-                else if (alu_field->dest_override == midgard_dest_override_upper)
-                        out_high = true;
-                else
-                        assert(0);
-        }
-
-        if (out_half) {
-                if (out_high)
-                        print_reg(2 * reg_info->out_reg + 1, true);
-                else
-                        print_reg(2 * reg_info->out_reg, true);
-        } else
-                print_reg(reg_info->out_reg, false);
+        /* The semantics here are not totally grokked yet */
+        if (alu_field->dest_override == midgard_dest_override_upper)
+                out_high = true;
 
         if (mask != 0xF) {
                 unsigned i;
@@ -304,7 +413,7 @@ print_vector_field(const char *name, uint16_t *words, uint16_t reg_word,
         printf(", ");
 
         bool is_int = midgard_is_integer_op(alu_field->op);
-        print_vector_src(alu_field->src1, out_high, half, reg_info->src1_reg, is_int);
+        print_vector_src(alu_field->src1, out_high, mode, reg_info->src1_reg, is_int);
 
         printf(", ");
 
@@ -312,7 +421,7 @@ print_vector_field(const char *name, uint16_t *words, uint16_t reg_word,
                 uint16_t imm = decode_vector_imm(reg_info->src2_reg, alu_field->src2 >> 2);
                 print_immediate(imm);
         } else {
-                print_vector_src(alu_field->src2, out_high, half,
+                print_vector_src(alu_field->src2, out_high, mode,
                                  reg_info->src2_reg, is_int);
         }
 
@@ -331,9 +440,9 @@ print_scalar_src(unsigned src_binary, unsigned reg)
                 printf("abs(");
 
         if (src->full)
-                print_reg(reg, false);
+                print_reg(reg, 32);
         else
-                print_reg(reg * 2 + (src->component >> 2), true);
+                print_reg(reg * 2 + (src->component >> 2), 16);
 
         static const char c[4] = "xyzw";
         \
@@ -372,10 +481,10 @@ print_scalar_field(const char *name, uint16_t *words, uint16_t reg_word,
         printf(" ");
 
         if (alu_field->output_full)
-                print_reg(reg_info->out_reg, false);
+                print_reg(reg_info->out_reg, 32);
         else
                 print_reg(reg_info->out_reg * 2 + (alu_field->output_component >> 2),
-                          true);
+                          16);
 
         static const char c[4] = "xyzw";
         printf(".%c, ",

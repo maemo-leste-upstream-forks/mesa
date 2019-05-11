@@ -150,6 +150,7 @@ static int nir_to_ppir_opcodes[nir_num_opcodes] = {
    [nir_op_fnot] = ppir_op_not,
    [nir_op_fcsel] = ppir_op_select,
    [nir_op_inot] = ppir_op_not,
+   [nir_op_ftrunc] = ppir_op_trunc,
 };
 
 static ppir_node *ppir_emit_alu(ppir_block *block, nir_instr *ni)
@@ -265,7 +266,8 @@ static ppir_node *ppir_emit_intrinsic(ppir_block *block, nir_instr *ni)
       return &snode->node;
 
    default:
-      ppir_error("unsupported nir_intrinsic_instr %d\n", instr->intrinsic);
+      ppir_error("unsupported nir_intrinsic_instr %s\n",
+                 nir_intrinsic_infos[instr->intrinsic].name);
       return NULL;
    }
 }
@@ -378,8 +380,10 @@ static bool ppir_emit_block(ppir_compiler *comp, nir_block *nblock)
    nir_foreach_instr(instr, nblock) {
       assert(instr->type < nir_instr_type_phi);
       ppir_node *node = ppir_emit_instr[instr->type](block, instr);
-      if (node)
-         list_addtail(&node->list, &block->node_list);
+      if (!node)
+         return false;
+
+      list_addtail(&node->list, &block->node_list);
    }
 
    return true;

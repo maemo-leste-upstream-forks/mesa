@@ -178,7 +178,7 @@ static struct {
 
         /* Incredibly, iadd can run on vmul, etc */
         [midgard_alu_op_iadd]		 = {"iadd", UNITS_MOST | OP_COMMUTES},
-        [midgard_alu_op_iabs]		 = {"iabs", UNITS_MOST},
+        [midgard_alu_op_iabs]		 = {"iabs", UNITS_ADD},
         [midgard_alu_op_isub]		 = {"isub", UNITS_MOST},
         [midgard_alu_op_imul]		 = {"imul", UNITS_MUL | OP_COMMUTES},
         [midgard_alu_op_imov]		 = {"imov", UNITS_MOST | QUIRK_FLIPPED_R24},
@@ -224,7 +224,7 @@ static struct {
         [midgard_alu_op_inor]		 = {"inor", UNITS_MOST | OP_COMMUTES},
         [midgard_alu_op_ixor]		 = {"ixor", UNITS_MOST | OP_COMMUTES},
         [midgard_alu_op_inxor]		 = {"inxor", UNITS_MOST | OP_COMMUTES},
-        [midgard_alu_op_ilzcnt]		 = {"ilzcnt", UNITS_ADD},
+        [midgard_alu_op_iclz]		 = {"iclz", UNITS_ADD},
         [midgard_alu_op_ibitcount8]	 = {"ibitcount8", UNITS_ADD},
         [midgard_alu_op_inand]		 = {"inand", UNITS_MOST},
         [midgard_alu_op_ishl]		 = {"ishl", UNITS_ADD},
@@ -264,6 +264,10 @@ static struct {
 static bool
 midgard_is_integer_op(int op)
 {
-        char prefix = alu_opcode_props[op].name[0];
-        return (prefix == 'i') || (prefix == 'u');
+        const char *name = alu_opcode_props[op].name;
+
+        if (!name)
+                return false;
+
+        return (name[0] == 'i') || (name[0] == 'u');
 }

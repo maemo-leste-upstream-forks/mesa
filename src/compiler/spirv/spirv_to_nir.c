@@ -2200,6 +2200,9 @@ vtn_handle_texture(struct vtn_builder *b, SpvOp opcode,
    case nir_texop_samples_identical:
       /* These don't */
       break;
+   case nir_texop_txf_ms_fb:
+      vtn_fail("unexpected nir_texop_txf_ms_fb");
+      break;
    case nir_texop_txf_ms_mcs:
       vtn_fail("unexpected nir_texop_txf_ms_mcs");
    }
@@ -2981,15 +2984,7 @@ vtn_handle_atomics(struct vtn_builder *b, SpvOp opcode,
 static nir_alu_instr *
 create_vec(struct vtn_builder *b, unsigned num_components, unsigned bit_size)
 {
-   nir_op op;
-   switch (num_components) {
-   case 1: op = nir_op_imov; break;
-   case 2: op = nir_op_vec2; break;
-   case 3: op = nir_op_vec3; break;
-   case 4: op = nir_op_vec4; break;
-   default: vtn_fail("bad vector size: %u", num_components);
-   }
-
+   nir_op op = nir_op_vec(num_components);
    nir_alu_instr *vec = nir_alu_instr_create(b->shader, op);
    nir_ssa_dest_init(&vec->instr, &vec->dest.dest, num_components,
                      bit_size, NULL);
@@ -4297,7 +4292,6 @@ vtn_handle_body_instruction(struct vtn_builder *b, SpvOp opcode,
    case SpvOpQuantizeToF16:
    case SpvOpPtrCastToGeneric:
    case SpvOpGenericCastToPtr:
-   case SpvOpBitcast:
    case SpvOpIsNan:
    case SpvOpIsInf:
    case SpvOpIsFinite:
@@ -4380,6 +4374,10 @@ vtn_handle_body_instruction(struct vtn_builder *b, SpvOp opcode,
    case SpvOpMatrixTimesVector:
    case SpvOpMatrixTimesMatrix:
       vtn_handle_alu(b, opcode, w, count);
+      break;
+
+   case SpvOpBitcast:
+      vtn_handle_bitcast(b, w, count);
       break;
 
    case SpvOpVectorExtractDynamic:

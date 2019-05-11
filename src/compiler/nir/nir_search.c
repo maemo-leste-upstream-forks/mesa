@@ -134,6 +134,50 @@ nir_op_matches_search_op(nir_op nop, uint16_t sop)
 
 #undef MATCH_FCONV_CASE
 #undef MATCH_ICONV_CASE
+#undef MATCH_BCONV_CASE
+}
+
+uint16_t
+nir_search_op_for_nir_op(nir_op nop)
+{
+#define MATCH_FCONV_CASE(op) \
+   case nir_op_##op##16: \
+   case nir_op_##op##32: \
+   case nir_op_##op##64: \
+      return nir_search_op_##op;
+
+#define MATCH_ICONV_CASE(op) \
+   case nir_op_##op##8: \
+   case nir_op_##op##16: \
+   case nir_op_##op##32: \
+   case nir_op_##op##64: \
+      return nir_search_op_##op;
+
+#define MATCH_BCONV_CASE(op) \
+   case nir_op_##op##1: \
+   case nir_op_##op##32: \
+      return nir_search_op_##op;
+
+
+   switch (nop) {
+   MATCH_FCONV_CASE(i2f)
+   MATCH_FCONV_CASE(u2f)
+   MATCH_FCONV_CASE(f2f)
+   MATCH_ICONV_CASE(f2u)
+   MATCH_ICONV_CASE(f2i)
+   MATCH_ICONV_CASE(u2u)
+   MATCH_ICONV_CASE(i2i)
+   MATCH_FCONV_CASE(b2f)
+   MATCH_ICONV_CASE(b2i)
+   MATCH_BCONV_CASE(i2b)
+   MATCH_BCONV_CASE(f2b)
+   default:
+      return nop;
+   }
+
+#undef MATCH_FCONV_CASE
+#undef MATCH_ICONV_CASE
+#undef MATCH_BCONV_CASE
 }
 
 static nir_op
@@ -187,6 +231,7 @@ nir_op_for_search_op(uint16_t sop, unsigned bit_size)
 
 #undef RET_FCONV_CASE
 #undef RET_ICONV_CASE
+#undef RET_BCONV_CASE
 }
 
 static bool
@@ -485,6 +530,73 @@ construct_value(nir_builder *build,
    }
 }
 
+MAYBE_UNUSED static void dump_value(const nir_search_value *val)
+{
+   switch (val->type) {
+   case nir_search_value_constant: {
+      const nir_search_constant *sconst = nir_search_value_as_constant(val);
+      switch (sconst->type) {
+      case nir_type_float:
+         printf("%f", sconst->data.d);
+         break;
+      case nir_type_int:
+         printf("%"PRId64, sconst->data.i);
+         break;
+      case nir_type_uint:
+         printf("0x%"PRIx64, sconst->data.u);
+         break;
+      default:
+         unreachable("bad const type");
+      }
+      break;
+   }
+
+   case nir_search_value_variable: {
+      const nir_search_variable *var = nir_search_value_as_variable(val);
+      if (var->is_constant)
+         printf("#");
+      printf("%c", var->variable + 'a');
+      break;
+   }
+
+   case nir_search_value_expression: {
+      const nir_search_expression *expr = nir_search_value_as_expression(val);
+      printf("(");
+      if (expr->inexact)
+         printf("~");
+      switch (expr->opcode) {
+#define CASE(n) \
+      case nir_search_op_##n: printf(#n); break;
+      CASE(f2b)
+      CASE(b2f)
+      CASE(b2i)
+      CASE(i2b)
+      CASE(i2i)
+      CASE(f2i)
+      CASE(i2f)
+#undef CASE
+      default:
+         printf("%s", nir_op_infos[expr->opcode].name);
+      }
+
+      unsigned num_srcs = 1;
+      if (expr->opcode <= nir_last_opcode)
+         num_srcs = nir_op_infos[expr->opcode].num_inputs;
+
+      for (unsigned i = 0; i < num_srcs; i++) {
+         printf(" ");
+         dump_value(expr->srcs[i]);
+      }
+
+      printf(")");
+      break;
+   }
+   }
+
+   if (val->bit_size > 0)
+      printf("@%d", val->bit_size);
+}
+
 nir_ssa_def *
 nir_replace_instr(nir_builder *build, nir_alu_instr *instr,
                   const nir_search_expression *search,
@@ -521,6 +633,14 @@ nir_replace_instr(nir_builder *build, nir_alu_instr *instr,
    }
    if (!found)
       return NULL;
+
+#if 0
+   printf("matched: ");
+   dump_value(&search->value);
+   printf(" -> ");
+   dump_value(replace);
+   printf(" ssa_%d\n", instr->dest.dest.ssa.index);
+#endif
 
    build->cursor = nir_before_instr(&instr->instr);
 

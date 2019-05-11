@@ -40,6 +40,7 @@
 #include "util/u_format.h"
 #include "indices/u_primconvert.h"
 #include "tgsi/tgsi_parse.h"
+#include "util/u_math.h"
 
 #include "pan_screen.h"
 #include "pan_blending.h"
@@ -52,6 +53,22 @@ extern const char *pan_counters_base;
 
 /* Do not actually send anything to the GPU; merely generate the cmdstream as fast as possible. Disables framebuffer writes */
 //#define DRY_RUN
+
+/* Can a given format support AFBC? Not all can. */
+
+static bool
+panfrost_can_afbc(enum pipe_format format)
+{
+        const struct util_format_description *desc =
+                util_format_description(format);
+
+        if (util_format_is_rgba8_variant(desc))
+                return true;
+
+        /* TODO: AFBC of other formats */
+
+        return false;
+}
 
 /* AFBC is enabled on a per-resource basis (AFBC enabling is theoretically
  * indepdent between color buffers and depth/stencil). To enable, we allocate
@@ -228,11 +245,38 @@ panfrost_is_scanout(struct panfrost_context *ctx)
                ctx->pipe_framebuffer.cbufs[0]->texture->bind & PIPE_BIND_SHARED;
 }
 
-/* Maps float 0.0-1.0 to int 0x00-0xFF */
-static uint8_t
-normalised_float_to_u8(float f)
+static uint32_t
+pan_pack_color(const union pipe_color_union *color, enum pipe_format format)
 {
-        return (uint8_t) (int) (f * 255.0f);
+        /* Alpha magicked to 1.0 if there is no alpha */
+
+        bool has_alpha = util_format_has_alpha(format);
+        float clear_alpha = has_alpha ? color->f[3] : 1.0f;
+
+        /* Packed color depends on the framebuffer format */
+
+        const struct util_format_description *desc =
+                util_format_description(format);
+
+        if (util_format_is_rgba8_variant(desc)) {
+                return (float_to_ubyte(clear_alpha) << 24) |
+                       (float_to_ubyte(color->f[2]) << 16) |
+                       (float_to_ubyte(color->f[1]) <<  8) |
+                       (float_to_ubyte(color->f[0]) <<  0);
+        } else if (format == PIPE_FORMAT_B5G6R5_UNORM) {
+                /* First, we convert the components to R5, G6, B5 separately */
+                unsigned r5 = CLAMP(color->f[0], 0.0, 1.0) * 31.0;
+                unsigned g6 = CLAMP(color->f[1], 0.0, 1.0) * 63.0;
+                unsigned b5 = CLAMP(color->f[2], 0.0, 1.0) * 31.0;
+
+                /* Then we pack into a sparse u32. TODO: Why these shifts? */
+                return (b5 << 25) | (g6 << 14) | (r5 << 5);
+        } else {
+                /* Unknown format */
+                assert(0);
+        }
+
+        return 0;
 }
 
 static void
@@ -246,18 +290,8 @@ panfrost_clear(
         struct panfrost_job *job = panfrost_get_job_for_fbo(ctx);
 
         if (buffers & PIPE_CLEAR_COLOR) {
-                /* Alpha clear only meaningful without alpha channel, TODO less ad hoc */
-                bool has_alpha = util_format_has_alpha(ctx->pipe_framebuffer.cbufs[0]->format);
-                float clear_alpha = has_alpha ? color->f[3] : 1.0f;
-
-                uint32_t packed_color =
-                        (normalised_float_to_u8(clear_alpha) << 24) |
-                        (normalised_float_to_u8(color->f[2]) << 16) |
-                        (normalised_float_to_u8(color->f[1]) <<  8) |
-                        (normalised_float_to_u8(color->f[0]) <<  0);
-
-                job->clear_color = packed_color;
-
+                enum pipe_format format = ctx->pipe_framebuffer.cbufs[0]->format;
+                job->clear_color = pan_pack_color(color, format);
         }
 
         if (buffers & PIPE_CLEAR_DEPTH) {
@@ -960,16 +994,23 @@ panfrost_emit_for_draw(struct panfrost_context *ctx, bool with_vertex_data)
 			(ctx->blend->equation.alpha_mode == 0x122) &&
 			(ctx->blend->equation.color_mask == 0xf);
 
+                /* Even on MFBD, the shader descriptor gets blend shaders. It's
+                 * *also* copied to the blend_meta appended (by convention),
+                 * but this is the field actually read by the hardware. (Or
+                 * maybe both are read...?) */
+
+                if (ctx->blend->has_blend_shader) {
+                        ctx->fragment_shader_core.blend.shader = ctx->blend->blend_shader;
+                }
+
                 if (ctx->require_sfbd) {
                         /* When only a single render target platform is used, the blend
                          * information is inside the shader meta itself. We
                          * additionally need to signal CAN_DISCARD for nontrivial blend
                          * modes (so we're able to read back the destination buffer) */
 
-                        if (ctx->blend->has_blend_shader) {
-                                ctx->fragment_shader_core.blend_shader = ctx->blend->blend_shader;
-                        } else {
-                                memcpy(&ctx->fragment_shader_core.blend_equation, &ctx->blend->equation, sizeof(ctx->blend->equation));
+                        if (!ctx->blend->has_blend_shader) {
+                                ctx->fragment_shader_core.blend.equation = ctx->blend->equation;
                         }
 
                         if (!no_blending) {
@@ -977,7 +1018,7 @@ panfrost_emit_for_draw(struct panfrost_context *ctx, bool with_vertex_data)
                         }
                 }
 
-                size_t size = sizeof(struct mali_shader_meta) + sizeof(struct mali_blend_meta);
+                size_t size = sizeof(struct mali_shader_meta) + sizeof(struct midgard_blend_rt);
                 struct panfrost_transfer transfer = panfrost_allocate_transient(ctx, size);
                 memcpy(transfer.cpu, &ctx->fragment_shader_core, sizeof(struct mali_shader_meta));
 
@@ -986,7 +1027,7 @@ panfrost_emit_for_draw(struct panfrost_context *ctx, bool with_vertex_data)
                 if (!ctx->require_sfbd) {
                         /* Additional blend descriptor tacked on for jobs using MFBD */
 
-                        unsigned blend_count = 0;
+                        unsigned blend_count = 0x200;
 
                         if (ctx->blend->has_blend_shader) {
                                 /* For a blend shader, the bottom nibble corresponds to
@@ -1004,24 +1045,20 @@ panfrost_emit_for_draw(struct panfrost_context *ctx, bool with_vertex_data)
                                         blend_count |= 0x1;
                         }
 
-                        /* Second blend equation is always a simple replace */
+                        struct midgard_blend_rt rts[4];
 
-                        uint64_t replace_magic = 0xf0122122;
-                        struct mali_blend_equation replace_mode;
-                        memcpy(&replace_mode, &replace_magic, sizeof(replace_mode));
+                        /* TODO: MRT */
 
-                        struct mali_blend_meta blend_meta[] = {
-                                {
-                                        .unk1 = 0x200 | blend_count,
-                                        .blend_equation_1 = ctx->blend->equation,
-                                        .blend_equation_2 = replace_mode
-                                },
-                        };
+                        for (unsigned i = 0; i < 1; ++i) {
+                                rts[i].flags = blend_count;
 
-                        if (ctx->blend->has_blend_shader)
-                                memcpy(&blend_meta[0].blend_equation_1, &ctx->blend->blend_shader, sizeof(ctx->blend->blend_shader));
+                                if (ctx->blend->has_blend_shader)
+                                        rts[i].blend.shader = ctx->blend->blend_shader;
+                                else
+                                        rts[i].blend.equation = ctx->blend->equation;
+                        }
 
-                        memcpy(transfer.cpu + sizeof(struct mali_shader_meta), blend_meta, sizeof(blend_meta));
+                        memcpy(transfer.cpu + sizeof(struct mali_shader_meta), rts, sizeof(rts[0]) * 1);
                 }
         }
 
@@ -2063,9 +2100,10 @@ panfrost_set_framebuffer_state(struct pipe_context *pctx,
                 panfrost_attach_vt_framebuffer(ctx);
 
                 struct panfrost_resource *tex = ((struct panfrost_resource *) ctx->pipe_framebuffer.cbufs[i]->texture);
+                enum pipe_format format = ctx->pipe_framebuffer.cbufs[i]->format;
                 bool is_scanout = panfrost_is_scanout(ctx);
 
-                if (!is_scanout && tex->bo->layout != PAN_AFBC) {
+                if (!is_scanout && tex->bo->layout != PAN_AFBC && panfrost_can_afbc(format)) {
                         /* The blob is aggressive about enabling AFBC. As such,
                          * it's pretty much necessary to use it here, since we
                          * have no traces of non-compressed FBO. */

@@ -631,6 +631,7 @@ iris_emit_l3_config(struct iris_batch *batch, const struct gen_l3_config *cfg,
        * desirable behavior.
        */
       reg.ErrorDetectionBehaviorControl = true;
+      reg.UseFullWays = true;
 #endif
       reg.URBAllocation = cfg->n[GEN_L3P_URB];
       reg.ROAllocation = cfg->n[GEN_L3P_RO];
@@ -984,12 +985,15 @@ iris_create_blend_state(struct pipe_context *ctx,
    }
 
    iris_pack_command(GENX(3DSTATE_PS_BLEND), cso->ps_blend, pb) {
-      /* pb.HasWriteableRT is filled in at draw time. */
-      /* pb.AlphaTestEnable is filled in at draw time. */
+      /* pb.HasWriteableRT is filled in at draw time.
+       * pb.AlphaTestEnable is filled in at draw time.
+       *
+       * pb.ColorBufferBlendEnable is filled in at draw time so we can avoid
+       * setting it when dual color blending without an appropriate shader.
+       */
+
       pb.AlphaToCoverageEnable = state->alpha_to_coverage;
       pb.IndependentAlphaBlendEnable = indep_alpha_blend;
-
-      pb.ColorBufferBlendEnable = state->rt[0].blend_enable;
 
       pb.SourceBlendFactor =
          fix_blendfactor(state->rt[0].rgb_src_factor, state->alpha_to_one);
@@ -1645,7 +1649,7 @@ fmt_swizzle(const struct iris_format_info *fmt, enum pipe_swizzle swz)
 
 static void
 fill_buffer_surface_state(struct isl_device *isl_dev,
-                          struct iris_bo *bo,
+                          struct iris_resource *res,
                           void *map,
                           enum isl_format format,
                           struct isl_swizzle swizzle,
@@ -1672,15 +1676,16 @@ fill_buffer_surface_state(struct isl_device *isl_dev,
     * texel count is clamped to MAX_TEXTURE_BUFFER_SIZE.
     */
    unsigned final_size =
-      MIN3(size, bo->size - offset, IRIS_MAX_TEXTURE_BUFFER_SIZE * cpp);
+      MIN3(size, res->bo->size - res->offset - offset,
+           IRIS_MAX_TEXTURE_BUFFER_SIZE * cpp);
 
    isl_buffer_fill_state(isl_dev, map,
-                         .address = bo->gtt_offset + offset,
+                         .address = res->bo->gtt_offset + res->offset + offset,
                          .size_B = final_size,
                          .format = format,
                          .swizzle = swizzle,
                          .stride_B = cpp,
-                         .mocs = mocs(bo));
+                         .mocs = mocs(res->bo));
 }
 
 #define SURFACE_STATE_ALIGNMENT 64
@@ -1721,7 +1726,7 @@ fill_surface_state(struct isl_device *isl_dev,
       .surf = &res->surf,
       .view = view,
       .mocs = mocs(res->bo),
-      .address = res->bo->gtt_offset,
+      .address = res->bo->gtt_offset + res->offset,
    };
 
    if (aux_usage != ISL_AUX_USAGE_NONE) {
@@ -1827,7 +1832,7 @@ iris_create_sampler_view(struct pipe_context *ctx,
          map += SURFACE_STATE_ALIGNMENT;
       }
    } else {
-      fill_buffer_surface_state(&screen->isl_dev, isv->res->bo, map,
+      fill_buffer_surface_state(&screen->isl_dev, isv->res, map,
                                 isv->view.format, isv->view.swizzle,
                                 tmpl->u.buf.offset, tmpl->u.buf.size);
    }
@@ -1898,7 +1903,8 @@ iris_create_surface(struct pipe_context *ctx,
       return NULL;
    }
 
-   surf->view = (struct isl_view) {
+   struct isl_view *view = &surf->view;
+   *view = (struct isl_view) {
       .format = fmt.fmt,
       .base_level = tmpl->u.tex.level,
       .levels = 1,
@@ -1922,15 +1928,102 @@ iris_create_surface(struct pipe_context *ctx,
    if (!unlikely(map))
       return NULL;
 
-   unsigned aux_modes = res->aux.possible_usages;
-   while (aux_modes) {
-      enum isl_aux_usage aux_usage = u_bit_scan(&aux_modes);
+   if (!isl_format_is_compressed(res->surf.format)) {
+      /* This is a normal surface.  Fill out a SURFACE_STATE for each possible
+       * auxiliary surface mode and return the pipe_surface.
+       */
+      unsigned aux_modes = res->aux.possible_usages;
+      while (aux_modes) {
+         enum isl_aux_usage aux_usage = u_bit_scan(&aux_modes);
 
-      fill_surface_state(&screen->isl_dev, map, res, &surf->view, aux_usage);
+         fill_surface_state(&screen->isl_dev, map, res, view, aux_usage);
 
-      map += SURFACE_STATE_ALIGNMENT;
+         map += SURFACE_STATE_ALIGNMENT;
+      }
+
+      return psurf;
    }
 
+   /* The resource has a compressed format, which is not renderable, but we
+    * have a renderable view format.  We must be attempting to upload blocks
+    * of compressed data via an uncompressed view.
+    *
+    * In this case, we can assume there are no auxiliary buffers, a single
+    * miplevel, and that the resource is single-sampled.  Gallium may try
+    * and create an uncompressed view with multiple layers, however.
+    */
+   assert(!isl_format_is_compressed(fmt.fmt));
+   assert(res->aux.possible_usages == 1 << ISL_AUX_USAGE_NONE);
+   assert(res->surf.samples == 1);
+   assert(view->levels == 1);
+
+   struct isl_surf isl_surf;
+   uint32_t offset_B = 0, tile_x_sa = 0, tile_y_sa = 0;
+
+   if (view->base_level > 0) {
+      /* We can't rely on the hardware's miplevel selection with such
+       * a substantial lie about the format, so we select a single image
+       * using the Tile X/Y Offset fields.  In this case, we can't handle
+       * multiple array slices.
+       *
+       * On Broadwell, HALIGN and VALIGN are specified in pixels and are
+       * hard-coded to align to exactly the block size of the compressed
+       * texture.  This means that, when reinterpreted as a non-compressed
+       * texture, the tile offsets may be anything and we can't rely on
+       * X/Y Offset.
+       *
+       * Return NULL to force the state tracker to take fallback paths.
+       */
+      if (view->array_len > 1 || GEN_GEN == 8)
+         return NULL;
+
+      const bool is_3d = res->surf.dim == ISL_SURF_DIM_3D;
+      isl_surf_get_image_surf(&screen->isl_dev, &res->surf,
+                              view->base_level,
+                              is_3d ? 0 : view->base_array_layer,
+                              is_3d ? view->base_array_layer : 0,
+                              &isl_surf,
+                              &offset_B, &tile_x_sa, &tile_y_sa);
+
+      /* We use address and tile offsets to access a single level/layer
+       * as a subimage, so reset level/layer so it doesn't offset again.
+       */
+      view->base_array_layer = 0;
+      view->base_level = 0;
+   } else {
+      /* Level 0 doesn't require tile offsets, and the hardware can find
+       * array slices using QPitch even with the format override, so we
+       * can allow layers in this case.  Copy the original ISL surface.
+       */
+      memcpy(&isl_surf, &res->surf, sizeof(isl_surf));
+   }
+
+   /* Scale down the image dimensions by the block size. */
+   const struct isl_format_layout *fmtl =
+      isl_format_get_layout(res->surf.format);
+   isl_surf.format = fmt.fmt;
+   isl_surf.logical_level0_px.width =
+      DIV_ROUND_UP(isl_surf.logical_level0_px.width, fmtl->bw);
+   isl_surf.logical_level0_px.height =
+      DIV_ROUND_UP(isl_surf.logical_level0_px.height, fmtl->bh);
+   isl_surf.phys_level0_sa.width /= fmtl->bw;
+   isl_surf.phys_level0_sa.height /= fmtl->bh;
+   tile_x_sa /= fmtl->bw;
+   tile_y_sa /= fmtl->bh;
+
+   psurf->width = isl_surf.logical_level0_px.width;
+   psurf->height = isl_surf.logical_level0_px.height;
+
+   struct isl_surf_fill_state_info f = {
+      .surf = &isl_surf,
+      .view = view,
+      .mocs = mocs(res->bo),
+      .address = res->bo->gtt_offset + offset_B,
+      .x_offset_sa = tile_x_sa,
+      .y_offset_sa = tile_y_sa,
+   };
+
+   isl_surf_fill_state_s(&screen->isl_dev, map, &f);
    return psurf;
 }
 
@@ -2039,7 +2132,7 @@ iris_set_shader_images(struct pipe_context *ctx,
             };
 
             if (untyped_fallback) {
-               fill_buffer_surface_state(&screen->isl_dev, res->bo, map,
+               fill_buffer_surface_state(&screen->isl_dev, res, map,
                                          isl_fmt, ISL_SWIZZLE_IDENTITY,
                                          0, res->bo->size);
             } else {
@@ -2061,7 +2154,7 @@ iris_set_shader_images(struct pipe_context *ctx,
             util_range_add(&res->valid_buffer_range, img->u.buf.offset,
                            img->u.buf.offset + img->u.buf.size);
 
-            fill_buffer_surface_state(&screen->isl_dev, res->bo, map,
+            fill_buffer_surface_state(&screen->isl_dev, res, map,
                                       isl_fmt, ISL_SWIZZLE_IDENTITY,
                                       img->u.buf.offset, img->u.buf.size);
             fill_buffer_image_param(&image_params[start_slot + i],
@@ -2414,7 +2507,7 @@ iris_set_framebuffer_state(struct pipe_context *ctx,
          view.usage |= ISL_SURF_USAGE_DEPTH_BIT;
 
          info.depth_surf = &zres->surf;
-         info.depth_address = zres->bo->gtt_offset;
+         info.depth_address = zres->bo->gtt_offset + zres->offset;
          info.mocs = mocs(zres->bo);
 
          view.format = zres->surf.format;
@@ -2429,7 +2522,7 @@ iris_set_framebuffer_state(struct pipe_context *ctx,
       if (stencil_res) {
          view.usage |= ISL_SURF_USAGE_STENCIL_BIT;
          info.stencil_surf = &stencil_res->surf;
-         info.stencil_address = stencil_res->bo->gtt_offset;
+         info.stencil_address = stencil_res->bo->gtt_offset + stencil_res->offset;
          if (!zres) {
             view.format = stencil_res->surf.format;
             info.mocs = mocs(stencil_res->bo);
@@ -2501,8 +2594,9 @@ upload_ubo_ssbo_surf_state(struct iris_context *ice,
    surf_state->offset += iris_bo_offset_from_base_address(surf_bo);
 
    isl_buffer_fill_state(&screen->isl_dev, map,
-                         .address = res->bo->gtt_offset + buf->buffer_offset,
-                         .size_B = buf->buffer_size,
+                         .address = res->bo->gtt_offset + res->offset +
+                                    buf->buffer_offset,
+                         .size_B = buf->buffer_size - res->offset,
                          .format = ssbo ? ISL_FORMAT_RAW
                                         : ISL_FORMAT_R32G32B32A32_FLOAT,
                          .swizzle = ISL_SWIZZLE_IDENTITY,
@@ -4851,6 +4945,14 @@ iris_upload_dirty_render_state(struct iris_context *ice,
       iris_pack_command(GENX(3DSTATE_PS_BLEND), &dynamic_pb, pb) {
          pb.HasWriteableRT = has_writeable_rt(cso_blend, fs_info);
          pb.AlphaTestEnable = cso_zsa->alpha.enabled;
+
+         /* The dual source blending docs caution against using SRC1 factors
+          * when the shader doesn't use a dual source render target write.
+          * Empirically, this can lead to GPU hangs, and the results are
+          * undefined anyway, so simply disable blending to avoid the hang.
+          */
+         pb.ColorBufferBlendEnable = (cso_blend->blend_enables & 1) &&
+            (!cso_blend->dual_color_blending || wm_prog_data->dual_src_blend);
       }
 
       iris_emit_merge(batch, cso_blend->ps_blend, dynamic_pb,
@@ -5658,7 +5760,7 @@ iris_rebind_buffer(struct iris_context *ice,
                                                 &isv->surface_state,
                                                 isv->res->aux.sampler_usages);
                assert(map);
-               fill_buffer_surface_state(&screen->isl_dev, isv->res->bo, map,
+               fill_buffer_surface_state(&screen->isl_dev, isv->res, map,
                                          isv->view.format, isv->view.swizzle,
                                          isv->base.u.buf.offset,
                                          isv->base.u.buf.size);

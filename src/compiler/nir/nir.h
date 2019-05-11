@@ -862,6 +862,18 @@ nir_get_nir_type_for_glsl_type(const struct glsl_type *type)
 nir_op nir_type_conversion_op(nir_alu_type src, nir_alu_type dst,
                               nir_rounding_mode rnd);
 
+static inline nir_op
+nir_op_vec(unsigned components)
+{
+   switch (components) {
+   case  1: return nir_op_imov;
+   case  2: return nir_op_vec2;
+   case  3: return nir_op_vec3;
+   case  4: return nir_op_vec4;
+   default: unreachable("bad component count");
+   }
+}
+
 typedef enum {
    NIR_OP_IS_COMMUTATIVE = (1 << 0),
    NIR_OP_IS_ASSOCIATIVE = (1 << 1),
@@ -1444,7 +1456,8 @@ typedef enum {
    nir_texop_txl,                /**< Texture look-up with explicit LOD */
    nir_texop_txd,                /**< Texture look-up with partial derivatives */
    nir_texop_txf,                /**< Texel fetch with explicit LOD */
-   nir_texop_txf_ms,                /**< Multisample texture fetch */
+   nir_texop_txf_ms,             /**< Multisample texture fetch */
+   nir_texop_txf_ms_fb,          /**< Multisample texture fetch from framebuffer */
    nir_texop_txf_ms_mcs,         /**< Multisample compression value fetch */
    nir_texop_txs,                /**< Texture size */
    nir_texop_lod,                /**< Texture lod query */
@@ -1579,6 +1592,7 @@ nir_tex_instr_is_query(const nir_tex_instr *instr)
    case nir_texop_txd:
    case nir_texop_txf:
    case nir_texop_txf_ms:
+   case nir_texop_txf_ms_fb:
    case nir_texop_tg4:
       return false;
    default:
@@ -1618,6 +1632,7 @@ nir_tex_instr_src_type(const nir_tex_instr *instr, unsigned src)
       switch (instr->op) {
       case nir_texop_txf:
       case nir_texop_txf_ms:
+      case nir_texop_txf_ms_fb:
       case nir_texop_txf_ms_mcs:
       case nir_texop_samples_identical:
          return nir_type_int;
@@ -2284,12 +2299,6 @@ typedef struct nir_shader_compiler_options {
 
    bool lower_all_io_to_temps;
    bool lower_all_io_to_elements;
-
-   /**
-    * Does the driver support real 32-bit integers?  (Otherwise, integers
-    * are simulated by floats.)
-    */
-   bool native_integers;
 
    /* Indicates that the driver only has zero-based vertex id */
    bool vertex_id_zero_based;
@@ -3041,6 +3050,10 @@ bool nir_lower_vars_to_scratch(nir_shader *shader,
 
 void nir_shader_gather_info(nir_shader *shader, nir_function_impl *entrypoint);
 
+void nir_gather_ssa_types(nir_function_impl *impl,
+                          BITSET_WORD *float_types,
+                          BITSET_WORD *int_types);
+
 void nir_assign_var_locations(struct exec_list *var_list, unsigned *size,
                               int (*type_size)(const struct glsl_type *, bool));
 
@@ -3161,9 +3174,14 @@ bool nir_lower_vec_to_movs(nir_shader *shader);
 void nir_lower_alpha_test(nir_shader *shader, enum compare_func func,
                           bool alpha_to_one);
 bool nir_lower_alu(nir_shader *shader);
-bool nir_lower_alu_to_scalar(nir_shader *shader);
+
+bool nir_lower_flrp(nir_shader *shader, unsigned lowering_mask,
+                    bool always_precise, bool have_ffma);
+
+bool nir_lower_alu_to_scalar(nir_shader *shader, BITSET_WORD *lower_set);
 bool nir_lower_bool_to_float(nir_shader *shader);
 bool nir_lower_bool_to_int32(nir_shader *shader);
+bool nir_lower_int_to_float(nir_shader *shader);
 bool nir_lower_load_const_to_scalar(nir_shader *shader);
 bool nir_lower_read_invocation_to_scalar(nir_shader *shader);
 bool nir_lower_phis_to_scalar(nir_shader *shader);
@@ -3394,6 +3412,8 @@ bool nir_lower_wpos_ytransform(nir_shader *shader,
                                const nir_lower_wpos_ytransform_options *options);
 bool nir_lower_wpos_center(nir_shader *shader, const bool for_sample_shading);
 
+bool nir_lower_fb_read(nir_shader *shader);
+
 typedef struct nir_lower_drawpixels_options {
    gl_state_index16 texcoord_state_tokens[STATE_LENGTH];
    gl_state_index16 scale_state_tokens[STATE_LENGTH];
@@ -3533,6 +3553,8 @@ uint64_t nir_get_single_slot_attribs_mask(uint64_t attribs, uint64_t dual_slot);
 
 nir_intrinsic_op nir_intrinsic_from_system_value(gl_system_value val);
 gl_system_value nir_system_value_from_intrinsic(nir_intrinsic_op intrin);
+
+bool nir_lower_sincos(nir_shader *shader);
 
 #ifdef __cplusplus
 } /* extern "C" */
