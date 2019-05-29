@@ -68,11 +68,11 @@ static void handle_env_var_force_family(struct amdgpu_winsys *ws)
             if (i >= CHIP_VEGA10)
                ws->info.chip_class = GFX9;
             else if (i >= CHIP_TONGA)
-               ws->info.chip_class = VI;
+               ws->info.chip_class = GFX8;
             else if (i >= CHIP_BONAIRE)
-               ws->info.chip_class = CIK;
+               ws->info.chip_class = GFX7;
             else
-               ws->info.chip_class = SI;
+               ws->info.chip_class = GFX6;
 
             /* Don't submit any IBs. */
             setenv("RADEON_NOOP", "1", 1);
@@ -219,9 +219,6 @@ static uint64_t amdgpu_query_value(struct radeon_winsys *rws,
    case RADEON_CURRENT_MCLK:
       amdgpu_query_sensor_info(ws->dev, AMDGPU_INFO_SENSOR_GFX_MCLK, 4, &retval);
       return retval;
-   case RADEON_GPU_RESET_COUNTER:
-      assert(0);
-      return 0;
    case RADEON_CS_THREAD_TIME:
       return util_queue_get_thread_time_nano(&ws->cs_queue, 0);
    }
@@ -287,16 +284,8 @@ amdgpu_winsys_create(int fd, const struct pipe_screen_config *config,
 		     radeon_screen_create_t screen_create)
 {
    struct amdgpu_winsys *ws;
-   drmVersionPtr version = drmGetVersion(fd);
    amdgpu_device_handle dev;
    uint32_t drm_major, drm_minor, r;
-
-   /* The DRM driver version of amdgpu is 3.x.x. */
-   if (version->version_major != 3) {
-      drmFreeVersion(version);
-      return NULL;
-   }
-   drmFreeVersion(version);
 
    /* Look up the winsys from the dev table. */
    simple_mtx_lock(&dev_tab_mutex);

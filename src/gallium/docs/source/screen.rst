@@ -34,8 +34,7 @@ The integer capabilities:
 * ``PIPE_CAP_QUERY_TIME_ELAPSED``: Whether PIPE_QUERY_TIME_ELAPSED queries are available.
 * ``PIPE_CAP_TEXTURE_SWIZZLE``: Whether swizzling through sampler views is
   supported.
-* ``PIPE_CAP_MAX_TEXTURE_2D_LEVELS``: The maximum number of mipmap levels available
-  for a 2D texture.
+* ``PIPE_CAP_MAX_TEXTURE_2D_SIZE``: The maximum size of 2D (and 1D) textures.
 * ``PIPE_CAP_MAX_TEXTURE_3D_LEVELS``: The maximum number of mipmap levels available
   for a 3D texture.
 * ``PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS``: The maximum number of mipmap levels available
@@ -379,8 +378,12 @@ The integer capabilities:
 * ``PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY``: Tell the GLSL compiler to use
   the minimum amount of optimizations just to be able to do all the linking
   and lowering.
-* ``PIPE_CAP_TGSI_FS_FBFETCH``: Whether a fragment shader can use the FBFETCH
-  opcode to retrieve the current value in the framebuffer.
+* ``PIPE_CAP_FBFETCH``: The number of render targets whose value in the
+  current framebuffer can be read in the shader.  0 means framebuffer fetch
+  is not supported.  1 means that only the first render target can be read,
+  and a larger value would mean that multiple render targets are supported.
+* ``PIPE_CAP_FBFETCH_COHERENT``: Whether framebuffer fetches from the fragment
+  shader can be guaranteed to be coherent with framebuffer writes.
 * ``PIPE_CAP_TGSI_MUL_ZERO_WINS``: Whether TGSI shaders support the
   ``TGSI_PROPERTY_MUL_ZERO_WINS`` shader property.
 * ``PIPE_CAP_DOUBLES``: Whether double precision floating-point operations
@@ -523,6 +526,8 @@ The integer capabilities:
   resource_from_handle and resource_get_handle.
 * ``PIPE_CAP_PREFER_COMPUTE_BLIT_FOR_MULTIMEDIA``: Whether VDPAU, VAAPI, and
   OpenMAX should use a compute-based blit instead of pipe_context::blit.
+* ``PIPE_CAP_FRAGMENT_SHADER_INTERLOCK``: True if fragment shader interlock
+  functionality is supported.
 
 .. _pipe_capf:
 

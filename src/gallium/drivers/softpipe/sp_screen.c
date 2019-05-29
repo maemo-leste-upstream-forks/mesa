@@ -95,8 +95,8 @@ softpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TEXTURE_BORDER_COLOR_QUIRK:
    case PIPE_CAP_MAX_TEXTURE_UPLOAD_MEMORY_BUDGET:
       return 0;
-   case PIPE_CAP_MAX_TEXTURE_2D_LEVELS:
-      return SP_MAX_TEXTURE_2D_LEVELS;
+   case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
+      return 1 << (SP_MAX_TEXTURE_2D_LEVELS - 1);
    case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
       return SP_MAX_TEXTURE_3D_LEVELS;
    case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
@@ -305,7 +305,7 @@ softpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TGSI_CAN_READ_OUTPUTS:
    case PIPE_CAP_NATIVE_FENCE_FD:
    case PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY:
-   case PIPE_CAP_TGSI_FS_FBFETCH:
+   case PIPE_CAP_FBFETCH:
    case PIPE_CAP_TGSI_MUL_ZERO_WINS:
    case PIPE_CAP_TGSI_CLOCK:
    case PIPE_CAP_POLYGON_MODE_FILL_RECTANGLE:

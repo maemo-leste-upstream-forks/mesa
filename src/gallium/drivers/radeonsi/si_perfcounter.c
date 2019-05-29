@@ -671,7 +671,7 @@ static void si_pc_emit_start(struct si_context *sctx,
 {
 	struct radeon_cmdbuf *cs = sctx->gfx_cs;
 
-	si_cp_copy_data(sctx,
+	si_cp_copy_data(sctx, sctx->gfx_cs,
 			COPY_DATA_DST_MEM, buffer, va - buffer->gpu_address,
 			COPY_DATA_IMM, NULL, 1);
 
@@ -690,7 +690,7 @@ static void si_pc_emit_stop(struct si_context *sctx,
 {
 	struct radeon_cmdbuf *cs = sctx->gfx_cs;
 
-	si_cp_release_mem(sctx, V_028A90_BOTTOM_OF_PIPE_TS, 0,
+	si_cp_release_mem(sctx, cs, V_028A90_BOTTOM_OF_PIPE_TS, 0,
 			  EOP_DST_SEL_MEM, EOP_INT_SEL_NONE,
 			  EOP_DATA_SEL_VALUE_32BIT,
 			  buffer, va, 0, SI_NOT_QUERY);
@@ -1284,11 +1284,11 @@ void si_init_perfcounters(struct si_screen *screen)
 	unsigned i;
 
 	switch (screen->info.chip_class) {
-	case CIK:
+	case GFX7:
 		blocks = groups_CIK;
 		num_blocks = ARRAY_SIZE(groups_CIK);
 		break;
-	case VI:
+	case GFX8:
 		blocks = groups_VI;
 		num_blocks = ARRAY_SIZE(groups_VI);
 		break;
@@ -1296,13 +1296,13 @@ void si_init_perfcounters(struct si_screen *screen)
 		blocks = groups_gfx9;
 		num_blocks = ARRAY_SIZE(groups_gfx9);
 		break;
-	case SI:
+	case GFX6:
 	default:
 		return; /* not implemented */
 	}
 
 	if (screen->info.max_sh_per_se != 1) {
-		/* This should not happen on non-SI chips. */
+		/* This should not happen on non-GFX6 chips. */
 		fprintf(stderr, "si_init_perfcounters: max_sh_per_se = %d not "
 			"supported (inaccurate performance counters)\n",
 			screen->info.max_sh_per_se);

@@ -152,7 +152,7 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_SIGNED_VERTEX_BUFFER_OFFSET:
 	case PIPE_CAP_TGSI_BALLOT:
 	case PIPE_CAP_TGSI_VOTE:
-	case PIPE_CAP_TGSI_FS_FBFETCH:
+	case PIPE_CAP_FBFETCH:
 	case PIPE_CAP_COMPUTE_GRID_INFO_LAST_BLOCK:
 	case PIPE_CAP_IMAGE_LOAD_FORMATTED:
 	case PIPE_CAP_PREFER_COMPUTE_BLIT_FOR_MULTIMEDIA:
@@ -162,8 +162,7 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 		return !SI_BIG_ENDIAN && sscreen->info.has_userptr;
 
 	case PIPE_CAP_DEVICE_RESET_STATUS_QUERY:
-		return sscreen->info.has_gpu_reset_status_query ||
-		       sscreen->info.has_gpu_reset_counter_query;
+		return sscreen->info.has_gpu_reset_status_query;
 
 	case PIPE_CAP_TEXTURE_MULTISAMPLE:
 		return sscreen->info.has_2d_tiling;
@@ -197,7 +196,7 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY:
 	case PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY:
 	case PIPE_CAP_VERTEX_ELEMENT_SRC_OFFSET_4BYTE_ALIGNED_ONLY:
-		return !sscreen->info.has_unaligned_shader_loads;
+		return HAVE_LLVM < 0x0900 && !sscreen->info.has_unaligned_shader_loads;
 
 	case PIPE_CAP_SPARSE_BUFFER_PAGE_SIZE:
 		return sscreen->info.has_sparse_vm_mappings ?
@@ -254,7 +253,7 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 		return 32;
 
 	case PIPE_CAP_TEXTURE_BORDER_COLOR_QUIRK:
-		return sscreen->info.chip_class <= VI ?
+		return sscreen->info.chip_class <= GFX8 ?
 			PIPE_QUIRK_TEXTURE_BORDER_COLOR_SWIZZLE_R600 : 0;
 
 	/* Stream output. */
@@ -276,7 +275,8 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 		return 2048;
 
 	/* Texturing. */
-	case PIPE_CAP_MAX_TEXTURE_2D_LEVELS:
+	case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
+		return 16384;
 	case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
 		return 15; /* 16384 */
 	case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:

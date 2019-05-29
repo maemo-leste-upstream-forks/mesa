@@ -92,7 +92,7 @@ public:
 
    bool run_fs(bool allow_spilling, bool do_rep_send);
    bool run_vs();
-   bool run_tcs_single_patch();
+   bool run_tcs();
    bool run_tes();
    bool run_gs();
    bool run_cs(unsigned min_dispatch_width);
@@ -110,17 +110,13 @@ public:
    void assign_urb_setup();
    void convert_attr_sources_to_hw_regs(fs_inst *inst);
    void assign_vs_urb_setup();
-   void assign_tcs_single_patch_urb_setup();
+   void assign_tcs_urb_setup();
    void assign_tes_urb_setup();
    void assign_gs_urb_setup();
    bool assign_regs(bool allow_spilling, bool spill_all);
    void assign_regs_trivial();
    void calculate_payload_ranges(int payload_node_count,
                                  int *payload_last_use_ip);
-   void setup_payload_interference(struct ra_graph *g, int payload_reg_count,
-                                   int first_payload_node);
-   int choose_spill_reg(struct ra_graph *g);
-   void spill_reg(unsigned spill_reg);
    void split_virtual_grfs();
    bool compact_virtual_grfs();
    void assign_constant_locations();
@@ -198,6 +194,8 @@ public:
    bool opt_cmod_propagation();
    bool opt_zero_samples();
 
+   void set_tcs_invocation_id();
+
    void emit_nir_code();
    void nir_setup_outputs();
    void nir_setup_uniforms();
@@ -251,6 +249,12 @@ public:
    fs_reg get_nir_src_imm(const nir_src &src);
    fs_reg get_nir_dest(const nir_dest &dest);
    fs_reg get_indirect_offset(nir_intrinsic_instr *instr);
+   fs_reg get_tcs_single_patch_icp_handle(const brw::fs_builder &bld,
+                                          nir_intrinsic_instr *instr);
+   fs_reg get_tcs_eight_patch_icp_handle(const brw::fs_builder &bld,
+                                         nir_intrinsic_instr *instr);
+   struct brw_reg get_tcs_output_urb_handle();
+
    void emit_percomp(const brw::fs_builder &bld, const fs_inst &inst,
                      unsigned wr_mask);
 

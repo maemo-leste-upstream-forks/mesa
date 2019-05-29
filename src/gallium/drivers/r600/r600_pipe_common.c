@@ -286,7 +286,7 @@ void r600_need_dma_space(struct r600_common_context *ctx, unsigned num_dw,
 	 * engine busy while uploads are being submitted.
 	 */
 	num_dw++; /* for emit_wait_idle below */
-	if (!ctx->ws->cs_check_space(ctx->dma.cs, num_dw) ||
+	if (!ctx->ws->cs_check_space(ctx->dma.cs, num_dw, false) ||
 	    ctx->dma.cs->used_vram + ctx->dma.cs->used_gart > 64 * 1024 * 1024 ||
 	    !radeon_cs_memory_below_limit(ctx->screen, ctx->dma.cs, vram, gtt)) {
 		ctx->dma.flush(ctx, PIPE_FLUSH_ASYNC, NULL);
@@ -351,8 +351,8 @@ static void r600_add_fence_dependency(struct r600_common_context *rctx,
 	struct radeon_winsys *ws = rctx->ws;
 
 	if (rctx->dma.cs)
-		ws->cs_add_fence_dependency(rctx->dma.cs, fence);
-	ws->cs_add_fence_dependency(rctx->gfx.cs, fence);
+		ws->cs_add_fence_dependency(rctx->dma.cs, fence, 0);
+	ws->cs_add_fence_dependency(rctx->gfx.cs, fence, 0);
 }
 
 static void r600_fence_server_sync(struct pipe_context *ctx,
@@ -546,14 +546,8 @@ void radeon_clear_saved_cs(struct radeon_saved_cs *saved)
 static enum pipe_reset_status r600_get_reset_status(struct pipe_context *ctx)
 {
 	struct r600_common_context *rctx = (struct r600_common_context *)ctx;
-	unsigned latest = rctx->ws->query_value(rctx->ws,
-						RADEON_GPU_RESET_COUNTER);
 
-	if (rctx->gpu_reset_counter == latest)
-		return PIPE_NO_RESET;
-
-	rctx->gpu_reset_counter = latest;
-	return PIPE_UNKNOWN_CONTEXT_RESET;
+	return rctx->ws->ctx_query_reset_status(rctx->ctx);
 }
 
 static void r600_set_debug_callback(struct pipe_context *ctx,
@@ -673,13 +667,7 @@ bool r600_common_context_init(struct r600_common_context *rctx,
 	else
 		rctx->b.buffer_subdata = r600_buffer_subdata;
 
-	if (rscreen->info.drm_major == 2 && rscreen->info.drm_minor >= 43) {
-		rctx->b.get_device_reset_status = r600_get_reset_status;
-		rctx->gpu_reset_counter =
-			rctx->ws->query_value(rctx->ws,
-					      RADEON_GPU_RESET_COUNTER);
-	}
-
+	rctx->b.get_device_reset_status = r600_get_reset_status;
 	rctx->b.set_device_reset_callback = r600_set_device_reset_callback;
 
 	r600_init_context_texture_functions(rctx);

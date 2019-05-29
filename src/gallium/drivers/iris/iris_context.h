@@ -247,6 +247,41 @@ enum iris_predicate_state {
 /** @} */
 
 /**
+ * An uncompiled, API-facing shader.  This is the Gallium CSO for shaders.
+ * It primarily contains the NIR for the shader.
+ *
+ * Each API-facing shader can be compiled into multiple shader variants,
+ * based on non-orthogonal state dependencies, recorded in the shader key.
+ *
+ * See iris_compiled_shader, which represents a compiled shader variant.
+ */
+struct iris_uncompiled_shader {
+   struct nir_shader *nir;
+
+   struct pipe_stream_output_info stream_output;
+
+   /* A SHA1 of the serialized NIR for the disk cache. */
+   unsigned char nir_sha1[20];
+
+   unsigned program_id;
+
+   /** Bitfield of (1 << IRIS_NOS_*) flags. */
+   unsigned nos;
+
+   /** Have any shader variants been compiled yet? */
+   bool compiled_once;
+
+   /** Should we use ALT mode for math?  Useful for ARB programs. */
+   bool use_alt_mode;
+
+   /** Constant data scraped from the shader by nir_opt_large_constants */
+   struct pipe_resource *const_data;
+
+   /** Surface state for const_data */
+   struct iris_state_ref const_data_state;
+};
+
+/**
  * A compiled shader variant, containing a pointer to the GPU assembly,
  * as well as program data and other packets needed by state upload.
  *
@@ -650,6 +685,9 @@ struct iris_context {
          struct pipe_resource *blend;
          struct pipe_resource *index_buffer;
       } last_res;
+
+      /** Records the size of variable-length state for INTEL_DEBUG=bat */
+      struct hash_table_u64 *sizes;
    } state;
 };
 
@@ -748,11 +786,28 @@ void gen11_emit_urb_setup(struct iris_context *ice,
                           bool tess_present, bool gs_present);
 
 /* iris_program.c */
+void iris_upload_ubo_ssbo_surf_state(struct iris_context *ice,
+                                     struct pipe_shader_buffer *buf,
+                                     struct iris_state_ref *surf_state,
+                                     bool ssbo);
 const struct shader_info *iris_get_shader_info(const struct iris_context *ice,
                                                gl_shader_stage stage);
 struct iris_bo *iris_get_scratch_space(struct iris_context *ice,
                                        unsigned per_thread_scratch,
                                        gl_shader_stage stage);
+
+/* iris_disk_cache.c */
+
+void iris_disk_cache_store(struct disk_cache *cache,
+                           const struct iris_uncompiled_shader *ish,
+                           const struct iris_compiled_shader *shader,
+                           const void *prog_key,
+                           uint32_t prog_key_size);
+struct iris_compiled_shader *
+iris_disk_cache_retrieve(struct iris_context *ice,
+                         const struct iris_uncompiled_shader *ish,
+                         const void *prog_key,
+                         uint32_t prog_key_size);
 
 /* iris_program_cache.c */
 

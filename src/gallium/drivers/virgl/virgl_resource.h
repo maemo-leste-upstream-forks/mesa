@@ -50,6 +50,14 @@ struct virgl_resource {
    uint16_t clean_mask;
    struct virgl_hw_res *hw_res;
    struct virgl_resource_metadata metadata;
+
+   /* For PIPE_BUFFER only.  Data outside of this range are uninitialized. */
+   struct util_range valid_buffer_range;
+};
+
+enum virgl_transfer_map_type {
+   VIRGL_TRANSFER_MAP_ERROR = -1,
+   VIRGL_TRANSFER_MAP_HW_RES,
 };
 
 struct virgl_transfer {
@@ -117,11 +125,9 @@ static inline unsigned pipe_to_virgl_bind(const struct virgl_screen *vs, unsigne
    return outbind;
 }
 
-bool virgl_res_needs_flush(struct virgl_context *vctx,
-                           struct virgl_transfer *transfer);
-bool virgl_res_needs_readback(struct virgl_context *vctx,
-                              struct virgl_resource *res,
-                              unsigned usage, unsigned level);
+enum virgl_transfer_map_type
+virgl_resource_transfer_prepare(struct virgl_context *vctx,
+                                struct virgl_transfer *xfer);
 
 void virgl_resource_layout(struct pipe_resource *pt,
                            struct virgl_resource_metadata *metadata);

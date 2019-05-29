@@ -912,10 +912,27 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
           compiler->devinfo->gen >= 6);
    }
 
-   OPT(nir_opt_algebraic_late);
+   do {
+      progress = false;
+      if (OPT(nir_opt_algebraic_late)) {
+         /* At this late stage, anything that makes more constants will wreak
+          * havok on the vec4 backend.  The handling of constants in the vec4
+          * backend is not good.
+          */
+         if (is_scalar) {
+            OPT(nir_opt_constant_folding);
+            OPT(nir_copy_prop);
+         }
+         OPT(nir_opt_dce);
+         OPT(nir_opt_cse);
+      }
+   } while (progress);
+
 
    OPT(brw_nir_lower_conversions);
 
+   if (is_scalar)
+      OPT(nir_lower_alu_to_scalar, NULL);
    OPT(nir_lower_to_source_mods, nir_lower_all_source_mods);
    OPT(nir_copy_prop);
    OPT(nir_opt_dce);

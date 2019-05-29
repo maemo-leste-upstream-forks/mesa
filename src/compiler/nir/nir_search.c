@@ -326,7 +326,17 @@ match_value(const nir_search_value *value, nir_alu_instr *instr, unsigned src,
          return false;
 
       switch (const_val->type) {
-      case nir_type_float:
+      case nir_type_float: {
+         nir_load_const_instr *const load =
+            nir_instr_as_load_const(instr->src[src].src.ssa->parent_instr);
+
+         /* There are 8-bit and 1-bit integer types, but there are no 8-bit or
+          * 1-bit float types.  This prevents potential assertion failures in
+          * nir_src_comp_as_float.
+          */
+         if (load->def.bit_size < 16)
+            return false;
+
          for (unsigned i = 0; i < num_components; ++i) {
             double val = nir_src_comp_as_float(instr->src[src].src,
                                                new_swizzle[i]);
@@ -334,6 +344,7 @@ match_value(const nir_search_value *value, nir_alu_instr *instr, unsigned src,
                return false;
          }
          return true;
+      }
 
       case nir_type_int:
       case nir_type_uint:
@@ -408,7 +419,11 @@ match_expression(const nir_search_expression *expr, nir_alu_instr *instr,
 
    bool matched = true;
    for (unsigned i = 0; i < nir_op_infos[instr->op].num_inputs; i++) {
-      if (!match_value(expr->srcs[i], instr, i ^ comm_op_flip,
+      /* 2src_commutative instructions that have 3 sources are only commutative
+       * in the first two sources.  Source 2 is always source 2.
+       */
+      if (!match_value(expr->srcs[i], instr,
+                       i < 2 ? i ^ comm_op_flip : i,
                        num_components, swizzle, state)) {
          matched = false;
          break;
@@ -654,7 +669,7 @@ nir_replace_instr(nir_builder *build, nir_alu_instr *instr,
     * and rewrite swizzles ourselves.
     */
    nir_ssa_def *ssa_val =
-      nir_imov_alu(build, val, instr->dest.dest.ssa.num_components);
+      nir_mov_alu(build, val, instr->dest.dest.ssa.num_components);
    nir_ssa_def_rewrite_uses(&instr->dest.dest.ssa, nir_src_for_ssa(ssa_val));
 
    /* We know this one has no more uses because we just rewrote them all,

@@ -866,7 +866,7 @@ static inline nir_op
 nir_op_vec(unsigned components)
 {
    switch (components) {
-   case  1: return nir_op_imov;
+   case  1: return nir_op_mov;
    case  2: return nir_op_vec2;
    case  3: return nir_op_vec3;
    case  4: return nir_op_vec4;
@@ -875,7 +875,14 @@ nir_op_vec(unsigned components)
 }
 
 typedef enum {
-   NIR_OP_IS_COMMUTATIVE = (1 << 0),
+   /**
+    * Operation where the first two sources are commutative.
+    *
+    * For 2-source operations, this just mathematical commutativity.  Some
+    * 3-source operations, like ffma, are only commutative in the first two
+    * sources.
+    */
+   NIR_OP_IS_2SRC_COMMUTATIVE = (1 << 0),
    NIR_OP_IS_ASSOCIATIVE = (1 << 1),
 } nir_op_algebraic_property;
 
@@ -2343,6 +2350,12 @@ typedef struct nir_shader_compiler_options {
    bool lower_add_sat;
 
    /**
+    * Should IO be re-vectorized?  Some scalar ISAs still operate on vec4's
+    * for IO purposes and would prefer loads/stores be vectorized.
+    */
+   bool vectorize_io;
+
+   /**
     * Should nir_lower_io() create load_interpolated_input intrinsics?
     *
     * If not, it generates regular load_input intrinsics and interpolation
@@ -3105,6 +3118,20 @@ typedef enum {
     * component is a buffer index and the second is an offset.
     */
    nir_address_format_32bit_index_offset,
+
+   /**
+    * An address format which is a simple 32-bit offset.
+    */
+   nir_address_format_32bit_offset,
+
+   /**
+    * An address format representing a purely logical addressing model.  In
+    * this model, all deref chains must be complete from the dereference
+    * operation to the variable.  Cast derefs are not allowed.  These
+    * addresses will be 32-bit scalars but the format is immaterial because
+    * you can always chase the chain.
+    */
+   nir_address_format_logical,
 } nir_address_format;
 
 static inline unsigned
@@ -3115,6 +3142,8 @@ nir_address_format_bit_size(nir_address_format addr_format)
    case nir_address_format_64bit_global:           return 64;
    case nir_address_format_64bit_bounded_global:   return 32;
    case nir_address_format_32bit_index_offset:     return 32;
+   case nir_address_format_32bit_offset:           return 32;
+   case nir_address_format_logical:                return 32;
    }
    unreachable("Invalid address format");
 }
@@ -3127,6 +3156,8 @@ nir_address_format_num_components(nir_address_format addr_format)
    case nir_address_format_64bit_global:           return 1;
    case nir_address_format_64bit_bounded_global:   return 4;
    case nir_address_format_32bit_index_offset:     return 2;
+   case nir_address_format_32bit_offset:           return 1;
+   case nir_address_format_logical:                return 1;
    }
    unreachable("Invalid address format");
 }
@@ -3139,6 +3170,8 @@ nir_address_format_to_glsl_type(nir_address_format addr_format)
    return glsl_vector_type(bit_size == 32 ? GLSL_TYPE_UINT : GLSL_TYPE_UINT64,
                            nir_address_format_num_components(addr_format));
 }
+
+const nir_const_value *nir_address_format_null_value(nir_address_format addr_format);
 
 nir_ssa_def * nir_explicit_io_address_from_deref(struct nir_builder *b,
                                                  nir_deref_instr *deref,

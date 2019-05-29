@@ -280,6 +280,9 @@ void *radv_lookup_entrypoint_checked(const char *name,
                                     uint32_t core_version,
                                     const struct radv_instance_extension_table *instance,
                                     const struct radv_device_extension_table *device);
+void *radv_lookup_physical_device_entrypoint_checked(const char *name,
+                                                     uint32_t core_version,
+                                                     const struct radv_instance_extension_table *instance);
 
 struct radv_physical_device {
 	VK_LOADER_DATA                              _loader_data;
@@ -698,9 +701,8 @@ struct radv_device {
 	float sample_locations_2x[2][2];
 	float sample_locations_4x[4][2];
 	float sample_locations_8x[8][2];
-	float sample_locations_16x[16][2];
 
-	/* CIK and later */
+	/* GFX7 and later */
 	uint32_t gfx_init_size_dw;
 	struct radeon_winsys_bo                      *gfx_init;
 
@@ -1140,6 +1142,11 @@ struct radv_cmd_buffer {
 	 * Whether a query pool has been resetted and we have to flush caches.
 	 */
 	bool pending_reset_query;
+
+	/**
+	 * Bitmask of pending active query flushes.
+	 */
+	enum radv_cmd_flush_bits active_query_flush_bits;
 };
 
 struct radv_image;
@@ -1210,8 +1217,8 @@ void radv_cmd_buffer_clear_subpass(struct radv_cmd_buffer *cmd_buffer);
 void radv_cmd_buffer_resolve_subpass(struct radv_cmd_buffer *cmd_buffer);
 void radv_cmd_buffer_resolve_subpass_cs(struct radv_cmd_buffer *cmd_buffer);
 void radv_cmd_buffer_resolve_subpass_fs(struct radv_cmd_buffer *cmd_buffer);
-void radv_cayman_emit_msaa_sample_locs(struct radeon_cmdbuf *cs, int nr_samples);
-unsigned radv_cayman_get_maxdist(int log_samples);
+void radv_emit_default_sample_locations(struct radeon_cmdbuf *cs, int nr_samples);
+unsigned radv_get_default_max_sample_dist(int log_samples);
 void radv_device_init_msaa(struct radv_device *device);
 
 void radv_update_ds_clear_metadata(struct radv_cmd_buffer *cmd_buffer,
@@ -1971,8 +1978,6 @@ void radv_initialize_fmask(struct radv_cmd_buffer *cmd_buffer,
 struct radv_fence {
 	struct radeon_winsys_fence *fence;
 	struct wsi_fence *fence_wsi;
-	bool submitted;
-	bool signalled;
 
 	uint32_t syncobj;
 	uint32_t temp_syncobj;

@@ -1805,7 +1805,7 @@ fs_visitor::assign_vs_urb_setup()
 }
 
 void
-fs_visitor::assign_tcs_single_patch_urb_setup()
+fs_visitor::assign_tcs_urb_setup()
 {
    assert(stage == MESA_SHADER_TESS_CTRL);
 
@@ -7246,7 +7246,7 @@ fs_visitor::fixup_3src_null_dest()
 void
 fs_visitor::allocate_registers(unsigned min_dispatch_width, bool allow_spilling)
 {
-   bool allocated_without_spills;
+   bool allocated;
 
    static const enum instruction_scheduler_mode pre_modes[] = {
       SCHEDULE_PRE,
@@ -7265,15 +7265,26 @@ fs_visitor::allocate_registers(unsigned min_dispatch_width, bool allow_spilling)
 
       if (0) {
          assign_regs_trivial();
-         allocated_without_spills = true;
-      } else {
-         allocated_without_spills = assign_regs(false, spill_all);
+         allocated = true;
+         break;
       }
-      if (allocated_without_spills)
+
+      /* We only allow spilling for the last schedule mode and only if the
+       * allow_spilling parameter and dispatch width work out ok.
+       */
+      bool can_spill = allow_spilling &&
+                       (i == ARRAY_SIZE(pre_modes) - 1) &&
+                       dispatch_width == min_dispatch_width;
+
+      /* We should only spill registers on the last scheduling. */
+      assert(!spilled_any_registers);
+
+      allocated = assign_regs(can_spill, spill_all);
+      if (allocated)
          break;
    }
 
-   if (!allocated_without_spills) {
+   if (!allocated) {
       if (!allow_spilling)
          fail("Failure to register allocate and spilling is not allowed.");
 
@@ -7284,21 +7295,16 @@ fs_visitor::allocate_registers(unsigned min_dispatch_width, bool allow_spilling)
       if (dispatch_width > min_dispatch_width) {
          fail("Failure to register allocate.  Reduce number of "
               "live scalar values to avoid this.");
-      } else {
-         compiler->shader_perf_log(log_data,
-                                   "%s shader triggered register spilling.  "
-                                   "Try reducing the number of live scalar "
-                                   "values to improve performance.\n",
-                                   stage_name);
       }
 
-      /* Since we're out of heuristics, just go spill registers until we
-       * get an allocation.
-       */
-      while (!assign_regs(true, spill_all)) {
-         if (failed)
-            break;
-      }
+      /* If we failed to allocate, we must have a reason */
+      assert(failed);
+   } else if (spilled_any_registers) {
+      compiler->shader_perf_log(log_data,
+                                "%s shader triggered register spilling.  "
+                                "Try reducing the number of live scalar "
+                                "values to improve performance.\n",
+                                stage_name);
    }
 
    /* This must come after all optimization and register allocation, since
@@ -7386,20 +7392,32 @@ fs_visitor::run_vs()
    return !failed;
 }
 
-bool
-fs_visitor::run_tcs_single_patch()
+void
+fs_visitor::set_tcs_invocation_id()
 {
-   assert(stage == MESA_SHADER_TESS_CTRL);
-
    struct brw_tcs_prog_data *tcs_prog_data = brw_tcs_prog_data(prog_data);
+   struct brw_vue_prog_data *vue_prog_data = &tcs_prog_data->base;
 
-   /* r1-r4 contain the ICP handles. */
-   payload.num_regs = 5;
+   const unsigned instance_id_mask =
+      devinfo->gen >= 11 ? INTEL_MASK(22, 16) : INTEL_MASK(23, 17);
+   const unsigned instance_id_shift =
+      devinfo->gen >= 11 ? 16 : 17;
 
-   if (shader_time_index >= 0)
-      emit_shader_time_begin();
+   /* Get instance number from g0.2 bits 22:16 or 23:17 */
+   fs_reg t = bld.vgrf(BRW_REGISTER_TYPE_UD);
+   bld.AND(t, fs_reg(retype(brw_vec1_grf(0, 2), BRW_REGISTER_TYPE_UD)),
+           brw_imm_ud(instance_id_mask));
 
-   /* Initialize gl_InvocationID */
+   invocation_id = bld.vgrf(BRW_REGISTER_TYPE_UD);
+
+   if (vue_prog_data->dispatch_mode == DISPATCH_MODE_TCS_8_PATCH) {
+      /* gl_InvocationID is just the thread number */
+      bld.SHR(invocation_id, t, brw_imm_ud(instance_id_shift));
+      return;
+   }
+
+   assert(vue_prog_data->dispatch_mode == DISPATCH_MODE_TCS_SINGLE_PATCH);
+
    fs_reg channels_uw = bld.vgrf(BRW_REGISTER_TYPE_UW);
    fs_reg channels_ud = bld.vgrf(BRW_REGISTER_TYPE_UD);
    bld.MOV(channels_uw, fs_reg(brw_imm_uv(0x76543210)));
@@ -7408,24 +7426,49 @@ fs_visitor::run_tcs_single_patch()
    if (tcs_prog_data->instances == 1) {
       invocation_id = channels_ud;
    } else {
-      const unsigned invocation_id_mask = devinfo->gen >= 11 ?
-         INTEL_MASK(22, 16) : INTEL_MASK(23, 17);
-      const unsigned invocation_id_shift = devinfo->gen >= 11 ? 16 : 17;
-
-      invocation_id = bld.vgrf(BRW_REGISTER_TYPE_UD);
-
-      /* Get instance number from g0.2 bits 23:17, and multiply it by 8. */
-      fs_reg t = bld.vgrf(BRW_REGISTER_TYPE_UD);
       fs_reg instance_times_8 = bld.vgrf(BRW_REGISTER_TYPE_UD);
-      bld.AND(t, fs_reg(retype(brw_vec1_grf(0, 2), BRW_REGISTER_TYPE_UD)),
-              brw_imm_ud(invocation_id_mask));
-      bld.SHR(instance_times_8, t, brw_imm_ud(invocation_id_shift - 3));
-
+      bld.SHR(instance_times_8, t, brw_imm_ud(instance_id_shift - 3));
       bld.ADD(invocation_id, instance_times_8, channels_ud);
    }
+}
+
+bool
+fs_visitor::run_tcs()
+{
+   assert(stage == MESA_SHADER_TESS_CTRL);
+
+   struct brw_vue_prog_data *vue_prog_data = brw_vue_prog_data(prog_data);
+   struct brw_tcs_prog_data *tcs_prog_data = brw_tcs_prog_data(prog_data);
+   struct brw_tcs_prog_key *tcs_key = (struct brw_tcs_prog_key *) key;
+
+   assert(vue_prog_data->dispatch_mode == DISPATCH_MODE_TCS_SINGLE_PATCH ||
+          vue_prog_data->dispatch_mode == DISPATCH_MODE_TCS_8_PATCH);
+
+   if (vue_prog_data->dispatch_mode == DISPATCH_MODE_TCS_SINGLE_PATCH) {
+      /* r1-r4 contain the ICP handles. */
+      payload.num_regs = 5;
+   } else {
+      assert(vue_prog_data->dispatch_mode == DISPATCH_MODE_TCS_8_PATCH);
+      assert(tcs_key->input_vertices > 0);
+      /* r1 contains output handles, r2 may contain primitive ID, then the
+       * ICP handles occupy the next 1-32 registers.
+       */
+      payload.num_regs = 2 + tcs_prog_data->include_primitive_id +
+                         tcs_key->input_vertices;
+   }
+
+   if (shader_time_index >= 0)
+      emit_shader_time_begin();
+
+   /* Initialize gl_InvocationID */
+   set_tcs_invocation_id();
+
+   const bool fix_dispatch_mask =
+      vue_prog_data->dispatch_mode == DISPATCH_MODE_TCS_SINGLE_PATCH &&
+      (nir->info.tess.tcs_vertices_out % 8) != 0;
 
    /* Fix the disptach mask */
-   if (nir->info.tess.tcs_vertices_out % 8) {
+   if (fix_dispatch_mask) {
       bld.CMP(bld.null_reg_ud(), invocation_id,
               brw_imm_ud(nir->info.tess.tcs_vertices_out), BRW_CONDITIONAL_L);
       bld.IF(BRW_PREDICATE_NORMAL);
@@ -7433,13 +7476,13 @@ fs_visitor::run_tcs_single_patch()
 
    emit_nir_code();
 
-   if (nir->info.tess.tcs_vertices_out % 8) {
+   if (fix_dispatch_mask) {
       bld.emit(BRW_OPCODE_ENDIF);
    }
 
    /* Emit EOT write; set TR DS Cache bit */
    fs_reg srcs[3] = {
-      fs_reg(retype(brw_vec1_grf(0, 0), BRW_REGISTER_TYPE_UD)),
+      fs_reg(get_tcs_output_urb_handle()),
       fs_reg(brw_imm_ud(WRITEMASK_X << 16)),
       fs_reg(brw_imm_ud(0)),
    };
@@ -7462,7 +7505,7 @@ fs_visitor::run_tcs_single_patch()
    optimize();
 
    assign_curb_setup();
-   assign_tcs_single_patch_urb_setup();
+   assign_tcs_urb_setup();
 
    fixup_3src_null_dest();
    allocate_registers(8, true);

@@ -27,39 +27,143 @@
 #include "virgl_resource.h"
 #include "virgl_screen.h"
 
-bool virgl_res_needs_flush(struct virgl_context *vctx,
-                           struct virgl_transfer *trans)
+/* We need to flush to properly sync the transfer with the current cmdbuf.
+ * But there are cases where the flushing can be skipped:
+ *
+ *  - synchronization is disabled
+ *  - the resource is not referenced by the current cmdbuf
+ */
+static bool virgl_res_needs_flush(struct virgl_context *vctx,
+                                  struct virgl_transfer *trans)
 {
-   struct virgl_screen *vs = virgl_screen(vctx->base.screen);
+   struct virgl_winsys *vws = virgl_screen(vctx->base.screen)->vws;
    struct virgl_resource *res = virgl_resource(trans->base.resource);
 
    if (trans->base.usage & PIPE_TRANSFER_UNSYNCHRONIZED)
       return false;
-   if (!vs->vws->res_is_referenced(vs->vws, vctx->cbuf, res->hw_res))
+
+   if (!vws->res_is_referenced(vws, vctx->cbuf, res->hw_res))
       return false;
-   if (res->clean_mask & (1 << trans->base.level)) {
-      if (vctx->num_draws == 0 && vctx->num_compute == 0)
-         return false;
-      if (!virgl_transfer_queue_is_queued(&vctx->queue, trans))
-         return false;
-   }
 
    return true;
 }
 
-bool virgl_res_needs_readback(struct virgl_context *vctx,
-                              struct virgl_resource *res,
-                              unsigned usage, unsigned level)
+/* We need to read back from the host storage to make sure the guest storage
+ * is up-to-date.  But there are cases where the readback can be skipped:
+ *
+ *  - the content can be discarded
+ *  - the host storage is read-only
+ *
+ * Note that PIPE_TRANSFER_WRITE without discard bits requires readback.
+ * PIPE_TRANSFER_READ becomes irrelevant.  PIPE_TRANSFER_UNSYNCHRONIZED and
+ * PIPE_TRANSFER_FLUSH_EXPLICIT are also irrelevant.
+ */
+static bool virgl_res_needs_readback(struct virgl_context *vctx,
+                                     struct virgl_resource *res,
+                                     unsigned usage, unsigned level)
 {
-   bool readback = true;
+   if (usage & (PIPE_TRANSFER_DISCARD_RANGE |
+                PIPE_TRANSFER_DISCARD_WHOLE_RESOURCE))
+      return false;
+
    if (res->clean_mask & (1 << level))
+      return false;
+
+   return true;
+}
+
+enum virgl_transfer_map_type
+virgl_resource_transfer_prepare(struct virgl_context *vctx,
+                                struct virgl_transfer *xfer)
+{
+   struct virgl_winsys *vws = virgl_screen(vctx->base.screen)->vws;
+   struct virgl_resource *res = virgl_resource(xfer->base.resource);
+   enum virgl_transfer_map_type map_type = VIRGL_TRANSFER_MAP_HW_RES;
+   bool flush;
+   bool readback;
+   bool wait;
+
+   /* there is no way to map the host storage currently */
+   if (xfer->base.usage & PIPE_TRANSFER_MAP_DIRECTLY)
+      return VIRGL_TRANSFER_MAP_ERROR;
+
+   /* We break the logic down into four steps
+    *
+    * step 1: determine the required operations independently
+    * step 2: look for chances to skip the operations
+    * step 3: resolve dependencies between the operations
+    * step 4: execute the operations
+    */
+
+   flush = virgl_res_needs_flush(vctx, xfer);
+   readback = virgl_res_needs_readback(vctx, res, xfer->base.usage,
+                                       xfer->base.level);
+   /* We need to wait for all cmdbufs, current or previous, that access the
+    * resource to finish unless synchronization is disabled.
+    */
+   wait = !(xfer->base.usage & PIPE_TRANSFER_UNSYNCHRONIZED);
+
+   /* When the transfer range consists of only uninitialized data, we can
+    * assume the GPU is not accessing the range and readback is unnecessary.
+    * We can proceed as if PIPE_TRANSFER_UNSYNCHRONIZED and
+    * PIPE_TRANSFER_DISCARD_RANGE are set.
+    */
+   if (res->u.b.target == PIPE_BUFFER &&
+         !util_ranges_intersect(&res->valid_buffer_range, xfer->base.box.x,
+            xfer->base.box.x + xfer->base.box.width)) {
+      flush = false;
       readback = false;
-   else if (usage & PIPE_TRANSFER_DISCARD_RANGE)
-      readback = false;
-   else if ((usage & (PIPE_TRANSFER_WRITE | PIPE_TRANSFER_FLUSH_EXPLICIT)) ==
-            (PIPE_TRANSFER_WRITE | PIPE_TRANSFER_FLUSH_EXPLICIT))
-      readback = false;
-   return readback;
+      wait = false;
+   }
+
+   /* readback has some implications */
+   if (readback) {
+      /* Readback is yet another command and is transparent to the state
+       * trackers.  It should be waited for in all cases, including when
+       * PIPE_TRANSFER_UNSYNCHRONIZED is set.
+       */
+      wait = true;
+
+      /* When the transfer queue has pending writes to this transfer's region,
+       * we have to flush before readback.
+       */
+      if (!flush && virgl_transfer_queue_is_queued(&vctx->queue, xfer))
+         flush = true;
+   }
+
+   /* XXX This is incorrect and will be removed.  Consider
+    *
+    *   glTexImage2D(..., data1);
+    *   glDrawArrays();
+    *   glFlush();
+    *   glTexImage2D(..., data2);
+    *
+    * readback and flush are both false in the second glTexImage2D call.  The
+    * draw call might end up seeing data2.  Same applies to buffers with
+    * glBufferSubData.
+    */
+   wait = flush || readback;
+
+   if (flush)
+      vctx->base.flush(&vctx->base, NULL, 0);
+
+   if (readback) {
+      vws->transfer_get(vws, res->hw_res, &xfer->base.box, xfer->base.stride,
+                        xfer->l_stride, xfer->offset, xfer->base.level);
+   }
+
+   if (wait) {
+      /* fail the mapping after flush and readback so that it will succeed in
+       * the future
+       */
+      if ((xfer->base.usage & PIPE_TRANSFER_DONTBLOCK) &&
+          vws->resource_is_busy(vws, res->hw_res))
+         return VIRGL_TRANSFER_MAP_ERROR;
+
+      vws->resource_wait(vws, res->hw_res);
+   }
+
+   return map_type;
 }
 
 static struct pipe_resource *virgl_resource_create(struct pipe_screen *screen,
@@ -90,10 +194,12 @@ static struct pipe_resource *virgl_resource_create(struct pipe_screen *screen,
 
    res->clean_mask = (1 << VR_MAX_TEXTURE_2D_LEVELS) - 1;
 
-   if (templ->target == PIPE_BUFFER)
+   if (templ->target == PIPE_BUFFER) {
+      util_range_init(&res->valid_buffer_range);
       virgl_buffer_init(res);
-   else
+   } else {
       virgl_texture_init(res);
+   }
 
    return &res->u.b;
 
@@ -157,7 +263,8 @@ static bool virgl_buffer_transfer_extend(struct pipe_context *ctx,
    dummy_trans.offset = box->x;
 
    flush = virgl_res_needs_flush(vctx, &dummy_trans);
-   if (flush)
+   if (flush && util_ranges_intersect(&vbuf->valid_buffer_range,
+                                      box->x, box->x + box->width))
       return false;
 
    queued = virgl_transfer_queue_extend(&vctx->queue, &dummy_trans);
@@ -165,6 +272,7 @@ static bool virgl_buffer_transfer_extend(struct pipe_context *ctx,
       return false;
 
    memcpy(queued->hw_res_map + dummy_trans.offset, data, box->width);
+   util_range_add(&vbuf->valid_buffer_range, box->x, box->x + box->width);
 
    return true;
 }
@@ -315,6 +423,10 @@ void virgl_resource_destroy(struct pipe_screen *screen,
 {
    struct virgl_screen *vs = virgl_screen(screen);
    struct virgl_resource *res = virgl_resource(resource);
+
+   if (res->u.b.target == PIPE_BUFFER)
+      util_range_destroy(&res->valid_buffer_range);
+
    vs->vws->resource_unref(vs->vws, res->hw_res);
    FREE(res);
 }

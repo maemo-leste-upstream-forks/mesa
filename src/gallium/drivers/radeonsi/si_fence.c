@@ -66,13 +66,12 @@ struct si_multi_fence {
  * \param old_value	Previous fence value (for a bug workaround)
  * \param new_value	Fence value to write for this event.
  */
-void si_cp_release_mem(struct si_context *ctx,
+void si_cp_release_mem(struct si_context *ctx, struct radeon_cmdbuf *cs,
 		       unsigned event, unsigned event_flags,
 		       unsigned dst_sel, unsigned int_sel, unsigned data_sel,
 		       struct si_resource *buf, uint64_t va,
 		       uint32_t new_fence, unsigned query_type)
 {
-	struct radeon_cmdbuf *cs = ctx->gfx_cs;
 	unsigned op = EVENT_TYPE(event) |
 		      EVENT_INDEX(event == V_028A90_CS_DONE ||
 				  event == V_028A90_PS_DONE ? 6 : 5) |
@@ -81,7 +80,7 @@ void si_cp_release_mem(struct si_context *ctx,
 		       EOP_INT_SEL(int_sel) |
 		       EOP_DATA_SEL(data_sel);
 
-	if (ctx->chip_class >= GFX9) {
+	if (ctx->chip_class >= GFX9 || cs == ctx->prim_discard_compute_cs) {
 		/* A ZPASS_DONE or PIXEL_STAT_DUMP_EVENT (of the DB occlusion
 		 * counters) must immediately precede every timestamp event to
 		 * prevent a GPU hang on GFX9.
@@ -90,6 +89,7 @@ void si_cp_release_mem(struct si_context *ctx,
 		 * always do ZPASS_DONE before the timestamp.
 		 */
 		if (ctx->chip_class == GFX9 &&
+		    cs != ctx->prim_discard_compute_cs &&
 		    query_type != PIPE_QUERY_OCCLUSION_COUNTER &&
 		    query_type != PIPE_QUERY_OCCLUSION_PREDICATE &&
 		    query_type != PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE) {
@@ -106,17 +106,18 @@ void si_cp_release_mem(struct si_context *ctx,
 						  RADEON_USAGE_WRITE, RADEON_PRIO_QUERY);
 		}
 
-		radeon_emit(cs, PKT3(PKT3_RELEASE_MEM, 6, 0));
+		radeon_emit(cs, PKT3(PKT3_RELEASE_MEM, ctx->chip_class >= GFX9 ? 6 : 5, 0));
 		radeon_emit(cs, op);
 		radeon_emit(cs, sel);
 		radeon_emit(cs, va);		/* address lo */
 		radeon_emit(cs, va >> 32);	/* address hi */
 		radeon_emit(cs, new_fence);	/* immediate data lo */
 		radeon_emit(cs, 0); /* immediate data hi */
-		radeon_emit(cs, 0); /* unused */
+		if (ctx->chip_class >= GFX9)
+			radeon_emit(cs, 0); /* unused */
 	} else {
-		if (ctx->chip_class == CIK ||
-		    ctx->chip_class == VI) {
+		if (ctx->chip_class == GFX7 ||
+		    ctx->chip_class == GFX8) {
 			struct si_resource *scratch = ctx->eop_bug_scratch;
 			uint64_t va = scratch->gpu_address;
 
@@ -153,8 +154,8 @@ unsigned si_cp_write_fence_dwords(struct si_screen *screen)
 {
 	unsigned dwords = 6;
 
-	if (screen->info.chip_class == CIK ||
-	    screen->info.chip_class == VI)
+	if (screen->info.chip_class == GFX7 ||
+	    screen->info.chip_class == GFX8)
 		dwords *= 2;
 
 	return dwords;
@@ -178,8 +179,8 @@ static void si_add_fence_dependency(struct si_context *sctx,
 	struct radeon_winsys *ws = sctx->ws;
 
 	if (sctx->dma_cs)
-		ws->cs_add_fence_dependency(sctx->dma_cs, fence);
-	ws->cs_add_fence_dependency(sctx->gfx_cs, fence);
+		ws->cs_add_fence_dependency(sctx->dma_cs, fence, 0);
+	ws->cs_add_fence_dependency(sctx->gfx_cs, fence, 0);
 }
 
 static void si_add_syncobj_signal(struct si_context *sctx,
@@ -269,7 +270,7 @@ static void si_fine_fence_set(struct si_context *ctx,
 
 		radeon_add_to_buffer_list(ctx, ctx->gfx_cs, fine->buf,
 					  RADEON_USAGE_WRITE, RADEON_PRIO_QUERY);
-		si_cp_release_mem(ctx,
+		si_cp_release_mem(ctx, ctx->gfx_cs,
 				  V_028A90_BOTTOM_OF_PIPE_TS, 0,
 				  EOP_DST_SEL_MEM, EOP_INT_SEL_NONE,
 				  EOP_DATA_SEL_VALUE_32BIT,

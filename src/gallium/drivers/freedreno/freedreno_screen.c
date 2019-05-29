@@ -307,7 +307,7 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_FORCE_PERSAMPLE_INTERP:
 		return 0;
 
-	case PIPE_CAP_TGSI_FS_FBFETCH:
+	case PIPE_CAP_FBFETCH:
 		if (fd_device_version(screen->dev) >= FD_VERSION_GMEM_BASE &&
 				is_a6xx(screen))
 			return 1;
@@ -371,7 +371,8 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 		return 0;
 
 	/* Texturing. */
-	case PIPE_CAP_MAX_TEXTURE_2D_LEVELS:
+	case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
+		return 1 << (MAX_MIP_LEVELS - 1);
 	case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
 		return MAX_MIP_LEVELS;
 	case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:

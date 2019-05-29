@@ -204,7 +204,11 @@ iris_resource_get_separate_stencil(struct pipe_resource *p_res)
    /* For packed depth-stencil, we treat depth as the primary resource
     * and store S8 as the "second plane" resource.
     */
-   return p_res->next;
+   if (p_res->next && p_res->next->format == PIPE_FORMAT_S8_UINT)
+      return p_res->next;
+
+   return NULL;
+
 }
 
 static void
@@ -351,6 +355,7 @@ iris_resource_alloc_aux(struct iris_screen *screen, struct iris_resource *res)
    switch (res->aux.usage) {
    case ISL_AUX_USAGE_NONE:
       res->aux.surf.size_B = 0;
+      ok = true;
       break;
    case ISL_AUX_USAGE_HIZ:
       initial_state = ISL_AUX_STATE_AUX_INVALID;
@@ -392,12 +397,13 @@ iris_resource_alloc_aux(struct iris_screen *screen, struct iris_resource *res)
       break;
    }
 
+   /* We should have a valid aux_surf. */
+   if (!ok)
+      return false;
+
    /* No work is needed for a zero-sized auxiliary buffer. */
    if (res->aux.surf.size_B == 0)
       return true;
-
-   /* Assert that ISL gave us a valid aux surf */
-   assert(ok);
 
    /* Create the aux_state for the auxiliary buffer. */
    res->aux.state = create_aux_state_map(res, initial_state);
@@ -473,10 +479,6 @@ supports_mcs(const struct isl_surf *surf)
    if (surf->samples <= 1)
       return false;
 
-   /* See isl_surf_get_mcs_surf for details. */
-   if (surf->samples == 16 && surf->logical_level0_px.width > 8192)
-      return false;
-
    /* Depth and stencil buffers use the IMS (interleaved) layout. */
    if (isl_surf_usage_is_depth_or_stencil(surf->usage))
       return false;
@@ -488,19 +490,8 @@ static bool
 supports_ccs(const struct gen_device_info *devinfo,
              const struct isl_surf *surf)
 {
-   /* Gen9+ only supports CCS for Y-tiled buffers. */
-   if (surf->tiling != ISL_TILING_Y0)
-      return false;
-
    /* CCS only supports singlesampled resources. */
    if (surf->samples > 1)
-      return false;
-
-   /* The PRM doesn't say this explicitly, but fast-clears don't appear to
-    * work for 3D textures until Gen9 where the layout of 3D textures changes
-    * to match 2D array textures.
-    */
-   if (devinfo->gen < 9 && surf->dim != ISL_SURF_DIM_2D)
       return false;
 
    /* Note: still need to check the format! */
@@ -684,7 +675,7 @@ iris_resource_create_with_modifiers(struct pipe_screen *pscreen,
       goto fail;
 
    if (!iris_resource_alloc_aux(screen, res))
-      goto fail;
+      iris_resource_disable_aux(res);
 
    return &res->base;
 

@@ -1062,8 +1062,7 @@ get_non_self_referential_store_comps(nir_intrinsic_instr *store)
 
    nir_alu_instr *src_alu = nir_instr_as_alu(src_instr);
 
-   if (src_alu->op == nir_op_imov ||
-       src_alu->op == nir_op_fmov) {
+   if (src_alu->op == nir_op_mov) {
       /* If it's just a swizzle of a load from the same deref, discount any
        * channels that don't move in the swizzle.
        */
@@ -1464,7 +1463,7 @@ shrink_vec_var_access_impl(nir_function_impl *impl,
                b.cursor = nir_before_instr(&intrin->instr);
 
                nir_ssa_def *swizzled =
-                  nir_swizzle(&b, intrin->src[1].ssa, swizzle, c, false);
+                  nir_swizzle(&b, intrin->src[1].ssa, swizzle, c);
 
                /* Rewrite to use the compacted source */
                nir_instr_rewrite_src(&intrin->instr, &intrin->src[1],

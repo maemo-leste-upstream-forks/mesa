@@ -201,7 +201,7 @@ static void virgl_attach_res_atomic_buffers(struct virgl_context *vctx)
  * after flushing, the hw context still has a bunch of
  * resources bound, so we need to rebind those here.
  */
-static void virgl_reemit_res(struct virgl_context *vctx)
+static void virgl_reemit_draw_resources(struct virgl_context *vctx)
 {
    enum pipe_shader_type shader_type;
 
@@ -209,7 +209,7 @@ static void virgl_reemit_res(struct virgl_context *vctx)
    /* framebuffer, sampler views, vertex/index/uniform/stream buffers */
    virgl_attach_res_framebuffer(vctx);
 
-   for (shader_type = 0; shader_type < PIPE_SHADER_TYPES; shader_type++) {
+   for (shader_type = 0; shader_type < PIPE_SHADER_COMPUTE; shader_type++) {
       virgl_attach_res_sampler_views(vctx, shader_type);
       virgl_attach_res_uniform_buffers(vctx, shader_type);
       virgl_attach_res_shader_buffers(vctx, shader_type);
@@ -220,6 +220,16 @@ static void virgl_reemit_res(struct virgl_context *vctx)
    virgl_attach_res_so_targets(vctx);
 }
 
+static void virgl_reemit_compute_resources(struct virgl_context *vctx)
+{
+   virgl_attach_res_sampler_views(vctx, PIPE_SHADER_COMPUTE);
+   virgl_attach_res_uniform_buffers(vctx, PIPE_SHADER_COMPUTE);
+   virgl_attach_res_shader_buffers(vctx, PIPE_SHADER_COMPUTE);
+   virgl_attach_res_shader_images(vctx, PIPE_SHADER_COMPUTE);
+
+   virgl_attach_res_atomic_buffers(vctx);
+}
+
 static struct pipe_surface *virgl_create_surface(struct pipe_context *ctx,
                                                 struct pipe_resource *resource,
                                                 const struct pipe_surface *templ)
@@ -228,6 +238,10 @@ static struct pipe_surface *virgl_create_surface(struct pipe_context *ctx,
    struct virgl_surface *surf;
    struct virgl_resource *res = virgl_resource(resource);
    uint32_t handle;
+
+   /* no support for buffer surfaces */
+   if (resource->target == PIPE_BUFFER)
+      return NULL;
 
    surf = CALLOC_STRUCT(virgl_surface);
    if (!surf)
@@ -244,18 +258,13 @@ static struct pipe_surface *virgl_create_surface(struct pipe_context *ctx,
    pipe_resource_reference(&surf->base.texture, resource);
    surf->base.context = ctx;
    surf->base.format = templ->format;
-   if (resource->target != PIPE_BUFFER) {
-      surf->base.width = u_minify(resource->width0, templ->u.tex.level);
-      surf->base.height = u_minify(resource->height0, templ->u.tex.level);
-      surf->base.u.tex.level = templ->u.tex.level;
-      surf->base.u.tex.first_layer = templ->u.tex.first_layer;
-      surf->base.u.tex.last_layer = templ->u.tex.last_layer;
-   } else {
-      surf->base.width = templ->u.buf.last_element - templ->u.buf.first_element + 1;
-      surf->base.height = resource->height0;
-      surf->base.u.buf.first_element = templ->u.buf.first_element;
-      surf->base.u.buf.last_element = templ->u.buf.last_element;
-   }
+
+   surf->base.width = u_minify(resource->width0, templ->u.tex.level);
+   surf->base.height = u_minify(resource->height0, templ->u.tex.level);
+   surf->base.u.tex.level = templ->u.tex.level;
+   surf->base.u.tex.first_layer = templ->u.tex.first_layer;
+   surf->base.u.tex.last_layer = templ->u.tex.last_layer;
+
    virgl_encoder_create_surface(vctx, handle, res, &surf->base);
    surf->handle = handle;
    return &surf->base;
@@ -514,39 +523,6 @@ static void virgl_set_constant_buffer(struct pipe_context *ctx,
    }
 }
 
-void virgl_transfer_inline_write(struct pipe_context *ctx,
-                                struct pipe_resource *res,
-                                unsigned level,
-                                unsigned usage,
-                                const struct pipe_box *box,
-                                const void *data,
-                                unsigned stride,
-                                unsigned layer_stride)
-{
-   struct virgl_context *vctx = virgl_context(ctx);
-   struct virgl_screen *vs = virgl_screen(ctx->screen);
-   struct virgl_resource *grres = virgl_resource(res);
-   struct virgl_transfer trans = { 0 };
-
-   trans.base.resource = res;
-   trans.base.level = level;
-   trans.base.usage = usage;
-   trans.base.box = *box;
-   trans.base.stride = stride;
-   trans.base.layer_stride = layer_stride;
-   trans.offset = box->x;
-
-   virgl_resource_dirty(grres, 0);
-
-   if (virgl_res_needs_flush(vctx, &trans)) {
-      ctx->flush(ctx, NULL, 0);
-      vs->vws->resource_wait(vs->vws, grres->hw_res);
-   }
-
-   virgl_encoder_inline_write(vctx, grres, level, usage,
-                              box, data, stride, layer_stride);
-}
-
 static void *virgl_shader_encoder(struct pipe_context *ctx,
                                   const struct pipe_shader_state *shader,
                                   unsigned type)
@@ -706,6 +682,10 @@ static void virgl_clear(struct pipe_context *ctx,
 {
    struct virgl_context *vctx = virgl_context(ctx);
 
+   if (!vctx->num_draws)
+      virgl_reemit_draw_resources(vctx);
+   vctx->num_draws++;
+
    virgl_encode_clear(vctx, buffers, color, depth, stencil);
 }
 
@@ -740,7 +720,10 @@ static void virgl_draw_vbo(struct pipe_context *ctx,
            }
    }
 
+   if (!vctx->num_draws)
+      virgl_reemit_draw_resources(vctx);
    vctx->num_draws++;
+
    virgl_hw_set_vertex_buffers(vctx);
    if (info.index_size)
       virgl_hw_set_index_buffer(vctx, &ib);
@@ -776,9 +759,6 @@ static void virgl_flush_eq(struct virgl_context *ctx, void *closure,
       ctx->cbuf->cdw = VIRGL_MAX_TBUF_DWORDS;
 
    virgl_encoder_set_sub_ctx(ctx, ctx->hw_sub_ctx_id);
-
-   /* add back current framebuffer resources to reference list? */
-   virgl_reemit_res(ctx);
 
    ctx->cbuf_initial_cdw = ctx->cbuf->cdw;
 }
@@ -988,7 +968,10 @@ static void virgl_resource_copy_region(struct pipe_context *ctx,
    struct virgl_resource *dres = virgl_resource(dst);
    struct virgl_resource *sres = virgl_resource(src);
 
+   if (dres->u.b.target == PIPE_BUFFER)
+      util_range_add(&dres->valid_buffer_range, dstx, dstx + src_box->width);
    virgl_resource_dirty(dres, dst_level);
+
    virgl_encode_resource_copy_region(vctx, dres,
                                     dst_level, dstx, dsty, dstz,
                                     sres, src_level,
@@ -1171,8 +1154,12 @@ static void virgl_launch_grid(struct pipe_context *ctx,
                               const struct pipe_grid_info *info)
 {
    struct virgl_context *vctx = virgl_context(ctx);
-   virgl_encode_launch_grid(vctx, info);
+
+   if (!vctx->num_compute)
+      virgl_reemit_compute_resources(vctx);
    vctx->num_compute++;
+
+   virgl_encode_launch_grid(vctx, info);
 }
 
 static void

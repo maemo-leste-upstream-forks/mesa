@@ -41,6 +41,7 @@
 
 struct si_screen;
 struct si_shader;
+struct si_shader_ctx_state;
 struct si_shader_selector;
 struct si_texture;
 struct si_qbo_state;
@@ -86,6 +87,10 @@ struct si_state_rasterizer {
 	unsigned		rasterizer_discard:1;
 	unsigned		scissor_enable:1;
 	unsigned		clip_halfz:1;
+	unsigned		cull_front:1;
+	unsigned		cull_back:1;
+	unsigned		depth_clamp_any:1;
+	unsigned		provoking_vertex_first:1;
 };
 
 struct si_dsa_stencil_ref_part {
@@ -138,6 +143,25 @@ struct si_vertex_elements
 	uint8_t				fix_fetch[SI_MAX_ATTRIBS];
 	uint8_t				format_size[SI_MAX_ATTRIBS];
 	uint8_t				vertex_buffer_index[SI_MAX_ATTRIBS];
+
+	/* Bitmask of elements that always need a fixup to be applied. */
+	uint16_t			fix_fetch_always;
+
+	/* Bitmask of elements whose fetch should always be opencoded. */
+	uint16_t			fix_fetch_opencode;
+
+	/* Bitmask of elements which need to be opencoded if the vertex buffer
+	 * is unaligned. */
+	uint16_t			fix_fetch_unaligned;
+
+	/* For elements in fix_fetch_unaligned: whether the effective
+	 * element load size as seen by the hardware is a dword (as opposed
+	 * to a short).
+	 */
+	uint16_t			hw_load_is_dword;
+
+	/* Bitmask of vertex buffers requiring alignment check */
+	uint16_t			vb_alignment_check_mask;
 
 	uint8_t				count;
 	bool				uses_instance_divisors;
@@ -375,6 +399,20 @@ enum {
 			  PIPE_SHADER_##name * SI_NUM_SHADER_DESCS, \
 			  SI_NUM_SHADER_DESCS)
 
+static inline unsigned
+si_const_and_shader_buffer_descriptors_idx(unsigned shader)
+{
+	return SI_DESCS_FIRST_SHADER + shader * SI_NUM_SHADER_DESCS +
+	       SI_SHADER_DESCS_CONST_AND_SHADER_BUFFERS;
+}
+
+static inline unsigned
+si_sampler_and_image_descriptors_idx(unsigned shader)
+{
+	return SI_DESCS_FIRST_SHADER + shader * SI_NUM_SHADER_DESCS +
+	       SI_SHADER_DESCS_SAMPLERS_AND_IMAGES;
+}
+
 /* This represents descriptors in memory, such as buffer resources,
  * image resources, and sampler states.
  */
@@ -409,6 +447,7 @@ struct si_descriptors {
 
 struct si_buffer_resources {
 	struct pipe_resource		**buffers; /* this has num_buffers elements */
+	unsigned			*offsets; /* this has num_buffers elements */
 
 	enum radeon_bo_priority		priority:6;
 	enum radeon_bo_priority		priority_constbuf:6;
@@ -487,8 +526,7 @@ struct pb_slab *si_bindless_descriptor_slab_alloc(void *priv, unsigned heap,
 						  unsigned entry_size,
 						  unsigned group_index);
 void si_bindless_descriptor_slab_free(void *priv, struct pb_slab *pslab);
-void si_rebind_buffer(struct si_context *sctx, struct pipe_resource *buf,
-		      uint64_t old_va);
+void si_rebind_buffer(struct si_context *sctx, struct pipe_resource *buf);
 /* si_state.c */
 void si_init_state_compute_functions(struct si_context *sctx);
 void si_init_state_functions(struct si_context *sctx);
@@ -522,6 +560,17 @@ void si_save_qbo_state(struct si_context *sctx, struct si_qbo_state *st);
 void si_set_occlusion_query_state(struct si_context *sctx,
 				  bool old_perfect_enable);
 
+struct si_fast_udiv_info32 {
+   unsigned multiplier; /* the "magic number" multiplier */
+   unsigned pre_shift; /* shift for the dividend before multiplying */
+   unsigned post_shift; /* shift for the dividend after multiplying */
+   int increment; /* 0 or 1; if set then increment the numerator, using one of
+                     the two strategies */
+};
+
+struct si_fast_udiv_info32
+si_compute_fast_udiv_info32(uint32_t D, unsigned num_bits);
+
 /* si_state_binning.c */
 void si_emit_dpbb_state(struct si_context *sctx);
 
@@ -543,8 +592,21 @@ void si_schedule_initial_compile(struct si_context *sctx, unsigned processor,
 void si_get_active_slot_masks(const struct tgsi_shader_info *info,
 			      uint32_t *const_and_shader_buffers,
 			      uint64_t *samplers_and_images);
+int si_shader_select_with_key(struct si_screen *sscreen,
+			      struct si_shader_ctx_state *state,
+			      struct si_compiler_ctx_state *compiler_state,
+			      struct si_shader_key *key,
+			      int thread_index,
+			      bool optimized_or_none);
+void si_shader_selector_key_vs(struct si_context *sctx,
+			       struct si_shader_selector *vs,
+			       struct si_shader_key *key,
+			       struct si_vs_prolog_bits *prolog_key);
 
 /* si_state_draw.c */
+void si_emit_surface_sync(struct si_context *sctx, struct radeon_cmdbuf *cs,
+			  unsigned cp_coher_cntl);
+void si_prim_discard_signal_next_compute_ib_start(struct si_context *sctx);
 void si_emit_cache_flush(struct si_context *sctx);
 void si_trace_emit(struct si_context *sctx);
 void si_init_draw_functions(struct si_context *sctx);

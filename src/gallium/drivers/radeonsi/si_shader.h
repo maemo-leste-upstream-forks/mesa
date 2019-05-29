@@ -247,7 +247,7 @@ enum {
 #define S_VS_STATE_LS_OUT_VERTEX_SIZE(x)	(((unsigned)(x) & 0xFF) << 24)
 #define C_VS_STATE_LS_OUT_VERTEX_SIZE		0x00FFFFFF
 
-/* SI-specific system values. */
+/* Driver-specific system values. */
 enum {
 	/* Values from set_tess_state. */
 	TGSI_SEMANTIC_DEFAULT_TESSOUTER_SI = TGSI_SEMANTIC_COUNT,
@@ -273,27 +273,24 @@ enum {
 	SI_VS_BLIT_SGPRS_POS_TEXCOORD = 9,
 };
 
-/* For VS shader key fix_fetch. */
-enum {
-	SI_FIX_FETCH_NONE = 0,
-	SI_FIX_FETCH_A2_SNORM,
-	SI_FIX_FETCH_A2_SSCALED,
-	SI_FIX_FETCH_A2_SINT,
-	SI_FIX_FETCH_RGBA_32_UNORM,
-	SI_FIX_FETCH_RGBX_32_UNORM,
-	SI_FIX_FETCH_RGBA_32_SNORM,
-	SI_FIX_FETCH_RGBX_32_SNORM,
-	SI_FIX_FETCH_RGBA_32_USCALED,
-	SI_FIX_FETCH_RGBA_32_SSCALED,
-	SI_FIX_FETCH_RGBA_32_FIXED,
-	SI_FIX_FETCH_RGBX_32_FIXED,
-	SI_FIX_FETCH_RG_64_FLOAT,
-	SI_FIX_FETCH_RGB_64_FLOAT,
-	SI_FIX_FETCH_RGBA_64_FLOAT,
-	SI_FIX_FETCH_RGB_8,	/* A = 1.0 */
-	SI_FIX_FETCH_RGB_8_INT,	/* A = 1 */
-	SI_FIX_FETCH_RGB_16,
-	SI_FIX_FETCH_RGB_16_INT,
+/**
+ * For VS shader keys, describe any fixups required for vertex fetch.
+ *
+ * \ref log_size, \ref format, and the number of channels are interpreted as
+ * by \ref ac_build_opencoded_load_format.
+ *
+ * Note: all bits 0 (size = 1 byte, num channels = 1, format = float) is an
+ * impossible format and indicates that no fixup is needed (just use
+ * buffer_load_format_xyzw).
+ */
+union si_vs_fix_fetch {
+	struct {
+		uint8_t log_size : 2; /* 1, 2, 4, 8 or bytes per channel */
+		uint8_t num_channels_m1 : 2; /* number of channels minus 1 */
+		uint8_t format : 3; /* AC_FETCH_FORMAT_xxx */
+		uint8_t reverse : 1; /* reverse XYZ channels */
+	} u;
+	uint8_t bits;
 };
 
 struct si_shader;
@@ -343,6 +340,7 @@ struct si_shader_selector {
 	unsigned	type;
 	bool		vs_needs_prolog;
 	bool		force_correct_derivs_after_kill;
+	bool		prim_discard_cs_allowed;
 	unsigned	pa_cl_vs_out_cntl;
 	ubyte		clipdist_mask;
 	ubyte		culldist_mask;
@@ -412,6 +410,7 @@ struct si_vs_prolog_bits {
 	uint16_t	instance_divisor_is_one;     /* bitmask of inputs */
 	uint16_t	instance_divisor_is_fetched; /* bitmask of inputs */
 	unsigned	ls_vgpr_fix:1;
+	unsigned	unpack_instance_id_from_vertex_id:1;
 };
 
 /* Common TCS bits between the shader key and the epilog key. */
@@ -524,8 +523,11 @@ struct si_shader_key {
 
 	/* Flags for monolithic compilation only. */
 	struct {
-		/* One byte for every input: SI_FIX_FETCH_* enums. */
-		uint8_t		vs_fix_fetch[SI_MAX_ATTRIBS];
+		/* Whether fetch should be opencoded according to vs_fix_fetch.
+		 * Otherwise, if vs_fix_fetch is non-zero, buffer_load_format_xyzw
+		 * with minimal fixups is used. */
+		uint16_t vs_fetch_opencode;
+		union si_vs_fix_fetch vs_fix_fetch[SI_MAX_ATTRIBS];
 
 		union {
 			uint64_t	ff_tcs_inputs_to_copy; /* for fixed-func TCS */
@@ -553,6 +555,19 @@ struct si_shader_key {
 		 * possible, because it's in the "opt" group.
 		 */
 		unsigned	prefer_mono:1;
+
+		/* Primitive discard compute shader. */
+		unsigned	vs_as_prim_discard_cs:1;
+		unsigned	cs_prim_type:4;
+		unsigned	cs_indexed:1;
+		unsigned	cs_instancing:1;
+		unsigned	cs_primitive_restart:1;
+		unsigned	cs_provoking_vertex_first:1;
+		unsigned	cs_need_correct_orientation:1;
+		unsigned	cs_cull_front:1;
+		unsigned	cs_cull_back:1;
+		unsigned	cs_cull_z:1;
+		unsigned	cs_halfz_clip_space:1;
 	} opt;
 };
 

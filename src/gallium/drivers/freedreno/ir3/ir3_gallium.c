@@ -49,30 +49,19 @@ dump_shader_info(struct ir3_shader_variant *v, struct pipe_debug_callback *debug
 	if (!unlikely(fd_mesa_debug & FD_DBG_SHADERDB))
 		return;
 
-	pipe_debug_message(debug, SHADER_INFO, "\n"
-			"SHADER-DB: %s prog %d/%d: %u instructions, %u dwords\n"
-			"SHADER-DB: %s prog %d/%d: %u half, %u full\n"
-			"SHADER-DB: %s prog %d/%d: %u const, %u constlen\n"
-			"SHADER-DB: %s prog %d/%d: %u (ss), %u (sy)\n"
-			"SHADER-DB: %s prog %d/%d: max_sun=%u\n",
+	pipe_debug_message(debug, SHADER_INFO,
+			"%s shader: %u inst, %u dwords, "
+			"%u half, %u full, %u const, %u constlen, "
+			"%u (ss), %u (sy), %d max_sun, %d loops\n",
 			ir3_shader_stage(v->shader),
-			v->shader->id, v->id,
 			v->info.instrs_count,
 			v->info.sizedwords,
-			ir3_shader_stage(v->shader),
-			v->shader->id, v->id,
 			v->info.max_half_reg + 1,
 			v->info.max_reg + 1,
-			ir3_shader_stage(v->shader),
-			v->shader->id, v->id,
 			v->info.max_const + 1,
 			v->constlen,
-			ir3_shader_stage(v->shader),
-			v->shader->id, v->id,
 			v->info.ss, v->info.sy,
-			ir3_shader_stage(v->shader),
-			v->shader->id, v->id,
-			v->max_sun);
+			v->max_sun, v->loops);
 }
 
 struct ir3_shader_variant *
@@ -133,7 +122,7 @@ ir3_shader_create(struct ir3_compiler *compiler,
 		if (ir3_shader_debug & IR3_DBG_DISASM) {
 			tgsi_dump(cso->tokens, 0);
 		}
-		nir = ir3_tgsi_to_nir(compiler, cso->tokens, screen);
+		nir = tgsi_to_nir(cso->tokens, screen);
 	}
 
 	struct ir3_shader *shader = ir3_shader_from_nir(compiler, nir);
@@ -170,26 +159,12 @@ ir3_shader_create_compute(struct ir3_compiler *compiler,
 		if (ir3_shader_debug & IR3_DBG_DISASM) {
 			tgsi_dump(cso->prog, 0);
 		}
-		nir = ir3_tgsi_to_nir(compiler, cso->prog, screen);
+		nir = tgsi_to_nir(cso->prog, screen);
 	}
 
 	struct ir3_shader *shader = ir3_shader_from_nir(compiler, nir);
 
 	return shader;
-}
-
-struct nir_shader *
-ir3_tgsi_to_nir(struct ir3_compiler *compiler,
-		const struct tgsi_token *tokens,
-		struct pipe_screen *screen)
-{
-	if (!screen) {
-		const nir_shader_compiler_options *options =
-			ir3_get_compiler_options(compiler);
-		return tgsi_to_nir_noscreen(tokens, options);
-	}
-
-	return tgsi_to_nir(tokens, screen);
 }
 
 /* This has to reach into the fd_context a bit more than the rest of

@@ -145,6 +145,8 @@ iris_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_SAMPLE_SHADING:
    case PIPE_CAP_FORCE_PERSAMPLE_INTERP:
    case PIPE_CAP_DRAW_INDIRECT:
+   case PIPE_CAP_MULTI_DRAW_INDIRECT:
+   case PIPE_CAP_MULTI_DRAW_INDIRECT_PARAMS:
    case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
    case PIPE_CAP_TGSI_VS_LAYER_VIEWPORT:
    case PIPE_CAP_TGSI_TES_LAYER_VIEWPORT:
@@ -190,17 +192,22 @@ iris_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_INVALIDATE_BUFFER:
    case PIPE_CAP_SURFACE_REINTERPRET_BLOCKS:
       return true;
+   case PIPE_CAP_FBFETCH:
+      /* TODO: Support non-coherent FB fetch on Broadwell */
+      return devinfo->gen >= 9 ? BRW_MAX_DRAW_BUFFERS : 0;
+   case PIPE_CAP_FBFETCH_COHERENT:
    case PIPE_CAP_CONSERVATIVE_RASTER_INNER_COVERAGE:
-   case PIPE_CAP_TGSI_FS_FBFETCH:
    case PIPE_CAP_POST_DEPTH_COVERAGE:
    case PIPE_CAP_SHADER_STENCIL_EXPORT:
    case PIPE_CAP_DEPTH_CLIP_DISABLE_SEPARATE:
+   case PIPE_CAP_FRAGMENT_SHADER_INTERLOCK:
       return devinfo->gen >= 9;
    case PIPE_CAP_MAX_DUAL_SOURCE_RENDER_TARGETS:
       return 1;
    case PIPE_CAP_MAX_RENDER_TARGETS:
       return BRW_MAX_DRAW_BUFFERS;
-   case PIPE_CAP_MAX_TEXTURE_2D_LEVELS:
+   case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
+      return 16384;
    case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
       return IRIS_MAX_MIPLEVELS; /* 16384x16384 */
    case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
@@ -403,11 +410,12 @@ iris_get_shader_param(struct pipe_screen *pscreen,
       return 1 << PIPE_SHADER_IR_NIR;
    case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
       return 32;
+   case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
+   case PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED:
+      return 1;
    case PIPE_SHADER_CAP_LOWER_IF_THRESHOLD:
    case PIPE_SHADER_CAP_TGSI_SKIP_MERGE_REGISTERS:
-   case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
-   case PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
    case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
@@ -505,6 +513,7 @@ iris_destroy_screen(struct pipe_screen *pscreen)
    iris_bo_unreference(screen->workaround_bo);
    u_transfer_helper_destroy(pscreen->transfer_helper);
    iris_bufmgr_destroy(screen->bufmgr);
+   disk_cache_destroy(screen->disk_cache);
    ralloc_free(screen);
 }
 
@@ -524,6 +533,13 @@ iris_get_compiler_options(struct pipe_screen *pscreen,
    assert(ir == PIPE_SHADER_IR_NIR);
 
    return screen->compiler->glsl_compiler_options[stage].NirOptions;
+}
+
+static struct disk_cache *
+iris_get_disk_shader_cache(struct pipe_screen *pscreen)
+{
+   struct iris_screen *screen = (struct iris_screen *) pscreen;
+   return screen->disk_cache;
 }
 
 static int
@@ -631,6 +647,9 @@ iris_screen_create(int fd, const struct pipe_screen_config *config)
    screen->compiler->shader_debug_log = iris_shader_debug_log;
    screen->compiler->shader_perf_log = iris_shader_perf_log;
    screen->compiler->supports_pull_constants = false;
+   screen->compiler->supports_shader_constants = true;
+
+   iris_disk_cache_init(screen);
 
    slab_create_parent(&screen->transfer_pool,
                       sizeof(struct iris_transfer), 64);
@@ -653,6 +672,7 @@ iris_screen_create(int fd, const struct pipe_screen_config *config)
    pscreen->get_compute_param = iris_get_compute_param;
    pscreen->get_paramf = iris_get_paramf;
    pscreen->get_compiler_options = iris_get_compiler_options;
+   pscreen->get_disk_shader_cache = iris_get_disk_shader_cache;
    pscreen->is_format_supported = iris_is_format_supported;
    pscreen->context_create = iris_create_context;
    pscreen->flush_frontbuffer = iris_flush_frontbuffer;

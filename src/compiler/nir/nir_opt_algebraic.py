@@ -105,6 +105,7 @@ optimizations = [
    (('iadd', a, ('iadd', ('ineg', a), b)), b),
    (('~fadd', ('fneg', a), ('fadd', a, b)), b),
    (('~fadd', a, ('fadd', ('fneg', a), b)), b),
+   (('fadd', ('fsat', a), ('fsat', ('fneg', a))), ('fsat', ('fabs', a))),
    (('~fmul', a, 0.0), 0.0),
    (('imul', a, 0), 0),
    (('umul_unorm_4x8', a, 0), 0),
@@ -119,10 +120,9 @@ optimizations = [
    (('fmul', ('fsign', a), ('fmul', a, a)), ('fmul', ('fabs', a), a)),
    (('fmul', ('fmul', ('fsign', a), a), a), ('fmul', ('fabs', a), a)),
    (('~ffma', 0.0, a, b), b),
-   (('~ffma', a, 0.0, b), b),
    (('~ffma', a, b, 0.0), ('fmul', a, b)),
-   (('ffma', a, 1.0, b), ('fadd', a, b)),
    (('ffma', 1.0, a, b), ('fadd', a, b)),
+   (('ffma', -1.0, a, b), ('fadd', ('fneg', a), b)),
    (('~flrp', a, b, 0.0), a),
    (('~flrp', a, b, 1.0), b),
    (('~flrp', a, a, b), a),
@@ -148,9 +148,14 @@ optimizations = [
    (('fadd', a, ('fneg', ('ffract', a))), ('ffloor', a), '!options->lower_ffloor'),
    (('ffract', a), ('fsub', a, ('ffloor', a)), 'options->lower_ffract'),
    (('fceil', a), ('fneg', ('ffloor', ('fneg', a))), 'options->lower_fceil'),
-   (('~fadd', ('fmul', a, ('fadd', 1.0, ('fneg', ('b2f', 'c@1')))), ('fmul', b, ('b2f', c))), ('bcsel', c, b, a), 'options->lower_flrp32'),
-   (('~fadd@32', ('fmul', a, ('fadd', 1.0, ('fneg',         c ))), ('fmul', b,         c )), ('flrp', a, b, c), '!options->lower_flrp32'),
-   (('~fadd@64', ('fmul', a, ('fadd', 1.0, ('fneg',         c ))), ('fmul', b,         c )), ('flrp', a, b, c), '!options->lower_flrp64'),
+   (('~fadd',    ('fmul', a,          ('fadd', 1.0, ('fneg', ('b2f', 'c@1')))), ('fmul', b, ('b2f',  c))), ('bcsel', c, b, a), 'options->lower_flrp32'),
+   (('~fadd@32', ('fmul', a,          ('fadd', 1.0, ('fneg',          c   ) )), ('fmul', b,          c )), ('flrp', a, b, c), '!options->lower_flrp32'),
+   (('~fadd@64', ('fmul', a,          ('fadd', 1.0, ('fneg',          c   ) )), ('fmul', b,          c )), ('flrp', a, b, c), '!options->lower_flrp64'),
+   # These are the same as the previous three rules, but it depends on
+   # 1-fsat(x) <=> fsat(1-x).  See below.
+   (('~fadd@32', ('fmul', a, ('fsat', ('fadd', 1.0, ('fneg',          c   )))), ('fmul', b, ('fsat', c))), ('flrp', a, b, ('fsat', c)), '!options->lower_flrp32'),
+   (('~fadd@64', ('fmul', a, ('fsat', ('fadd', 1.0, ('fneg',          c   )))), ('fmul', b, ('fsat', c))), ('flrp', a, b, ('fsat', c)), '!options->lower_flrp64'),
+
    (('~fadd', a, ('fmul', ('b2f', 'c@1'), ('fadd', b, ('fneg', a)))), ('bcsel', c, b, a), 'options->lower_flrp32'),
    (('~fadd@32', a, ('fmul',         c , ('fadd', b, ('fneg', a)))), ('flrp', a, b, c), '!options->lower_flrp32'),
    (('~fadd@64', a, ('fmul',         c , ('fadd', b, ('fneg', a)))), ('flrp', a, b, c), '!options->lower_flrp64'),
@@ -167,6 +172,11 @@ optimizations = [
 
    (('fdot3', ('vec3', a, 0.0, 0.0), b), ('fmul', a, b)),
    (('fdot3', ('vec3', a, b,   0.0), c), ('fdot2', ('vec2', a, b), c)),
+
+   # If x >= 0 and x <= 1: fsat(1 - x) == 1 - fsat(x) trivially
+   # If x < 0: 1 - fsat(x) => 1 - 0 => 1 and fsat(1 - x) => fsat(> 1) => 1
+   # If x > 1: 1 - fsat(x) => 1 - 1 => 0 and fsat(1 - x) => fsat(< 0) => 0
+   (('~fadd', ('fneg(is_used_once)', ('fsat(is_used_once)', 'a(is_not_fmul)')), 1.0), ('fsat', ('fadd', 1.0, ('fneg', a)))),
 
    # (a * #b + #c) << #d
    # ((a * #b) << #d) + (#c << #d)
@@ -189,6 +199,32 @@ optimizations = [
    (('inot', ('uge', a, b)), ('ult', a, b)),
    (('inot', ('ieq', a, b)), ('ine', a, b)),
    (('inot', ('ine', a, b)), ('ieq', a, b)),
+
+   # This helps some shaders because, after some optimizations, they end up
+   # with patterns like (-a < -b) || (b < a).  In an ideal world, this sort of
+   # matching would be handled by CSE.
+   (('flt', ('fneg', a), ('fneg', b)), ('flt', b, a)),
+   (('fge', ('fneg', a), ('fneg', b)), ('fge', b, a)),
+   (('feq', ('fneg', a), ('fneg', b)), ('feq', b, a)),
+   (('fne', ('fneg', a), ('fneg', b)), ('fne', b, a)),
+   (('flt', ('fneg', a), -1.0), ('flt', 1.0, a)),
+   (('flt', -1.0, ('fneg', a)), ('flt', a, 1.0)),
+   (('fge', ('fneg', a), -1.0), ('fge', 1.0, a)),
+   (('fge', -1.0, ('fneg', a)), ('fge', a, 1.0)),
+   (('fne', ('fneg', a), -1.0), ('fne', 1.0, a)),
+   (('feq', -1.0, ('fneg', a)), ('feq', a, 1.0)),
+
+   (('flt', ('fsat(is_used_once)', a), '#b(is_gt_0_and_lt_1)'), ('flt', a, b)),
+   (('flt', '#b(is_gt_0_and_lt_1)', ('fsat(is_used_once)', a)), ('flt', b, a)),
+   (('fge', ('fsat(is_used_once)', a), '#b(is_gt_0_and_lt_1)'), ('fge', a, b)),
+   (('fge', '#b(is_gt_0_and_lt_1)', ('fsat(is_used_once)', a)), ('fge', b, a)),
+   (('feq', ('fsat(is_used_once)', a), '#b(is_gt_0_and_lt_1)'), ('feq', a, b)),
+   (('fne', ('fsat(is_used_once)', a), '#b(is_gt_0_and_lt_1)'), ('fne', a, b)),
+
+   (('fge', ('fsat(is_used_once)', a), 1.0), ('fge', a, 1.0)),
+   (('flt', ('fsat(is_used_once)', a), 1.0), ('flt', a, 1.0)),
+   (('fge', 0.0, ('fsat(is_used_once)', a)), ('fge', 0.0, a)),
+   (('flt', 0.0, ('fsat(is_used_once)', a)), ('flt', 0.0, a)),
 
    # 0.0 >= b2f(a)
    # b2f(a) <= 0.0
@@ -363,10 +399,15 @@ optimizations = [
    (('imax', a, ('ineg', a)), ('iabs', a)),
    (('~fmin', ('fmax', a, 0.0), 1.0), ('fsat', a), '!options->lower_fsat'),
    (('~fmax', ('fmin', a, 1.0), 0.0), ('fsat', a), '!options->lower_fsat'),
+   (('~fmin', ('fmax', a, -1.0),  0.0), ('fneg', ('fsat', ('fneg', a))), '!options->lower_negate && !options->lower_fsat'),
+   (('~fmax', ('fmin', a,  0.0), -1.0), ('fneg', ('fsat', ('fneg', a))), '!options->lower_negate && !options->lower_fsat'),
    (('fsat', ('fsign', a)), ('b2f', ('flt', 0.0, a))),
    (('fsat', ('b2f', a)), ('b2f', a)),
    (('fsat', a), ('fmin', ('fmax', a, 0.0), 1.0), 'options->lower_fsat'),
    (('fsat', ('fsat', a)), ('fsat', a)),
+   (('fsat', ('fneg(is_used_once)', ('fadd(is_used_once)', a, b))), ('fsat', ('fadd', ('fneg', a), ('fneg', b))), '!options->lower_negate && !options->lower_fsat'),
+   (('fsat', ('fneg(is_used_once)', ('fmul(is_used_once)', a, b))), ('fsat', ('fmul', ('fneg', a), b)), '!options->lower_negate && !options->lower_fsat'),
+   (('fsat', ('fabs(is_used_once)', ('fmul(is_used_once)', a, b))), ('fsat', ('fmul', ('fabs', a), ('fabs', b))), '!options->lower_fsat'),
    (('fmin', ('fmax', ('fmin', ('fmax', a, b), c), b), c), ('fmin', ('fmax', a, b), c)),
    (('imin', ('imax', ('imin', ('imax', a, b), c), b), c), ('imin', ('imax', a, b), c)),
    (('umin', ('umax', ('umin', ('umax', a, b), c), b), c), ('umin', ('umax', a, b), c)),
@@ -556,6 +597,7 @@ optimizations = [
    (('~flog2', ('frsq', a)), ('fmul', -0.5, ('flog2', a))),
    (('~flog2', ('fpow', a, b)), ('fmul', b, ('flog2', a))),
    (('~fmul', ('fexp2(is_used_once)', a), ('fexp2(is_used_once)', b)), ('fexp2', ('fadd', a, b))),
+   (('bcsel', ('flt', a, 0.0), 0.0, ('fsqrt', a)), ('fsqrt', ('fmax', a, 0.0))),
    # Division and reciprocal
    (('~fdiv', 1.0, a), ('frcp', a)),
    (('fdiv', a, b), ('fmul', a, ('frcp', b)), 'options->lower_fdiv'),
@@ -579,9 +621,6 @@ optimizations = [
    (('bcsel', True, b, c), b),
    (('bcsel', False, b, c), c),
    (('bcsel', a, ('b2f(is_used_once)', 'b@32'), ('b2f', 'c@32')), ('b2f', ('bcsel', a, b, c))),
-   # The result of this should be hit by constant propagation and, in the
-   # next round of opt_algebraic, get picked up by one of the above two.
-   (('bcsel', '#a', b, c), ('bcsel', ('ine', 'a', 0), b, c)),
 
    (('bcsel', a, b, b), b),
    (('fcsel', a, b, b), b),
@@ -634,6 +673,15 @@ optimizations = [
    (('ige', b, ('f2u', a)), ('ige', b, ('f2i', a))),
    (('ilt', ('f2u', a), b), ('ilt', ('f2i', a), b)),
    (('ilt', b, ('f2u', a)), ('ilt', b, ('f2i', a))),
+
+   (('~fmin', ('fabs', a), 1.0), ('fsat', ('fabs', a)), '!options->lower_fsat'),
+
+   # The result of the multiply must be in [-1, 0], so the result of the ffma
+   # must be in [0, 1].
+   (('flt', ('fadd', ('fmul', ('fsat', a), ('fneg', ('fsat', a))), 1.0), 0.0), False),
+   (('flt', ('fadd', ('fneg', ('fmul', ('fsat', a), ('fsat', a))), 1.0), 0.0), False),
+   (('fmax', ('fadd', ('fmul', ('fsat', a), ('fneg', ('fsat', a))), 1.0), 0.0), ('fadd', ('fmul', ('fsat', a), ('fneg', ('fsat', a))), 1.0)),
+   (('fmax', ('fadd', ('fneg', ('fmul', ('fsat', a), ('fsat', a))), 1.0), 0.0), ('fadd', ('fneg', ('fmul', ('fsat', a), ('fsat', a))), 1.0)),
 
    # Packing and then unpacking does nothing
    (('unpack_64_2x32_split_x', ('pack_64_2x32_split', a, b)), a),
@@ -690,7 +738,7 @@ optimizations.extend([
    (('iabs', ('isub', 0, a)), ('iabs', a)),
 
    # Propagate negation up multiplication chains
-   (('fmul', ('fneg', a), b), ('fneg', ('fmul', a, b))),
+   (('fmul(is_used_by_non_fsat)', ('fneg', a), b), ('fneg', ('fmul', a, b))),
    (('imul', ('ineg', a), b), ('ineg', ('imul', a, b))),
 
    # Propagate constants up multiplication chains
@@ -1094,7 +1142,42 @@ late_optimizations = [
    (('~feq', ('fadd', a, b), 0.0), ('feq', a, ('fneg', b))),
    (('~fne', ('fadd', a, b), 0.0), ('fne', a, ('fneg', b))),
 
+   # nir_lower_to_source_mods will collapse this, but its existence during the
+   # optimization loop can prevent other optimizations.
+   (('fneg', ('fneg', a)), a),
+
+   # These are duplicated from the main optimizations table.  The late
+   # patterns that rearrange expressions like x - .5 < 0 to x < .5 can create
+   # new patterns like these.  The patterns that compare with zero are removed
+   # because they are unlikely to be created in by anything in
+   # late_optimizations.
+   (('flt', ('fsat(is_used_once)', a), '#b(is_gt_0_and_lt_1)'), ('flt', a, b)),
+   (('flt', '#b(is_gt_0_and_lt_1)', ('fsat(is_used_once)', a)), ('flt', b, a)),
+   (('fge', ('fsat(is_used_once)', a), '#b(is_gt_0_and_lt_1)'), ('fge', a, b)),
+   (('fge', '#b(is_gt_0_and_lt_1)', ('fsat(is_used_once)', a)), ('fge', b, a)),
+   (('feq', ('fsat(is_used_once)', a), '#b(is_gt_0_and_lt_1)'), ('feq', a, b)),
+   (('fne', ('fsat(is_used_once)', a), '#b(is_gt_0_and_lt_1)'), ('fne', a, b)),
+
+   (('fge', ('fsat(is_used_once)', a), 1.0), ('fge', a, 1.0)),
+   (('flt', ('fsat(is_used_once)', a), 1.0), ('flt', a, 1.0)),
+
    (('~fge', ('fmin(is_used_once)', ('fadd(is_used_once)', a, b), ('fadd', c, d)), 0.0), ('iand', ('fge', a, ('fneg', b)), ('fge', c, ('fneg', d)))),
+
+   (('flt', ('fneg', a), ('fneg', b)), ('flt', b, a)),
+   (('fge', ('fneg', a), ('fneg', b)), ('fge', b, a)),
+   (('feq', ('fneg', a), ('fneg', b)), ('feq', b, a)),
+   (('fne', ('fneg', a), ('fneg', b)), ('fne', b, a)),
+   (('flt', ('fneg', a), -1.0), ('flt', 1.0, a)),
+   (('flt', -1.0, ('fneg', a)), ('flt', a, 1.0)),
+   (('fge', ('fneg', a), -1.0), ('fge', 1.0, a)),
+   (('fge', -1.0, ('fneg', a)), ('fge', a, 1.0)),
+   (('fne', ('fneg', a), -1.0), ('fne', 1.0, a)),
+   (('feq', -1.0, ('fneg', a)), ('feq', a, 1.0)),
+
+   (('ior', a, a), a),
+   (('iand', a, a), a),
+
+   (('~fadd', ('fneg(is_used_once)', ('fsat(is_used_once)', 'a(is_not_fmul)')), 1.0), ('fsat', ('fadd', 1.0, ('fneg', a)))),
 
    (('fdot2', a, b), ('fdot_replicated2', a, b), 'options->fdot_replicates'),
    (('fdot3', a, b), ('fdot_replicated3', a, b), 'options->fdot_replicates'),
@@ -1103,9 +1186,6 @@ late_optimizations = [
 
    (('~flrp@32', ('fadd(is_used_once)', a, b), ('fadd(is_used_once)', a, c), d), ('fadd', ('flrp', b, c, d), a)),
    (('~flrp@64', ('fadd(is_used_once)', a, b), ('fadd(is_used_once)', a, c), d), ('fadd', ('flrp', b, c, d), a)),
-
-   (('b2f(is_used_more_than_once)', ('inot', 'a@1')), ('bcsel', a, 0.0, 1.0)),
-   (('fneg(is_used_more_than_once)', ('b2f', ('inot', 'a@1'))), ('bcsel', a, -0.0, -1.0)),
 
    (('~fadd@32', 1.0, ('fmul(is_used_once)', c , ('fadd', b, -1.0 ))), ('fadd', ('fadd', 1.0, ('fneg', c)), ('fmul', b, c)), 'options->lower_flrp32'),
    (('~fadd@64', 1.0, ('fmul(is_used_once)', c , ('fadd', b, -1.0 ))), ('fadd', ('fadd', 1.0, ('fneg', c)), ('fmul', b, c)), 'options->lower_flrp64'),

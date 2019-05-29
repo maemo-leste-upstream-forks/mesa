@@ -82,10 +82,10 @@ virgl_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return vscreen->caps.caps.v1.bset.mirror_clamp;
    case PIPE_CAP_TEXTURE_SWIZZLE:
       return 1;
-   case PIPE_CAP_MAX_TEXTURE_2D_LEVELS:
+   case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
       if (vscreen->caps.caps.v2.max_texture_2d_size)
-         return 1 + util_logbase2(vscreen->caps.caps.v2.max_texture_2d_size);
-      return 15; /* 16K x 16K */
+         return vscreen->caps.caps.v2.max_texture_2d_size;
+      return 16384;
    case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
       if (vscreen->caps.caps.v2.max_texture_3d_size)
          return 1 + util_logbase2(vscreen->caps.caps.v2.max_texture_3d_size);
@@ -246,8 +246,9 @@ virgl_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return vscreen->caps.caps.v2.capability_bits & VIRGL_CAP_FB_NO_ATTACH;
    case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
       return vscreen->caps.caps.v2.capability_bits & VIRGL_CAP_ROBUST_BUFFER_ACCESS;
-   case PIPE_CAP_TGSI_FS_FBFETCH:
-      return vscreen->caps.caps.v2.capability_bits & VIRGL_CAP_TGSI_FBFETCH;
+   case PIPE_CAP_FBFETCH:
+      return (vscreen->caps.caps.v2.capability_bits &
+              VIRGL_CAP_TGSI_FBFETCH) ? 1 : 0;
    case PIPE_CAP_TGSI_CLOCK:
       return vscreen->caps.caps.v2.capability_bits & VIRGL_CAP_SHADER_CLOCK;
    case PIPE_CAP_TGSI_ARRAY_COMPONENTS:

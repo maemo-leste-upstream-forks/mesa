@@ -317,9 +317,8 @@ static void si_set_global_binding(
 	}
 }
 
-static void si_initialize_compute(struct si_context *sctx)
+void si_emit_initial_compute_regs(struct si_context *sctx, struct radeon_cmdbuf *cs)
 {
-	struct radeon_cmdbuf *cs = sctx->gfx_cs;
 	uint64_t bc_va;
 
 	radeon_set_sh_reg_seq(cs, R_00B858_COMPUTE_STATIC_THREAD_MGMT_SE0, 2);
@@ -327,7 +326,7 @@ static void si_initialize_compute(struct si_context *sctx)
 	radeon_emit(cs, S_00B858_SH0_CU_EN(0xffff) | S_00B858_SH1_CU_EN(0xffff));
 	radeon_emit(cs, S_00B85C_SH0_CU_EN(0xffff) | S_00B85C_SH1_CU_EN(0xffff));
 
-	if (sctx->chip_class >= CIK) {
+	if (sctx->chip_class >= GFX7) {
 		/* Also set R_00B858_COMPUTE_STATIC_THREAD_MGMT_SE2 / SE3 */
 		radeon_set_sh_reg_seq(cs,
 		                     R_00B864_COMPUTE_STATIC_THREAD_MGMT_SE2, 2);
@@ -342,7 +341,7 @@ static void si_initialize_compute(struct si_context *sctx)
 	 * kernel if we want to use something other than the default value,
 	 * which is now 0x22f.
 	 */
-	if (sctx->chip_class <= SI) {
+	if (sctx->chip_class <= GFX6) {
 		/* XXX: This should be:
 		 * (number of compute units) * 4 * (waves per simd) - 1 */
 
@@ -353,7 +352,7 @@ static void si_initialize_compute(struct si_context *sctx)
 	/* Set the pointer to border colors. */
 	bc_va = sctx->border_color_buffer->gpu_address;
 
-	if (sctx->chip_class >= CIK) {
+	if (sctx->chip_class >= GFX7) {
 		radeon_set_uconfig_reg_seq(cs, R_030E00_TA_CS_BC_BASE_ADDR, 2);
 		radeon_emit(cs, bc_va >> 8);  /* R_030E00_TA_CS_BC_BASE_ADDR */
 		radeon_emit(cs, S_030E04_ADDRESS(bc_va >> 40)); /* R_030E04_TA_CS_BC_BASE_ADDR_HI */
@@ -363,9 +362,6 @@ static void si_initialize_compute(struct si_context *sctx)
 					      bc_va >> 8);
 		}
 	}
-
-	sctx->cs_shader_state.emitted_program = NULL;
-	sctx->cs_shader_state.initialized = true;
 }
 
 static bool si_setup_compute_scratch_buffer(struct si_context *sctx,
@@ -434,12 +430,12 @@ static bool si_switch_compute_shader(struct si_context *sctx,
 		}
 
 		lds_blocks = config->lds_size;
-		/* XXX: We are over allocating LDS.  For SI, the shader reports
+		/* XXX: We are over allocating LDS.  For GFX6, the shader reports
 		* LDS in blocks of 256 bytes, so if there are 4 bytes lds
 		* allocated in the shader and 4 bytes allocated by the state
 		* tracker, then we will set LDS_SIZE to 512 bytes rather than 256.
 		*/
-		if (sctx->chip_class <= SI) {
+		if (sctx->chip_class <= GFX6) {
 			lds_blocks += align(program->local_size, 256) >> 8;
 		} else {
 			lds_blocks += align(program->local_size, 512) >> 9;
@@ -474,7 +470,7 @@ static bool si_switch_compute_shader(struct si_context *sctx,
 	 * command. However, that would add more complexity and we're likely
 	 * to get a shader state change in that case anyway.
 	 */
-	if (sctx->chip_class >= CIK) {
+	if (sctx->chip_class >= GFX7) {
 		cik_prefetch_TC_L2_async(sctx, &program->shader.bo->b.b,
 					 0, program->shader.bo->b.b.width0);
 	}
@@ -539,7 +535,7 @@ static void setup_scratch_rsrc_user_sgprs(struct si_context *sctx,
 	} else {
 		scratch_dword3 |= S_008F0C_ELEMENT_SIZE(max_private_element_size);
 
-		if (sctx->chip_class < VI) {
+		if (sctx->chip_class < GFX8) {
 			/* BUF_DATA_FORMAT is ignored, but it cannot be
 			 * BUF_DATA_FORMAT_INVALID. */
 			scratch_dword3 |=
@@ -726,7 +722,7 @@ static void si_setup_tgsi_user_data(struct si_context *sctx,
 	if (info->indirect) {
 		if (program->uses_grid_size) {
 			for (unsigned i = 0; i < 3; ++i) {
-				si_cp_copy_data(sctx,
+				si_cp_copy_data(sctx, sctx->gfx_cs,
 						COPY_DATA_REG, NULL, (grid_size_reg >> 2) + i,
 						COPY_DATA_SRC_MEM, si_resource(info->indirect),
 						info->indirect_offset + 4 * i);
@@ -753,18 +749,15 @@ static void si_setup_tgsi_user_data(struct si_context *sctx,
 	}
 }
 
-static void si_emit_dispatch_packets(struct si_context *sctx,
-                                     const struct pipe_grid_info *info)
+unsigned si_get_compute_resource_limits(struct si_screen *sscreen,
+					unsigned waves_per_threadgroup,
+					unsigned max_waves_per_sh,
+					unsigned threadgroups_per_cu)
 {
-	struct si_screen *sscreen = sctx->screen;
-	struct radeon_cmdbuf *cs = sctx->gfx_cs;
-	bool render_cond_bit = sctx->render_cond && !sctx->render_cond_force_off;
-	unsigned waves_per_threadgroup =
-		DIV_ROUND_UP(info->block[0] * info->block[1] * info->block[2], 64);
 	unsigned compute_resource_limits =
 		S_00B854_SIMD_DEST_CNTL(waves_per_threadgroup % 4 == 0);
 
-	if (sctx->chip_class >= CIK) {
+	if (sscreen->info.chip_class >= GFX7) {
 		unsigned num_cu_per_se = sscreen->info.num_good_compute_units /
 					 sscreen->info.max_se;
 
@@ -775,24 +768,38 @@ static void si_emit_dispatch_packets(struct si_context *sctx,
 		if (num_cu_per_se % 4 && waves_per_threadgroup == 1)
 			compute_resource_limits |= S_00B854_FORCE_SIMD_DIST(1);
 
-		compute_resource_limits |= S_00B854_WAVES_PER_SH(sctx->cs_max_waves_per_sh);
+		assert(threadgroups_per_cu >= 1 && threadgroups_per_cu <= 8);
+		compute_resource_limits |= S_00B854_WAVES_PER_SH(max_waves_per_sh) |
+					   S_00B854_CU_GROUP_COUNT(threadgroups_per_cu - 1);
 	} else {
-		/* SI */
-		if (sctx->cs_max_waves_per_sh) {
-			unsigned limit_div16 = DIV_ROUND_UP(sctx->cs_max_waves_per_sh, 16);
+		/* GFX6 */
+		if (max_waves_per_sh) {
+			unsigned limit_div16 = DIV_ROUND_UP(max_waves_per_sh, 16);
 			compute_resource_limits |= S_00B854_WAVES_PER_SH_SI(limit_div16);
 		}
 	}
+	return compute_resource_limits;
+}
+
+static void si_emit_dispatch_packets(struct si_context *sctx,
+                                     const struct pipe_grid_info *info)
+{
+	struct si_screen *sscreen = sctx->screen;
+	struct radeon_cmdbuf *cs = sctx->gfx_cs;
+	bool render_cond_bit = sctx->render_cond && !sctx->render_cond_force_off;
+	unsigned waves_per_threadgroup =
+		DIV_ROUND_UP(info->block[0] * info->block[1] * info->block[2], 64);
 
 	radeon_set_sh_reg(cs, R_00B854_COMPUTE_RESOURCE_LIMITS,
-			  compute_resource_limits);
+			  si_get_compute_resource_limits(sscreen, waves_per_threadgroup,
+							 sctx->cs_max_waves_per_sh, 1));
 
 	unsigned dispatch_initiator =
 		S_00B800_COMPUTE_SHADER_EN(1) |
 		S_00B800_FORCE_START_AT_000(1) |
 		/* If the KMD allows it (there is a KMD hw register for it),
 		 * allow launching waves out-of-order. (same as Vulkan) */
-		S_00B800_ORDER_MODE(sctx->chip_class >= CIK);
+		S_00B800_ORDER_MODE(sctx->chip_class >= GFX7);
 
 	const uint *last_block = info->last_block;
 	bool partial_block_en = last_block[0] || last_block[1] || last_block[2];
@@ -861,10 +868,10 @@ static void si_launch_grid(
 	 * compute isn't used, i.e. only one compute job can run at a time.
 	 * If async compute is possible, the threadgroup size must be limited
 	 * to 256 threads on all queues to avoid the bug.
-	 * Only SI and certain CIK chips are affected.
+	 * Only GFX6 and certain GFX7 chips are affected.
 	 */
 	bool cs_regalloc_hang =
-		(sctx->chip_class == SI ||
+		(sctx->chip_class == GFX6 ||
 		 sctx->family == CHIP_BONAIRE ||
 		 sctx->family == CHIP_KABINI) &&
 		info->block[0] * info->block[1] * info->block[2] > 256;
@@ -894,7 +901,7 @@ static void si_launch_grid(
 		si_context_add_resource_size(sctx, info->indirect);
 
 		/* Indirect buffers use TC L2 on GFX9, but not older hw. */
-		if (sctx->chip_class <= VI &&
+		if (sctx->chip_class <= GFX8 &&
 		    si_resource(info->indirect)->TC_L2_dirty) {
 			sctx->flags |= SI_CONTEXT_WRITEBACK_GLOBAL_L2;
 			si_resource(info->indirect)->TC_L2_dirty = false;
@@ -906,8 +913,12 @@ static void si_launch_grid(
 	if (sctx->bo_list_add_all_compute_resources)
 		si_compute_resources_add_all_to_bo_list(sctx);
 
-	if (!sctx->cs_shader_state.initialized)
-		si_initialize_compute(sctx);
+	if (!sctx->cs_shader_state.initialized) {
+		si_emit_initial_compute_regs(sctx, sctx->gfx_cs);
+
+		sctx->cs_shader_state.emitted_program = NULL;
+		sctx->cs_shader_state.initialized = true;
+	}
 
 	if (sctx->flags)
 		si_emit_cache_flush(sctx);

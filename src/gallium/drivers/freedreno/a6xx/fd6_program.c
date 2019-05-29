@@ -285,6 +285,19 @@ setup_stages(struct fd6_program_state *state, struct stage *s, bool binning_pass
 			s[i].instrlen = 0;
 		}
 	}
+
+	/* since we share the constant state w/ VS we need to make sure
+	 * constlen is sufficiently large for full VS, even if the binning
+	 * pass shader doesn't use them all
+	 */
+	if (binning_pass) {
+		s[VS].constlen = MAX2(s[VS].constlen, align(state->bs->constlen, 4));
+	} else {
+		/* It should be impossible for VS to have smaller constlen than BS
+		 * since BS is just a subset of VS.
+		 */
+		debug_assert(s[VS].constlen >= state->bs->constlen);
+	}
 }
 
 static inline uint32_t
@@ -312,6 +325,8 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd6_program_state *state,
 	enum a3xx_threadsize fssz;
 	uint8_t psize_loc = ~0;
 	int i, j;
+
+	OUT_WFI5(ring);
 
 	setup_stages(state, s, binning_pass);
 

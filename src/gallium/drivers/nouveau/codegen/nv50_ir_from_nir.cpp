@@ -1330,15 +1330,15 @@ bool Converter::assignSlots() {
          else
             info->out[vary].mask |= ((1 << comp) - 1) << frac;
 
-         if (nir->info.outputs_read & 1ll << slot)
+         if (nir->info.outputs_read & 1ull << slot)
             info->out[vary].oread = 1;
       }
       info->numOutputs = std::max<uint8_t>(info->numOutputs, vary);
    }
 
    info->numSysVals = 0;
-   for (uint8_t i = 0; i < 64; ++i) {
-      if (!(nir->info.system_values_read & 1ll << i))
+   for (uint8_t i = 0; i < SYSTEM_VALUE_MAX; ++i) {
+      if (!(nir->info.system_values_read & 1ull << i))
          continue;
 
       system_val_to_tgsi_semantic(i, &name, &index);
@@ -2845,8 +2845,7 @@ Converter::visit(nir_alu_instr *insn)
    // those are weird ALU ops and need special handling, because
    //   1. they are always componend based
    //   2. they basically just merge multiple values into one data type
-   case nir_op_imov:
-   case nir_op_fmov:
+   case nir_op_mov:
       if (!insn->dest.dest.is_ssa && insn->dest.dest.reg.reg->num_array_elems) {
          nir_reg_dest& reg = insn->dest.dest.reg;
          uint32_t goffset = regToLmemOffset[reg.reg->index];

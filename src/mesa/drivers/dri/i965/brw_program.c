@@ -869,45 +869,29 @@ brw_assign_common_binding_table_offsets(const struct gen_device_info *devinfo,
 }
 
 void
-brw_prog_key_set_id(union brw_any_prog_key *key, gl_shader_stage stage,
-                    unsigned id)
-{
-   static const unsigned stage_offsets[] = {
-      offsetof(struct brw_vs_prog_key, program_string_id),
-      offsetof(struct brw_tcs_prog_key, program_string_id),
-      offsetof(struct brw_tes_prog_key, program_string_id),
-      offsetof(struct brw_gs_prog_key, program_string_id),
-      offsetof(struct brw_wm_prog_key, program_string_id),
-      offsetof(struct brw_cs_prog_key, program_string_id),
-   };
-   assert((int)stage >= 0 && stage < ARRAY_SIZE(stage_offsets));
-   *(unsigned*)((uint8_t*)key + stage_offsets[stage]) = id;
-}
-
-void
-brw_populate_default_key(const struct gen_device_info *devinfo,
+brw_populate_default_key(const struct brw_compiler *compiler,
                          union brw_any_prog_key *prog_key,
                          struct gl_shader_program *sh_prog,
                          struct gl_program *prog)
 {
    switch (prog->info.stage) {
    case MESA_SHADER_VERTEX:
-      brw_vs_populate_default_key(devinfo, &prog_key->vs, prog);
+      brw_vs_populate_default_key(compiler, &prog_key->vs, prog);
       break;
    case MESA_SHADER_TESS_CTRL:
-      brw_tcs_populate_default_key(devinfo, &prog_key->tcs, sh_prog, prog);
+      brw_tcs_populate_default_key(compiler, &prog_key->tcs, sh_prog, prog);
       break;
    case MESA_SHADER_TESS_EVAL:
-      brw_tes_populate_default_key(devinfo, &prog_key->tes, sh_prog, prog);
+      brw_tes_populate_default_key(compiler, &prog_key->tes, sh_prog, prog);
       break;
    case MESA_SHADER_GEOMETRY:
-      brw_gs_populate_default_key(devinfo, &prog_key->gs, prog);
+      brw_gs_populate_default_key(compiler, &prog_key->gs, prog);
       break;
    case MESA_SHADER_FRAGMENT:
-      brw_wm_populate_default_key(devinfo, &prog_key->wm, prog);
+      brw_wm_populate_default_key(compiler, &prog_key->wm, prog);
       break;
    case MESA_SHADER_COMPUTE:
-      brw_cs_populate_default_key(devinfo, &prog_key->cs, prog);
+      brw_cs_populate_default_key(compiler, &prog_key->cs, prog);
       break;
    default:
       unreachable("Unsupported stage!");

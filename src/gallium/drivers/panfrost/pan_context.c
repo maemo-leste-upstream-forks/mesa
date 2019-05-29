@@ -438,8 +438,7 @@ translate_tex_wrap(enum pipe_tex_wrap w)
                 return MALI_WRAP_MIRRORED_REPEAT;
 
         default:
-                assert(0);
-                return 0;
+                unreachable("Invalid wrap");
         }
 }
 
@@ -454,8 +453,7 @@ translate_tex_filter(enum pipe_tex_filter f)
                 return MALI_LINEAR;
 
         default:
-                assert(0);
-                return 0;
+                unreachable("Invalid filter");
         }
 }
 
@@ -492,10 +490,10 @@ panfrost_translate_compare_func(enum pipe_compare_func in)
 
         case PIPE_FUNC_ALWAYS:
                 return MALI_FUNC_ALWAYS;
-        }
 
-        assert (0);
-        return 0; /* Unreachable */
+        default:
+                unreachable("Invalid func");
+        }
 }
 
 static unsigned
@@ -525,10 +523,10 @@ panfrost_translate_alt_compare_func(enum pipe_compare_func in)
 
         case PIPE_FUNC_ALWAYS:
                 return MALI_ALT_FUNC_ALWAYS;
-        }
 
-        assert (0);
-        return 0; /* Unreachable */
+        default:
+                unreachable("Invalid alt func");
+        }
 }
 
 static unsigned
@@ -558,10 +556,10 @@ panfrost_translate_stencil_op(enum pipe_stencil_op in)
 
         case PIPE_STENCIL_OP_INVERT:
                 return MALI_STENCIL_INVERT;
-        }
 
-        assert (0);
-        return 0; /* Unreachable */
+        default:
+                unreachable("Invalid stencil op");
+        }
 }
 
 static void
@@ -1011,6 +1009,7 @@ panfrost_emit_for_draw(struct panfrost_context *ctx, bool with_vertex_data)
 
                         if (!ctx->blend->has_blend_shader) {
                                 ctx->fragment_shader_core.blend.equation = ctx->blend->equation;
+                                ctx->fragment_shader_core.blend.constant = ctx->blend->constant;
                         }
 
                         if (!no_blending) {
@@ -1052,10 +1051,12 @@ panfrost_emit_for_draw(struct panfrost_context *ctx, bool with_vertex_data)
                         for (unsigned i = 0; i < 1; ++i) {
                                 rts[i].flags = blend_count;
 
-                                if (ctx->blend->has_blend_shader)
+                                if (ctx->blend->has_blend_shader) {
                                         rts[i].blend.shader = ctx->blend->blend_shader;
-                                else
+                                } else {
                                         rts[i].blend.equation = ctx->blend->equation;
+                                        rts[i].blend.constant = ctx->blend->constant;
+                                }
                         }
 
                         memcpy(transfer.cpu + sizeof(struct mali_shader_meta), rts, sizeof(rts[0]) * 1);
@@ -1113,6 +1114,17 @@ panfrost_emit_for_draw(struct panfrost_context *ctx, bool with_vertex_data)
                                                         rsrc->bo->slices[l].offset +
                                                         f * rsrc->bo->cubemap_stride;
                                         }
+                                }
+
+                                /* Inject the strides */
+                                unsigned usage2 = ctx->sampler_views[t][i]->hw.format.usage2;
+
+                                if (usage2 & MALI_TEX_MANUAL_STRIDE) {
+                                        unsigned idx = tex_rsrc->last_level * tex_rsrc->array_size;
+                                        idx += tex_rsrc->array_size;
+
+                                        ctx->sampler_views[t][i]->hw.swizzled_bitmaps[idx] =
+                                                rsrc->bo->slices[0].stride;
                                 }
 
                                 trampolines[i] = panfrost_upload_transient(ctx, &ctx->sampler_views[t][i]->hw, sizeof(struct mali_texture_descriptor));
@@ -1189,8 +1201,7 @@ panfrost_emit_for_draw(struct panfrost_context *ctx, bool with_vertex_data)
                         break;
 
                 default:
-                        DBG("Unknown shader stage %d in uniform upload\n", i);
-                        assert(0);
+                        unreachable("Invalid shader stage\n");
                 }
 
                 /* Also attach the same buffer as a UBO for extended access */
@@ -1421,9 +1432,7 @@ g2m_draw_mode(enum pipe_prim_type mode)
                 DEFINE_CASE(POLYGON);
 
         default:
-                DBG("Illegal draw mode %d\n", mode);
-                assert(0);
-                return MALI_LINE_LOOP;
+                unreachable("Invalid draw mode");
         }
 }
 
@@ -1443,9 +1452,7 @@ panfrost_translate_index_size(unsigned size)
                 return MALI_DRAW_INDEXED_UINT32;
 
         default:
-                DBG("Unknown index size %d\n", size);
-                assert(0);
-                return 0;
+                unreachable("Invalid index size");
         }
 }
 
@@ -1665,15 +1672,6 @@ panfrost_bind_vertex_elements_state(
         ctx->dirty |= PAN_DIRTY_VERTEX;
 }
 
-static void
-panfrost_delete_vertex_elements_state(struct pipe_context *pctx, void *hwcso)
-{
-        struct panfrost_vertex_state *so = (struct panfrost_vertex_state *) hwcso;
-        unsigned bytes = sizeof(struct mali_attr_meta) * so->num_elements;
-        DBG("Vertex elements delete leaks descriptor (%d bytes)\n", bytes);
-        free(hwcso);
-}
-
 static void *
 panfrost_create_shader_state(
         struct pipe_context *pctx,
@@ -1700,9 +1698,6 @@ panfrost_delete_shader_state(
         if (cso->base.type == PIPE_SHADER_IR_TGSI) {
                 DBG("Deleting TGSI shader leaks duplicated tokens\n");
         }
-
-        unsigned leak = cso->variant_count * sizeof(struct mali_shader_meta);
-        DBG("Deleting shader state leaks descriptors (%d bytes), and shader bytecode\n", leak);
 
         free(so);
 }
@@ -1951,6 +1946,7 @@ panfrost_create_sampler_view(
         pipe_reference(NULL, &texture->reference);
 
         struct panfrost_resource *prsrc = (struct panfrost_resource *) texture;
+        assert(prsrc->bo);
 
         so->base = *template;
         so->base.texture = texture;
@@ -1993,6 +1989,19 @@ panfrost_create_sampler_view(
                 default:
                         assert(0);
                         break;
+        }
+
+        /* Check if we need to set a custom stride by computing the "expected"
+         * stride and comparing it to what the BO actually wants. Only applies
+         * to linear textures TODO: Mipmap? */
+
+        unsigned actual_stride = prsrc->bo->slices[0].stride;
+
+        if (prsrc->bo->layout == PAN_LINEAR &&
+            template->u.tex.last_level == 0 &&
+            template->u.tex.first_level == 0 &&
+            (texture->width0 * bytes_per_pixel) != actual_stride) {
+                usage2_layout |= MALI_TEX_MANUAL_STRIDE;
         }
 
         struct mali_texture_descriptor texture_descriptor = {
@@ -2048,13 +2057,10 @@ panfrost_set_sampler_views(
 static void
 panfrost_sampler_view_destroy(
         struct pipe_context *pctx,
-        struct pipe_sampler_view *views)
+        struct pipe_sampler_view *view)
 {
-        //struct panfrost_context *ctx = pan_context(pctx);
-
-        /* TODO */
-
-        free(views);
+        pipe_resource_reference(&view->texture, NULL);
+        free(view);
 }
 
 static void
@@ -2154,7 +2160,7 @@ panfrost_create_blend_state(struct pipe_context *pipe,
 
         /* Compile the blend state, first as fixed-function if we can */
 
-        if (panfrost_make_fixed_blend_mode(&blend->rt[0], &so->equation, blend->rt[0].colormask, &ctx->blend_color))
+        if (panfrost_make_fixed_blend_mode(&blend->rt[0], so, blend->rt[0].colormask, &ctx->blend_color))
                 return so;
 
         /* If we can't, compile a blend shader instead */
@@ -2549,7 +2555,7 @@ panfrost_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
 
         gallium->create_vertex_elements_state = panfrost_create_vertex_elements_state;
         gallium->bind_vertex_elements_state = panfrost_bind_vertex_elements_state;
-        gallium->delete_vertex_elements_state = panfrost_delete_vertex_elements_state;
+        gallium->delete_vertex_elements_state = panfrost_generic_cso_delete;
 
         gallium->create_fs_state = panfrost_create_shader_state;
         gallium->delete_fs_state = panfrost_delete_shader_state;

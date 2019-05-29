@@ -112,7 +112,8 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
    switch (param) {
    /* non-boolean caps */
-   case PIPE_CAP_MAX_TEXTURE_2D_LEVELS:
+   case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
+      return 16384;
    case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
       return 15;
    case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
@@ -279,8 +280,8 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 1;
    case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
       return nouveau_screen(pscreen)->vram_domain & NOUVEAU_BO_VRAM ? 1 : 0;
-   case PIPE_CAP_TGSI_FS_FBFETCH:
-      return class_3d >= NVE4_3D_CLASS; /* needs testing on fermi */
+   case PIPE_CAP_FBFETCH:
+      return class_3d >= NVE4_3D_CLASS ? 1 : 0; /* needs testing on fermi */
    case PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE:
    case PIPE_CAP_TGSI_BALLOT:
       return class_3d >= NVE4_3D_CLASS;

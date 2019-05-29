@@ -58,8 +58,8 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    /* non-boolean capabilities */
    case PIPE_CAP_MAX_RENDER_TARGETS:
       return (eng3d->oclass >= NV40_3D_CLASS) ? 4 : 1;
-   case PIPE_CAP_MAX_TEXTURE_2D_LEVELS:
-      return 13;
+   case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
+      return 4096;
    case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
       return 10;
    case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
@@ -212,7 +212,7 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_TGSI_CAN_READ_OUTPUTS:
    case PIPE_CAP_NATIVE_FENCE_FD:
    case PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY:
-   case PIPE_CAP_TGSI_FS_FBFETCH:
+   case PIPE_CAP_FBFETCH:
    case PIPE_CAP_TGSI_MUL_ZERO_WINS:
    case PIPE_CAP_DOUBLES:
    case PIPE_CAP_INT64:

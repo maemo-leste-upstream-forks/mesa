@@ -604,6 +604,7 @@ build_addr_iadd(nir_builder *b, nir_ssa_def *addr,
    switch (addr_format) {
    case nir_address_format_32bit_global:
    case nir_address_format_64bit_global:
+   case nir_address_format_32bit_offset:
       assert(addr->num_components == 1);
       return nir_iadd(b, addr, offset);
 
@@ -618,6 +619,8 @@ build_addr_iadd(nir_builder *b, nir_ssa_def *addr,
       assert(addr->num_components == 2);
       return nir_vec2(b, nir_channel(b, addr, 0),
                          nir_iadd(b, nir_channel(b, addr, 1), offset));
+   case nir_address_format_logical:
+      unreachable("Unsupported address format");
    }
    unreachable("Invalid address format");
 }
@@ -673,6 +676,8 @@ addr_to_global(nir_builder *b, nir_ssa_def *addr,
                          nir_u2u64(b, nir_channel(b, addr, 3)));
 
    case nir_address_format_32bit_index_offset:
+   case nir_address_format_32bit_offset:
+   case nir_address_format_logical:
       unreachable("Cannot get a 64-bit address with this address format");
    }
 
@@ -1224,4 +1229,24 @@ nir_get_io_vertex_index_src(nir_intrinsic_instr *instr)
    default:
       return NULL;
    }
+}
+
+/**
+ * Return the numeric constant that identify a NULL pointer for each address
+ * format.
+ */
+const nir_const_value *
+nir_address_format_null_value(nir_address_format addr_format)
+{
+   const static nir_const_value null_values[][NIR_MAX_VEC_COMPONENTS] = {
+      [nir_address_format_32bit_global] = {{0}},
+      [nir_address_format_64bit_global] = {{0}},
+      [nir_address_format_64bit_bounded_global] = {{0}},
+      [nir_address_format_32bit_index_offset] = {{.u32 = ~0}, {.u32 = ~0}},
+      [nir_address_format_32bit_offset] = {{.u32 = ~0}},
+      [nir_address_format_logical] = {{.u32 = ~0}},
+   };
+
+   assert(addr_format < ARRAY_SIZE(null_values));
+   return null_values[addr_format];
 }

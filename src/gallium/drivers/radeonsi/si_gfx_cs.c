@@ -24,6 +24,8 @@
  */
 
 #include "si_pipe.h"
+#include "si_build_pm4.h"
+#include "sid.h"
 
 #include "util/os_time.h"
 #include "util/u_upload_mgr.h"
@@ -55,7 +57,7 @@ void si_need_gfx_cs_space(struct si_context *ctx)
 	ctx->vram = 0;
 
 	unsigned need_dwords = si_get_minimum_num_gfx_cs_dwords(ctx);
-	if (!ctx->ws->cs_check_space(cs, need_dwords))
+	if (!ctx->ws->cs_check_space(cs, need_dwords, false))
 		si_flush_gfx_cs(ctx, RADEON_FLUSH_ASYNC_START_NEXT_GFX_IB_NOW, NULL);
 }
 
@@ -82,7 +84,7 @@ void si_flush_gfx_cs(struct si_context *ctx, unsigned flags,
 		wait_flags |= SI_CONTEXT_PS_PARTIAL_FLUSH |
 			      SI_CONTEXT_CS_PARTIAL_FLUSH |
 			      SI_CONTEXT_INV_GLOBAL_L2;
-	} else if (ctx->chip_class == SI) {
+	} else if (ctx->chip_class == GFX6) {
 		/* The kernel flushes L2 before shaders are finished. */
 		wait_flags |= SI_CONTEXT_PS_PARTIAL_FLUSH |
 			      SI_CONTEXT_CS_PARTIAL_FLUSH;
@@ -134,6 +136,24 @@ void si_flush_gfx_cs(struct si_context *ctx, unsigned flags,
 	if (radeon_emitted(ctx->dma_cs, 0))
 		si_flush_dma_cs(ctx, flags, NULL);
 
+	if (radeon_emitted(ctx->prim_discard_compute_cs, 0)) {
+		struct radeon_cmdbuf *compute_cs = ctx->prim_discard_compute_cs;
+		si_compute_signal_gfx(ctx);
+
+		/* Make sure compute shaders are idle before leaving the IB, so that
+		 * the next IB doesn't overwrite GDS that might be in use. */
+		radeon_emit(compute_cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
+		radeon_emit(compute_cs, EVENT_TYPE(V_028A90_CS_PARTIAL_FLUSH) |
+					EVENT_INDEX(4));
+
+		/* Save the GDS prim restart counter if needed. */
+		if (ctx->preserve_prim_restart_gds_at_flush) {
+			si_cp_copy_data(ctx, compute_cs,
+					COPY_DATA_DST_MEM, ctx->wait_mem_scratch, 4,
+					COPY_DATA_GDS, NULL, 4);
+		}
+	}
+
 	if (ctx->has_graphics) {
 		if (!LIST_IS_EMPTY(&ctx->active_queries))
 			si_suspend_queries(ctx);
@@ -147,7 +167,7 @@ void si_flush_gfx_cs(struct si_context *ctx, unsigned flags,
 
 	/* Make sure CP DMA is idle at the end of IBs after L2 prefetches
 	 * because the kernel doesn't wait for it. */
-	if (ctx->chip_class >= CIK)
+	if (ctx->chip_class >= GFX7)
 		si_cp_dma_wait_for_idle(ctx);
 
 	/* Wait for draw calls to finish if needed. */
@@ -168,12 +188,49 @@ void si_flush_gfx_cs(struct si_context *ctx, unsigned flags,
 		si_log_hw_flush(ctx);
 	}
 
+	if (si_compute_prim_discard_enabled(ctx)) {
+		/* The compute IB can start after the previous gfx IB starts. */
+		if (radeon_emitted(ctx->prim_discard_compute_cs, 0) &&
+		    ctx->last_gfx_fence) {
+			ctx->ws->cs_add_fence_dependency(ctx->gfx_cs,
+							 ctx->last_gfx_fence,
+							 RADEON_DEPENDENCY_PARALLEL_COMPUTE_ONLY |
+							 RADEON_DEPENDENCY_START_FENCE);
+		}
+
+		/* Remember the last execution barrier. It's in the IB.
+		 * It will signal the start of the next compute IB.
+		 */
+		if (flags & RADEON_FLUSH_START_NEXT_GFX_IB_NOW &&
+		    ctx->last_pkt3_write_data) {
+			*ctx->last_pkt3_write_data = PKT3(PKT3_WRITE_DATA, 3, 0);
+			ctx->last_pkt3_write_data = NULL;
+
+			si_resource_reference(&ctx->last_ib_barrier_buf, ctx->barrier_buf);
+			ctx->last_ib_barrier_buf_offset = ctx->barrier_buf_offset;
+			si_resource_reference(&ctx->barrier_buf, NULL);
+
+			ws->fence_reference(&ctx->last_ib_barrier_fence, NULL);
+		}
+	}
+
 	/* Flush the CS. */
 	ws->cs_flush(cs, flags, &ctx->last_gfx_fence);
 	if (fence)
 		ws->fence_reference(fence, ctx->last_gfx_fence);
 
 	ctx->num_gfx_cs_flushes++;
+
+	if (si_compute_prim_discard_enabled(ctx)) {
+		/* Remember the last execution barrier, which is the last fence
+		 * in this case.
+		 */
+		if (!(flags & RADEON_FLUSH_START_NEXT_GFX_IB_NOW)) {
+			ctx->last_pkt3_write_data = NULL;
+			si_resource_reference(&ctx->last_ib_barrier_buf, NULL);
+			ws->fence_reference(&ctx->last_ib_barrier_fence, ctx->last_gfx_fence);
+		}
+	}
 
 	/* Check VM faults if needed. */
 	if (ctx->screen->debug_flags & DBG(CHECK_VM)) {
@@ -225,6 +282,16 @@ void si_begin_new_gfx_cs(struct si_context *ctx)
 {
 	if (ctx->is_debug)
 		si_begin_gfx_cs_debug(ctx);
+
+	if (ctx->gds) {
+		ctx->ws->cs_add_buffer(ctx->gfx_cs, ctx->gds,
+				       RADEON_USAGE_READWRITE, 0, 0);
+		if (ctx->gds_oa) {
+			ctx->ws->cs_add_buffer(ctx->gfx_cs, ctx->gds_oa,
+					       RADEON_USAGE_READWRITE, 0, 0);
+		}
+	}
+
 
 	/* Always invalidate caches at the beginning of IBs, because external
 	 * users (e.g. BO evictions and SDMA/UVD/VCE IBs) can modify our
@@ -352,6 +419,19 @@ void si_begin_new_gfx_cs(struct si_context *ctx)
 	ctx->last_num_tcs_input_cp = -1;
 	ctx->last_ls_hs_config = -1; /* impossible value */
 
+	ctx->prim_discard_compute_ib_initialized = false;
+
+        /* Compute-based primitive discard:
+         *   The index ring is divided into 2 halves. Switch between the halves
+         *   in the same fashion as doublebuffering.
+         */
+        if (ctx->index_ring_base)
+                ctx->index_ring_base = 0;
+        else
+                ctx->index_ring_base = ctx->index_ring_size_per_ib;
+
+        ctx->index_ring_offset = 0;
+
 	if (has_clear_state) {
 		ctx->tracked_regs.reg_value[SI_TRACKED_DB_RENDER_CONTROL] = 0x00000000;
 		ctx->tracked_regs.reg_value[SI_TRACKED_DB_COUNT_CONTROL] = 0x00000000;
@@ -407,7 +487,7 @@ void si_begin_new_gfx_cs(struct si_context *ctx)
 		ctx->tracked_regs.reg_value[SI_TRACKED_SPI_SHADER_COL_FORMAT]  = 0x00000000;
 		ctx->tracked_regs.reg_value[SI_TRACKED_CB_SHADER_MASK]  = 0xffffffff;
 		ctx->tracked_regs.reg_value[SI_TRACKED_VGT_TF_PARAM]  = 0x00000000;
-		ctx->tracked_regs.reg_value[SI_TRACKED_VGT_VERTEX_REUSE_BLOCK_CNTL]  = 0x0000001e; /* From VI */
+		ctx->tracked_regs.reg_value[SI_TRACKED_VGT_VERTEX_REUSE_BLOCK_CNTL]  = 0x0000001e; /* From GFX8 */
 
 		/* Set all saved registers state to saved. */
 		ctx->tracked_regs.reg_saved = 0xffffffffffffffff;

@@ -68,6 +68,9 @@ stream_state(struct iris_batch *batch,
    struct iris_bo *bo = iris_resource_bo(res);
    iris_use_pinned_bo(batch, bo, false);
 
+   iris_record_state_size(batch->state_sizes,
+                          bo->gtt_offset + *out_offset, size);
+
    /* If the caller has asked for a BO, we leave them the responsibility of
     * adding bo->gtt_offset (say, by handing an address to genxml).  If not,
     * we assume they want the offset from a base address.
@@ -329,6 +332,7 @@ iris_blorp_exec(struct blorp_batch *blorp_batch,
                          IRIS_DIRTY_UNCOMPILED_GS |
                          IRIS_DIRTY_UNCOMPILED_FS |
                          IRIS_DIRTY_VF |
+                         IRIS_DIRTY_URB |
                          IRIS_DIRTY_SF_CL_VIEWPORT |
                          IRIS_DIRTY_SAMPLER_STATES_VS |
                          IRIS_DIRTY_SAMPLER_STATES_TCS |

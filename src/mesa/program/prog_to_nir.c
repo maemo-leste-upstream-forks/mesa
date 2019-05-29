@@ -62,7 +62,7 @@ struct ptn_compile {
 
 #define SWIZ(X, Y, Z, W) \
    (unsigned[4]){ SWIZZLE_##X, SWIZZLE_##Y, SWIZZLE_##Z, SWIZZLE_##W }
-#define ptn_channel(b, src, ch) nir_swizzle(b, src, SWIZ(ch, ch, ch, ch), 1, true)
+#define ptn_channel(b, src, ch) nir_channel(b, src, SWIZZLE_##ch)
 
 static nir_ssa_def *
 ptn_src_for_dest(struct ptn_compile *c, nir_alu_dest *dest)
@@ -83,7 +83,7 @@ ptn_src_for_dest(struct ptn_compile *c, nir_alu_dest *dest)
    for (int i = 0; i < 4; i++)
       src.swizzle[i] = i;
 
-   return nir_fmov_alu(b, src, 4);
+   return nir_mov_alu(b, src, 4);
 }
 
 static nir_alu_dest
@@ -205,7 +205,7 @@ ptn_get_src(struct ptn_compile *c, const struct prog_src_register *prog_src)
       for (int i = 0; i < 4; i++)
          src.swizzle[i] = GET_SWZ(prog_src->Swizzle, i);
 
-      def = nir_fmov_alu(b, src, 4);
+      def = nir_mov_alu(b, src, 4);
 
       if (prog_src->Negate)
          def = nir_fneg(b, def);
@@ -222,7 +222,7 @@ ptn_get_src(struct ptn_compile *c, const struct prog_src_register *prog_src)
             chans[i] = nir_imm_float(b, 1.0);
          } else {
             assert(swizzle != SWIZZLE_NIL);
-            nir_alu_instr *mov = nir_alu_instr_create(b->shader, nir_op_fmov);
+            nir_alu_instr *mov = nir_alu_instr_create(b->shader, nir_op_mov);
             nir_ssa_dest_init(&mov->instr, &mov->dest.dest, 1, 32, NULL);
             mov->dest.write_mask = 0x1;
             mov->src[0] = src;
@@ -262,7 +262,7 @@ ptn_move_dest_masked(nir_builder *b, nir_alu_dest dest,
    if (!(dest.write_mask & write_mask))
       return;
 
-   nir_alu_instr *mov = nir_alu_instr_create(b->shader, nir_op_fmov);
+   nir_alu_instr *mov = nir_alu_instr_create(b->shader, nir_op_mov);
    if (!mov)
       return;
 
@@ -336,8 +336,8 @@ ptn_dst(nir_builder *b, nir_alu_dest dest, nir_ssa_def **src)
 {
    ptn_move_dest_masked(b, dest, nir_imm_float(b, 1.0), WRITEMASK_X);
    ptn_move_dest_masked(b, dest, nir_fmul(b, src[0], src[1]), WRITEMASK_Y);
-   ptn_move_dest_masked(b, dest, nir_fmov(b, src[0]), WRITEMASK_Z);
-   ptn_move_dest_masked(b, dest, nir_fmov(b, src[1]), WRITEMASK_W);
+   ptn_move_dest_masked(b, dest, nir_mov(b, src[0]), WRITEMASK_Z);
+   ptn_move_dest_masked(b, dest, nir_mov(b, src[1]), WRITEMASK_W);
 }
 
 /* LIT - Light Coefficients
@@ -412,11 +412,11 @@ ptn_xpd(nir_builder *b, nir_alu_dest dest, nir_ssa_def **src)
    ptn_move_dest_masked(b, dest,
                         nir_fsub(b,
                                  nir_fmul(b,
-                                          nir_swizzle(b, src[0], SWIZ(Y, Z, X, W), 3, true),
-                                          nir_swizzle(b, src[1], SWIZ(Z, X, Y, W), 3, true)),
+                                          nir_swizzle(b, src[0], SWIZ(Y, Z, X, W), 3),
+                                          nir_swizzle(b, src[1], SWIZ(Z, X, Y, W), 3)),
                                  nir_fmul(b,
-                                          nir_swizzle(b, src[1], SWIZ(Y, Z, X, W), 3, true),
-                                          nir_swizzle(b, src[0], SWIZ(Z, X, Y, W), 3, true))),
+                                          nir_swizzle(b, src[1], SWIZ(Y, Z, X, W), 3),
+                                          nir_swizzle(b, src[0], SWIZ(Z, X, Y, W), 3))),
                         WRITEMASK_XYZ);
    ptn_move_dest_masked(b, dest, nir_imm_float(b, 1.0), WRITEMASK_W);
 }
@@ -580,7 +580,7 @@ ptn_tex(struct ptn_compile *c, nir_alu_dest dest, nir_ssa_def **src,
 
    instr->src[src_number].src =
       nir_src_for_ssa(nir_swizzle(b, src[0], SWIZ(X, Y, Z, W),
-                                  instr->coord_components, true));
+                                  instr->coord_components));
    instr->src[src_number].src_type = nir_tex_src_coord;
    src_number++;
 
@@ -647,7 +647,7 @@ static const nir_op op_trans[MAX_OPCODE] = {
    [OPCODE_MAD] = 0,
    [OPCODE_MAX] = nir_op_fmax,
    [OPCODE_MIN] = nir_op_fmin,
-   [OPCODE_MOV] = nir_op_fmov,
+   [OPCODE_MOV] = nir_op_mov,
    [OPCODE_MUL] = nir_op_fmul,
    [OPCODE_POW] = 0,
    [OPCODE_RCP] = 0,
@@ -797,7 +797,7 @@ ptn_emit_instruction(struct ptn_compile *c, struct prog_instruction *prog_inst)
 
    case OPCODE_SWZ:
       /* Extended swizzles were already handled in ptn_get_src(). */
-      ptn_alu(b, nir_op_fmov, dest, src);
+      ptn_alu(b, nir_op_mov, dest, src);
       break;
 
    case OPCODE_NOP:

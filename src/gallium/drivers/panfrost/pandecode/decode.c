@@ -29,9 +29,11 @@
 #include <stdbool.h>
 #include <stdarg.h>
 #include "mmap.h"
+#include "util/u_math.h"
 
 #include "../pan_pretty_print.h"
 #include "../midgard/disassemble.h"
+#include "../bifrost/disassemble.h"
 int pandecode_replay_jc(mali_ptr jc_gpu_va, bool bifrost);
 
 #define MEMORY_PROP(obj, p) {\
@@ -876,6 +878,17 @@ pandecode_replay_blend_equation(const struct mali_blend_equation *blend)
         pandecode_log("},\n");
 }
 
+/* Decodes a Bifrost blend constant. See the notes in bifrost_blend_rt */
+
+static unsigned
+decode_bifrost_constant(u16 constant)
+{
+        float lo = (float) (constant & 0xFF);
+        float hi = (float) (constant >> 8);
+
+        return (hi / 255.0) + (lo / 65535.0);
+}
+
 static mali_ptr
 pandecode_bifrost_blend(void *descs, int job_no, int rt_no)
 {
@@ -885,7 +898,10 @@ pandecode_bifrost_blend(void *descs, int job_no, int rt_no)
         pandecode_log("struct bifrost_blend_rt blend_rt_%d_%d = {\n", job_no, rt_no);
         pandecode_indent++;
 
-        pandecode_prop("unk1 = 0x%" PRIx32, b->unk1);
+        pandecode_prop("flags = 0x%" PRIx16, b->flags);
+        pandecode_prop("constant = 0x%" PRIx8 " /* %f */",
+                        b->constant, decode_bifrost_constant(b->constant));
+
         /* TODO figure out blend shader enable bit */
         pandecode_replay_blend_equation(&b->equation);
         pandecode_prop("unk2 = 0x%" PRIx16, b->unk2);
@@ -908,6 +924,7 @@ pandecode_midgard_blend(union midgard_blend *blend, bool is_shader)
                 pandecode_replay_shader_address("shader", blend->shader);
         } else {
                 pandecode_replay_blend_equation(&blend->equation);
+                pandecode_prop("constant = %f", blend->constant);
         }
 
         pandecode_indent--;
@@ -1154,17 +1171,17 @@ pandecode_shader_disassemble(mali_ptr shader_ptr, int shader_no, int type,
         /* Compute maximum possible size */
         size_t sz = mem->length - (shader_ptr - mem->gpu_va);
 
-        /* TODO: When Bifrost is upstreamed, disassemble that too */
-        if (is_bifrost) {
-                pandecode_msg("Bifrost disassembler not yet upstreamed");
-                return;
-        }
-
         /* Print some boilerplate to clearly denote the assembly (which doesn't
          * obey indentation rules), and actually do the disassembly! */
 
         printf("\n\n");
-        disassemble_midgard(code, sz);
+
+        if (is_bifrost) {
+                disassemble_bifrost(code, sz, false);
+        } else {
+                disassemble_midgard(code, sz);
+        }
+
         printf("\n\n");
 }
 
@@ -1456,6 +1473,7 @@ pandecode_replay_vertex_tiler_postfix_pre(const struct mali_vertex_tiler_postfix
                                         pandecode_prop("height = MALI_POSITIVE(%" PRId16 ")", t->height + 1);
                                         pandecode_prop("depth = MALI_POSITIVE(%" PRId16 ")", t->depth + 1);
 
+                                        pandecode_prop("unknown1 = %" PRId16, t->unknown1);
                                         pandecode_prop("unknown3 = %" PRId16, t->unknown3);
                                         pandecode_prop("unknown3A = %" PRId8, t->unknown3A);
                                         pandecode_prop("nr_mipmap_levels = %" PRId8, t->nr_mipmap_levels);
@@ -1492,11 +1510,31 @@ pandecode_replay_vertex_tiler_postfix_pre(const struct mali_vertex_tiler_postfix
                                         pandecode_log(".swizzled_bitmaps = {\n");
                                         pandecode_indent++;
 
+                                        /* A bunch of bitmap pointers follow.
+                                         * We work out the correct number,
+                                         * based on the mipmap/cubemap
+                                         * properties, but dump extra
+                                         * possibilities to futureproof */
+
                                         int bitmap_count = MALI_NEGATIVE(t->nr_mipmap_levels);
 
                                         if (!f.is_not_cubemap) {
                                                 /* Miptree for each face */
                                                 bitmap_count *= 6;
+                                        }
+
+                                        if (f.usage2 & MALI_TEX_MANUAL_STRIDE) {
+                                                /* Stride for each... what exactly? TODO More traces */
+
+                                                if (bitmap_count > 1) {
+                                                        pandecode_msg("Manual stride with mip/cubemaps, decode uncertain");
+                                                }
+
+                                                /* This is a guess, we've only
+                                                 * seen for 1-level non-mip 2D
+                                                 * */
+
+                                                bitmap_count += 1;
                                         }
 
                                         int max_count = sizeof(t->swizzled_bitmaps) / sizeof(t->swizzled_bitmaps[0]);
@@ -1506,10 +1544,26 @@ pandecode_replay_vertex_tiler_postfix_pre(const struct mali_vertex_tiler_postfix
                                                 bitmap_count = max_count;
                                         }
 
-                                        for (int i = 0; i < bitmap_count; ++i) {
-                                                char *a = pointer_as_memory_reference(t->swizzled_bitmaps[i]);
-                                                pandecode_log("%s, \n", a);
-                                                free(a);
+                                        /* Dump more to be safe, but not _that_ much more */
+                                        int safe_count = MIN2(bitmap_count * 2, max_count);
+
+                                        for (int i = 0; i < safe_count; ++i) {
+                                                char *prefix = (i >= bitmap_count) ? "// " : "";
+
+                                                /* How we dump depends if this is a stride or a pointer */
+
+                                                if ((f.usage2 & MALI_TEX_MANUAL_STRIDE) && ((i + 1) == bitmap_count)) {
+                                                        /* signed 32-bit snuck in as a 64-bit pointer */
+                                                        uint64_t stride_set = t->swizzled_bitmaps[i];
+                                                        uint32_t clamped_stride = stride_set;
+                                                        int32_t stride = clamped_stride;
+                                                        assert(stride_set == clamped_stride);
+                                                        pandecode_log("%s(mali_ptr) %d /* stride */, \n", prefix, stride);
+                                                } else {
+                                                        char *a = pointer_as_memory_reference(t->swizzled_bitmaps[i]);
+                                                        pandecode_log("%s%s, \n", prefix, a);
+                                                        free(a);
+                                                }
                                         }
 
                                         pandecode_indent--;
