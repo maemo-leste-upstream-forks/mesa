@@ -27,8 +27,12 @@ files_panfrost = files(
   'pan_resource.h',
 
   'midgard/midgard_compile.c',
+  'midgard/mir.c',
   'midgard/midgard_print.c',
+  'midgard/midgard_schedule.c',
+  'midgard/midgard_emit.c',
   'midgard/midgard_ra.c',
+  'midgard/midgard_ra_pipeline.c',
   'midgard/midgard_liveness.c',
   'midgard/midgard_ops.c',
 
@@ -38,9 +42,13 @@ files_panfrost = files(
 
   'bifrost/disassemble.c',
 
+  'pandecode/common.c',
+  'pandecode/decode.c',
+
   'pan_context.c',
+  'pan_afbc.c',
+  'pan_blit.c',
   'pan_job.c',
-  'pan_trace.c',
   'pan_drm.c',
   'pan_allocate.c',
   'pan_assemble.c',
@@ -48,11 +56,11 @@ files_panfrost = files(
   'pan_swizzle.c',
   'pan_blending.c',
   'pan_blend_shaders.c',
-  'pan_wallpaper.c',
   'pan_pretty_print.c',
   'pan_fragment.c',
   'pan_sfbd.c',
-  'pan_mfbd.c'
+  'pan_mfbd.c',
+  'pan_tiler.c',
 )
 
 inc_panfrost = [
@@ -130,6 +138,7 @@ bifrost_compiler = executable(
 
 files_pandecode = files(
   'pandecode/cmdline.c',
+  'pandecode/common.c',
   'pandecode/decode.c',
 
   'pan_pretty_print.c',

@@ -328,6 +328,12 @@ static void ppir_codegen_encode_vec_add(ppir_node *node, void *code)
    case ppir_op_select:
       f->op = ppir_codegen_vec4_acc_op_sel;
       break;
+   case ppir_op_max:
+      f->op = ppir_codegen_vec4_acc_op_max;
+      break;
+   case ppir_op_min:
+      f->op = ppir_codegen_vec4_acc_op_min;
+      break;
    default:
       break;
    }
@@ -671,7 +677,7 @@ static void ppir_codegen_print_prog(ppir_compiler *comp)
    printf("========ppir codegen========\n");
    list_for_each_entry(ppir_block, block, &comp->block_list, list) {
       list_for_each_entry(ppir_instr, instr, &block->instr_list, list) {
-         printf("%03d (@%6ld): ", instr->index, instr->offset);
+         printf("%03d (@%6d): ", instr->index, instr->offset);
          int n = prog[0] & 0x1f;
          for (int i = 0; i < n; i++) {
             if (i && i % 6 == 0)

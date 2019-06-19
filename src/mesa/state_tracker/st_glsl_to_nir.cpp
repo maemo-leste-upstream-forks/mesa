@@ -314,6 +314,9 @@ st_nir_opts(nir_shader *nir, bool scalar)
 
       NIR_PASS_V(nir, nir_lower_vars_to_ssa);
 
+      NIR_PASS(progress, nir, nir_opt_copy_prop_vars);
+      NIR_PASS(progress, nir, nir_opt_dead_write_vars);
+
       if (scalar) {
          NIR_PASS_V(nir, nir_lower_alu_to_scalar, NULL);
          NIR_PASS_V(nir, nir_lower_phis_to_scalar);
@@ -524,7 +527,7 @@ st_glsl_to_nir_post_opts(struct st_context *st, struct gl_program *prog,
     * prog->ParameterValues to get reallocated (e.g., anything that adds a
     * program constant) has to happen before creating this linkage.
     */
-   _mesa_associate_uniform_storage(st->ctx, shader_program, prog, true);
+   _mesa_associate_uniform_storage(st->ctx, shader_program, prog);
 
    st_set_prog_affected_state_flags(prog);
 

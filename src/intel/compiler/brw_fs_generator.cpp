@@ -1653,6 +1653,9 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width)
    struct disasm_info *disasm_info = disasm_initialize(devinfo, cfg);
 
    foreach_block_and_inst (block, fs_inst, inst, cfg) {
+      if (inst->opcode == SHADER_OPCODE_UNDEF)
+         continue;
+
       struct brw_reg src[4], dst;
       unsigned int last_insn_offset = p->next_insn_offset;
       bool multiple_instructions_emitted = false;
@@ -2071,13 +2074,14 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width)
          break;
 
       case SHADER_OPCODE_MEMORY_FENCE:
-         brw_memory_fence(p, dst, BRW_OPCODE_SEND);
+         assert(src[1].file == BRW_IMMEDIATE_VALUE);
+         brw_memory_fence(p, dst, src[0], BRW_OPCODE_SEND, src[1].ud);
          break;
 
       case SHADER_OPCODE_INTERLOCK:
          assert(devinfo->gen >= 9);
          /* The interlock is basically a memory fence issued via sendc */
-         brw_memory_fence(p, dst, BRW_OPCODE_SENDC);
+         brw_memory_fence(p, dst, src[0], BRW_OPCODE_SENDC, false);
          break;
 
       case SHADER_OPCODE_FIND_LIVE_CHANNEL: {

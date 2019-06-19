@@ -848,9 +848,21 @@ nir_get_nir_type_for_glsl_base_type(enum glsl_base_type base_type)
    case GLSL_TYPE_DOUBLE:
       return nir_type_float64;
       break;
-   default:
-      unreachable("unknown type");
+
+   case GLSL_TYPE_SAMPLER:
+   case GLSL_TYPE_IMAGE:
+   case GLSL_TYPE_ATOMIC_UINT:
+   case GLSL_TYPE_STRUCT:
+   case GLSL_TYPE_INTERFACE:
+   case GLSL_TYPE_ARRAY:
+   case GLSL_TYPE_VOID:
+   case GLSL_TYPE_SUBROUTINE:
+   case GLSL_TYPE_FUNCTION:
+   case GLSL_TYPE_ERROR:
+      return nir_type_invalid;
    }
+
+   unreachable("unknown type");
 }
 
 static inline nir_alu_type
@@ -1085,6 +1097,7 @@ nir_deref_instr_get_variable(const nir_deref_instr *instr)
 }
 
 bool nir_deref_instr_has_indirect(nir_deref_instr *instr);
+bool nir_deref_instr_has_complex_use(nir_deref_instr *instr);
 
 bool nir_deref_instr_remove_if_unused(nir_deref_instr *instr);
 
@@ -1196,80 +1209,80 @@ typedef enum {
    /**
     * For store instructions, a writemask for the store.
     */
-   NIR_INTRINSIC_WRMASK = 2,
+   NIR_INTRINSIC_WRMASK,
 
    /**
     * The stream-id for GS emit_vertex/end_primitive intrinsics.
     */
-   NIR_INTRINSIC_STREAM_ID = 3,
+   NIR_INTRINSIC_STREAM_ID,
 
    /**
     * The clip-plane id for load_user_clip_plane intrinsic.
     */
-   NIR_INTRINSIC_UCP_ID = 4,
+   NIR_INTRINSIC_UCP_ID,
 
    /**
     * The amount of data, starting from BASE, that this instruction may
     * access.  This is used to provide bounds if the offset is not constant.
     */
-   NIR_INTRINSIC_RANGE = 5,
+   NIR_INTRINSIC_RANGE,
 
    /**
     * The Vulkan descriptor set for vulkan_resource_index intrinsic.
     */
-   NIR_INTRINSIC_DESC_SET = 6,
+   NIR_INTRINSIC_DESC_SET,
 
    /**
     * The Vulkan descriptor set binding for vulkan_resource_index intrinsic.
     */
-   NIR_INTRINSIC_BINDING = 7,
+   NIR_INTRINSIC_BINDING,
 
    /**
     * Component offset.
     */
-   NIR_INTRINSIC_COMPONENT = 8,
+   NIR_INTRINSIC_COMPONENT,
 
    /**
     * Interpolation mode (only meaningful for FS inputs).
     */
-   NIR_INTRINSIC_INTERP_MODE = 9,
+   NIR_INTRINSIC_INTERP_MODE,
 
    /**
     * A binary nir_op to use when performing a reduction or scan operation
     */
-   NIR_INTRINSIC_REDUCTION_OP = 10,
+   NIR_INTRINSIC_REDUCTION_OP,
 
    /**
     * Cluster size for reduction operations
     */
-   NIR_INTRINSIC_CLUSTER_SIZE = 11,
+   NIR_INTRINSIC_CLUSTER_SIZE,
 
    /**
     * Parameter index for a load_param intrinsic
     */
-   NIR_INTRINSIC_PARAM_IDX = 12,
+   NIR_INTRINSIC_PARAM_IDX,
 
    /**
     * Image dimensionality for image intrinsics
     *
     * One of GLSL_SAMPLER_DIM_*
     */
-   NIR_INTRINSIC_IMAGE_DIM = 13,
+   NIR_INTRINSIC_IMAGE_DIM,
 
    /**
     * Non-zero if we are accessing an array image
     */
-   NIR_INTRINSIC_IMAGE_ARRAY = 14,
+   NIR_INTRINSIC_IMAGE_ARRAY,
 
    /**
     * Image format for image intrinsics
     */
-   NIR_INTRINSIC_FORMAT = 15,
+   NIR_INTRINSIC_FORMAT,
 
    /**
     * Access qualifiers for image and memory access intrinsics
     */
-   NIR_INTRINSIC_ACCESS = 16,
+   NIR_INTRINSIC_ACCESS,
 
    /**
     * Alignment for offsets and addresses
@@ -1280,13 +1293,24 @@ typedef enum {
     *
     *                (X - align_offset) % align_mul == 0
     */
-   NIR_INTRINSIC_ALIGN_MUL = 17,
-   NIR_INTRINSIC_ALIGN_OFFSET = 18,
+   NIR_INTRINSIC_ALIGN_MUL,
+   NIR_INTRINSIC_ALIGN_OFFSET,
 
    /**
     * The Vulkan descriptor type for a vulkan_resource_[re]index intrinsic.
     */
-   NIR_INTRINSIC_DESC_TYPE = 19,
+   NIR_INTRINSIC_DESC_TYPE,
+
+   /**
+    * The nir_alu_type of a uniform/input/output
+    */
+   NIR_INTRINSIC_TYPE,
+
+   /**
+    * The swizzle mask for the instructions
+    * SwizzleInvocationsAMD and SwizzleInvocationsMaskedAMD
+    */
+   NIR_INTRINSIC_SWIZZLE_MASK,
 
    NIR_INTRINSIC_NUM_INDEX_FLAGS,
 
@@ -1392,6 +1416,8 @@ INTRINSIC_IDX_ACCESSORS(format, FORMAT, unsigned)
 INTRINSIC_IDX_ACCESSORS(align_mul, ALIGN_MUL, unsigned)
 INTRINSIC_IDX_ACCESSORS(align_offset, ALIGN_OFFSET, unsigned)
 INTRINSIC_IDX_ACCESSORS(desc_type, DESC_TYPE, unsigned)
+INTRINSIC_IDX_ACCESSORS(type, TYPE, nir_alu_type)
+INTRINSIC_IDX_ACCESSORS(swizzle_mask, SWIZZLE_MASK, unsigned)
 
 static inline void
 nir_intrinsic_set_align(nir_intrinsic_instr *intrin,
@@ -2229,9 +2255,7 @@ typedef struct nir_shader_compiler_options {
    bool lower_fpow;
    bool lower_fsat;
    bool lower_fsqrt;
-   bool lower_fmod16;
-   bool lower_fmod32;
-   bool lower_fmod64;
+   bool lower_fmod;
    /** Lowers ibitfield_extract/ubitfield_extract to ibfe/ubfe. */
    bool lower_bitfield_extract;
    /** Lowers ibitfield_extract/ubitfield_extract to bfm, compares, shifts. */
@@ -2264,6 +2288,9 @@ typedef struct nir_shader_compiler_options {
 
    /** enables rules to lower idiv by power-of-two: */
    bool lower_idiv;
+
+   /** enable rules to avoid bit shifts */
+   bool lower_bitshift;
 
    /** enables rules to lower isign to imin+imax */
    bool lower_isign;
@@ -2887,13 +2914,18 @@ void nir_print_shader_annotated(nir_shader *shader, FILE *fp, struct hash_table 
 void nir_print_instr(const nir_instr *instr, FILE *fp);
 void nir_print_deref(const nir_deref_instr *deref, FILE *fp);
 
+/** Shallow clone of a single ALU instruction. */
+nir_alu_instr *nir_alu_instr_clone(nir_shader *s, const nir_alu_instr *orig);
+
 nir_shader *nir_shader_clone(void *mem_ctx, const nir_shader *s);
 nir_function_impl *nir_function_impl_clone(nir_shader *shader,
                                            const nir_function_impl *fi);
 nir_constant *nir_constant_clone(const nir_constant *c, nir_variable *var);
 nir_variable *nir_variable_clone(const nir_variable *c, nir_shader *shader);
 
-nir_shader *nir_shader_serialize_deserialize(void *mem_ctx, nir_shader *s);
+void nir_shader_replace(nir_shader *dest, nir_shader *src);
+
+void nir_shader_serialize_deserialize(nir_shader *s);
 
 #ifndef NDEBUG
 void nir_validate_shader(nir_shader *shader, const char *when);
@@ -2965,12 +2997,10 @@ static inline bool should_print_nir(void) { return false; }
    nir_validate_shader(nir, "after " #pass);                         \
    if (should_clone_nir()) {                                         \
       nir_shader *clone = nir_shader_clone(ralloc_parent(nir), nir); \
-      ralloc_free(nir);                                              \
-      nir = clone;                                                   \
+      nir_shader_replace(nir, clone);                                \
    }                                                                 \
    if (should_serialize_deserialize_nir()) {                         \
-      void *mem_ctx = ralloc_parent(nir);                            \
-      nir = nir_shader_serialize_deserialize(mem_ctx, nir);          \
+      nir_shader_serialize_deserialize(nir);                         \
    }                                                                 \
 } while (0)
 
@@ -3172,6 +3202,12 @@ nir_address_format_to_glsl_type(nir_address_format addr_format)
 }
 
 const nir_const_value *nir_address_format_null_value(nir_address_format addr_format);
+
+nir_ssa_def *nir_build_addr_ieq(struct nir_builder *b, nir_ssa_def *addr0, nir_ssa_def *addr1,
+                                nir_address_format addr_format);
+
+nir_ssa_def *nir_build_addr_isub(struct nir_builder *b, nir_ssa_def *addr0, nir_ssa_def *addr1,
+                                 nir_address_format addr_format);
 
 nir_ssa_def * nir_explicit_io_address_from_deref(struct nir_builder *b,
                                                  nir_deref_instr *deref,
@@ -3391,6 +3427,12 @@ typedef struct nir_lower_tex_options {
    bool lower_txd_clamp_if_sampler_index_not_lt_16;
 
    /**
+    * If true, lower nir_texop_txs with a non-0-lod into nir_texop_txs with
+    * 0-lod followed by a nir_ishr.
+    */
+   bool lower_txs_lod;
+
+   /**
     * If true, apply a .bagr swizzle on tg4 results to handle Broadcom's
     * mixed-up tg4 locations.
     */
@@ -3566,6 +3608,8 @@ bool nir_opt_move_load_ubo(nir_shader *shader);
 bool nir_opt_peephole_select(nir_shader *shader, unsigned limit,
                              bool indirect_load_ok, bool expensive_alu_ok);
 
+bool nir_opt_rematerialize_compares(nir_shader *shader);
+
 bool nir_opt_remove_phis(nir_shader *shader);
 
 bool nir_opt_shrink_load(nir_shader *shader);
@@ -3573,6 +3617,8 @@ bool nir_opt_shrink_load(nir_shader *shader);
 bool nir_opt_trivial_continues(nir_shader *shader);
 
 bool nir_opt_undef(nir_shader *shader);
+
+bool nir_opt_vectorize(nir_shader *shader);
 
 bool nir_opt_conditional_discard(nir_shader *shader);
 

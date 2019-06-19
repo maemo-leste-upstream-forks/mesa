@@ -607,7 +607,7 @@ struct si_sampler_view {
 #define SI_SAMPLER_STATE_MAGIC 0x34f1c35a
 
 struct si_sampler_state {
-#ifdef DEBUG
+#ifndef NDEBUG
 	unsigned			magic;
 #endif
 	uint32_t			val[4];
@@ -1296,7 +1296,7 @@ void si_log_compute_state(struct si_context *sctx, struct u_log_context *log);
 void si_init_debug_functions(struct si_context *sctx);
 void si_check_vm_faults(struct si_context *sctx,
 			struct radeon_saved_cs *saved, enum ring_type ring);
-bool si_replace_shader(unsigned num, struct ac_shader_binary *binary);
+bool si_replace_shader(unsigned num, struct si_shader_binary *binary);
 
 /* si_dma.c */
 void si_init_dma_functions(struct si_context *sctx);

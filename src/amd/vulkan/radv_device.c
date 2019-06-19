@@ -44,7 +44,6 @@
 #include "vk_format.h"
 #include "sid.h"
 #include "git_sha1.h"
-#include "gfx9d.h"
 #include "util/build_id.h"
 #include "util/debug.h"
 #include "util/mesa-sha1.h"
@@ -372,6 +371,8 @@ radv_physical_device_init(struct radv_physical_device *device,
 				       (device->rad_info.chip_class >= GFX8 &&
 				        device->rad_info.me_fw_feature >= 41);
 
+	device->use_shader_ballot = device->instance->perftest_flags & RADV_PERFTEST_SHADER_BALLOT;
+
 	radv_physical_device_init_mem_types(device);
 	radv_fill_device_extension_table(device, &device->supported_extensions);
 
@@ -480,6 +481,8 @@ static const struct debug_control radv_perftest_options[] = {
 	{"localbos", RADV_PERFTEST_LOCAL_BOS},
 	{"dccmsaa", RADV_PERFTEST_DCC_MSAA},
 	{"bolist", RADV_PERFTEST_BO_LIST},
+	{"shader_ballot", RADV_PERFTEST_SHADER_BALLOT},
+	{"tccompatcmask", RADV_PERFTEST_TC_COMPAT_CMASK},
 	{NULL, 0}
 };
 
@@ -1351,7 +1354,7 @@ void radv_GetPhysicalDeviceProperties2(
 			properties->maxTransformFeedbackBufferDataSize = UINT32_MAX;
 			properties->maxTransformFeedbackBufferDataStride = 512;
 			properties->transformFeedbackQueries = true;
-			properties->transformFeedbackStreamsLinesTriangles = false;
+			properties->transformFeedbackStreamsLinesTriangles = true;
 			properties->transformFeedbackRasterizationStreamSelect = false;
 			properties->transformFeedbackDraw = true;
 			break;
@@ -1365,6 +1368,19 @@ void radv_GetPhysicalDeviceProperties2(
 			props->maxPerStageDescriptorUpdateAfterBindInlineUniformBlocks = MAX_INLINE_UNIFORM_BLOCK_SIZE * MAX_SETS;
 			props->maxDescriptorSetInlineUniformBlocks = MAX_INLINE_UNIFORM_BLOCK_COUNT;
 			props->maxDescriptorSetUpdateAfterBindInlineUniformBlocks = MAX_INLINE_UNIFORM_BLOCK_COUNT;
+			break;
+		}
+		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLE_LOCATIONS_PROPERTIES_EXT: {
+			VkPhysicalDeviceSampleLocationsPropertiesEXT *properties =
+				(VkPhysicalDeviceSampleLocationsPropertiesEXT *)ext;
+			properties->sampleLocationSampleCounts = VK_SAMPLE_COUNT_2_BIT |
+								 VK_SAMPLE_COUNT_4_BIT |
+								 VK_SAMPLE_COUNT_8_BIT;
+			properties->maxSampleLocationGridSize = (VkExtent2D){ 2 , 2 };
+			properties->sampleLocationCoordinateRange[0] = 0.0f;
+			properties->sampleLocationCoordinateRange[1] = 0.9375f;
+			properties->sampleLocationSubPixelBits = 4;
+			properties->variableSampleLocations = VK_FALSE;
 			break;
 		}
 		default:
@@ -1490,40 +1506,46 @@ radv_get_memory_budget_properties(VkPhysicalDevice physicalDevice,
 	 * Note that the application heap usages are not really accurate (eg.
 	 * in presence of shared buffers).
 	 */
-	if (vram_size) {
-		heap_usage = device->ws->query_value(device->ws,
-						     RADEON_ALLOCATED_VRAM);
+	for (int i = 0; i < device->memory_properties.memoryTypeCount; i++) {
+		uint32_t heap_index = device->memory_properties.memoryTypes[i].heapIndex;
 
-		heap_budget = vram_size -
-			device->ws->query_value(device->ws, RADEON_VRAM_USAGE) +
-			heap_usage;
+		switch (device->mem_type_indices[i]) {
+		case RADV_MEM_TYPE_VRAM:
+			heap_usage = device->ws->query_value(device->ws,
+							     RADEON_ALLOCATED_VRAM);
 
-		memoryBudget->heapBudget[RADV_MEM_HEAP_VRAM] = heap_budget;
-		memoryBudget->heapUsage[RADV_MEM_HEAP_VRAM] = heap_usage;
-	}
+			heap_budget = vram_size -
+				device->ws->query_value(device->ws, RADEON_VRAM_USAGE) +
+				heap_usage;
 
-	if (visible_vram_size) {
-		heap_usage = device->ws->query_value(device->ws,
-						     RADEON_ALLOCATED_VRAM_VIS);
+			memoryBudget->heapBudget[heap_index] = heap_budget;
+			memoryBudget->heapUsage[heap_index] = heap_usage;
+			break;
+		case RADV_MEM_TYPE_VRAM_CPU_ACCESS:
+			heap_usage = device->ws->query_value(device->ws,
+							     RADEON_ALLOCATED_VRAM_VIS);
 
-		heap_budget = visible_vram_size -
-			device->ws->query_value(device->ws, RADEON_VRAM_VIS_USAGE) +
-			heap_usage;
+			heap_budget = visible_vram_size -
+				device->ws->query_value(device->ws, RADEON_VRAM_VIS_USAGE) +
+				heap_usage;
 
-		memoryBudget->heapBudget[RADV_MEM_HEAP_VRAM_CPU_ACCESS] = heap_budget;
-		memoryBudget->heapUsage[RADV_MEM_HEAP_VRAM_CPU_ACCESS] = heap_usage;
-	}
+			memoryBudget->heapBudget[heap_index] = heap_budget;
+			memoryBudget->heapUsage[heap_index] = heap_usage;
+			break;
+		case RADV_MEM_TYPE_GTT_WRITE_COMBINE:
+			heap_usage = device->ws->query_value(device->ws,
+							     RADEON_ALLOCATED_GTT);
 
-	if (gtt_size) {
-		heap_usage = device->ws->query_value(device->ws,
-						     RADEON_ALLOCATED_GTT);
+			heap_budget = gtt_size -
+				device->ws->query_value(device->ws, RADEON_GTT_USAGE) +
+				heap_usage;
 
-		heap_budget = gtt_size -
-			device->ws->query_value(device->ws, RADEON_GTT_USAGE) +
-			heap_usage;
-
-		memoryBudget->heapBudget[RADV_MEM_HEAP_GTT] = heap_budget;
-		memoryBudget->heapUsage[RADV_MEM_HEAP_GTT] = heap_usage;
+			memoryBudget->heapBudget[heap_index] = heap_budget;
+			memoryBudget->heapUsage[heap_index] = heap_usage;
+			break;
+		default:
+			break;
+		}
 	}
 
 	/* The heapBudget and heapUsage values must be zero for array elements
@@ -4181,7 +4203,7 @@ radv_init_dcc_control_reg(struct radv_device *device,
 	unsigned max_compressed_block_size;
 	unsigned independent_64b_blocks;
 
-	if (!radv_image_has_dcc(iview->image))
+	if (!radv_dcc_enabled(iview->image, iview->base_mip))
 		return 0;
 
 	if (iview->image->info.samples > 1) {
@@ -4301,6 +4323,11 @@ radv_initialise_color_surface(struct radv_device *device,
 
 	va = radv_buffer_get_va(iview->bo) + iview->image->offset;
 	va += iview->image->dcc_offset;
+
+	if (radv_dcc_enabled(iview->image, iview->base_mip) &&
+	    device->physical_device->rad_info.chip_class <= GFX8)
+		va += plane->surface.u.legacy.level[iview->base_mip].dcc_offset;
+
 	cb->cb_dcc_base = va >> 8;
 	cb->cb_dcc_base |= surf->tile_swizzle;
 
@@ -4370,6 +4397,20 @@ radv_initialise_color_surface(struct radv_device *device,
 		if (device->physical_device->rad_info.chip_class == GFX6) {
 			unsigned fmask_bankh = util_logbase2(iview->image->fmask.bank_height);
 			cb->cb_color_attrib |= S_028C74_FMASK_BANK_HEIGHT(fmask_bankh);
+		}
+
+		if (radv_image_is_tc_compat_cmask(iview->image)) {
+			/* Allow the texture block to read FMASK directly
+			 * without decompressing it. This bit must be cleared
+			 * when performing FMASK_DECOMPRESS or DCC_COMPRESS,
+			 * otherwise the operation doesn't happen.
+			 */
+			cb->cb_color_info |= S_028C70_FMASK_COMPRESS_1FRAG_ONLY(1);
+
+			/* Set CMASK into a tiling format that allows the
+			 * texture block to read it.
+			 */
+			cb->cb_color_info |= S_028C70_CMASK_ADDR_TYPE(2);
 		}
 	}
 
@@ -5367,4 +5408,18 @@ VkResult radv_GetCalibratedTimestampsEXT(
         *pMaxDeviation = sample_interval + max_clock_period;
 
 	return VK_SUCCESS;
+}
+
+void radv_GetPhysicalDeviceMultisamplePropertiesEXT(
+    VkPhysicalDevice                            physicalDevice,
+    VkSampleCountFlagBits                       samples,
+    VkMultisamplePropertiesEXT*                 pMultisampleProperties)
+{
+	if (samples & (VK_SAMPLE_COUNT_2_BIT |
+		       VK_SAMPLE_COUNT_4_BIT |
+		       VK_SAMPLE_COUNT_8_BIT)) {
+		pMultisampleProperties->maxSampleLocationGridSize = (VkExtent2D){ 2, 2 };
+	} else {
+		pMultisampleProperties->maxSampleLocationGridSize = (VkExtent2D){ 0, 0 };
+	}
 }

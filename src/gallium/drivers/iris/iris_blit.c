@@ -289,9 +289,8 @@ tex_cache_flush_hack(struct iris_batch *batch)
     *
     * TODO: Remove this hack!
     */
-   iris_emit_pipe_control_flush(batch,
-                                PIPE_CONTROL_CS_STALL |
-                                PIPE_CONTROL_TEXTURE_CACHE_INVALIDATE);
+   iris_emit_pipe_control_flush(batch, PIPE_CONTROL_CS_STALL);
+   iris_emit_pipe_control_flush(batch, PIPE_CONTROL_TEXTURE_CACHE_INVALIDATE);
 }
 
 /**
@@ -423,10 +422,9 @@ iris_blit(struct pipe_context *ctx, const struct pipe_blit_info *info)
       filter = BLORP_FILTER_NEAREST;
    }
 
-   bool flush_hack = src_fmt.fmt != src_res->surf.format &&
-                     iris_batch_references(batch, src_res->bo);
+   bool format_mismatch = src_fmt.fmt != src_res->surf.format;
 
-   if (flush_hack)
+   if (format_mismatch && iris_batch_references(batch, src_res->bo))
       tex_cache_flush_hack(batch);
 
    if (dst_res->base.target == PIPE_BUFFER)
@@ -483,7 +481,7 @@ iris_blit(struct pipe_context *ctx, const struct pipe_blit_info *info)
 
    blorp_batch_finish(&blorp_batch);
 
-   if (flush_hack)
+   if (format_mismatch)
       tex_cache_flush_hack(batch);
 
    iris_resource_finish_write(ice, dst_res, info->dst.level, info->dst.box.z,
@@ -549,8 +547,7 @@ iris_copy_region(struct blorp_context *blorp,
    get_copy_region_aux_settings(devinfo, dst_res, &dst_aux_usage,
                                 &dst_clear_supported);
 
-   bool flush_hack = iris_batch_references(batch, src_res->bo);
-   if (flush_hack)
+   if (iris_batch_references(batch, src_res->bo))
       tex_cache_flush_hack(batch);
 
    if (dst->target == PIPE_BUFFER)
@@ -605,8 +602,7 @@ iris_copy_region(struct blorp_context *blorp,
                                  src_box->depth, dst_aux_usage);
    }
 
-   if (flush_hack)
-      tex_cache_flush_hack(batch);
+   tex_cache_flush_hack(batch);
 }
 
 
@@ -630,6 +626,16 @@ iris_resource_copy_region(struct pipe_context *ctx,
 
    iris_copy_region(&ice->blorp, batch, dst, dst_level, dstx, dsty, dstz,
                     src, src_level, src_box);
+
+   if (util_format_is_depth_and_stencil(dst->format) &&
+       util_format_has_stencil(util_format_description(src->format))) {
+      struct iris_resource *junk, *s_src_res, *s_dst_res;
+      iris_get_depth_stencil_resources(src, &junk, &s_src_res);
+      iris_get_depth_stencil_resources(dst, &junk, &s_dst_res);
+
+      iris_copy_region(&ice->blorp, batch, &s_dst_res->base, dst_level, dstx,
+                       dsty, dstz, &s_src_res->base, src_level, src_box);
+   }
 }
 
 void

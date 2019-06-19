@@ -24,6 +24,7 @@
 #include "compiler/glsl/ir.h"
 #include "brw_fs.h"
 #include "brw_nir.h"
+#include "brw_eu.h"
 #include "nir_search_helpers.h"
 #include "util/u_math.h"
 #include "util/bitscan.h"
@@ -450,7 +451,7 @@ fs_visitor::nir_emit_instr(nir_instr *instr)
 
    switch (instr->type) {
    case nir_instr_type_alu:
-      nir_emit_alu(abld, nir_instr_as_alu(instr));
+      nir_emit_alu(abld, nir_instr_as_alu(instr), true);
       break;
 
    case nir_instr_type_deref:
@@ -981,13 +982,14 @@ can_fuse_fmul_fsign(nir_alu_instr *instr, unsigned fsign_src)
 }
 
 void
-fs_visitor::nir_emit_alu(const fs_builder &bld, nir_alu_instr *instr)
+fs_visitor::nir_emit_alu(const fs_builder &bld, nir_alu_instr *instr,
+                         bool need_dest)
 {
    struct brw_wm_prog_key *fs_key = (struct brw_wm_prog_key *) this->key;
    fs_inst *inst;
 
    fs_reg op[4];
-   fs_reg result = prepare_alu_destination_and_sources(bld, instr, op, true);
+   fs_reg result = prepare_alu_destination_and_sources(bld, instr, op, need_dest);
 
    switch (instr->op) {
    case nir_op_mov:
@@ -1836,6 +1838,7 @@ fs_visitor::nir_emit_alu(const fs_builder &bld, nir_alu_instr *instr)
     * to sign extend the low bit to 0/~0
     */
    if (devinfo->gen <= 5 &&
+       !result.is_null() &&
        (instr->instr.pass_flags & BRW_NIR_BOOLEAN_MASK) == BRW_NIR_BOOLEAN_NEEDS_RESOLVE) {
       fs_reg masked = vgrf(glsl_type::int_type);
       bld.AND(masked, result, brw_imm_d(1));
@@ -1951,6 +1954,7 @@ fs_visitor::get_nir_dest(const nir_dest &dest)
                                     BRW_REGISTER_TYPE_F);
       nir_ssa_values[dest.ssa.index] =
          bld.vgrf(reg_type, dest.ssa.num_components);
+      bld.UNDEF(nir_ssa_values[dest.ssa.index]);
       return nir_ssa_values[dest.ssa.index];
    } else {
       /* We don't handle indirects on locals */
@@ -3500,15 +3504,54 @@ fs_visitor::nir_emit_fs_intrinsic(const fs_builder &bld,
        * condition, we emit a CMP of g0 != g0, so all currently executing
        * channels will get turned off.
        */
-      fs_inst *cmp;
+      fs_inst *cmp = NULL;
       if (instr->intrinsic == nir_intrinsic_discard_if) {
-         cmp = bld.CMP(bld.null_reg_f(), get_nir_src(instr->src[0]),
-                       brw_imm_d(0), BRW_CONDITIONAL_Z);
+         nir_alu_instr *alu = nir_src_as_alu_instr(instr->src[0]);
+
+         if (alu != NULL &&
+             alu->op != nir_op_bcsel &&
+             alu->op != nir_op_inot) {
+            /* Re-emit the instruction that generated the Boolean value, but
+             * do not store it.  Since this instruction will be conditional,
+             * other instructions that want to use the real Boolean value may
+             * get garbage.  This was a problem for piglit's fs-discard-exit-2
+             * test.
+             *
+             * Ideally we'd detect that the instruction cannot have a
+             * conditional modifier before emitting the instructions.  Alas,
+             * that is nigh impossible.  Instead, we're going to assume the
+             * instruction (or last instruction) generated can have a
+             * conditional modifier.  If it cannot, fallback to the old-style
+             * compare, and hope dead code elimination will clean up the
+             * extra instructions generated.
+             */
+            nir_emit_alu(bld, alu, false);
+
+            cmp = (fs_inst *) instructions.get_tail();
+            if (cmp->conditional_mod == BRW_CONDITIONAL_NONE) {
+               if (cmp->can_do_cmod())
+                  cmp->conditional_mod = BRW_CONDITIONAL_Z;
+               else
+                  cmp = NULL;
+            } else {
+               /* The old sequence that would have been generated is,
+                * basically, bool_result == false.  This is equivalent to
+                * !bool_result, so negate the old modifier.
+                */
+               cmp->conditional_mod = brw_negate_cmod(cmp->conditional_mod);
+            }
+         }
+
+         if (cmp == NULL) {
+            cmp = bld.CMP(bld.null_reg_f(), get_nir_src(instr->src[0]),
+                          brw_imm_d(0), BRW_CONDITIONAL_Z);
+         }
       } else {
          fs_reg some_reg = fs_reg(retype(brw_vec8_grf(0, 0),
                                        BRW_REGISTER_TYPE_UW));
          cmp = bld.CMP(bld.null_reg_f(), some_reg, some_reg, BRW_CONDITIONAL_NZ);
       }
+
       cmp->predicate = BRW_PREDICATE_NORMAL;
       cmp->flag_subreg = 1;
 
@@ -4273,7 +4316,8 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
    case nir_intrinsic_memory_barrier: {
       const fs_builder ubld = bld.group(8, 0);
       const fs_reg tmp = ubld.vgrf(BRW_REGISTER_TYPE_UD, 2);
-      ubld.emit(SHADER_OPCODE_MEMORY_FENCE, tmp)
+      ubld.emit(SHADER_OPCODE_MEMORY_FENCE, tmp,
+                brw_vec8_grf(0, 0), brw_imm_ud(0))
          ->size_written = 2 * REG_SIZE;
       break;
    }
@@ -5074,14 +5118,26 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
       const fs_builder ubld = bld.group(8, 0);
       const fs_reg tmp = ubld.vgrf(BRW_REGISTER_TYPE_UD, 2);
 
-      ubld.emit(SHADER_OPCODE_INTERLOCK, tmp)->size_written = 2 *
-         REG_SIZE;
-
+      ubld.emit(SHADER_OPCODE_INTERLOCK, tmp, brw_vec8_grf(0, 0))
+         ->size_written = 2 * REG_SIZE;
       break;
    }
 
    case nir_intrinsic_end_invocation_interlock: {
-      /* We don't need to do anything here */
+      /* For endInvocationInterlock(), we need to insert a memory fence which
+       * stalls in the shader until the memory transactions prior to that
+       * fence are complete.  This ensures that the shader does not end before
+       * any writes from its critical section have landed.  Otherwise, you can
+       * end up with a case where the next invocation on that pixel properly
+       * stalls for previous FS invocation on its pixel to complete but
+       * doesn't actually wait for the dataport memory transactions from that
+       * thread to land before submitting its own.
+       */
+      const fs_builder ubld = bld.group(8, 0);
+      const fs_reg tmp = ubld.vgrf(BRW_REGISTER_TYPE_UD, 2);
+      ubld.emit(SHADER_OPCODE_MEMORY_FENCE, tmp,
+                brw_vec8_grf(0, 0), brw_imm_ud(1))
+         ->size_written = 2 * REG_SIZE;
       break;
    }
 

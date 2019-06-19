@@ -281,6 +281,35 @@ struct iris_uncompiled_shader {
    struct iris_state_ref const_data_state;
 };
 
+enum iris_surface_group {
+   IRIS_SURFACE_GROUP_RENDER_TARGET,
+   IRIS_SURFACE_GROUP_CS_WORK_GROUPS,
+   IRIS_SURFACE_GROUP_TEXTURE,
+   IRIS_SURFACE_GROUP_IMAGE,
+   IRIS_SURFACE_GROUP_UBO,
+   IRIS_SURFACE_GROUP_SSBO,
+
+   IRIS_SURFACE_GROUP_COUNT,
+};
+
+enum {
+   /* Invalid value for a binding table index. */
+   IRIS_SURFACE_NOT_USED = 0xa0a0a0a0,
+};
+
+struct iris_binding_table {
+   uint32_t size_bytes;
+
+   /** Number of surfaces in each group, before compacting. */
+   uint32_t sizes[IRIS_SURFACE_GROUP_COUNT];
+
+   /** Initial offset of each group. */
+   uint32_t offsets[IRIS_SURFACE_GROUP_COUNT];
+
+   /** Mask of surfaces used in each group. */
+   uint64_t used_mask[IRIS_SURFACE_GROUP_COUNT];
+};
+
 /**
  * A compiled shader variant, containing a pointer to the GPU assembly,
  * as well as program data and other packets needed by state upload.
@@ -310,6 +339,8 @@ struct iris_compiled_shader {
     * (the VUE-based information for transform feedback outputs).
     */
    uint32_t *streamout;
+
+   struct iris_binding_table bt;
 
    /**
     * Shader packets and other data derived from prog_data.  These must be
@@ -365,7 +396,7 @@ struct iris_stream_output_target {
    /** Storage holding the offset where we're writing in the buffer */
    struct iris_state_ref offset;
 
-   /** Stride (dwords-per-vertex) during this transform feedback operation */
+   /** Stride (bytes-per-vertex) during this transform feedback operation */
    uint16_t stride;
 
    /** Has 3DSTATE_SO_BUFFER actually been emitted, zeroing the offsets? */
@@ -795,6 +826,12 @@ const struct shader_info *iris_get_shader_info(const struct iris_context *ice,
 struct iris_bo *iris_get_scratch_space(struct iris_context *ice,
                                        unsigned per_thread_scratch,
                                        gl_shader_stage stage);
+uint32_t iris_group_index_to_bti(const struct iris_binding_table *bt,
+                                 enum iris_surface_group group,
+                                 uint32_t index);
+uint32_t iris_bti_to_group_index(const struct iris_binding_table *bt,
+                                 enum iris_surface_group group,
+                                 uint32_t bti);
 
 /* iris_disk_cache.c */
 
@@ -827,7 +864,8 @@ struct iris_compiled_shader *iris_upload_shader(struct iris_context *ice,
                                                 uint32_t *streamout,
                                                 enum brw_param_builtin *sysv,
                                                 unsigned num_system_values,
-                                                unsigned num_cbufs);
+                                                unsigned num_cbufs,
+                                                const struct iris_binding_table *bt);
 const void *iris_find_previous_compile(const struct iris_context *ice,
                                        enum iris_program_cache_id cache_id,
                                        unsigned program_string_id);

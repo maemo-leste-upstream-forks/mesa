@@ -31,8 +31,14 @@
 static bool
 midgard_is_live_in_instr(midgard_instruction *ins, int src)
 {
-        if (ins->ssa_args.src0 == src) return true;
-        if (ins->ssa_args.src1 == src) return true;
+        if (ins->compact_branch)
+                return false;
+
+        if (ins->ssa_args.src0 == src)
+                return true;
+
+        if (!ins->ssa_args.inline_constant && ins->ssa_args.src1 == src)
+                return true;
 
         return false;
 }
@@ -89,4 +95,20 @@ mir_is_live_after(compiler_context *ctx, midgard_block *block, midgard_instructi
         }
 
         return succ;
+}
+
+/* Just a quick check -- is it written more than once? (I.e. are we definitely
+ * not SSA?) */
+
+bool
+mir_has_multiple_writes(compiler_context *ctx, int dest)
+{
+        unsigned write_count = 0;
+
+        mir_foreach_instr_global(ctx, ins) {
+                if (ins->ssa_args.dest == dest)
+                        write_count++;
+        }
+
+        return write_count > 1;
 }

@@ -32,13 +32,14 @@
 static const nir_shader_compiler_options options = {
 	.lower_fpow = true,
 	.lower_flrp32 = true,
-	.lower_fmod32 = true,
+	.lower_fmod = true,
 	.lower_fdiv = true,
 	.lower_fceil = true,
 	.fuse_ffma = true,
 	/* .fdot_replicates = true, it is replicated, but it makes things worse */
 	.lower_all_io_to_temps = true,
 	.vertex_id_zero_based = true, /* its not implemented anyway */
+	.lower_bitshift = true,
 };
 
 const nir_shader_compiler_options *
@@ -1072,6 +1073,7 @@ ir2_nir_compile(struct ir2_context *ctx, bool binning)
 	OPT_V(ctx->nir, nir_opt_move_comparisons);
 
 	OPT_V(ctx->nir, nir_lower_bool_to_float);
+	OPT_V(ctx->nir, nir_lower_int_to_float);
 
 	/* lower to scalar instructions that can only be scalar on a2xx */
 	OPT_V(ctx->nir, ir2_nir_lower_scalar);

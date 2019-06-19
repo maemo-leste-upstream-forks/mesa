@@ -528,6 +528,11 @@ The integer capabilities:
   OpenMAX should use a compute-based blit instead of pipe_context::blit.
 * ``PIPE_CAP_FRAGMENT_SHADER_INTERLOCK``: True if fragment shader interlock
   functionality is supported.
+* ``PIPE_CAP_CS_DERIVED_SYSTEM_VALUES_SUPPORTED``: True if driver handles
+  gl_LocalInvocationIndex and gl_GlobalInvocationID.  Otherwise, state tracker will
+  lower those system values.
+* ``PIPE_CAP_ATOMIC_FLOAT_MINMAX``: Atomic float point minimum,
+  maximum, exchange and compare-and-swap support to buffer and shared variables.
 
 .. _pipe_capf:
 

@@ -21,7 +21,16 @@
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "virgl_resource.h"
+#ifndef VIRGL_TRANSFER_QUEUE_H
+#define VIRGL_TRANSFER_QUEUE_H
+
+#include "pipe/p_defines.h"
+#include "util/list.h"
+
+struct virgl_cmd_buf;
+struct virgl_screen;
+struct virgl_context;
+struct virgl_transfer;
 
 enum virgl_transfer_queue_lists {
    PENDING_LIST = 0,
@@ -32,14 +41,13 @@ enum virgl_transfer_queue_lists {
 struct virgl_transfer_queue {
    struct list_head lists[MAX_LISTS];
    struct virgl_screen *vs;
-   struct slab_child_pool *pool;
+   struct virgl_context *vctx;
    struct virgl_cmd_buf *tbuf;
    uint32_t num_dwords;
 };
 
 void virgl_transfer_queue_init(struct virgl_transfer_queue *queue,
-                               struct virgl_screen *vs,
-                               struct slab_child_pool *pool);
+                               struct virgl_context *vctx);
 
 void virgl_transfer_queue_fini(struct virgl_transfer_queue *queue);
 
@@ -58,3 +66,5 @@ bool virgl_transfer_queue_is_queued(struct virgl_transfer_queue *queue,
  */
 struct virgl_transfer * virgl_transfer_queue_extend(
    struct virgl_transfer_queue *queue, struct virgl_transfer *transfer);
+
+#endif /* VIRGL_TRANSFER_QUEUE_H */

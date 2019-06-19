@@ -118,6 +118,10 @@ ALIGN_MUL = "NIR_INTRINSIC_ALIGN_MUL"
 ALIGN_OFFSET = "NIR_INTRINSIC_ALIGN_OFFSET"
 # The vulkan descriptor type for vulkan_resource_index
 DESC_TYPE = "NIR_INTRINSIC_DESC_TYPE"
+# The nir_alu_type of a uniform/input/output
+TYPE = "NIR_INTRINSIC_TYPE"
+# The swizzle mask for quad_swizzle_amd & masked_swizzle_amd
+SWIZZLE_MASK = "NIR_INTRINSIC_SWIZZLE_MASK"
 
 #
 # Possible flags:
@@ -264,6 +268,14 @@ intrinsic("inclusive_scan", src_comp=[0], dest_comp=0, indices=[REDUCTION_OP],
           flags=[CAN_ELIMINATE])
 intrinsic("exclusive_scan", src_comp=[0], dest_comp=0, indices=[REDUCTION_OP],
           flags=[CAN_ELIMINATE])
+
+# AMD shader ballot operations
+intrinsic("quad_swizzle_amd", src_comp=[0], dest_comp=0, indices=[SWIZZLE_MASK],
+          flags=[CAN_ELIMINATE])
+intrinsic("masked_swizzle_amd", src_comp=[0], dest_comp=0, indices=[SWIZZLE_MASK],
+          flags=[CAN_ELIMINATE])
+intrinsic("write_invocation_amd", src_comp=[0, 0, 1], dest_comp=0, flags=[CAN_ELIMINATE])
+intrinsic("mbcnt_amd", src_comp=[1], dest_comp=1, flags=[CAN_ELIMINATE])
 
 # Basic Geometry Shader intrinsics.
 #
@@ -640,11 +652,11 @@ def load(name, num_srcs, indices=[], flags=[]):
               flags=flags)
 
 # src[] = { offset }.
-load("uniform", 1, [BASE, RANGE], [CAN_ELIMINATE, CAN_REORDER])
+load("uniform", 1, [BASE, RANGE, TYPE], [CAN_ELIMINATE, CAN_REORDER])
 # src[] = { buffer_index, offset }.
 load("ubo", 2, [ACCESS, ALIGN_MUL, ALIGN_OFFSET], flags=[CAN_ELIMINATE, CAN_REORDER])
 # src[] = { offset }.
-load("input", 1, [BASE, COMPONENT], [CAN_ELIMINATE, CAN_REORDER])
+load("input", 1, [BASE, COMPONENT, TYPE], [CAN_ELIMINATE, CAN_REORDER])
 # src[] = { vertex, offset }.
 load("per_vertex_input", 2, [BASE, COMPONENT], [CAN_ELIMINATE, CAN_REORDER])
 # src[] = { barycoord, offset }.
@@ -679,7 +691,7 @@ def store(name, num_srcs, indices=[], flags=[]):
     intrinsic("store_" + name, [0] + ([1] * (num_srcs - 1)), indices=indices, flags=flags)
 
 # src[] = { value, offset }.
-store("output", 2, [BASE, WRMASK, COMPONENT])
+store("output", 2, [BASE, WRMASK, COMPONENT, TYPE])
 # src[] = { value, vertex, offset }.
 store("per_vertex_output", 3, [BASE, WRMASK, COMPONENT])
 # src[] = { value, block_index, offset }

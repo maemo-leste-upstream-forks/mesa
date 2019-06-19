@@ -33,6 +33,12 @@
 #include "virgl_screen.h"
 #define VR_MAX_TEXTURE_2D_LEVELS 15
 
+/* Indicates that the resource will be used as a staging buffer, not requiring
+ * dedicated host-side storage. Can only be used with PIPE_BUFFER resources
+ * that have a PIPE_BIND_CUSTOM bind type.
+ */
+#define VIRGL_RESOURCE_FLAG_STAGING (PIPE_RESOURCE_FLAG_DRV_PRIV << 0)
+
 struct winsys_handle;
 struct virgl_screen;
 struct virgl_context;
@@ -53,11 +59,28 @@ struct virgl_resource {
 
    /* For PIPE_BUFFER only.  Data outside of this range are uninitialized. */
    struct util_range valid_buffer_range;
+
+   /* This mask indicates where the resource has been bound to, excluding
+    * pipe_surface binds.
+    *
+    * This is more accurate than pipe_resource::bind.  Besides,
+    * pipe_resource::bind can be 0 with direct state access, and is not
+    * usable.
+    */
+   unsigned bind_history;
 };
 
 enum virgl_transfer_map_type {
    VIRGL_TRANSFER_MAP_ERROR = -1,
    VIRGL_TRANSFER_MAP_HW_RES,
+
+   /* Map a range of a staging buffer. The updated contents should be transferred
+    * with a copy transfer.
+    */
+   VIRGL_TRANSFER_MAP_STAGING,
+
+   /* Reallocate the underlying virgl_hw_res. */
+   VIRGL_TRANSFER_MAP_REALLOC,
 };
 
 struct virgl_transfer {
@@ -66,7 +89,16 @@ struct virgl_transfer {
    struct util_range range;
    struct list_head queue_link;
    struct pipe_transfer *resolve_transfer;
+
+   struct virgl_hw_res *hw_res;
    void *hw_res_map;
+   /* If not NULL, denotes that this is a copy transfer, i.e.,
+    * that the transfer source data should be taken from this
+    * resource instead of the original transfer resource.
+    */
+   struct pipe_resource *copy_src_res;
+   /* The offset in the copy source resource to copy data from. */
+   uint32_t copy_src_offset;
 };
 
 void virgl_resource_destroy(struct pipe_screen *screen,
@@ -90,7 +122,8 @@ static inline struct virgl_transfer *virgl_transfer(struct pipe_transfer *trans)
 
 void virgl_buffer_init(struct virgl_resource *res);
 
-static inline unsigned pipe_to_virgl_bind(const struct virgl_screen *vs, unsigned pbind)
+static inline unsigned pipe_to_virgl_bind(const struct virgl_screen *vs,
+                                          unsigned pbind, unsigned flags)
 {
    unsigned outbind = 0;
    if (pbind & PIPE_BIND_DEPTH_STENCIL)
@@ -111,8 +144,12 @@ static inline unsigned pipe_to_virgl_bind(const struct virgl_screen *vs, unsigne
       outbind |= VIRGL_BIND_STREAM_OUTPUT;
    if (pbind & PIPE_BIND_CURSOR)
       outbind |= VIRGL_BIND_CURSOR;
-   if (pbind & PIPE_BIND_CUSTOM)
-      outbind |= VIRGL_BIND_CUSTOM;
+   if (pbind & PIPE_BIND_CUSTOM) {
+      if (flags & VIRGL_RESOURCE_FLAG_STAGING)
+         outbind |= VIRGL_BIND_STAGING;
+      else
+         outbind |= VIRGL_BIND_CUSTOM;
+   }
    if (pbind & PIPE_BIND_SCANOUT)
       outbind |= VIRGL_BIND_SCANOUT;
    if (pbind & PIPE_BIND_SHADER_BUFFER)
@@ -133,13 +170,13 @@ void virgl_resource_layout(struct pipe_resource *pt,
                            struct virgl_resource_metadata *metadata);
 
 struct virgl_transfer *
-virgl_resource_create_transfer(struct slab_child_pool *pool,
+virgl_resource_create_transfer(struct virgl_context *vctx,
                                struct pipe_resource *pres,
                                const struct virgl_resource_metadata *metadata,
                                unsigned level, unsigned usage,
                                const struct pipe_box *box);
 
-void virgl_resource_destroy_transfer(struct slab_child_pool *pool,
+void virgl_resource_destroy_transfer(struct virgl_context *vctx,
                                      struct virgl_transfer *trans);
 
 void virgl_resource_destroy(struct pipe_screen *screen,
@@ -150,5 +187,12 @@ boolean virgl_resource_get_handle(struct pipe_screen *screen,
                                   struct winsys_handle *whandle);
 
 void virgl_resource_dirty(struct virgl_resource *res, uint32_t level);
+
+void *virgl_transfer_uploader_map(struct virgl_context *vctx,
+                                  struct virgl_transfer *vtransfer);
+
+bool
+virgl_resource_realloc(struct virgl_context *vctx,
+                       struct virgl_resource *res);
 
 #endif

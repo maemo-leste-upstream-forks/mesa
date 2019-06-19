@@ -91,6 +91,7 @@ typedef uint32_t xcb_window_t;
 #define MAX_VIEWPORTS   16
 #define MAX_SCISSORS    16
 #define MAX_DISCARD_RECTANGLES 4
+#define MAX_SAMPLE_LOCATIONS 32
 #define MAX_PUSH_CONSTANTS_SIZE 128
 #define MAX_PUSH_DESCRIPTORS 32
 #define MAX_DYNAMIC_UNIFORM_BUFFERS 16
@@ -314,6 +315,9 @@ struct radv_physical_device {
 
 	/* Whether LOAD_CONTEXT_REG packets are supported. */
 	bool has_load_ctx_reg_pkt;
+
+	/* Whether to enable the AMD_shader_ballot extension */
+	bool use_shader_ballot;
 
 	/* This is the drivers on-disk cache used as a fallback as opposed to
 	 * the pipeline cache defined by apps.
@@ -852,7 +856,8 @@ enum radv_dynamic_state_bits {
 	RADV_DYNAMIC_STENCIL_WRITE_MASK   = 1 << 7,
 	RADV_DYNAMIC_STENCIL_REFERENCE    = 1 << 8,
 	RADV_DYNAMIC_DISCARD_RECTANGLE    = 1 << 9,
-	RADV_DYNAMIC_ALL                  = (1 << 10) - 1,
+	RADV_DYNAMIC_SAMPLE_LOCATIONS     = 1 << 10,
+	RADV_DYNAMIC_ALL                  = (1 << 11) - 1,
 };
 
 enum radv_cmd_dirty_bits {
@@ -868,12 +873,13 @@ enum radv_cmd_dirty_bits {
 	RADV_CMD_DIRTY_DYNAMIC_STENCIL_WRITE_MASK        = 1 << 7,
 	RADV_CMD_DIRTY_DYNAMIC_STENCIL_REFERENCE         = 1 << 8,
 	RADV_CMD_DIRTY_DYNAMIC_DISCARD_RECTANGLE         = 1 << 9,
-	RADV_CMD_DIRTY_DYNAMIC_ALL                       = (1 << 10) - 1,
-	RADV_CMD_DIRTY_PIPELINE                          = 1 << 10,
-	RADV_CMD_DIRTY_INDEX_BUFFER                      = 1 << 11,
-	RADV_CMD_DIRTY_FRAMEBUFFER                       = 1 << 12,
-	RADV_CMD_DIRTY_VERTEX_BUFFER                     = 1 << 13,
-	RADV_CMD_DIRTY_STREAMOUT_BUFFER                  = 1 << 14,
+	RADV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS          = 1 << 10,
+	RADV_CMD_DIRTY_DYNAMIC_ALL                       = (1 << 11) - 1,
+	RADV_CMD_DIRTY_PIPELINE                          = 1 << 11,
+	RADV_CMD_DIRTY_INDEX_BUFFER                      = 1 << 12,
+	RADV_CMD_DIRTY_FRAMEBUFFER                       = 1 << 13,
+	RADV_CMD_DIRTY_VERTEX_BUFFER                     = 1 << 14,
+	RADV_CMD_DIRTY_STREAMOUT_BUFFER                  = 1 << 15,
 };
 
 enum radv_cmd_flush_bits {
@@ -950,6 +956,13 @@ struct radv_discard_rectangle_state {
 	VkRect2D                                          rectangles[MAX_DISCARD_RECTANGLES];
 };
 
+struct radv_sample_locations_state {
+	VkSampleCountFlagBits per_pixel;
+	VkExtent2D grid_size;
+	uint32_t count;
+	VkSampleLocationEXT locations[MAX_SAMPLE_LOCATIONS];
+};
+
 struct radv_dynamic_state {
 	/**
 	 * Bitmask of (1 << VK_DYNAMIC_STATE_*).
@@ -992,6 +1005,8 @@ struct radv_dynamic_state {
 	} stencil_reference;
 
 	struct radv_discard_rectangle_state               discard_rectangle;
+
+	struct radv_sample_locations_state                sample_location;
 };
 
 extern const struct radv_dynamic_state default_dynamic_state;
@@ -1012,6 +1027,7 @@ struct radv_attachment_state {
 	uint32_t                                     cleared_views;
 	VkClearValue                                 clear_value;
 	VkImageLayout                                current_layout;
+	struct radv_sample_locations_state	     sample_location;
 };
 
 struct radv_descriptor_state {
@@ -1021,6 +1037,11 @@ struct radv_descriptor_state {
 	struct radv_push_descriptor_set push_set;
 	bool push_dirty;
 	uint32_t dynamic_buffers[4 * MAX_DYNAMIC_BUFFERS];
+};
+
+struct radv_subpass_sample_locs_state {
+	uint32_t subpass_idx;
+	struct radv_sample_locations_state sample_location;
 };
 
 struct radv_cmd_state {
@@ -1044,6 +1065,9 @@ struct radv_cmd_state {
 	struct radv_attachment_state *                attachments;
 	struct radv_streamout_state                  streamout;
 	VkRect2D                                     render_area;
+
+	uint32_t                                     num_subpass_sample_locs;
+	struct radv_subpass_sample_locs_state *      subpass_sample_locs;
 
 	/* Index buffer */
 	struct radv_buffer                           *index_buffer;
@@ -1150,6 +1174,7 @@ struct radv_cmd_buffer {
 };
 
 struct radv_image;
+struct radv_image_view;
 
 bool radv_cmd_buffer_uses_mec(struct radv_cmd_buffer *cmd_buffer);
 
@@ -1227,15 +1252,17 @@ void radv_update_ds_clear_metadata(struct radv_cmd_buffer *cmd_buffer,
 				   VkImageAspectFlags aspects);
 
 void radv_update_color_clear_metadata(struct radv_cmd_buffer *cmd_buffer,
-				      struct radv_image *image,
+				      const struct radv_image_view *iview,
 				      int cb_idx,
 				      uint32_t color_values[2]);
 
 void radv_update_fce_metadata(struct radv_cmd_buffer *cmd_buffer,
-			      struct radv_image *image, bool value);
+			      struct radv_image *image,
+			      const VkImageSubresourceRange *range, bool value);
 
 void radv_update_dcc_metadata(struct radv_cmd_buffer *cmd_buffer,
-			      struct radv_image *image, bool value);
+			      struct radv_image *image,
+			      const VkImageSubresourceRange *range, bool value);
 
 uint32_t radv_fill_buffer(struct radv_cmd_buffer *cmd_buffer,
 			  struct radeon_winsys_bo *bo,
@@ -1463,6 +1490,7 @@ uint32_t radv_translate_buffer_dataformat(const struct vk_format_description *de
 					  int first_non_void);
 uint32_t radv_translate_buffer_numformat(const struct vk_format_description *desc,
 					 int first_non_void);
+bool radv_is_buffer_format_supported(VkFormat format, bool *scaled);
 uint32_t radv_translate_colorformat(VkFormat format);
 uint32_t radv_translate_color_numformat(VkFormat format,
 					const struct vk_format_description *desc,
@@ -1534,6 +1562,7 @@ struct radv_image {
 	uint64_t dcc_offset;
 	uint64_t htile_offset;
 	bool tc_compatible_htile;
+	bool tc_compatible_cmask;
 
 	struct radv_fmask_info fmask;
 	struct radv_cmask_info cmask;
@@ -1608,6 +1637,15 @@ radv_image_has_dcc(const struct radv_image *image)
 }
 
 /**
+ * Return whether the image is TC-compatible CMASK.
+ */
+static inline bool
+radv_image_is_tc_compat_cmask(const struct radv_image *image)
+{
+	return radv_image_has_fmask(image) && image->tc_compatible_cmask;
+}
+
+/**
  * Return whether DCC metadata is enabled for a level.
  */
 static inline bool
@@ -1653,6 +1691,33 @@ static inline bool
 radv_image_is_tc_compat_htile(const struct radv_image *image)
 {
 	return radv_image_has_htile(image) && image->tc_compatible_htile;
+}
+
+static inline uint64_t
+radv_image_get_fast_clear_va(const struct radv_image *image,
+			     uint32_t base_level)
+{
+	uint64_t va = radv_buffer_get_va(image->bo);
+	va += image->offset + image->clear_value_offset + base_level * 8;
+	return va;
+}
+
+static inline uint64_t
+radv_image_get_fce_pred_va(const struct radv_image *image,
+			   uint32_t base_level)
+{
+	uint64_t va = radv_buffer_get_va(image->bo);
+	va += image->offset + image->fce_pred_offset + base_level * 8;
+	return va;
+}
+
+static inline uint64_t
+radv_image_get_dcc_pred_va(const struct radv_image *image,
+			   uint32_t base_level)
+{
+	uint64_t va = radv_buffer_get_va(image->bo);
+	va += image->offset + image->dcc_pred_offset + base_level * 8;
+	return va;
 }
 
 unsigned radv_image_queue_family_mask(const struct radv_image *image, uint32_t family, uint32_t queue_family);
@@ -1721,6 +1786,7 @@ struct radv_image_create_info {
 	const VkImageCreateInfo *vk_info;
 	bool scanout;
 	bool no_metadata_planes;
+	const struct radeon_bo_metadata *bo_metadata;
 };
 
 VkResult radv_image_create(VkDevice _device,
@@ -1908,7 +1974,8 @@ struct radv_render_pass_attachment {
 	VkImageLayout                                initial_layout;
 	VkImageLayout                                final_layout;
 
-	/* The subpass id in which the attachment will be used last. */
+	/* The subpass id in which the attachment will be used first/last. */
+	uint32_t				     first_subpass_idx;
 	uint32_t                                     last_subpass_idx;
 };
 
@@ -1970,7 +2037,8 @@ void radv_meta_push_descriptor_set(struct radv_cmd_buffer *cmd_buffer,
                                    const VkWriteDescriptorSet *pDescriptorWrites);
 
 void radv_initialize_dcc(struct radv_cmd_buffer *cmd_buffer,
-			 struct radv_image *image, uint32_t value);
+			 struct radv_image *image,
+			 const VkImageSubresourceRange *range, uint32_t value);
 
 void radv_initialize_fmask(struct radv_cmd_buffer *cmd_buffer,
 			   struct radv_image *image);

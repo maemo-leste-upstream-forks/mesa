@@ -23,7 +23,7 @@
  */
 
 #include "si_build_pm4.h"
-#include "gfx9d.h"
+#include "sid.h"
 #include "si_query.h"
 
 #include "util/u_dual_blend.h"
@@ -3850,8 +3850,8 @@ si_make_texture_descriptor(struct si_screen *screen,
 		depth = res->array_size / 6;
 
 	state[0] = 0;
-	state[1] = (S_008F14_DATA_FORMAT_GFX6(data_format) |
-		    S_008F14_NUM_FORMAT_GFX6(num_format));
+	state[1] = (S_008F14_DATA_FORMAT(data_format) |
+		    S_008F14_NUM_FORMAT(num_format));
 	state[2] = (S_008F18_WIDTH(width - 1) |
 		    S_008F18_HEIGHT(height - 1) |
 		    S_008F18_PERF_MOD(4));
@@ -4006,8 +4006,8 @@ si_make_texture_descriptor(struct si_screen *screen,
 
 		fmask_state[0] = (va >> 8) | tex->surface.fmask_tile_swizzle;
 		fmask_state[1] = S_008F14_BASE_ADDRESS_HI(va >> 40) |
-				 S_008F14_DATA_FORMAT_GFX6(data_format) |
-				 S_008F14_NUM_FORMAT_GFX6(num_format);
+				 S_008F14_DATA_FORMAT(data_format) |
+				 S_008F14_NUM_FORMAT(num_format);
 		fmask_state[2] = S_008F18_WIDTH(width - 1) |
 				 S_008F18_HEIGHT(height - 1);
 		fmask_state[3] = S_008F1C_DST_SEL_X(V_008F1C_SQ_SEL_X) |
@@ -4023,13 +4023,13 @@ si_make_texture_descriptor(struct si_screen *screen,
 		if (screen->info.chip_class >= GFX9) {
 			fmask_state[3] |= S_008F1C_SW_MODE(tex->surface.u.gfx9.fmask.swizzle_mode);
 			fmask_state[4] |= S_008F20_DEPTH(last_layer) |
-					  S_008F20_PITCH_GFX9(tex->surface.u.gfx9.fmask.epitch);
+					  S_008F20_PITCH(tex->surface.u.gfx9.fmask.epitch);
 			fmask_state[5] |= S_008F24_META_PIPE_ALIGNED(tex->surface.u.gfx9.cmask.pipe_aligned) |
 					  S_008F24_META_RB_ALIGNED(tex->surface.u.gfx9.cmask.rb_aligned);
 		} else {
 			fmask_state[3] |= S_008F1C_TILING_INDEX(tex->surface.u.legacy.fmask.tiling_index);
 			fmask_state[4] |= S_008F20_DEPTH(depth - 1) |
-					  S_008F20_PITCH_GFX6(tex->surface.u.legacy.fmask.pitch_in_pixels - 1);
+					  S_008F20_PITCH(tex->surface.u.legacy.fmask.pitch_in_pixels - 1);
 			fmask_state[5] |= S_008F24_LAST_ARRAY(last_layer);
 		}
 	}
@@ -4183,7 +4183,7 @@ si_create_sampler_view_custom(struct pipe_context *ctx,
 				   width, height, depth,
 				   view->state, view->fmask_state);
 
-	unsigned num_format = G_008F14_NUM_FORMAT_GFX6(view->state[1]);
+	unsigned num_format = G_008F14_NUM_FORMAT(view->state[1]);
 	view->is_integer =
 		num_format == V_008F14_IMG_NUM_FORMAT_USCALED ||
 		num_format == V_008F14_IMG_NUM_FORMAT_SSCALED ||
@@ -4328,7 +4328,7 @@ static void *si_create_sampler_state(struct pipe_context *ctx,
 		return NULL;
 	}
 
-#ifdef DEBUG
+#ifndef NDEBUG
 	rstate->magic = SI_SAMPLER_STATE_MAGIC;
 #endif
 	rstate->val[0] = (S_008F30_CLAMP_X(si_tex_wrap(state->wrap_s)) |
@@ -4407,7 +4407,7 @@ static void si_emit_sample_mask(struct si_context *sctx)
 
 static void si_delete_sampler_state(struct pipe_context *ctx, void *state)
 {
-#ifdef DEBUG
+#ifndef NDEBUG
 	struct si_sampler_state *s = state;
 
 	assert(s->magic == SI_SAMPLER_STATE_MAGIC);
@@ -4991,7 +4991,7 @@ static void si_init_config(struct si_context *sctx)
 
        /* GFX6, radeon kernel disabled CLEAR_STATE. */
        assert(has_clear_state || sscreen->info.chip_class == GFX6 ||
-              sscreen->info.drm_major != 3);
+              !sscreen->info.is_amdgpu);
 
 	if (!pm4)
 		return;

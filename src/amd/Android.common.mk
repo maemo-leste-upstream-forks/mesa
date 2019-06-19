@@ -44,8 +44,11 @@ LOCAL_GENERATED_SOURCES := $(addprefix $(intermediates)/, $(AMD_GENERATED_FILES)
 $(LOCAL_GENERATED_SOURCES): PRIVATE_PYTHON := $(MESA_PYTHON2)
 $(LOCAL_GENERATED_SOURCES): PRIVATE_CUSTOM_TOOL = $(PRIVATE_PYTHON) $^ > $@
 
-$(intermediates)/common/sid_tables.h: $(LOCAL_PATH)/common/sid_tables.py $(LOCAL_PATH)/common/sid.h $(LOCAL_PATH)/common/gfx9d.h
+$(intermediates)/common/sid_tables.h: $(LOCAL_PATH)/common/sid_tables.py $(LOCAL_PATH)/common/sid.h $(LOCAL_PATH)/registers/amdgfxregs.json $(LOCAL_PATH)/registers/pkt3.json
 	$(transform-generated-source)
+
+$(intermediates)/common/amdgfxregs.h: $(LOCAL_PATH)/registers/makeregheader.py $(LOCAL_PATH)/registers/amdgfxregs.json $(LOCAL_PATH)/registers/pkt3.json
+	$(transform-generated-source) --sort address --guard AMDGFXREGS_H
 
 LOCAL_C_INCLUDES := \
 	$(MESA_TOP)/include \
@@ -55,6 +58,7 @@ LOCAL_C_INCLUDES := \
 	$(call generated-sources-dir-for,STATIC_LIBRARIES,libmesa_nir,,)/nir \
 	$(MESA_TOP)/src/gallium/include \
 	$(MESA_TOP)/src/gallium/auxiliary \
+	$(MESA_TOP)/src/mesa \
 	$(intermediates)/common
 
 LOCAL_EXPORT_C_INCLUDE_DIRS := \

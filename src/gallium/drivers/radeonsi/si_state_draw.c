@@ -23,7 +23,7 @@
  */
 
 #include "si_build_pm4.h"
-#include "gfx9d.h"
+#include "sid.h"
 
 #include "util/u_index_modify.h"
 #include "util/u_log.h"
@@ -251,6 +251,11 @@ static void si_emit_derived_tess_state(struct si_context *sctx,
 	sctx->current_vs_state &= C_VS_STATE_LS_OUT_PATCH_SIZE &
 				  C_VS_STATE_LS_OUT_VERTEX_SIZE;
 	sctx->current_vs_state |= tcs_in_layout;
+
+	/* We should be able to support in-shader LDS use with LLVM >= 9
+	 * by just adding the lds_sizes together, but it has never
+	 * been tested. */
+	assert(ls_current->config.lds_size == 0);
 
 	if (sctx->chip_class >= GFX9) {
 		unsigned hs_rsrc2 = ls_current->config.rsrc2 |

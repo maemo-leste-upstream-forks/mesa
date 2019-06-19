@@ -331,10 +331,10 @@ struct dri2_egl_surface
    } color_buffers[3], *back;
 #endif
 
-#if defined(HAVE_SURFACELESS_PLATFORM)
-      __DRIimage           *front;
-      unsigned int         visual;
-#endif
+   /* surfaceless and device */
+   __DRIimage           *front;
+   unsigned int         visual;
+
    int out_fence_fd;
    EGLBoolean enable_out_fence;
 };
@@ -492,6 +492,11 @@ dri2_initialize_surfaceless(_EGLDriver *drv, _EGLDisplay *disp)
 }
 #endif
 
+EGLBoolean
+dri2_initialize_device(_EGLDriver *drv, _EGLDisplay *disp);
+static inline void
+dri2_teardown_device(struct dri2_egl_display *dri2_dpy) { /* noop */ }
+
 void
 dri2_flush_drawable_for_swapbuffers(_EGLDisplay *disp, _EGLSurface *draw);
 
@@ -540,6 +545,12 @@ dri2_init_surface(_EGLSurface *surf, _EGLDisplay *disp, EGLint type,
 
 void
 dri2_fini_surface(_EGLSurface *surf);
+
+EGLBoolean
+dri2_create_drawable(struct dri2_egl_display *dri2_dpy,
+                     const __DRIconfig *config,
+                     struct dri2_egl_surface *dri2_surf,
+                     void *loaderPrivate);
 
 static inline uint64_t
 combine_u32_into_u64(uint32_t hi, uint32_t lo)

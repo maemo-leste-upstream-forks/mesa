@@ -122,7 +122,25 @@ pan_transfer(struct pipe_transfer *p)
 }
 
 void panfrost_resource_screen_init(struct panfrost_screen *screen);
+void panfrost_resource_screen_deinit(struct panfrost_screen *screen);
 
 void panfrost_resource_context_init(struct pipe_context *pctx);
+
+/* AFBC */
+
+bool
+panfrost_format_supports_afbc(enum pipe_format format);
+
+void
+panfrost_enable_afbc(struct panfrost_context *ctx, struct panfrost_resource *rsrc, bool ds);
+
+/* Blitting */
+
+void
+panfrost_blit(struct pipe_context *pipe,
+              const struct pipe_blit_info *info);
+
+void
+panfrost_blit_wallpaper(struct panfrost_context *ctx);
 
 #endif /* PAN_RESOURCE_H */

@@ -35,7 +35,6 @@
 
 #include <panfrost-misc.h>
 #include "pan_allocate.h"
-#include "pan_trace.h"
 
 struct panfrost_context;
 struct panfrost_resource;
@@ -98,5 +97,11 @@ struct panfrost_screen {
 	int last_fragment_flushed;
         struct panfrost_job *last_job;
 };
+
+static inline struct panfrost_screen *
+pan_screen(struct pipe_screen *p)
+{
+   return (struct panfrost_screen *)p;
+}
 
 #endif /* PAN_SCREEN_H */

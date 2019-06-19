@@ -69,8 +69,10 @@ e = 'e'
 
 optimizations = [
 
-   (('imul', a, '#b@32(is_pos_power_of_two)'), ('ishl', a, ('find_lsb', b))),
-   (('imul', a, '#b@32(is_neg_power_of_two)'), ('ineg', ('ishl', a, ('find_lsb', ('iabs', b))))),
+   (('imul', a, '#b@32(is_pos_power_of_two)'), ('ishl', a, ('find_lsb', b)), '!options->lower_bitshift'),
+   (('imul', a, '#b@32(is_neg_power_of_two)'), ('ineg', ('ishl', a, ('find_lsb', ('iabs', b)))), '!options->lower_bitshift'),
+   (('ishl', a, '#b@32'), ('imul', a, ('ishl', 1, b)), 'options->lower_bitshift'),
+
    (('unpack_64_2x32_split_x', ('imul_2x32_64(is_used_once)', a, b)), ('imul', a, b)),
    (('unpack_64_2x32_split_x', ('umul_2x32_64(is_used_once)', a, b)), ('imul', a, b)),
    (('imul_2x32_64', a, b), ('pack_64_2x32_split', ('imul', a, b), ('imul_high', a, b)), 'options->lower_mul_2x32_64'),
@@ -79,7 +81,7 @@ optimizations = [
    (('idiv', a, 1), a),
    (('umod', a, 1), 0),
    (('imod', a, 1), 0),
-   (('udiv', a, '#b@32(is_pos_power_of_two)'), ('ushr', a, ('find_lsb', b))),
+   (('udiv', a, '#b@32(is_pos_power_of_two)'), ('ushr', a, ('find_lsb', b)), '!options->lower_bitshift'),
    (('idiv', a, '#b@32(is_pos_power_of_two)'), ('imul', ('isign', a), ('ushr', ('iabs', a), ('find_lsb', b))), 'options->lower_idiv'),
    (('idiv', a, '#b@32(is_neg_power_of_two)'), ('ineg', ('imul', ('isign', a), ('ushr', ('iabs', a), ('find_lsb', ('iabs', b))))), 'options->lower_idiv'),
    (('umod', a, '#b(is_pos_power_of_two)'),    ('iand', a, ('isub', b, 1))),
@@ -397,6 +399,7 @@ optimizations = [
    (('imax', a, ('iabs', a)), ('iabs', a)),
    (('fmax', a, ('fneg', a)), ('fabs', a)),
    (('imax', a, ('ineg', a)), ('iabs', a)),
+   (('~fmax', ('fabs', a), 0.0), ('fabs', a)),
    (('~fmin', ('fmax', a, 0.0), 1.0), ('fsat', a), '!options->lower_fsat'),
    (('~fmax', ('fmin', a, 1.0), 0.0), ('fsat', a), '!options->lower_fsat'),
    (('~fmin', ('fmax', a, -1.0),  0.0), ('fneg', ('fsat', ('fneg', a))), '!options->lower_negate && !options->lower_fsat'),
@@ -768,10 +771,9 @@ optimizations.extend([
    (('bcsel', ('ine', a, -1), ('ifind_msb', a), -1), ('ifind_msb', a)),
 
    # Misc. lowering
-   (('fmod@16', a, b), ('fsub', a, ('fmul', b, ('ffloor', ('fdiv', a, b)))), 'options->lower_fmod16'),
-   (('fmod@32', a, b), ('fsub', a, ('fmul', b, ('ffloor', ('fdiv', a, b)))), 'options->lower_fmod32'),
-   (('fmod@64', a, b), ('fsub', a, ('fmul', b, ('ffloor', ('fdiv', a, b)))), 'options->lower_fmod64'),
-   (('frem', a, b), ('fsub', a, ('fmul', b, ('ftrunc', ('fdiv', a, b)))), 'options->lower_fmod32'),
+   (('fmod@16', a, b), ('fsub', a, ('fmul', b, ('ffloor', ('fdiv', a, b)))), 'options->lower_fmod'),
+   (('fmod@32', a, b), ('fsub', a, ('fmul', b, ('ffloor', ('fdiv', a, b)))), 'options->lower_fmod'),
+   (('frem', a, b), ('fsub', a, ('fmul', b, ('ftrunc', ('fdiv', a, b)))), 'options->lower_fmod'),
    (('uadd_carry@32', a, b), ('b2i', ('ult', ('iadd', a, b), a)), 'options->lower_uadd_carry'),
    (('usub_borrow@32', a, b), ('b2i', ('ult', a, b)), 'options->lower_usub_borrow'),
 
@@ -1101,6 +1103,15 @@ for op in ['fddx', 'fddx_fine', 'fddx_coarse',
            'fddy', 'fddy_fine', 'fddy_coarse']:
    optimizations += [
       ((op, 'a'), 0.0, 'info->stage == MESA_SHADER_COMPUTE && info->cs.derivative_group == DERIVATIVE_GROUP_NONE')
+]
+
+# Some optimizations for ir3-specific instructions.
+optimizations += [
+   # 'al * bl': If either 'al' or 'bl' is zero, return zero.
+   (('umul_low', '#a(is_lower_half_zero)', 'b'), (0)),
+   # '(ah * bl) << 16 + c': If either 'ah' or 'bl' is zero, return 'c'.
+   (('imadsh_mix16', '#a@32(is_lower_half_zero)', 'b@32', 'c@32'), ('c')),
+   (('imadsh_mix16', 'a@32', '#b@32(is_upper_half_zero)', 'c@32'), ('c')),
 ]
 
 # This section contains "late" optimizations that should be run before

@@ -40,7 +40,6 @@
 #include <llvm-c/TargetMachine.h>
 
 #include "sid.h"
-#include "gfx9d.h"
 #include "ac_binary.h"
 #include "ac_llvm_util.h"
 #include "ac_nir_to_llvm.h"
@@ -524,7 +523,7 @@ radv_pipeline_compute_spi_color_formats(struct radv_pipeline *pipeline,
 		col_format |= cf << (4 * i);
 	}
 
-	if (!col_format && blend->need_src_alpha & (1 << 0)) {
+	if (!(col_format & 0xf) && blend->need_src_alpha & (1 << 0)) {
 		/* When a subpass doesn't have any color attachments, write the
 		 * alpha channel of MRT0 when alpha coverage is enabled because
 		 * the depth attachment needs it.
@@ -542,10 +541,13 @@ radv_pipeline_compute_spi_color_formats(struct radv_pipeline *pipeline,
 		}
 	}
 
-	blend->cb_shader_mask = ac_get_cb_shader_mask(col_format);
-
+	/* The output for dual source blending should have the same format as
+	 * the first output.
+	 */
 	if (blend->mrt0_is_dual_src)
 		col_format |= (col_format & 0xf) << 4;
+
+	blend->cb_shader_mask = ac_get_cb_shader_mask(col_format);
 	blend->spi_shader_col_format = col_format;
 }
 
@@ -1267,6 +1269,8 @@ static unsigned radv_dynamic_state_mask(VkDynamicState state)
 		return RADV_DYNAMIC_STENCIL_REFERENCE;
 	case VK_DYNAMIC_STATE_DISCARD_RECTANGLE_EXT:
 		return RADV_DYNAMIC_DISCARD_RECTANGLE;
+	case VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT:
+		return RADV_DYNAMIC_SAMPLE_LOCATIONS;
 	default:
 		unreachable("Unhandled dynamic state");
 	}
@@ -1296,6 +1300,11 @@ static uint32_t radv_pipeline_needed_dynamic_state(const VkGraphicsPipelineCreat
 
 	if (!vk_find_struct_const(pCreateInfo->pNext, PIPELINE_DISCARD_RECTANGLE_STATE_CREATE_INFO_EXT))
 		states &= ~RADV_DYNAMIC_DISCARD_RECTANGLE;
+
+	if (!pCreateInfo->pMultisampleState ||
+	    !vk_find_struct_const(pCreateInfo->pMultisampleState->pNext,
+				  PIPELINE_SAMPLE_LOCATIONS_STATE_CREATE_INFO_EXT))
+		states &= ~RADV_DYNAMIC_SAMPLE_LOCATIONS;
 
 	/* TODO: blend constants & line width. */
 
@@ -1423,6 +1432,29 @@ radv_pipeline_init_dynamic_state(struct radv_pipeline *pipeline,
 			typed_memcpy(dynamic->discard_rectangle.rectangles,
 			             discard_rectangle_info->pDiscardRectangles,
 			             discard_rectangle_info->discardRectangleCount);
+		}
+	}
+
+	if (needed_states & RADV_DYNAMIC_SAMPLE_LOCATIONS) {
+		const VkPipelineSampleLocationsStateCreateInfoEXT *sample_location_info =
+			vk_find_struct_const(pCreateInfo->pMultisampleState->pNext,
+					     PIPELINE_SAMPLE_LOCATIONS_STATE_CREATE_INFO_EXT);
+		/* If sampleLocationsEnable is VK_FALSE, the default sample
+		 * locations are used and the values specified in
+		 * sampleLocationsInfo are ignored.
+		 */
+		if (sample_location_info->sampleLocationsEnable) {
+			const VkSampleLocationsInfoEXT *pSampleLocationsInfo =
+				&sample_location_info->sampleLocationsInfo;
+
+			assert(pSampleLocationsInfo->sampleLocationsCount <= MAX_SAMPLE_LOCATIONS);
+
+			dynamic->sample_location.per_pixel = pSampleLocationsInfo->sampleLocationsPerPixel;
+			dynamic->sample_location.grid_size = pSampleLocationsInfo->sampleLocationGridSize;
+			dynamic->sample_location.count = pSampleLocationsInfo->sampleLocationsCount;
+			typed_memcpy(&dynamic->sample_location.locations[0],
+				     pSampleLocationsInfo->pSampleLocations,
+				     pSampleLocationsInfo->sampleLocationsCount);
 		}
 	}
 

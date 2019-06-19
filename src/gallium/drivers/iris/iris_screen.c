@@ -151,6 +151,7 @@ iris_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_TGSI_VS_LAYER_VIEWPORT:
    case PIPE_CAP_TGSI_TES_LAYER_VIEWPORT:
    case PIPE_CAP_TGSI_FS_FINE_DERIVATIVE:
+   case PIPE_CAP_TGSI_PACK_HALF_FLOAT:
    case PIPE_CAP_ACCELERATED:
    case PIPE_CAP_UMA:
    case PIPE_CAP_CONDITIONAL_RENDER_INVERTED:
@@ -191,6 +192,7 @@ iris_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_COMPUTE_SHADER_DERIVATIVES:
    case PIPE_CAP_INVALIDATE_BUFFER:
    case PIPE_CAP_SURFACE_REINTERPRET_BLOCKS:
+   case PIPE_CAP_CS_DERIVED_SYSTEM_VALUES_SUPPORTED:
       return true;
    case PIPE_CAP_FBFETCH:
       /* TODO: Support non-coherent FB fetch on Broadwell */
@@ -201,6 +203,7 @@ iris_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_SHADER_STENCIL_EXPORT:
    case PIPE_CAP_DEPTH_CLIP_DISABLE_SEPARATE:
    case PIPE_CAP_FRAGMENT_SHADER_INTERLOCK:
+   case PIPE_CAP_ATOMIC_FLOAT_MINMAX:
       return devinfo->gen >= 9;
    case PIPE_CAP_MAX_DUAL_SOURCE_RENDER_TARGETS:
       return 1;

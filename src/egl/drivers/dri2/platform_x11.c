@@ -261,7 +261,7 @@ dri2_x11_create_surface(_EGLDriver *drv, _EGLDisplay *disp, EGLint type,
 
    (void) drv;
 
-   dri2_surf = malloc(sizeof *dri2_surf);
+   dri2_surf = calloc(1, sizeof *dri2_surf);
    if (!dri2_surf) {
       _eglError(EGL_BAD_ALLOC, "dri2_create_surface");
       return NULL;
@@ -290,21 +290,8 @@ dri2_x11_create_surface(_EGLDriver *drv, _EGLDisplay *disp, EGLint type,
       goto cleanup_pixmap;
    }
 
-   if (dri2_dpy->dri2) {
-      dri2_surf->dri_drawable =
-         dri2_dpy->dri2->createNewDrawable(dri2_dpy->dri_screen, config,
-                                           dri2_surf);
-   } else {
-      assert(dri2_dpy->swrast);
-      dri2_surf->dri_drawable = 
-         dri2_dpy->swrast->createNewDrawable(dri2_dpy->dri_screen, config,
-                                             dri2_surf);
-   }
-
-   if (dri2_surf->dri_drawable == NULL) {
-      _eglError(EGL_BAD_ALLOC, "dri2->createNewDrawable");
+   if (!dri2_create_drawable(dri2_dpy, config, dri2_surf, dri2_surf))
       goto cleanup_pixmap;
-   }
 
    if (type != EGL_PBUFFER_BIT) {
       cookie = xcb_get_geometry (dri2_dpy->conn, dri2_surf->drawable);
@@ -1277,21 +1264,34 @@ static const __DRIextension *swrast_loader_extensions[] = {
    NULL,
 };
 
+static int
+dri2_find_screen_for_display(const _EGLDisplay *disp, int fallback_screen)
+{
+   const EGLAttrib *attr;
+
+   for (attr = disp->Options.Attribs; attr; attr += 2) {
+      if (attr[0] == EGL_PLATFORM_X11_SCREEN_EXT)
+         return attr[1];
+   }
+
+   return fallback_screen;
+}
+
 static EGLBoolean
 dri2_get_xcb_connection(_EGLDriver *drv, _EGLDisplay *disp,
                         struct dri2_egl_display *dri2_dpy)
 {
    xcb_screen_iterator_t s;
-   int screen = (uintptr_t)disp->Options.Platform;
+   int screen;
    const char *msg;
 
    disp->DriverData = (void *) dri2_dpy;
    if (disp->PlatformDisplay == NULL) {
       dri2_dpy->conn = xcb_connect(NULL, &screen);
       dri2_dpy->own_device = true;
+      screen = dri2_find_screen_for_display(disp, screen);
    } else {
       Display *dpy = disp->PlatformDisplay;
-
       dri2_dpy->conn = XGetXCBConnection(dpy);
       screen = DefaultScreen(dpy);
    }

@@ -71,6 +71,7 @@ struct ac_llvm_context {
 	LLVMTypeRef v3i32;
 	LLVMTypeRef v4i32;
 	LLVMTypeRef v2f32;
+	LLVMTypeRef v3f32;
 	LLVMTypeRef v4f32;
 	LLVMTypeRef v8i32;
 
@@ -281,6 +282,7 @@ ac_build_buffer_store_format(struct ac_llvm_context *ctx,
 			     LLVMValueRef voffset,
 			     unsigned num_channels,
 			     bool glc,
+			     bool slc,
 			     bool writeonly_memory);
 
 LLVMValueRef

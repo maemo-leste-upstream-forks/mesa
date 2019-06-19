@@ -34,7 +34,9 @@
 /* Allow 2D of sysval IDs, while allowing nonparametric sysvals to equal
  * their class for equal comparison */
 
-#define PAN_SYSVAL(type, no) ((no << 16) | PAN_SYSVAL_##type)
+#define PAN_SYSVAL(type, no) (((no) << 16) | PAN_SYSVAL_##type)
+#define PAN_SYSVAL_TYPE(sysval) ((sysval) & 0xffff)
+#define PAN_SYSVAL_ID(sysval) ((sysval) >> 16)
 
 /* Define some common types. We start at one for easy indexing of hash
  * tables internal to the compiler */
@@ -42,7 +44,15 @@
 enum {
         PAN_SYSVAL_VIEWPORT_SCALE = 1,
         PAN_SYSVAL_VIEWPORT_OFFSET = 2,
+        PAN_SYSVAL_TEXTURE_SIZE = 3,
 } pan_sysval;
+
+#define PAN_TXS_SYSVAL_ID(texidx, dim, is_array)          \
+	((texidx) | ((dim) << 7) | ((is_array) ? (1 << 9) : 0))
+
+#define PAN_SYSVAL_ID_TO_TXS_TEX_IDX(id)        ((id) & 0x7f)
+#define PAN_SYSVAL_ID_TO_TXS_DIM(id)            (((id) >> 7) & 0x3)
+#define PAN_SYSVAL_ID_TO_TXS_IS_ARRAY(id)       !!((id) & (1 << 9))
 
 typedef struct {
         int work_register_count;
@@ -91,13 +101,14 @@ static const nir_shader_compiler_options midgard_nir_options = {
         .lower_flrp32 = true,
         .lower_flrp64 = true,
         .lower_ffract = true,
-        .lower_fmod32 = true,
-        .lower_fmod64 = true,
+        .lower_fmod = true,
         .lower_fdiv = true,
         .lower_idiv = true,
         .lower_isign = true,
         .lower_fpow = true,
         .lower_find_lsb = true,
+
+        .lower_wpos_pntc = true,
 
         /* TODO: We have native ops to help here, which we'll want to look into
          * eventually */
@@ -106,6 +117,10 @@ static const nir_shader_compiler_options midgard_nir_options = {
         .vertex_id_zero_based = true,
         .lower_extract_byte = true,
         .lower_extract_word = true,
+
+        .lower_doubles_options = nir_lower_dmod,
+
+        .vectorize_io = true,
 };
 
 #endif

@@ -340,22 +340,16 @@ _eglConvertIntsToAttribs(const EGLint *int_list, EGLAttrib **out_attrib_list)
 static EGLint *
 _eglConvertAttribsToInt(const EGLAttrib *attr_list)
 {
+   size_t size = _eglNumAttribs(attr_list);
    EGLint *int_attribs = NULL;
 
    /* Convert attributes from EGLAttrib[] to EGLint[] */
-   if (attr_list) {
-      int i, size = 0;
-
-      while (attr_list[size] != EGL_NONE)
-         size += 2;
-
-      size += 1; /* add space for EGL_NONE */
-
+   if (size) {
       int_attribs = calloc(size, sizeof(int_attribs[0]));
       if (!int_attribs)
          return NULL;
 
-      for (i = 0; i < size; i++)
+      for (size_t i = 0; i < size; i++)
          int_attribs[i] = attr_list[i];
    }
    return int_attribs;
@@ -379,7 +373,7 @@ eglGetDisplay(EGLNativeDisplayType nativeDisplay)
    native_display_ptr = (void*) nativeDisplay;
 
    plat = _eglGetNativePlatform(native_display_ptr);
-   disp = _eglFindDisplay(plat, native_display_ptr);
+   disp = _eglFindDisplay(plat, native_display_ptr, NULL);
    return _eglGetDisplayHandle(disp);
 }
 
@@ -412,6 +406,9 @@ _eglGetPlatformDisplayCommon(EGLenum platform, void *native_display,
       disp = _eglGetSurfacelessDisplay(native_display, attrib_list);
       break;
 #endif
+   case EGL_PLATFORM_DEVICE_EXT:
+      disp = _eglGetDeviceDisplay(native_display, attrib_list);
+      break;
    default:
       RETURN_EGL_ERROR(NULL, EGL_BAD_PARAMETER, NULL);
    }
@@ -929,8 +926,8 @@ _eglCreateWindowSurfaceCommon(_EGLDisplay *disp, EGLConfig config,
    if (native_window == NULL)
       RETURN_EGL_ERROR(disp, EGL_BAD_NATIVE_WINDOW, EGL_NO_SURFACE);
 
-#ifdef HAVE_SURFACELESS_PLATFORM
-   if (disp && disp->Platform == _EGL_PLATFORM_SURFACELESS) {
+   if (disp && (disp->Platform == _EGL_PLATFORM_SURFACELESS ||
+                disp->Platform == _EGL_PLATFORM_DEVICE)) {
       /* From the EGL_MESA_platform_surfaceless spec (v1):
        *
        *    eglCreatePlatformWindowSurface fails when called with a <display>
@@ -945,7 +942,6 @@ _eglCreateWindowSurfaceCommon(_EGLDisplay *disp, EGLConfig config,
        */
       RETURN_EGL_ERROR(disp, EGL_BAD_NATIVE_WINDOW, EGL_NO_SURFACE);
    }
-#endif
 
    _EGL_CHECK_CONFIG(disp, conf, EGL_NO_SURFACE, drv);
 
@@ -1056,8 +1052,8 @@ _eglCreatePixmapSurfaceCommon(_EGLDisplay *disp, EGLConfig config,
    _EGLSurface *surf;
    EGLSurface ret;
 
-#if HAVE_SURFACELESS_PLATFORM
-   if (disp && disp->Platform == _EGL_PLATFORM_SURFACELESS) {
+   if (disp && (disp->Platform == _EGL_PLATFORM_SURFACELESS ||
+                disp->Platform == _EGL_PLATFORM_DEVICE)) {
       /* From the EGL_MESA_platform_surfaceless spec (v1):
        *
        *   [Like eglCreatePlatformWindowSurface,] eglCreatePlatformPixmapSurface
@@ -1070,7 +1066,6 @@ _eglCreatePixmapSurfaceCommon(_EGLDisplay *disp, EGLConfig config,
        */
       RETURN_EGL_ERROR(disp, EGL_BAD_NATIVE_PIXMAP, EGL_NO_SURFACE);
    }
-#endif
 
    _EGL_CHECK_CONFIG(disp, conf, EGL_NO_SURFACE, drv);
 

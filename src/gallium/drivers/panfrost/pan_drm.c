@@ -36,7 +36,8 @@
 #include "pan_resource.h"
 #include "pan_context.h"
 #include "pan_drm.h"
-#include "pan_trace.h"
+#include "pan_util.h"
+#include "pandecode/decode.h"
 
 struct panfrost_drm {
 	struct panfrost_driver base;
@@ -91,8 +92,8 @@ panfrost_drm_allocate_slab(struct panfrost_screen *screen,
 	}
 
         /* Record the mmap if we're tracing */
-        if (!(extra_flags & PAN_ALLOCATE_GROWABLE))
-                pantrace_mmap(mem->gpu, mem->cpu, mem->size, NULL);
+        if (pan_debug & PAN_DBG_TRACE)
+                pandecode_inject_mmap(mem->gpu, mem->cpu, mem->size, NULL);
 }
 
 static void
@@ -123,7 +124,7 @@ panfrost_drm_free_slab(struct panfrost_screen *screen, struct panfrost_memory *m
 static struct panfrost_bo *
 panfrost_drm_import_bo(struct panfrost_screen *screen, struct winsys_handle *whandle)
 {
-	struct panfrost_bo *bo = CALLOC_STRUCT(panfrost_bo);
+	struct panfrost_bo *bo = rzalloc(screen, struct panfrost_bo);
 	struct panfrost_drm *drm = (struct panfrost_drm *)screen->driver;
         struct drm_panfrost_get_bo_offset get_bo_offset = {0,};
 	struct drm_panfrost_mmap_bo mmap_bo = {0,};
@@ -159,7 +160,8 @@ panfrost_drm_import_bo(struct panfrost_screen *screen, struct winsys_handle *wha
 	}
 
         /* Record the mmap if we're tracing */
-        pantrace_mmap(bo->gpu, bo->cpu, bo->size, NULL);
+        if (pan_debug & PAN_DBG_TRACE)
+                pandecode_inject_mmap(bo->gpu, bo->cpu, bo->size, NULL);
 
         return bo;
 }
@@ -234,20 +236,18 @@ panfrost_drm_submit_job(struct panfrost_context *ctx, u64 job_desc, int reqs, st
 	bo_handles[submit.bo_handle_count++] = ctx->scratchpad.gem_handle;
 	bo_handles[submit.bo_handle_count++] = ctx->tiler_heap.gem_handle;
 	bo_handles[submit.bo_handle_count++] = ctx->varying_mem.gem_handle;
-	bo_handles[submit.bo_handle_count++] = ctx->misc_0.gem_handle;
+	bo_handles[submit.bo_handle_count++] = ctx->tiler_polygon_list.gem_handle;
 	submit.bo_handles = (u64) (uintptr_t) bo_handles;
-
-        /* Dump memory _before_ submitting so we're not corrupted with actual GPU results */
-        pantrace_dump_memory();
 
 	if (drmIoctl(drm->fd, DRM_IOCTL_PANFROST_SUBMIT, &submit)) {
 	        fprintf(stderr, "Error submitting: %m\n");
 	        return errno;
 	}
 
-        /* Trace the job if we're doing that and do a memory dump. We may
-         * want to adjust this logic once we're ready to trace FBOs */
-        pantrace_submit_job(submit.jc, submit.requirements, FALSE);
+        /* Trace the job if we're doing that */
+
+        if (pan_debug & PAN_DBG_TRACE)
+                pandecode_replay_jc(submit.jc, FALSE);
 
 	return 0;
 }
@@ -263,7 +263,7 @@ panfrost_drm_submit_vs_fs_job(struct panfrost_context *ctx, bool has_draws, bool
 		assert(!ret);
 	}
 
-	ret = panfrost_drm_submit_job(ctx, panfrost_fragment_job(ctx), PANFROST_JD_REQ_FS, surf);
+	ret = panfrost_drm_submit_job(ctx, panfrost_fragment_job(ctx, has_draws), PANFROST_JD_REQ_FS, surf);
 
         return ret;
 }
@@ -337,7 +337,7 @@ panfrost_drm_query_gpu_version(struct panfrost_screen *screen)
         struct drm_panfrost_get_param get_param = {0,};
         int ret;
 
-	get_param.param = DRM_PANFROST_PARAM_GPU_ID;
+	get_param.param = DRM_PANFROST_PARAM_GPU_PROD_ID;
         ret = drmIoctl(drm->fd, DRM_IOCTL_PANFROST_GET_PARAM, &get_param);
         assert(!ret);
 

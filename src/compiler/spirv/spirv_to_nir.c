@@ -394,10 +394,13 @@ vtn_handle_extension(struct vtn_builder *b, SpvOp opcode,
       if (strcmp(ext, "GLSL.std.450") == 0) {
          val->ext_handler = vtn_handle_glsl450_instruction;
       } else if ((strcmp(ext, "SPV_AMD_gcn_shader") == 0)
-                && (b->options && b->options->caps.gcn_shader)) {
+                && (b->options && b->options->caps.amd_gcn_shader)) {
          val->ext_handler = vtn_handle_amd_gcn_shader_instruction;
+      } else if ((strcmp(ext, "SPV_AMD_shader_ballot") == 0)
+                && (b->options && b->options->caps.amd_shader_ballot)) {
+         val->ext_handler = vtn_handle_amd_shader_ballot_instruction;
       } else if ((strcmp(ext, "SPV_AMD_shader_trinary_minmax") == 0)
-                && (b->options && b->options->caps.trinary_minmax)) {
+                && (b->options && b->options->caps.amd_trinary_minmax)) {
          val->ext_handler = vtn_handle_amd_shader_trinary_minmax_instruction;
       } else if (strcmp(ext, "OpenCL.std") == 0) {
          val->ext_handler = vtn_handle_opencl_instruction;
@@ -751,6 +754,7 @@ struct_member_decoration_cb(struct vtn_builder *b,
    switch (dec->decoration) {
    case SpvDecorationRelaxedPrecision:
    case SpvDecorationUniform:
+   case SpvDecorationUniformId:
       break; /* FIXME: Do nothing with this for now. */
    case SpvDecorationNonWritable:
       vtn_handle_access_qualifier(b, ctx->type, member, ACCESS_NON_WRITEABLE);
@@ -980,6 +984,7 @@ type_decoration_cb(struct vtn_builder *b,
    case SpvDecorationNonWritable:
    case SpvDecorationNonReadable:
    case SpvDecorationUniform:
+   case SpvDecorationUniformId:
    case SpvDecorationLocation:
    case SpvDecorationComponent:
    case SpvDecorationOffset:
@@ -3252,6 +3257,7 @@ vtn_handle_composite(struct vtn_builder *b, SpvOp opcode,
                                       w + 5, count - 5);
       break;
 
+   case SpvOpCopyLogical:
    case SpvOpCopyObject:
       val->ssa = vtn_composite_copy(b, vtn_ssa_value(b, w[3]));
       break;
@@ -3609,7 +3615,6 @@ vtn_handle_preamble_instruction(struct vtn_builder *b, SpvOp opcode,
       case SpvCapabilityImageReadWrite:
       case SpvCapabilityImageMipmap:
       case SpvCapabilityPipes:
-      case SpvCapabilityGroups:
       case SpvCapabilityDeviceEnqueue:
       case SpvCapabilityLiteralSampler:
       case SpvCapabilityGenericPointer:
@@ -3650,6 +3655,7 @@ vtn_handle_preamble_instruction(struct vtn_builder *b, SpvOp opcode,
          spv_check_supported(subgroup_basic, cap);
          break;
 
+      case SpvCapabilitySubgroupVoteKHR:
       case SpvCapabilityGroupNonUniformVote:
          spv_check_supported(subgroup_vote, cap);
          break;
@@ -3671,6 +3677,10 @@ vtn_handle_preamble_instruction(struct vtn_builder *b, SpvOp opcode,
       case SpvCapabilityGroupNonUniformArithmetic:
       case SpvCapabilityGroupNonUniformClustered:
          spv_check_supported(subgroup_arithmetic, cap);
+         break;
+
+      case SpvCapabilityGroups:
+         spv_check_supported(amd_shader_ballot, cap);
          break;
 
       case SpvCapabilityVariablePointersStorageBuffer:
@@ -3739,6 +3749,14 @@ vtn_handle_preamble_instruction(struct vtn_builder *b, SpvOp opcode,
 
       case SpvCapabilityFloat16:
          spv_check_supported(float16, cap);
+         break;
+
+      case SpvCapabilityFragmentShaderSampleInterlockEXT:
+         spv_check_supported(fragment_shader_sample_interlock, cap);
+         break;
+
+      case SpvCapabilityFragmentShaderPixelInterlockEXT:
+         spv_check_supported(fragment_shader_pixel_interlock, cap);
          break;
 
       default:
@@ -3997,6 +4015,26 @@ vtn_handle_execution_mode(struct vtn_builder *b, struct vtn_value *entry_point,
       b->shader->info.cs.derivative_group = DERIVATIVE_GROUP_LINEAR;
       break;
 
+   case SpvExecutionModePixelInterlockOrderedEXT:
+      vtn_assert(b->shader->info.stage == MESA_SHADER_FRAGMENT);
+      b->shader->info.fs.pixel_interlock_ordered = true;
+      break;
+
+   case SpvExecutionModePixelInterlockUnorderedEXT:
+      vtn_assert(b->shader->info.stage == MESA_SHADER_FRAGMENT);
+      b->shader->info.fs.pixel_interlock_unordered = true;
+      break;
+
+   case SpvExecutionModeSampleInterlockOrderedEXT:
+      vtn_assert(b->shader->info.stage == MESA_SHADER_FRAGMENT);
+      b->shader->info.fs.sample_interlock_ordered = true;
+      break;
+
+   case SpvExecutionModeSampleInterlockUnorderedEXT:
+      vtn_assert(b->shader->info.stage == MESA_SHADER_FRAGMENT);
+      b->shader->info.fs.sample_interlock_unordered = true;
+      break;
+
    default:
       vtn_fail("Unhandled execution mode: %s (%u)",
                spirv_executionmode_to_string(mode->exec_mode),
@@ -4082,6 +4120,138 @@ vtn_handle_variable_or_type_instruction(struct vtn_builder *b, SpvOp opcode,
    }
 
    return true;
+}
+
+static struct vtn_ssa_value *
+vtn_nir_select(struct vtn_builder *b, struct vtn_ssa_value *src0,
+               struct vtn_ssa_value *src1, struct vtn_ssa_value *src2)
+{
+   struct vtn_ssa_value *dest = rzalloc(b, struct vtn_ssa_value);
+   dest->type = src1->type;
+
+   if (glsl_type_is_vector_or_scalar(src1->type)) {
+      dest->def = nir_bcsel(&b->nb, src0->def, src1->def, src2->def);
+   } else {
+      unsigned elems = glsl_get_length(src1->type);
+
+      dest->elems = ralloc_array(b, struct vtn_ssa_value *, elems);
+      for (unsigned i = 0; i < elems; i++) {
+         dest->elems[i] = vtn_nir_select(b, src0,
+                                         src1->elems[i], src2->elems[i]);
+      }
+   }
+
+   return dest;
+}
+
+static void
+vtn_handle_select(struct vtn_builder *b, SpvOp opcode,
+                  const uint32_t *w, unsigned count)
+{
+   /* Handle OpSelect up-front here because it needs to be able to handle
+    * pointers and not just regular vectors and scalars.
+    */
+   struct vtn_value *res_val = vtn_untyped_value(b, w[2]);
+   struct vtn_value *cond_val = vtn_untyped_value(b, w[3]);
+   struct vtn_value *obj1_val = vtn_untyped_value(b, w[4]);
+   struct vtn_value *obj2_val = vtn_untyped_value(b, w[5]);
+
+   vtn_fail_if(obj1_val->type != res_val->type ||
+               obj2_val->type != res_val->type,
+               "Object types must match the result type in OpSelect");
+
+   vtn_fail_if((cond_val->type->base_type != vtn_base_type_scalar &&
+                cond_val->type->base_type != vtn_base_type_vector) ||
+               !glsl_type_is_boolean(cond_val->type->type),
+               "OpSelect must have either a vector of booleans or "
+               "a boolean as Condition type");
+
+   vtn_fail_if(cond_val->type->base_type == vtn_base_type_vector &&
+               (res_val->type->base_type != vtn_base_type_vector ||
+                res_val->type->length != cond_val->type->length),
+               "When Condition type in OpSelect is a vector, the Result "
+               "type must be a vector of the same length");
+
+   switch (res_val->type->base_type) {
+   case vtn_base_type_scalar:
+   case vtn_base_type_vector:
+   case vtn_base_type_matrix:
+   case vtn_base_type_array:
+   case vtn_base_type_struct:
+      /* OK. */
+      break;
+   case vtn_base_type_pointer:
+      /* We need to have actual storage for pointer types. */
+      vtn_fail_if(res_val->type->type == NULL,
+                  "Invalid pointer result type for OpSelect");
+      break;
+   default:
+      vtn_fail("Result type of OpSelect must be a scalar, composite, or pointer");
+   }
+
+   struct vtn_type *res_type = vtn_value(b, w[1], vtn_value_type_type)->type;
+   struct vtn_ssa_value *ssa = vtn_nir_select(b,
+      vtn_ssa_value(b, w[3]), vtn_ssa_value(b, w[4]), vtn_ssa_value(b, w[5]));
+
+   vtn_push_ssa(b, w[2], res_type, ssa);
+}
+
+static void
+vtn_handle_ptr(struct vtn_builder *b, SpvOp opcode,
+               const uint32_t *w, unsigned count)
+{
+      struct vtn_type *type1 = vtn_untyped_value(b, w[3])->type;
+      struct vtn_type *type2 = vtn_untyped_value(b, w[4])->type;
+      vtn_fail_if(type1->base_type != vtn_base_type_pointer ||
+                  type2->base_type != vtn_base_type_pointer,
+                  "%s operands must have pointer types",
+                  spirv_op_to_string(opcode));
+      vtn_fail_if(type1->storage_class != type2->storage_class,
+                  "%s operands must have the same storage class",
+                  spirv_op_to_string(opcode));
+
+      const struct glsl_type *type =
+         vtn_value(b, w[1], vtn_value_type_type)->type->type;
+
+      nir_address_format addr_format = vtn_mode_to_address_format(
+         b, vtn_storage_class_to_mode(b, type1->storage_class, NULL, NULL));
+
+      nir_ssa_def *def;
+
+      switch (opcode) {
+      case SpvOpPtrDiff: {
+         /* OpPtrDiff returns the difference in number of elements (not byte offset). */
+         unsigned elem_size, elem_align;
+         glsl_get_natural_size_align_bytes(type1->deref->type,
+                                           &elem_size, &elem_align);
+
+         def = nir_build_addr_isub(&b->nb,
+                                   vtn_ssa_value(b, w[3])->def,
+                                   vtn_ssa_value(b, w[4])->def,
+                                   addr_format);
+         def = nir_idiv(&b->nb, def, nir_imm_intN_t(&b->nb, elem_size, def->bit_size));
+         def = nir_i2i(&b->nb, def, glsl_get_bit_size(type));
+         break;
+      }
+
+      case SpvOpPtrEqual:
+      case SpvOpPtrNotEqual: {
+         def = nir_build_addr_ieq(&b->nb,
+                                  vtn_ssa_value(b, w[3])->def,
+                                  vtn_ssa_value(b, w[4])->def,
+                                  addr_format);
+         if (opcode == SpvOpPtrNotEqual)
+            def = nir_inot(&b->nb, def);
+         break;
+      }
+
+      default:
+         unreachable("Invalid ptr operation");
+      }
+
+      struct vtn_value *val = vtn_push_value(b, w[2], vtn_value_type_ssa);
+      val->ssa = vtn_create_ssa_value(b, type);
+      val->ssa->def = def;
 }
 
 static bool
@@ -4200,67 +4370,9 @@ vtn_handle_body_instruction(struct vtn_builder *b, SpvOp opcode,
       break;
    }
 
-   case SpvOpSelect: {
-      /* Handle OpSelect up-front here because it needs to be able to handle
-       * pointers and not just regular vectors and scalars.
-       */
-      struct vtn_value *res_val = vtn_untyped_value(b, w[2]);
-      struct vtn_value *sel_val = vtn_untyped_value(b, w[3]);
-      struct vtn_value *obj1_val = vtn_untyped_value(b, w[4]);
-      struct vtn_value *obj2_val = vtn_untyped_value(b, w[5]);
-
-      const struct glsl_type *sel_type;
-      switch (res_val->type->base_type) {
-      case vtn_base_type_scalar:
-         sel_type = glsl_bool_type();
-         break;
-      case vtn_base_type_vector:
-         sel_type = glsl_vector_type(GLSL_TYPE_BOOL, res_val->type->length);
-         break;
-      case vtn_base_type_pointer:
-         /* We need to have actual storage for pointer types */
-         vtn_fail_if(res_val->type->type == NULL,
-                     "Invalid pointer result type for OpSelect");
-         sel_type = glsl_bool_type();
-         break;
-      default:
-         vtn_fail("Result type of OpSelect must be a scalar, vector, or pointer");
-      }
-
-      if (unlikely(sel_val->type->type != sel_type)) {
-         if (sel_val->type->type == glsl_bool_type()) {
-            /* This case is illegal but some older versions of GLSLang produce
-             * it.  The GLSLang issue was fixed on March 30, 2017:
-             *
-             * https://github.com/KhronosGroup/glslang/issues/809
-             *
-             * Unfortunately, there are applications in the wild which are
-             * shipping with this bug so it isn't nice to fail on them so we
-             * throw a warning instead.  It's not actually a problem for us as
-             * nir_builder will just splat the condition out which is most
-             * likely what the client wanted anyway.
-             */
-            vtn_warn("Condition type of OpSelect must have the same number "
-                     "of components as Result Type");
-         } else {
-            vtn_fail("Condition type of OpSelect must be a scalar or vector "
-                     "of Boolean type. It must have the same number of "
-                     "components as Result Type");
-         }
-      }
-
-      vtn_fail_if(obj1_val->type != res_val->type ||
-                  obj2_val->type != res_val->type,
-                  "Object types must match the result type in OpSelect");
-
-      struct vtn_type *res_type = vtn_value(b, w[1], vtn_value_type_type)->type;
-      struct vtn_ssa_value *ssa = vtn_create_ssa_value(b, res_type->type);
-      ssa->def = nir_bcsel(&b->nb, vtn_ssa_value(b, w[3])->def,
-                                   vtn_ssa_value(b, w[4])->def,
-                                   vtn_ssa_value(b, w[5])->def);
-      vtn_push_ssa(b, w[2], res_type, ssa);
+   case SpvOpSelect:
+      vtn_handle_select(b, opcode, w, count);
       break;
-   }
 
    case SpvOpSNegate:
    case SpvOpFNegate:
@@ -4371,6 +4483,7 @@ vtn_handle_body_instruction(struct vtn_builder *b, SpvOp opcode,
    case SpvOpCompositeConstruct:
    case SpvOpCompositeExtract:
    case SpvOpCompositeInsert:
+   case SpvOpCopyLogical:
    case SpvOpCopyObject:
       vtn_handle_composite(b, opcode, w, count);
       break;
@@ -4418,7 +4531,46 @@ vtn_handle_body_instruction(struct vtn_builder *b, SpvOp opcode,
    case SpvOpGroupNonUniformLogicalXor:
    case SpvOpGroupNonUniformQuadBroadcast:
    case SpvOpGroupNonUniformQuadSwap:
+   case SpvOpGroupAll:
+   case SpvOpGroupAny:
+   case SpvOpGroupBroadcast:
+   case SpvOpGroupIAdd:
+   case SpvOpGroupFAdd:
+   case SpvOpGroupFMin:
+   case SpvOpGroupUMin:
+   case SpvOpGroupSMin:
+   case SpvOpGroupFMax:
+   case SpvOpGroupUMax:
+   case SpvOpGroupSMax:
+   case SpvOpSubgroupBallotKHR:
+   case SpvOpSubgroupFirstInvocationKHR:
+   case SpvOpSubgroupReadInvocationKHR:
+   case SpvOpSubgroupAllKHR:
+   case SpvOpSubgroupAnyKHR:
+   case SpvOpSubgroupAllEqualKHR:
+   case SpvOpGroupIAddNonUniformAMD:
+   case SpvOpGroupFAddNonUniformAMD:
+   case SpvOpGroupFMinNonUniformAMD:
+   case SpvOpGroupUMinNonUniformAMD:
+   case SpvOpGroupSMinNonUniformAMD:
+   case SpvOpGroupFMaxNonUniformAMD:
+   case SpvOpGroupUMaxNonUniformAMD:
+   case SpvOpGroupSMaxNonUniformAMD:
       vtn_handle_subgroup(b, opcode, w, count);
+      break;
+
+   case SpvOpPtrDiff:
+   case SpvOpPtrEqual:
+   case SpvOpPtrNotEqual:
+      vtn_handle_ptr(b, opcode, w, count);
+      break;
+
+   case SpvOpBeginInvocationInterlockEXT:
+      vtn_emit_barrier(b, nir_intrinsic_begin_invocation_interlock);
+      break;
+
+   case SpvOpEndInvocationInterlockEXT:
+      vtn_emit_barrier(b, nir_intrinsic_end_invocation_interlock);
       break;
 
    default:

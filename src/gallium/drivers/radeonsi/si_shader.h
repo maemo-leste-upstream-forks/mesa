@@ -143,6 +143,10 @@
 
 #include <stdio.h>
 
+// Use LDS symbols when supported by LLVM. Can be disabled for testing the old
+// path on newer LLVM for now. Should be removed in the long term.
+#define USE_LDS_SYMBOLS (true)
+
 struct nir_shader;
 struct si_shader;
 struct si_context;
@@ -574,22 +578,6 @@ struct si_shader_key {
 /* Restore the pack alignment to default. */
 #pragma pack(pop)
 
-struct si_shader_config {
-	unsigned			num_sgprs;
-	unsigned			num_vgprs;
-	unsigned			spilled_sgprs;
-	unsigned			spilled_vgprs;
-	unsigned			private_mem_vgprs;
-	unsigned			lds_size;
-	unsigned			max_simd_waves;
-	unsigned			spi_ps_input_ena;
-	unsigned			spi_ps_input_addr;
-	unsigned			float_mode;
-	unsigned			scratch_bytes_per_wave;
-	unsigned			rsrc1;
-	unsigned			rsrc2;
-};
-
 /* GCN-specific shader info. */
 struct si_shader_info {
 	ubyte			vs_output_param_offset[SI_MAX_VS_OUTPUTS];
@@ -600,6 +588,23 @@ struct si_shader_info {
 	bool			uses_instanceid;
 	ubyte			nr_pos_exports;
 	ubyte			nr_param_exports;
+	unsigned		private_mem_vgprs;
+	unsigned		max_simd_waves;
+};
+
+struct si_shader_binary {
+	const char *elf_buffer;
+	size_t elf_size;
+
+	char *llvm_ir_string;
+};
+
+struct gfx9_gs_info {
+	unsigned es_verts_per_subgroup;
+	unsigned gs_prims_per_subgroup;
+	unsigned gs_inst_prims_in_subgroup;
+	unsigned max_prims_per_subgroup;
+	unsigned esgs_ring_size; /* in bytes */
 };
 
 struct si_shader {
@@ -626,8 +631,8 @@ struct si_shader {
 	bool				is_gs_copy_shader;
 
 	/* The following data is all that's needed for binary shaders. */
-	struct ac_shader_binary	binary;
-	struct si_shader_config		config;
+	struct si_shader_binary		binary;
+	struct ac_shader_config		config;
 	struct si_shader_info		info;
 
 	/* Shader key + LLVM IR + disassembly + statistics.
@@ -635,6 +640,8 @@ struct si_shader {
 	 */
 	char				*shader_log;
 	size_t				shader_log_size;
+
+	struct gfx9_gs_info gs_info;
 
 	/* For save precompute context registers values. */
 	union {
@@ -683,8 +690,8 @@ struct si_shader {
 struct si_shader_part {
 	struct si_shader_part *next;
 	union si_shader_part_key key;
-	struct ac_shader_binary binary;
-	struct si_shader_config config;
+	struct si_shader_binary binary;
+	struct ac_shader_config config;
 };
 
 /* si_shader.c */
@@ -697,27 +704,25 @@ int si_compile_tgsi_shader(struct si_screen *sscreen,
 			   struct ac_llvm_compiler *compiler,
 			   struct si_shader *shader,
 			   struct pipe_debug_callback *debug);
-int si_shader_create(struct si_screen *sscreen, struct ac_llvm_compiler *compiler,
+bool si_shader_create(struct si_screen *sscreen, struct ac_llvm_compiler *compiler,
 		     struct si_shader *shader,
 		     struct pipe_debug_callback *debug);
 void si_shader_destroy(struct si_shader *shader);
 unsigned si_shader_io_get_unique_index_patch(unsigned semantic_name, unsigned index);
 unsigned si_shader_io_get_unique_index(unsigned semantic_name, unsigned index,
 				       unsigned is_varying);
-int si_shader_binary_upload(struct si_screen *sscreen, struct si_shader *shader);
-void si_shader_dump(struct si_screen *sscreen, const struct si_shader *shader,
+bool si_shader_binary_upload(struct si_screen *sscreen, struct si_shader *shader,
+			     uint64_t scratch_va);
+void si_shader_dump(struct si_screen *sscreen, struct si_shader *shader,
 		    struct pipe_debug_callback *debug, unsigned processor,
 		    FILE *f, bool check_debug_option);
-void si_shader_dump_stats_for_shader_db(const struct si_shader *shader,
+void si_shader_dump_stats_for_shader_db(struct si_screen *screen,
+					struct si_shader *shader,
 					struct pipe_debug_callback *debug);
 void si_multiwave_lds_size_workaround(struct si_screen *sscreen,
 				      unsigned *lds_size);
-void si_shader_apply_scratch_relocs(struct si_shader *shader,
-				    uint64_t scratch_va);
-void si_shader_binary_read_config(struct ac_shader_binary *binary,
-				  struct si_shader_config *conf,
-				  unsigned symbol_offset);
 const char *si_get_shader_name(const struct si_shader *shader, unsigned processor);
+void si_shader_binary_clean(struct si_shader_binary *binary);
 
 /* si_shader_nir.c */
 void si_nir_scan_shader(const struct nir_shader *nir,
@@ -726,6 +731,11 @@ void si_nir_scan_tess_ctrl(const struct nir_shader *nir,
 			   struct tgsi_tessctrl_info *out);
 void si_lower_nir(struct si_shader_selector *sel);
 void si_nir_opts(struct nir_shader *nir);
+
+/* si_state_shaders.c */
+void gfx9_get_gs_info(struct si_shader_selector *es,
+		      struct si_shader_selector *gs,
+		      struct gfx9_gs_info *out);
 
 /* Inline helpers. */
 

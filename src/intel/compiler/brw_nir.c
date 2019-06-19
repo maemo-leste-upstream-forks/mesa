@@ -530,7 +530,7 @@ brw_nir_no_indirect_mask(const struct brw_compiler *compiler,
    return indirect_mask;
 }
 
-nir_shader *
+void
 brw_nir_optimize(nir_shader *nir, const struct brw_compiler *compiler,
                  bool is_scalar, bool allow_copies)
 {
@@ -643,8 +643,6 @@ brw_nir_optimize(nir_shader *nir, const struct brw_compiler *compiler,
     * assert in the opt_large_constants pass.
     */
    OPT(nir_remove_dead_variables, nir_var_function_temp);
-
-   return nir;
 }
 
 static unsigned
@@ -691,7 +689,7 @@ lower_bit_size_callback(const nir_alu_instr *alu, UNUSED void *data)
  * intended for the FS backend as long as nir_optimize is called again with
  * is_scalar = true to scalarize everything prior to code gen.
  */
-nir_shader *
+void
 brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
                    const nir_shader *softfp64)
 {
@@ -732,7 +730,7 @@ brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
    OPT(nir_split_var_copies);
    OPT(nir_split_struct_vars, nir_var_function_temp);
 
-   nir = brw_nir_optimize(nir, compiler, is_scalar, true);
+   brw_nir_optimize(nir, compiler, is_scalar, true);
 
    bool lowered_64bit_ops = false;
    do {
@@ -793,70 +791,66 @@ brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
        nir_lower_direct_array_deref_of_vec_load);
 
    /* Get rid of split copies */
-   nir = brw_nir_optimize(nir, compiler, is_scalar, false);
-
-   return nir;
+   brw_nir_optimize(nir, compiler, is_scalar, false);
 }
 
 void
 brw_nir_link_shaders(const struct brw_compiler *compiler,
-                     nir_shader **producer, nir_shader **consumer)
+                     nir_shader *producer, nir_shader *consumer)
 {
-   nir_lower_io_arrays_to_elements(*producer, *consumer);
-   nir_validate_shader(*producer, "after nir_lower_io_arrays_to_elements");
-   nir_validate_shader(*consumer, "after nir_lower_io_arrays_to_elements");
+   nir_lower_io_arrays_to_elements(producer, consumer);
+   nir_validate_shader(producer, "after nir_lower_io_arrays_to_elements");
+   nir_validate_shader(consumer, "after nir_lower_io_arrays_to_elements");
 
-   const bool p_is_scalar =
-      compiler->scalar_stage[(*producer)->info.stage];
-   const bool c_is_scalar =
-      compiler->scalar_stage[(*consumer)->info.stage];
+   const bool p_is_scalar = compiler->scalar_stage[producer->info.stage];
+   const bool c_is_scalar = compiler->scalar_stage[consumer->info.stage];
 
    if (p_is_scalar && c_is_scalar) {
-      NIR_PASS_V(*producer, nir_lower_io_to_scalar_early, nir_var_shader_out);
-      NIR_PASS_V(*consumer, nir_lower_io_to_scalar_early, nir_var_shader_in);
-      *producer = brw_nir_optimize(*producer, compiler, p_is_scalar, false);
-      *consumer = brw_nir_optimize(*consumer, compiler, c_is_scalar, false);
+      NIR_PASS_V(producer, nir_lower_io_to_scalar_early, nir_var_shader_out);
+      NIR_PASS_V(consumer, nir_lower_io_to_scalar_early, nir_var_shader_in);
+      brw_nir_optimize(producer, compiler, p_is_scalar, false);
+      brw_nir_optimize(consumer, compiler, c_is_scalar, false);
    }
 
-   if (nir_link_opt_varyings(*producer, *consumer))
-      *consumer = brw_nir_optimize(*consumer, compiler, c_is_scalar, false);
+   if (nir_link_opt_varyings(producer, consumer))
+      brw_nir_optimize(consumer, compiler, c_is_scalar, false);
 
-   NIR_PASS_V(*producer, nir_remove_dead_variables, nir_var_shader_out);
-   NIR_PASS_V(*consumer, nir_remove_dead_variables, nir_var_shader_in);
+   NIR_PASS_V(producer, nir_remove_dead_variables, nir_var_shader_out);
+   NIR_PASS_V(consumer, nir_remove_dead_variables, nir_var_shader_in);
 
-   if (nir_remove_unused_varyings(*producer, *consumer)) {
-      NIR_PASS_V(*producer, nir_lower_global_vars_to_local);
-      NIR_PASS_V(*consumer, nir_lower_global_vars_to_local);
+   if (nir_remove_unused_varyings(producer, consumer)) {
+      NIR_PASS_V(producer, nir_lower_global_vars_to_local);
+      NIR_PASS_V(consumer, nir_lower_global_vars_to_local);
 
       /* The backend might not be able to handle indirects on
        * temporaries so we need to lower indirects on any of the
        * varyings we have demoted here.
        */
-      NIR_PASS_V(*producer, nir_lower_indirect_derefs,
-                 brw_nir_no_indirect_mask(compiler, (*producer)->info.stage));
-      NIR_PASS_V(*consumer, nir_lower_indirect_derefs,
-                 brw_nir_no_indirect_mask(compiler, (*consumer)->info.stage));
+      NIR_PASS_V(producer, nir_lower_indirect_derefs,
+                 brw_nir_no_indirect_mask(compiler, producer->info.stage));
+      NIR_PASS_V(consumer, nir_lower_indirect_derefs,
+                 brw_nir_no_indirect_mask(compiler, consumer->info.stage));
 
-      *producer = brw_nir_optimize(*producer, compiler, p_is_scalar, false);
-      *consumer = brw_nir_optimize(*consumer, compiler, c_is_scalar, false);
+      brw_nir_optimize(producer, compiler, p_is_scalar, false);
+      brw_nir_optimize(consumer, compiler, c_is_scalar, false);
    }
 
-   NIR_PASS_V(*producer, nir_lower_io_to_vector, nir_var_shader_out);
-   NIR_PASS_V(*producer, nir_opt_combine_stores, nir_var_shader_out);
-   NIR_PASS_V(*consumer, nir_lower_io_to_vector, nir_var_shader_in);
+   NIR_PASS_V(producer, nir_lower_io_to_vector, nir_var_shader_out);
+   NIR_PASS_V(producer, nir_opt_combine_stores, nir_var_shader_out);
+   NIR_PASS_V(consumer, nir_lower_io_to_vector, nir_var_shader_in);
 
-   if ((*producer)->info.stage != MESA_SHADER_TESS_CTRL) {
+   if (producer->info.stage != MESA_SHADER_TESS_CTRL) {
       /* Calling lower_io_to_vector creates output variable writes with
        * write-masks.  On non-TCS outputs, the back-end can't handle it and we
        * need to call nir_lower_io_to_temporaries to get rid of them.  This,
        * in turn, creates temporary variables and extra copy_deref intrinsics
        * that we need to clean up.
        */
-      NIR_PASS_V(*producer, nir_lower_io_to_temporaries,
-                 nir_shader_get_entrypoint(*producer), true, false);
-      NIR_PASS_V(*producer, nir_lower_global_vars_to_local);
-      NIR_PASS_V(*producer, nir_split_var_copies);
-      NIR_PASS_V(*producer, nir_lower_var_copies);
+      NIR_PASS_V(producer, nir_lower_io_to_temporaries,
+                 nir_shader_get_entrypoint(producer), true, false);
+      NIR_PASS_V(producer, nir_lower_global_vars_to_local);
+      NIR_PASS_V(producer, nir_split_var_copies);
+      NIR_PASS_V(producer, nir_lower_var_copies);
    }
 }
 
@@ -867,7 +861,7 @@ brw_nir_link_shaders(const struct brw_compiler *compiler,
  * called on a shader, it will no longer be in SSA form so most optimizations
  * will not work.
  */
-nir_shader *
+void
 brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
                     bool is_scalar)
 {
@@ -885,7 +879,7 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
       OPT(nir_opt_algebraic_before_ffma);
    } while (progress);
 
-   nir = brw_nir_optimize(nir, compiler, is_scalar, false);
+   brw_nir_optimize(nir, compiler, is_scalar, false);
 
    if (devinfo->gen >= 6) {
       /* Try and fuse multiply-adds */
@@ -963,6 +957,9 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
 
    OPT(nir_opt_dce);
 
+   if (OPT(nir_opt_rematerialize_compares))
+      OPT(nir_opt_dce);
+
    /* This is the last pass we run before we start emitting stuff.  It
     * determines when we need to insert boolean resolves on Gen <= 5.  We
     * run it last because it stashes data in instr->pass_flags and we don't
@@ -978,11 +975,9 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
               _mesa_shader_stage_to_string(nir->info.stage));
       nir_print_shader(nir, stderr);
    }
-
-   return nir;
 }
 
-nir_shader *
+void
 brw_nir_apply_sampler_key(nir_shader *nir,
                           const struct brw_compiler *compiler,
                           const struct brw_sampler_prog_key_data *key_tex,
@@ -1031,10 +1026,8 @@ brw_nir_apply_sampler_key(nir_shader *nir,
 
    if (nir_lower_tex(nir, &tex_options)) {
       nir_validate_shader(nir, "after nir_lower_tex");
-      nir = brw_nir_optimize(nir, compiler, is_scalar, false);
+      brw_nir_optimize(nir, compiler, is_scalar, false);
    }
-
-   return nir;
 }
 
 enum brw_reg_type
@@ -1186,7 +1179,7 @@ brw_nir_create_passthrough_tcs(void *mem_ctx, const struct brw_compiler *compile
 
    nir_validate_shader(nir, "in brw_nir_create_passthrough_tcs");
 
-   nir = brw_preprocess_nir(compiler, nir, NULL);
+   brw_preprocess_nir(compiler, nir, NULL);
 
    return nir;
 }

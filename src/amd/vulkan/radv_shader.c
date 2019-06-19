@@ -40,7 +40,6 @@
 #include <llvm-c/Support.h>
 
 #include "sid.h"
-#include "gfx9d.h"
 #include "ac_binary.h"
 #include "ac_llvm_util.h"
 #include "ac_nir_to_llvm.h"
@@ -246,6 +245,9 @@ radv_shader_compile_to_nir(struct radv_device *device,
 		const struct spirv_to_nir_options spirv_options = {
 			.lower_ubo_ssbo_access_to_offsets = true,
 			.caps = {
+				.amd_gcn_shader = true,
+				.amd_shader_ballot = device->instance->perftest_flags & RADV_PERFTEST_SHADER_BALLOT,
+				.amd_trinary_minmax = true,
 				.derivative_group = true,
 				.descriptor_array_dynamic_indexing = true,
 				.descriptor_array_non_uniform_indexing = true,
@@ -254,7 +256,6 @@ radv_shader_compile_to_nir(struct radv_device *device,
 				.draw_parameters = true,
 				.float16 = true,
 				.float64 = true,
-				.gcn_shader = true,
 				.geometry_streams = true,
 				.image_read_without_format = true,
 				.image_write_without_format = true,
@@ -278,7 +279,6 @@ radv_shader_compile_to_nir(struct radv_device *device,
 				.subgroup_vote = true,
 				.tessellation = true,
 				.transform_feedback = true,
-				.trinary_minmax = true,
 				.variable_pointers = true,
 			},
 			.ubo_addr_format = nir_address_format_32bit_index_offset,

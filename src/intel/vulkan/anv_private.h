@@ -2978,7 +2978,8 @@ struct anv_image {
    uint32_t array_size;
    uint32_t samples; /**< VkImageCreateInfo::samples */
    uint32_t n_planes;
-   VkImageUsageFlags usage; /**< Superset of VkImageCreateInfo::usage. */
+   VkImageUsageFlags usage; /**< VkImageCreateInfo::usage. */
+   VkImageUsageFlags stencil_usage;
    VkImageCreateFlags create_flags; /* Flags used when creating image. */
    VkImageTiling tiling; /** VkImageCreateInfo::tiling */
 
@@ -3285,6 +3286,7 @@ anv_image_ccs_op(struct anv_cmd_buffer *cmd_buffer,
 void
 anv_image_copy_to_shadow(struct anv_cmd_buffer *cmd_buffer,
                          const struct anv_image *image,
+                         VkImageAspectFlagBits aspect,
                          uint32_t base_level, uint32_t level_count,
                          uint32_t base_layer, uint32_t layer_count);
 

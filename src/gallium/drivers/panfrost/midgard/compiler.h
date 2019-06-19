@@ -169,7 +169,7 @@ typedef struct midgard_bundle {
 
         /* Instructions contained by the bundle */
         int instruction_count;
-        midgard_instruction instructions[5];
+        midgard_instruction *instructions[5];
 
         /* Bundle-wide ALU configuration */
         int padding;
@@ -177,13 +177,6 @@ typedef struct midgard_bundle {
         bool has_embedded_constants;
         float constants[4];
         bool has_blend_constant;
-
-        uint16_t register_words[8];
-        int register_words_count;
-
-        uint64_t body_words[8];
-        size_t body_size[8];
-        int body_words_count;
 } midgard_bundle;
 
 typedef struct compiler_context {
@@ -216,9 +209,6 @@ typedef struct compiler_context {
 
         /* Constants which have been loaded, for later inlining */
         struct hash_table_u64 *ssa_constants;
-
-        /* SSA indices to be outputted to corresponding varying offset */
-        struct hash_table_u64 *ssa_varyings;
 
         /* SSA values / registers which have been aliased. Naively, these
          * demand a fmov output; instead, we alias them in a later pass to
@@ -313,16 +303,39 @@ mir_next_op(struct midgard_instruction *ins)
         return list_first_entry(&(ins->link), midgard_instruction, link);
 }
 
-#define mir_foreach_block(ctx, v) list_for_each_entry(struct midgard_block, v, &ctx->blocks, link) 
-#define mir_foreach_block_from(ctx, from, v) list_for_each_entry_from(struct midgard_block, v, from, &ctx->blocks, link)
+#define mir_foreach_block(ctx, v) \
+        list_for_each_entry(struct midgard_block, v, &ctx->blocks, link) 
 
-#define mir_foreach_instr(ctx, v) list_for_each_entry(struct midgard_instruction, v, &ctx->current_block->instructions, link) 
-#define mir_foreach_instr_safe(ctx, v) list_for_each_entry_safe(struct midgard_instruction, v, &ctx->current_block->instructions, link) 
-#define mir_foreach_instr_in_block(block, v) list_for_each_entry(struct midgard_instruction, v, &block->instructions, link) 
-#define mir_foreach_instr_in_block_safe(block, v) list_for_each_entry_safe(struct midgard_instruction, v, &block->instructions, link) 
-#define mir_foreach_instr_in_block_safe_rev(block, v) list_for_each_entry_safe_rev(struct midgard_instruction, v, &block->instructions, link) 
-#define mir_foreach_instr_in_block_from(block, v, from) list_for_each_entry_from(struct midgard_instruction, v, from, &block->instructions, link) 
-#define mir_foreach_instr_in_block_from_rev(block, v, from) list_for_each_entry_from_rev(struct midgard_instruction, v, from, &block->instructions, link) 
+#define mir_foreach_block_from(ctx, from, v) \
+        list_for_each_entry_from(struct midgard_block, v, from, &ctx->blocks, link)
+
+#define mir_foreach_instr(ctx, v) \
+        list_for_each_entry(struct midgard_instruction, v, &ctx->current_block->instructions, link) 
+
+#define mir_foreach_instr_safe(ctx, v) \
+        list_for_each_entry_safe(struct midgard_instruction, v, &ctx->current_block->instructions, link) 
+
+#define mir_foreach_instr_in_block(block, v) \
+        list_for_each_entry(struct midgard_instruction, v, &block->instructions, link) 
+
+#define mir_foreach_instr_in_block_safe(block, v) \
+        list_for_each_entry_safe(struct midgard_instruction, v, &block->instructions, link) 
+
+#define mir_foreach_instr_in_block_safe_rev(block, v) \
+        list_for_each_entry_safe_rev(struct midgard_instruction, v, &block->instructions, link) 
+
+#define mir_foreach_instr_in_block_from(block, v, from) \
+        list_for_each_entry_from(struct midgard_instruction, v, from, &block->instructions, link) 
+
+#define mir_foreach_instr_in_block_from_rev(block, v, from) \
+        list_for_each_entry_from_rev(struct midgard_instruction, v, from, &block->instructions, link) 
+
+#define mir_foreach_bundle_in_block(block, v) \
+        util_dynarray_foreach(&block->bundles, midgard_bundle, v)
+
+#define mir_foreach_instr_global(ctx, v) \
+        mir_foreach_block(ctx, v_block) \
+                mir_foreach_instr_in_block(v_block, v)
 
 
 static inline midgard_instruction *
@@ -342,11 +355,71 @@ mir_get_block(compiler_context *ctx, int idx)
         return (struct midgard_block *) lst;
 }
 
+static inline bool
+mir_is_alu_bundle(midgard_bundle *bundle)
+{
+        return IS_ALU(bundle->tag);
+}
+
+/* MIR manipulation */
+
+void mir_rewrite_index(compiler_context *ctx, unsigned old, unsigned new);
+void mir_rewrite_index_src(compiler_context *ctx, unsigned old, unsigned new);
+void mir_rewrite_index_dst(compiler_context *ctx, unsigned old, unsigned new);
+
 /* MIR printing */
 
 void mir_print_instruction(midgard_instruction *ins);
+void mir_print_bundle(midgard_bundle *ctx);
 void mir_print_block(midgard_block *block);
 void mir_print_shader(compiler_context *ctx);
+
+/* MIR goodies */
+
+static const midgard_vector_alu_src blank_alu_src = {
+        .swizzle = SWIZZLE(COMPONENT_X, COMPONENT_Y, COMPONENT_Z, COMPONENT_W),
+};
+
+static const midgard_vector_alu_src blank_alu_src_xxxx = {
+        .swizzle = SWIZZLE(COMPONENT_X, COMPONENT_X, COMPONENT_X, COMPONENT_X),
+};
+
+static const midgard_scalar_alu_src blank_scalar_alu_src = {
+        .full = true
+};
+
+/* Used for encoding the unused source of 1-op instructions */
+static const midgard_vector_alu_src zero_alu_src = { 0 };
+
+/* 'Intrinsic' move for aliasing */
+
+static inline midgard_instruction
+v_mov(unsigned src, midgard_vector_alu_src mod, unsigned dest)
+{
+        midgard_instruction ins = {
+                .type = TAG_ALU_4,
+                .ssa_args = {
+                        .src0 = SSA_UNUSED_1,
+                        .src1 = src,
+                        .dest = dest,
+                },
+                .alu = {
+                        .op = midgard_alu_op_imov,
+                        .reg_mode = midgard_reg_mode_32,
+                        .dest_override = midgard_dest_override_none,
+                        .outmod = midgard_outmod_int_wrap,
+                        .mask = 0xFF,
+                        .src1 = vector_alu_srco_unsigned(zero_alu_src),
+                        .src2 = vector_alu_srco_unsigned(mod)
+                },
+        };
+
+        return ins;
+}
+
+/* Scheduling */
+
+void schedule_program(compiler_context *ctx);
 
 /* Register allocation */
 
@@ -355,5 +428,15 @@ struct ra_graph;
 struct ra_graph* allocate_registers(compiler_context *ctx);
 void install_registers(compiler_context *ctx, struct ra_graph *g);
 bool mir_is_live_after(compiler_context *ctx, midgard_block *block, midgard_instruction *start, int src);
+bool mir_has_multiple_writes(compiler_context *ctx, int src);
 
+void mir_create_pipeline_registers(compiler_context *ctx);
+
+/* Final emission */
+
+void emit_binary_bundle(
+                compiler_context *ctx,
+                midgard_bundle *bundle,
+                struct util_dynarray *emission,
+                int next_tag);
 #endif

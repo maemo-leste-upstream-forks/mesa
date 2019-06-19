@@ -23,7 +23,7 @@
  */
 
 #include "si_build_pm4.h"
-#include "gfx9d.h"
+#include "sid.h"
 
 #include "compiler/nir/nir_serialize.h"
 #include "tgsi/tgsi_parse.h"
@@ -127,21 +127,21 @@ static uint32_t *read_chunk(uint32_t *ptr, void **data, unsigned *size)
 static void *si_get_shader_binary(struct si_shader *shader)
 {
 	/* There is always a size of data followed by the data itself. */
-	unsigned relocs_size = shader->binary.reloc_count *
-			       sizeof(shader->binary.relocs[0]);
-	unsigned disasm_size = shader->binary.disasm_string ?
-			       strlen(shader->binary.disasm_string) + 1 : 0;
 	unsigned llvm_ir_size = shader->binary.llvm_ir_string ?
 				strlen(shader->binary.llvm_ir_string) + 1 : 0;
+
+	/* Refuse to allocate overly large buffers and guard against integer
+	 * overflow. */
+	if (shader->binary.elf_size > UINT_MAX / 4 ||
+	    llvm_ir_size > UINT_MAX / 4)
+		return NULL;
+
 	unsigned size =
 		4 + /* total size */
 		4 + /* CRC32 of the data below */
 		align(sizeof(shader->config), 4) +
 		align(sizeof(shader->info), 4) +
-		4 + align(shader->binary.code_size, 4) +
-		4 + align(shader->binary.rodata_size, 4) +
-		4 + align(relocs_size, 4) +
-		4 + align(disasm_size, 4) +
+		4 + align(shader->binary.elf_size, 4) +
 		4 + align(llvm_ir_size, 4);
 	void *buffer = CALLOC(1, size);
 	uint32_t *ptr = (uint32_t*)buffer;
@@ -154,10 +154,7 @@ static void *si_get_shader_binary(struct si_shader *shader)
 
 	ptr = write_data(ptr, &shader->config, sizeof(shader->config));
 	ptr = write_data(ptr, &shader->info, sizeof(shader->info));
-	ptr = write_chunk(ptr, shader->binary.code, shader->binary.code_size);
-	ptr = write_chunk(ptr, shader->binary.rodata, shader->binary.rodata_size);
-	ptr = write_chunk(ptr, shader->binary.relocs, relocs_size);
-	ptr = write_chunk(ptr, shader->binary.disasm_string, disasm_size);
+	ptr = write_chunk(ptr, shader->binary.elf_buffer, shader->binary.elf_size);
 	ptr = write_chunk(ptr, shader->binary.llvm_ir_string, llvm_ir_size);
 	assert((char *)ptr - (char *)buffer == size);
 
@@ -175,6 +172,7 @@ static bool si_load_shader_binary(struct si_shader *shader, void *binary)
 	uint32_t size = *ptr++;
 	uint32_t crc32 = *ptr++;
 	unsigned chunk_size;
+	unsigned elf_size;
 
 	if (util_hash_crc32(ptr, size - 8) != crc32) {
 		fprintf(stderr, "radeonsi: binary shader has invalid CRC32\n");
@@ -183,13 +181,9 @@ static bool si_load_shader_binary(struct si_shader *shader, void *binary)
 
 	ptr = read_data(ptr, &shader->config, sizeof(shader->config));
 	ptr = read_data(ptr, &shader->info, sizeof(shader->info));
-	ptr = read_chunk(ptr, (void**)&shader->binary.code,
-			 &shader->binary.code_size);
-	ptr = read_chunk(ptr, (void**)&shader->binary.rodata,
-			 &shader->binary.rodata_size);
-	ptr = read_chunk(ptr, (void**)&shader->binary.relocs, &chunk_size);
-	shader->binary.reloc_count = chunk_size / sizeof(shader->binary.relocs[0]);
-	ptr = read_chunk(ptr, (void**)&shader->binary.disasm_string, &chunk_size);
+	ptr = read_chunk(ptr, (void**)&shader->binary.elf_buffer,
+			 &elf_size);
+	shader->binary.elf_size = elf_size;
 	ptr = read_chunk(ptr, (void**)&shader->binary.llvm_ir_string, &chunk_size);
 
 	return true;
@@ -652,17 +646,9 @@ static unsigned si_conv_prim_to_gs_out(unsigned mode)
 	return prim_conv[mode];
 }
 
-struct gfx9_gs_info {
-	unsigned es_verts_per_subgroup;
-	unsigned gs_prims_per_subgroup;
-	unsigned gs_inst_prims_in_subgroup;
-	unsigned max_prims_per_subgroup;
-	unsigned lds_size;
-};
-
-static void gfx9_get_gs_info(struct si_shader_selector *es,
-				   struct si_shader_selector *gs,
-				   struct gfx9_gs_info *out)
+void gfx9_get_gs_info(struct si_shader_selector *es,
+		      struct si_shader_selector *gs,
+		      struct gfx9_gs_info *out)
 {
 	unsigned gs_num_invocations = MAX2(gs->gs_num_invocations, 1);
 	unsigned input_prim = gs->info.properties[TGSI_PROPERTY_GS_INPUT_PRIM];
@@ -753,7 +739,7 @@ static void gfx9_get_gs_info(struct si_shader_selector *es,
 	out->gs_inst_prims_in_subgroup = gs_prims * gs_num_invocations;
 	out->max_prims_per_subgroup = out->gs_inst_prims_in_subgroup *
 				      gs->gs_max_out_vertices;
-	out->lds_size = align(esgs_lds_size, 128) / 128;
+	out->esgs_ring_size = 4 * esgs_lds_size;
 
 	assert(out->max_prims_per_subgroup <= max_out_prims);
 }
@@ -882,7 +868,6 @@ static void si_shader_gs(struct si_screen *sscreen, struct si_shader *shader)
 		unsigned input_prim = sel->info.properties[TGSI_PROPERTY_GS_INPUT_PRIM];
 		unsigned es_type = shader->key.part.gs.es->type;
 		unsigned es_vgpr_comp_cnt, gs_vgpr_comp_cnt;
-		struct gfx9_gs_info gs_info;
 
 		if (es_type == PIPE_SHADER_VERTEX)
 			/* VGPR0-3: (VertexID, InstanceID / StepRate0, ...) */
@@ -910,8 +895,6 @@ static void si_shader_gs(struct si_screen *sscreen, struct si_shader *shader)
 		else
 			num_user_sgprs = GFX9_TESGS_NUM_USER_SGPR;
 
-		gfx9_get_gs_info(shader->key.part.gs.es, sel, &gs_info);
-
 		si_pm4_set_reg(pm4, R_00B210_SPI_SHADER_PGM_LO_ES, va >> 8);
 		si_pm4_set_reg(pm4, R_00B214_SPI_SHADER_PGM_HI_ES, S_00B214_MEM_BASE(va >> 40));
 
@@ -926,15 +909,15 @@ static void si_shader_gs(struct si_screen *sscreen, struct si_shader *shader)
 			       S_00B22C_USER_SGPR_MSB(num_user_sgprs >> 5) |
 			       S_00B22C_ES_VGPR_COMP_CNT(es_vgpr_comp_cnt) |
 			       S_00B22C_OC_LDS_EN(es_type == PIPE_SHADER_TESS_EVAL) |
-			       S_00B22C_LDS_SIZE(gs_info.lds_size) |
+			       S_00B22C_LDS_SIZE(shader->config.lds_size) |
 			       S_00B22C_SCRATCH_EN(shader->config.scratch_bytes_per_wave > 0));
 
 		shader->ctx_reg.gs.vgt_gs_onchip_cntl =
-			S_028A44_ES_VERTS_PER_SUBGRP(gs_info.es_verts_per_subgroup) |
-			S_028A44_GS_PRIMS_PER_SUBGRP(gs_info.gs_prims_per_subgroup) |
-			S_028A44_GS_INST_PRIMS_IN_SUBGRP(gs_info.gs_inst_prims_in_subgroup);
+			S_028A44_ES_VERTS_PER_SUBGRP(shader->gs_info.es_verts_per_subgroup) |
+			S_028A44_GS_PRIMS_PER_SUBGRP(shader->gs_info.gs_prims_per_subgroup) |
+			S_028A44_GS_INST_PRIMS_IN_SUBGRP(shader->gs_info.gs_inst_prims_in_subgroup);
 		shader->ctx_reg.gs.vgt_gs_max_prims_per_subgroup =
-			S_028A94_MAX_PRIMS_PER_SUBGROUP(gs_info.max_prims_per_subgroup);
+			S_028A94_MAX_PRIMS_PER_SUBGROUP(shader->gs_info.max_prims_per_subgroup);
 		shader->ctx_reg.gs.vgt_esgs_ring_itemsize =
 			shader->key.part.gs.es->esgs_itemsize / 4;
 
@@ -1715,7 +1698,6 @@ static void si_build_shader_variant(struct si_shader *shader,
 	struct si_screen *sscreen = sel->screen;
 	struct ac_llvm_compiler *compiler;
 	struct pipe_debug_callback *debug = &shader->compiler_ctx_state.debug;
-	int r;
 
 	if (thread_index >= 0) {
 		if (low_priority) {
@@ -1732,10 +1714,9 @@ static void si_build_shader_variant(struct si_shader *shader,
 		compiler = shader->compiler_ctx_state.compiler;
 	}
 
-	r = si_shader_create(sscreen, compiler, shader, debug);
-	if (unlikely(r)) {
-		PRINT_ERR("Failed to build shader variant (type=%u) %d\n",
-			 sel->type, r);
+	if (unlikely(!si_shader_create(sscreen, compiler, shader, debug))) {
+		PRINT_ERR("Failed to build shader variant (type=%u)\n",
+			  sel->type);
 		shader->compilation_failed = true;
 		return;
 	}
@@ -2124,7 +2105,7 @@ static void si_init_shader_selector_async(void *job, int thread_index)
 		if (ir_binary &&
 		    si_shader_cache_load_shader(sscreen, ir_binary, shader)) {
 			mtx_unlock(&sscreen->shader_cache_mutex);
-			si_shader_dump_stats_for_shader_db(shader, debug);
+			si_shader_dump_stats_for_shader_db(sscreen, shader, debug);
 		} else {
 			mtx_unlock(&sscreen->shader_cache_mutex);
 
@@ -2828,7 +2809,8 @@ static unsigned si_get_ps_input_cntl(struct si_context *sctx,
 	unsigned j, offset, ps_input_cntl = 0;
 
 	if (interpolate == TGSI_INTERPOLATE_CONSTANT ||
-	    (interpolate == TGSI_INTERPOLATE_COLOR && sctx->flatshade))
+	    (interpolate == TGSI_INTERPOLATE_COLOR && sctx->flatshade) ||
+	    name == TGSI_SEMANTIC_PRIMID)
 		ps_input_cntl |= S_028644_FLAT_SHADE(1);
 
 	if (name == TGSI_SEMANTIC_PCOORD ||
@@ -3109,7 +3091,6 @@ static int si_update_scratch_buffer(struct si_context *sctx,
 				    struct si_shader *shader)
 {
 	uint64_t scratch_va = sctx->scratch_buffer->gpu_address;
-	int r;
 
 	if (!shader)
 		return 0;
@@ -3134,16 +3115,10 @@ static int si_update_scratch_buffer(struct si_context *sctx,
 
 	assert(sctx->scratch_buffer);
 
-	if (shader->previous_stage)
-		si_shader_apply_scratch_relocs(shader->previous_stage, scratch_va);
-
-	si_shader_apply_scratch_relocs(shader, scratch_va);
-
 	/* Replace the shader bo with a new bo that has the relocs applied. */
-	r = si_shader_binary_upload(sctx->screen, shader);
-	if (r) {
+	if (!si_shader_binary_upload(sctx->screen, shader, scratch_va)) {
 		si_shader_unlock(shader);
-		return r;
+		return -1;
 	}
 
 	/* Update the shader state to use the new shader bo. */

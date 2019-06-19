@@ -1049,6 +1049,15 @@ void anv_GetPhysicalDeviceFeatures2(
          break;
       }
 
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT: {
+         VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT *features =
+            (VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT *)ext;
+         features->fragmentShaderSampleInterlock = pdevice->info.gen >= 9;
+         features->fragmentShaderPixelInterlock = pdevice->info.gen >= 9;
+         features->fragmentShaderShadingRateInterlock = false;
+         break;
+      }
+
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES_EXT: {
          VkPhysicalDeviceHostQueryResetFeaturesEXT *features =
             (VkPhysicalDeviceHostQueryResetFeaturesEXT *)ext;
@@ -1871,6 +1880,25 @@ anv_state_pool_emit_data(struct anv_state_pool *pool, size_t size, size_t align,
    return state;
 }
 
+/* Haswell border color is a bit of a disaster.  Float and unorm formats use a
+ * straightforward 32-bit float color in the first 64 bytes.  Instead of using
+ * a nice float/integer union like Gen8+, Haswell specifies the integer border
+ * color as a separate entry /after/ the float color.  The layout of this entry
+ * also depends on the format's bpp (with extra hacks for RG32), and overlaps.
+ *
+ * Since we don't know the format/bpp, we can't make any of the border colors
+ * containing '1' work for all formats, as it would be in the wrong place for
+ * some of them.  We opt to make 32-bit integers work as this seems like the
+ * most common option.  Fortunately, transparent black works regardless, as
+ * all zeroes is the same in every bit-size.
+ */
+struct hsw_border_color {
+   float float32[4];
+   uint32_t _pad0[12];
+   uint32_t uint32[4];
+   uint32_t _pad1[108];
+};
+
 struct gen8_border_color {
    union {
       float float32[4];
@@ -1883,18 +1911,33 @@ struct gen8_border_color {
 static void
 anv_device_init_border_colors(struct anv_device *device)
 {
-   static const struct gen8_border_color border_colors[] = {
-      [VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK] =  { .float32 = { 0.0, 0.0, 0.0, 0.0 } },
-      [VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK] =       { .float32 = { 0.0, 0.0, 0.0, 1.0 } },
-      [VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE] =       { .float32 = { 1.0, 1.0, 1.0, 1.0 } },
-      [VK_BORDER_COLOR_INT_TRANSPARENT_BLACK] =    { .uint32 = { 0, 0, 0, 0 } },
-      [VK_BORDER_COLOR_INT_OPAQUE_BLACK] =         { .uint32 = { 0, 0, 0, 1 } },
-      [VK_BORDER_COLOR_INT_OPAQUE_WHITE] =         { .uint32 = { 1, 1, 1, 1 } },
-   };
+   if (device->info.is_haswell) {
+      static const struct hsw_border_color border_colors[] = {
+         [VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK] =  { .float32 = { 0.0, 0.0, 0.0, 0.0 } },
+         [VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK] =       { .float32 = { 0.0, 0.0, 0.0, 1.0 } },
+         [VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE] =       { .float32 = { 1.0, 1.0, 1.0, 1.0 } },
+         [VK_BORDER_COLOR_INT_TRANSPARENT_BLACK] =    { .uint32 = { 0, 0, 0, 0 } },
+         [VK_BORDER_COLOR_INT_OPAQUE_BLACK] =         { .uint32 = { 0, 0, 0, 1 } },
+         [VK_BORDER_COLOR_INT_OPAQUE_WHITE] =         { .uint32 = { 1, 1, 1, 1 } },
+      };
 
-   device->border_colors = anv_state_pool_emit_data(&device->dynamic_state_pool,
-                                                    sizeof(border_colors), 64,
-                                                    border_colors);
+      device->border_colors =
+         anv_state_pool_emit_data(&device->dynamic_state_pool,
+                                  sizeof(border_colors), 512, border_colors);
+   } else {
+      static const struct gen8_border_color border_colors[] = {
+         [VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK] =  { .float32 = { 0.0, 0.0, 0.0, 0.0 } },
+         [VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK] =       { .float32 = { 0.0, 0.0, 0.0, 1.0 } },
+         [VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE] =       { .float32 = { 1.0, 1.0, 1.0, 1.0 } },
+         [VK_BORDER_COLOR_INT_TRANSPARENT_BLACK] =    { .uint32 = { 0, 0, 0, 0 } },
+         [VK_BORDER_COLOR_INT_OPAQUE_BLACK] =         { .uint32 = { 0, 0, 0, 1 } },
+         [VK_BORDER_COLOR_INT_OPAQUE_WHITE] =         { .uint32 = { 1, 1, 1, 1 } },
+      };
+
+      device->border_colors =
+         anv_state_pool_emit_data(&device->dynamic_state_pool,
+                                  sizeof(border_colors), 64, border_colors);
+   }
 }
 
 static void
@@ -2158,16 +2201,18 @@ VkResult anv_CreateDevice(
    if (!device)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   const unsigned decode_flags =
-      GEN_BATCH_DECODE_FULL |
-      ((INTEL_DEBUG & DEBUG_COLOR) ? GEN_BATCH_DECODE_IN_COLOR : 0) |
-      GEN_BATCH_DECODE_OFFSETS |
-      GEN_BATCH_DECODE_FLOATS;
+   if (INTEL_DEBUG & DEBUG_BATCH) {
+      const unsigned decode_flags =
+         GEN_BATCH_DECODE_FULL |
+         ((INTEL_DEBUG & DEBUG_COLOR) ? GEN_BATCH_DECODE_IN_COLOR : 0) |
+         GEN_BATCH_DECODE_OFFSETS |
+         GEN_BATCH_DECODE_FLOATS;
 
-   gen_batch_decode_ctx_init(&device->decoder_ctx,
-                             &physical_device->info,
-                             stderr, decode_flags, NULL,
-                             decode_get_bo, NULL, device);
+      gen_batch_decode_ctx_init(&device->decoder_ctx,
+                                &physical_device->info,
+                                stderr, decode_flags, NULL,
+                                decode_get_bo, NULL, device);
+   }
 
    device->_loader_data.loaderMagic = ICD_LOADER_MAGIC;
    device->instance = physical_device->instance;
@@ -2450,7 +2495,8 @@ void anv_DestroyDevice(
 
    anv_gem_destroy_context(device, device->context_id);
 
-   gen_batch_decode_ctx_finish(&device->decoder_ctx);
+   if (INTEL_DEBUG & DEBUG_BATCH)
+      gen_batch_decode_ctx_finish(&device->decoder_ctx);
 
    close(device->fd);
 

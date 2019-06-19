@@ -59,8 +59,8 @@ static void ac_init_llvm_target()
 	 * This option tells the backend to fall-back to SelectionDAG and print
 	 * a diagnostic message if global isel fails.
 	 */
-	const char *argv[3] = { "mesa", "-simplifycfg-sink-common=false", "-global-isel-abort=2" };
-	LLVMParseCommandLineOptions(3, argv, NULL);
+	const char *argv[] = { "mesa", "-simplifycfg-sink-common=false", "-global-isel-abort=2" };
+	LLVMParseCommandLineOptions(ARRAY_SIZE(argv), argv, NULL);
 }
 
 static once_flag ac_init_llvm_target_once_flag = ONCE_FLAG_INIT;
@@ -267,6 +267,16 @@ ac_llvm_add_target_dep_function_attr(LLVMValueRef F,
 
 	snprintf(str, sizeof(str), "0x%x", value);
 	LLVMAddTargetDependentFunctionAttr(F, name, str);
+}
+
+void ac_llvm_set_workgroup_size(LLVMValueRef F, unsigned size)
+{
+	if (!size)
+		return;
+
+	char str[32];
+	snprintf(str, sizeof(str), "%u,%u", size, size);
+	LLVMAddTargetDependentFunctionAttr(F, "amdgpu-flat-work-group-size", str);
 }
 
 unsigned

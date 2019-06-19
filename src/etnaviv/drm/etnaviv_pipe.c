@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 Alyssa Rosenzweig
+ * Copyright (C) 2014-2015 Etnaviv Project
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -20,14 +20,60 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
+ * Authors:
+ *    Christian Gmeiner <christian.gmeiner@gmail.com>
  */
 
-#ifndef __PAN_TRACE_H__
-#define __PAN_TRACE_H__
+#include "etnaviv_priv.h"
 
-void pantrace_initialize(const char *base);
-void pantrace_submit_job(mali_ptr jc, unsigned core_req, unsigned is_bifrost);
-void pantrace_mmap(mali_ptr gpu, void *cpu, size_t sz, char *label);
-void pantrace_dump_memory(void);
+int etna_pipe_wait(struct etna_pipe *pipe, uint32_t timestamp, uint32_t ms)
+{
+	return etna_pipe_wait_ns(pipe, timestamp, ms * 1000000);
+}
 
-#endif
+int etna_pipe_wait_ns(struct etna_pipe *pipe, uint32_t timestamp, uint64_t ns)
+{
+	struct etna_device *dev = pipe->gpu->dev;
+	int ret;
+
+	struct drm_etnaviv_wait_fence req = {
+		.pipe = pipe->gpu->core,
+		.fence = timestamp,
+	};
+
+	if (ns == 0)
+		req.flags |= ETNA_WAIT_NONBLOCK;
+
+	get_abs_timeout(&req.timeout, ns);
+
+	ret = drmCommandWrite(dev->fd, DRM_ETNAVIV_WAIT_FENCE, &req, sizeof(req));
+	if (ret) {
+		ERROR_MSG("wait-fence failed! %d (%s)", ret, strerror(errno));
+		return ret;
+	}
+
+	return 0;
+}
+
+void etna_pipe_del(struct etna_pipe *pipe)
+{
+	free(pipe);
+}
+
+struct etna_pipe *etna_pipe_new(struct etna_gpu *gpu, enum etna_pipe_id id)
+{
+	struct etna_pipe *pipe;
+
+	pipe = calloc(1, sizeof(*pipe));
+	if (!pipe) {
+		ERROR_MSG("allocation failed");
+		goto fail;
+	}
+
+	pipe->id = id;
+	pipe->gpu = gpu;
+
+	return pipe;
+fail:
+	return NULL;
+}

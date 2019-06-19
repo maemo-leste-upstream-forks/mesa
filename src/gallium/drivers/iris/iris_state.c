@@ -3566,7 +3566,7 @@ KSP(const struct iris_compiled_shader *shader)
 #define INIT_THREAD_DISPATCH_FIELDS(pkt, prefix, stage)                   \
    pkt.KernelStartPointer = KSP(shader);                                  \
    pkt.BindingTableEntryCount = GEN_GEN == 11 ? 0 :                       \
-      prog_data->binding_table.size_bytes / 4;                            \
+      shader->bt.size_bytes / 4;                                          \
    pkt.FloatingPointMode = prog_data->use_alt_mode;                       \
                                                                           \
    pkt.DispatchGRFStartRegisterForURBData =                               \
@@ -3735,7 +3735,7 @@ iris_store_fs_state(struct iris_context *ice,
       ps.VectorMaskEnable = true;
       // XXX: WABTPPrefetchDisable, see above, drop at C0
       ps.BindingTableEntryCount = GEN_GEN == 11 ? 0 :
-         prog_data->binding_table.size_bytes / 4;
+         shader->bt.size_bytes / 4;
       ps.FloatingPointMode = prog_data->use_alt_mode;
       ps.MaximumNumberofThreadsPerPSD = 64 - (GEN_GEN == 8 ? 2 : 1);
 
@@ -4099,12 +4099,12 @@ use_image(struct iris_batch *batch, struct iris_context *ice,
 
 #define push_bt_entry(addr) \
    assert(addr >= binder_addr); \
-   assert(s < prog_data->binding_table.size_bytes / sizeof(uint32_t)); \
+   assert(s < shader->bt.size_bytes / sizeof(uint32_t)); \
    if (!pin_only) bt_map[s++] = (addr) - binder_addr;
 
-#define bt_assert(section, exists)                           \
-   if (!pin_only) assert(prog_data->binding_table.section == \
-                         (exists) ? s : 0xd0d0d0d0)
+#define bt_assert(section) \
+   if (!pin_only && shader->bt.used_mask[section] != 0) \
+      assert(shader->bt.offsets[section] == s);
 
 /**
  * Populate the binding table for a given shader stage.
@@ -4125,6 +4125,7 @@ iris_populate_binding_table(struct iris_context *ice,
    if (!shader)
       return;
 
+   struct iris_binding_table *bt = &shader->bt;
    UNUSED struct brw_stage_prog_data *prog_data = shader->prog_data;
    struct iris_shader_state *shs = &ice->state.shaders[stage];
    uint32_t binder_addr = binder->bo->gtt_offset;
@@ -4140,7 +4141,8 @@ iris_populate_binding_table(struct iris_context *ice,
       return;
    }
 
-   if (stage == MESA_SHADER_COMPUTE) {
+   if (stage == MESA_SHADER_COMPUTE &&
+       shader->bt.used_mask[IRIS_SURFACE_GROUP_CS_WORK_GROUPS]) {
       /* surface for gl_NumWorkGroups */
       struct iris_state_ref *grid_data = &ice->state.grid_size;
       struct iris_state_ref *grid_state = &ice->state.grid_surf_state;
@@ -4169,54 +4171,50 @@ iris_populate_binding_table(struct iris_context *ice,
       }
    }
 
-   unsigned num_textures = util_last_bit(info->textures_used);
+#define foreach_surface_used(index, group) \
+   bt_assert(group); \
+   for (int index = 0; index < bt->sizes[group]; index++) \
+      if (iris_group_index_to_bti(bt, group, index) != \
+          IRIS_SURFACE_NOT_USED)
 
-   bt_assert(texture_start, num_textures > 0);
-
-   for (int i = 0; i < num_textures; i++) {
+   foreach_surface_used(i, IRIS_SURFACE_GROUP_TEXTURE) {
       struct iris_sampler_view *view = shs->textures[i];
       uint32_t addr = view ? use_sampler_view(ice, batch, view)
                            : use_null_surface(batch, ice);
       push_bt_entry(addr);
    }
 
-   bt_assert(image_start, info->num_images > 0);
-
-   for (int i = 0; i < info->num_images; i++) {
+   foreach_surface_used(i, IRIS_SURFACE_GROUP_IMAGE) {
       uint32_t addr = use_image(batch, ice, shs, i);
       push_bt_entry(addr);
    }
 
-   bt_assert(ubo_start, shader->num_cbufs > 0);
+   foreach_surface_used(i, IRIS_SURFACE_GROUP_UBO) {
+      uint32_t addr;
 
-   for (int i = 0; i < shader->num_cbufs; i++) {
-      uint32_t addr = use_ubo_ssbo(batch, ice, &shs->constbuf[i],
-                                   &shs->constbuf_surf_state[i], false);
-      push_bt_entry(addr);
-   }
-
-   if (ish->const_data) {
-      iris_use_pinned_bo(batch, iris_resource_bo(ish->const_data), false);
-      iris_use_pinned_bo(batch, iris_resource_bo(ish->const_data_state.res),
-                         false);
-      uint32_t addr = ish->const_data_state.offset;
-      push_bt_entry(addr);
-   }
-
-   bt_assert(ssbo_start, info->num_abos + info->num_ssbos > 0);
-
-   /* XXX: st is wasting 16 binding table slots for ABOs.  Should add a cap
-    * for changing nir_lower_atomics_to_ssbos setting and buffer_base offset
-    * in st_atom_storagebuf.c so it'll compact them into one range, with
-    * SSBOs starting at info->num_abos.  Ideally it'd reset num_abos to 0 too
-    */
-   if (info->num_abos + info->num_ssbos > 0) {
-      for (int i = 0; i < IRIS_MAX_ABOS + info->num_ssbos; i++) {
-         uint32_t addr =
-            use_ubo_ssbo(batch, ice, &shs->ssbo[i], &shs->ssbo_surf_state[i],
-                         shs->writable_ssbos & (1u << i));
-         push_bt_entry(addr);
+      if (i == bt->sizes[IRIS_SURFACE_GROUP_UBO] - 1) {
+         if (ish->const_data) {
+            iris_use_pinned_bo(batch, iris_resource_bo(ish->const_data), false);
+            iris_use_pinned_bo(batch, iris_resource_bo(ish->const_data_state.res),
+                               false);
+            addr = ish->const_data_state.offset;
+         } else {
+            /* This can only happen with INTEL_DISABLE_COMPACT_BINDING_TABLE=1. */
+            addr = use_null_surface(batch, ice);
+         }
+      } else {
+         addr = use_ubo_ssbo(batch, ice, &shs->constbuf[i],
+                             &shs->constbuf_surf_state[i], false);
       }
+
+      push_bt_entry(addr);
+   }
+
+   foreach_surface_used(i, IRIS_SURFACE_GROUP_SSBO) {
+      uint32_t addr =
+         use_ubo_ssbo(batch, ice, &shs->ssbo[i], &shs->ssbo_surf_state[i],
+                      shs->writable_ssbos & (1u << i));
+      push_bt_entry(addr);
    }
 
 #if 0
@@ -4336,7 +4334,12 @@ iris_restore_render_saved_bos(struct iris_context *ice,
          if (range->length == 0)
             continue;
 
-         struct pipe_shader_buffer *cbuf = &shs->constbuf[range->block];
+         /* Range block is a binding table index, map back to UBO index. */
+         unsigned block_index = iris_bti_to_group_index(
+            &shader->bt, IRIS_SURFACE_GROUP_UBO, range->block);
+         assert(block_index != IRIS_SURFACE_NOT_USED);
+
+         struct pipe_shader_buffer *cbuf = &shs->constbuf[block_index];
          struct iris_resource *res = (void *) cbuf->buffer;
 
          if (res)
@@ -4421,7 +4424,12 @@ iris_restore_compute_saved_bos(struct iris_context *ice,
          const struct brw_ubo_range *range = &prog_data->ubo_ranges[0];
 
          if (range->length > 0) {
-            struct pipe_shader_buffer *cbuf = &shs->constbuf[range->block];
+            /* Range block is a binding table index, map back to UBO index. */
+            unsigned block_index = iris_bti_to_group_index(
+               &shader->bt, IRIS_SURFACE_GROUP_UBO, range->block);
+            assert(block_index != IRIS_SURFACE_NOT_USED);
+
+            struct pipe_shader_buffer *cbuf = &shs->constbuf[block_index];
             struct iris_resource *res = (void *) cbuf->buffer;
 
             if (res)
@@ -4694,7 +4702,12 @@ iris_upload_dirty_render_state(struct iris_context *ice,
                if (range->length == 0)
                   continue;
 
-               struct pipe_shader_buffer *cbuf = &shs->constbuf[range->block];
+               /* Range block is a binding table index, map back to UBO index. */
+               unsigned block_index = iris_bti_to_group_index(
+                  &shader->bt, IRIS_SURFACE_GROUP_UBO, range->block);
+               assert(block_index != IRIS_SURFACE_NOT_USED);
+
+               struct pipe_shader_buffer *cbuf = &shs->constbuf[block_index];
                struct iris_resource *res = (void *) cbuf->buffer;
 
                assert(cbuf->buffer_offset % 32 == 0);

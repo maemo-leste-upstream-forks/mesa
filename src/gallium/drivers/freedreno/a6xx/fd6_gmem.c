@@ -189,12 +189,12 @@ emit_zs(struct fd_ringbuffer *ring, struct pipe_surface *zsbuf,
 		OUT_PKT4(ring, REG_A6XX_RB_DEPTH_FLAG_BUFFER_BASE_LO, 3);
 		if (ubwc_enabled) {
 			OUT_RELOCW(ring, rsc->bo, ubwc_offset, 0, 0);	/* BASE_LO/HI */
-			OUT_RING(ring, A6XX_RB_MRT_FLAG_BUFFER_PITCH_PITCH(rsc->ubwc_pitch) |
-				A6XX_RB_MRT_FLAG_BUFFER_PITCH_ARRAY_PITCH(rsc->ubwc_size));
+			OUT_RING(ring, A6XX_RB_DEPTH_FLAG_BUFFER_PITCH_PITCH(rsc->ubwc_pitch) |
+				A6XX_RB_DEPTH_FLAG_BUFFER_PITCH_ARRAY_PITCH(rsc->ubwc_size));
 		} else {
-			OUT_RING(ring, 0x00000000);    /* RB_MRT_FLAG_BUFFER[i].ADDR_LO */
-			OUT_RING(ring, 0x00000000);    /* RB_MRT_FLAG_BUFFER[i].ADDR_HI */
-			OUT_RING(ring, 0x00000000);
+			OUT_RING(ring, 0x00000000);    /* RB_DEPTH_FLAG_BUFFER_BASE_LO */
+			OUT_RING(ring, 0x00000000);    /* RB_DEPTH_FLAG_BUFFER_BASE_HI */
+			OUT_RING(ring, 0x00000000);    /* RB_DEPTH_FLAG_BUFFER_PITCH */
 		}
 
 		if (rsc->lrz) {
@@ -213,6 +213,12 @@ emit_zs(struct fd_ringbuffer *ring, struct pipe_surface *zsbuf,
 			OUT_RING(ring, 0x00000000);     /* GRAS_LRZ_FAST_CLEAR_BUFFER_BASE_LO */
 			OUT_RING(ring, 0x00000000);
 		}
+
+		/* NOTE: blob emits GRAS_LRZ_CNTL plus GRAZ_LRZ_BUFFER_BASE
+		 * plus this CP_EVENT_WRITE at the end in it's own IB..
+		 */
+		OUT_PKT7(ring, CP_EVENT_WRITE, 1);
+		OUT_RING(ring, CP_EVENT_WRITE_0_EVENT(UNK_25));
 
 		if (rsc->stencil) {
 			struct fd_resource_slice *slice = fd_resource_slice(rsc->stencil, 0);
@@ -274,7 +280,7 @@ patch_fb_read(struct fd_batch *batch)
 		struct fd_cs_patch *patch = fd_patch_element(&batch->fb_read_patches, i);
 		*patch->cs = patch->val | A6XX_TEX_CONST_2_PITCH(gmem->bin_w * gmem->cbuf_cpp[0]);
 	}
-	util_dynarray_resize(&batch->fb_read_patches, 0);
+	util_dynarray_clear(&batch->fb_read_patches);
 }
 
 static void
@@ -285,7 +291,7 @@ patch_draws(struct fd_batch *batch, enum pc_di_vis_cull_mode vismode)
 		struct fd_cs_patch *patch = fd_patch_element(&batch->draw_patches, i);
 		*patch->cs = patch->val | DRAW4(0, 0, 0, vismode);
 	}
-	util_dynarray_resize(&batch->draw_patches, 0);
+	util_dynarray_clear(&batch->draw_patches);
 }
 
 static void
@@ -402,7 +408,6 @@ set_bin_size(struct fd_ringbuffer *ring, uint32_t w, uint32_t h, uint32_t flag)
 static void
 emit_binning_pass(struct fd_batch *batch)
 {
-	struct fd_context *ctx = batch->ctx;
 	struct fd_ringbuffer *ring = batch->gmem;
 	struct fd_gmem_stateobj *gmem = &batch->ctx->gmem;
 
@@ -463,12 +468,22 @@ emit_binning_pass(struct fd_batch *batch)
 	OUT_PKT7(ring, CP_EVENT_WRITE, 1);
 	OUT_RING(ring, UNK_2D);
 
-	OUT_PKT7(ring, CP_EVENT_WRITE, 4);
-	OUT_RING(ring, CACHE_FLUSH_TS);
-	OUT_RELOCW(ring, fd6_context(ctx)->blit_mem, 0, 0, 0);  /* ADDR_LO/HI */
-	OUT_RING(ring, 0x00000000);
-
+	fd6_cache_inv(batch, ring);
+	fd6_cache_flush(batch, ring);
 	fd_wfi(batch, ring);
+
+	OUT_PKT7(ring, CP_WAIT_FOR_ME, 0);
+
+	OUT_PKT7(ring, CP_SET_VISIBILITY_OVERRIDE, 1);
+	OUT_RING(ring, 0x0);
+
+	OUT_PKT7(ring, CP_SET_MODE, 1);
+	OUT_RING(ring, 0x0);
+
+	OUT_WFI5(ring);
+
+	OUT_PKT4(ring, REG_A6XX_RB_CCU_CNTL, 1);
+	OUT_RING(ring, 0x7c400004);        /* RB_CCU_CNTL */
 }
 
 static void
@@ -544,6 +559,15 @@ fd6_emit_tile_init(struct fd_batch *batch)
 
 		OUT_PKT4(ring, REG_A6XX_VFD_MODE_CNTL, 1);
 		OUT_RING(ring, 0x0);
+
+		OUT_PKT4(ring, REG_A6XX_PC_UNKNOWN_9805, 1);
+		OUT_RING(ring, 0x1);
+
+		OUT_PKT4(ring, REG_A6XX_SP_UNKNOWN_A0F8, 1);
+		OUT_RING(ring, 0x1);
+
+		OUT_PKT7(ring, CP_SKIP_IB2_ENABLE_GLOBAL, 1);
+		OUT_RING(ring, 0x1);
 	} else {
 		set_bin_size(ring, gmem->bin_w, gmem->bin_h, 0x6000000);
 		patch_draws(batch, IGNORE_VISIBILITY);
@@ -580,9 +604,6 @@ fd6_emit_tile_prep(struct fd_batch *batch, struct fd_tile *tile)
 	struct fd6_context *fd6_ctx = fd6_context(ctx);
 	struct fd_ringbuffer *ring = batch->gmem;
 
-	OUT_PKT7(ring, CP_SET_MARKER, 1);
-	OUT_RING(ring, A2XX_CP_SET_MARKER_0_MODE(0x7));
-
 	emit_marker6(ring, 7);
 	OUT_PKT7(ring, CP_SET_MARKER, 1);
 	OUT_RING(ring, A2XX_CP_SET_MARKER_0_MODE(RM6_GMEM) | 0x10);
@@ -594,8 +615,6 @@ fd6_emit_tile_prep(struct fd_batch *batch, struct fd_tile *tile)
 	uint32_t y2 = tile->yoff + tile->bin_h - 1;
 
 	set_scissor(ring, x1, y1, x2, y2);
-
-	set_window_offset(ring, x1, y1);
 
 	OUT_PKT4(ring, REG_A6XX_VPC_SO_OVERRIDE, 1);
 	OUT_RING(ring, A6XX_VPC_SO_OVERRIDE_SO_DISABLE);
@@ -620,7 +639,32 @@ fd6_emit_tile_prep(struct fd_batch *batch, struct fd_tile *tile)
 				(tile->p * 4) + (32 * A6XX_VSC_DATA_PITCH), 0, 0);
 		OUT_RELOC(ring, fd6_ctx->vsc_data2,
 				(tile->p * A6XX_VSC_DATA2_PITCH), 0, 0);
+
+		set_window_offset(ring, x1, y1);
+
+		struct fd_gmem_stateobj *gmem = &batch->ctx->gmem;
+		set_bin_size(ring, gmem->bin_w, gmem->bin_h, 0x6000000);
+
+		OUT_PKT4(ring, REG_A6XX_VPC_SO_OVERRIDE, 1);
+		OUT_RING(ring, A6XX_VPC_SO_OVERRIDE_SO_DISABLE);
+
+		OUT_PKT7(ring, CP_SET_VISIBILITY_OVERRIDE, 1);
+		OUT_RING(ring, 0x0);
+
+		OUT_PKT7(ring, CP_SET_MODE, 1);
+		OUT_RING(ring, 0x0);
+
+		OUT_PKT4(ring, REG_A6XX_RB_UNKNOWN_8804, 1);
+		OUT_RING(ring, 0x0);
+
+		OUT_PKT4(ring, REG_A6XX_SP_TP_UNKNOWN_B304, 1);
+		OUT_RING(ring, 0x0);
+
+		OUT_PKT4(ring, REG_A6XX_GRAS_UNKNOWN_80A4, 1);
+		OUT_RING(ring, 0x0);
 	} else {
+		set_window_offset(ring, x1, y1);
+
 		OUT_PKT7(ring, CP_SET_VISIBILITY_OVERRIDE, 1);
 		OUT_RING(ring, 0x1);
 
@@ -639,6 +683,13 @@ set_blit_scissor(struct fd_batch *batch, struct fd_ringbuffer *ring)
 	blit_scissor.miny = batch->max_scissor.miny;
 	blit_scissor.maxx = MIN2(pfb->width, batch->max_scissor.maxx);
 	blit_scissor.maxy = MIN2(pfb->height, batch->max_scissor.maxy);
+
+	/* NOTE: blob switches to CP_BLIT instead of CP_EVENT_WRITE:BLIT for
+	 * small render targets.  But since we align pitch to binw I think
+	 * we can get away avoiding GPU hangs a simpler way, by just rounding
+	 * up the blit scissor:
+	 */
+	blit_scissor.maxx = MAX2(blit_scissor.maxx, batch->ctx->screen->gmem_alignw);
 
 	OUT_PKT4(ring, REG_A6XX_RB_BLIT_SCISSOR_TL, 2);
 	OUT_RING(ring,
@@ -708,8 +759,8 @@ emit_blit(struct fd_batch *batch,
 	if (ubwc_enabled) {
 		OUT_PKT4(ring, REG_A6XX_RB_BLIT_FLAG_DST_LO, 3);
 		OUT_RELOCW(ring, rsc->bo, ubwc_offset, 0, 0);
-		OUT_RING(ring, A6XX_RB_MRT_FLAG_BUFFER_PITCH_PITCH(rsc->ubwc_pitch) |
-				 A6XX_RB_MRT_FLAG_BUFFER_PITCH_ARRAY_PITCH(rsc->ubwc_size));
+		OUT_RING(ring, A6XX_RB_BLIT_FLAG_DST_PITCH_PITCH(rsc->ubwc_pitch) |
+				 A6XX_RB_BLIT_FLAG_DST_PITCH_ARRAY_PITCH(rsc->ubwc_size));
 	}
 
 	fd6_emit_blit(batch, ring);
@@ -1021,26 +1072,6 @@ prepare_tile_fini_ib(struct fd_batch *batch)
 			FD_RINGBUFFER_STREAMING);
 	ring = batch->tile_fini;
 
-	if (use_hw_binning(batch)) {
-		OUT_PKT7(ring, CP_SET_MARKER, 1);
-		OUT_RING(ring, A2XX_CP_SET_MARKER_0_MODE(0x5) | 0x10);
-	}
-
-	OUT_PKT7(ring, CP_SET_DRAW_STATE, 3);
-	OUT_RING(ring, CP_SET_DRAW_STATE__0_COUNT(0) |
-			CP_SET_DRAW_STATE__0_DISABLE_ALL_GROUPS |
-			CP_SET_DRAW_STATE__0_GROUP_ID(0));
-	OUT_RING(ring, CP_SET_DRAW_STATE__1_ADDR_LO(0));
-	OUT_RING(ring, CP_SET_DRAW_STATE__2_ADDR_HI(0));
-
-	OUT_PKT7(ring, CP_SKIP_IB2_ENABLE_GLOBAL, 1);
-	OUT_RING(ring, 0x0);
-
-	emit_marker6(ring, 7);
-	OUT_PKT7(ring, CP_SET_MARKER, 1);
-	OUT_RING(ring, A2XX_CP_SET_MARKER_0_MODE(RM6_RESOLVE) | 0x10);
-	emit_marker6(ring, 7);
-
 	set_blit_scissor(batch, ring);
 
 	if (batch->resolve & (FD_BUFFER_DEPTH | FD_BUFFER_STENCIL)) {
@@ -1074,7 +1105,32 @@ prepare_tile_fini_ib(struct fd_batch *batch)
 static void
 fd6_emit_tile_gmem2mem(struct fd_batch *batch, struct fd_tile *tile)
 {
-	fd6_emit_ib(batch->gmem, batch->tile_fini);
+	struct fd_ringbuffer *ring = batch->gmem;
+
+	if (use_hw_binning(batch)) {
+		OUT_PKT7(ring, CP_SET_MARKER, 1);
+		OUT_RING(ring, A2XX_CP_SET_MARKER_0_MODE(0x5) | 0x10);
+	}
+
+	OUT_PKT7(ring, CP_SET_DRAW_STATE, 3);
+	OUT_RING(ring, CP_SET_DRAW_STATE__0_COUNT(0) |
+			CP_SET_DRAW_STATE__0_DISABLE_ALL_GROUPS |
+			CP_SET_DRAW_STATE__0_GROUP_ID(0));
+	OUT_RING(ring, CP_SET_DRAW_STATE__1_ADDR_LO(0));
+	OUT_RING(ring, CP_SET_DRAW_STATE__2_ADDR_HI(0));
+
+	OUT_PKT7(ring, CP_SKIP_IB2_ENABLE_LOCAL, 1);
+	OUT_RING(ring, 0x0);
+
+	emit_marker6(ring, 7);
+	OUT_PKT7(ring, CP_SET_MARKER, 1);
+	OUT_RING(ring, A2XX_CP_SET_MARKER_0_MODE(RM6_RESOLVE) | 0x10);
+	emit_marker6(ring, 7);
+
+	fd6_emit_ib(ring, batch->tile_fini);
+
+	OUT_PKT7(ring, CP_SET_MARKER, 1);
+	OUT_RING(ring, A2XX_CP_SET_MARKER_0_MODE(0x7));
 }
 
 static void

@@ -28,6 +28,7 @@
 #include <stdint.h>
 #include <assert.h>
 #include <inttypes.h>
+#include <ctype.h>
 #include <string.h>
 #include "midgard.h"
 #include "midgard-parse.h"
@@ -35,10 +36,36 @@
 #include "disassemble.h"
 #include "helpers.h"
 #include "util/half_float.h"
+#include "util/u_math.h"
 
 #define DEFINE_CASE(define, str) case define: { printf(str); break; }
 
 static bool is_instruction_int = false;
+
+/* Prints a short form of the tag for branching, the minimum needed to be
+ * legible and unambiguous */
+
+static void
+print_tag_short(unsigned tag)
+{
+        switch (midgard_word_types[tag]) {
+                case midgard_word_type_texture:
+                        printf("tex/%X", tag);
+                        break;
+
+                case midgard_word_type_load_store:
+                        printf("ldst");
+                        break;
+
+                case midgard_word_type_alu:
+                        printf("alu%d/%X", midgard_word_size[tag], tag);
+                        break;
+
+                default:
+                        printf("%s%X", (tag > 0) ? "" : "unk", tag);
+                        break;
+        }
+}
 
 static void
 print_alu_opcode(midgard_alu_op op)
@@ -88,15 +115,9 @@ print_reg(unsigned reg, unsigned bits)
 {
         /* Perform basic static analysis for expanding constants correctly */
 
-        if ((bits == 16) && (reg >> 1) == 26) {
-                is_embedded_constant_half = true;
+        if (reg == 26) {
                 is_embedded_constant_int = is_instruction_int;
-        } else if ((bits == 32) && reg == 26) {
-                is_embedded_constant_int = is_instruction_int;
-        } else if (bits == 8) {
-                /* TODO */
-        } else if (bits == 64) {
-                /* TODO */
+                is_embedded_constant_half = (bits < 32);
         }
 
         char prefix = prefix_for_bits(bits);
@@ -107,17 +128,32 @@ print_reg(unsigned reg, unsigned bits)
         printf("r%u", reg);
 }
 
-static char *outmod_names[4] = {
+static char *outmod_names_float[4] = {
         "",
         ".pos",
-        ".int",
+        ".unk2",
         ".sat"
 };
 
+static char *outmod_names_int[4] = {
+        ".isat",
+        ".usat",
+        "",
+        ".hi"
+};
+
+static char *srcmod_names_int[4] = {
+        "sext(",
+        "zext(",
+        "",
+        "("
+};
+
 static void
-print_outmod(midgard_outmod outmod)
+print_outmod(unsigned outmod, bool is_int)
 {
-        printf("%s", outmod_names[outmod]);
+        printf("%s", is_int ? outmod_names_int[outmod] :
+                              outmod_names_float[outmod]);
 }
 
 static void
@@ -131,10 +167,137 @@ print_quad_word(uint32_t *words, unsigned tabs)
         printf("\n");
 }
 
+static const char components[16] = "xyzwefghijklmnop";
+
+/* Helper to print 4 chars of a swizzle */
 static void
-print_vector_src(unsigned src_binary, bool out_high,
+print_swizzle_helper(unsigned swizzle, bool upper)
+{
+        for (unsigned i = 0; i < 4; ++i) {
+                unsigned c = (swizzle >> (i * 2)) & 3;
+                c += upper*4;
+                printf("%c", components[c]);
+        }
+}
+
+/* Helper to print 8 chars of a swizzle, duplicating over */
+static void
+print_swizzle_helper_8(unsigned swizzle, bool upper)
+{
+        for (unsigned i = 0; i < 4; ++i) {
+                unsigned c = (swizzle >> (i * 2)) & 3;
+                c *= 2;
+                c += upper*8;
+                printf("%c%c", components[c], components[c+1]);
+        }
+}
+
+static void
+print_swizzle_vec16(unsigned swizzle, bool rep_high, bool rep_low,
+                midgard_dest_override override)
+{
+        printf(".");
+
+        if (override == midgard_dest_override_upper) {
+                if (rep_high)
+                        printf(" /* rep_high */ ");
+                if (rep_low)
+                        printf(" /* rep_low */ ");
+
+                if (!rep_high && rep_low)
+                        print_swizzle_helper_8(swizzle, true);
+                else
+                        print_swizzle_helper_8(swizzle, false);
+        } else {
+                print_swizzle_helper_8(swizzle, rep_high & 1);
+                print_swizzle_helper_8(swizzle, !rep_low & 1);
+        }
+}
+
+static void
+print_swizzle_vec8(unsigned swizzle, bool rep_high, bool rep_low)
+{
+        printf(".");
+
+        print_swizzle_helper(swizzle, rep_high & 1);
+        print_swizzle_helper(swizzle, !rep_low & 1);
+}
+
+static void
+print_swizzle_vec4(unsigned swizzle, bool rep_high, bool rep_low)
+{
+        if (rep_high)
+                printf(" /* rep_high */ ");
+        if (rep_low)
+                printf(" /* rep_low */ ");
+
+        if (swizzle == 0xE4) return; /* xyzw */
+
+        printf(".");
+        print_swizzle_helper(swizzle, 0);
+}
+static void
+print_swizzle_vec2(unsigned swizzle, bool rep_high, bool rep_low)
+{
+        if (rep_high)
+                printf(" /* rep_high */ ");
+        if (rep_low)
+                printf(" /* rep_low */ ");
+
+        if (swizzle == 0xE4) return; /* XY */
+
+        printf(".");
+
+        for (unsigned i = 0; i < 4; i += 2) {
+                unsigned a = (swizzle >> (i * 2)) & 3;
+                unsigned b = (swizzle >> ((i+1) * 2)) & 3;
+
+                /* Normally we're adjacent, but if there's an issue, don't make
+                 * it ambiguous */
+
+                if (a & 0x1)
+                        printf("[%c%c]", components[a], components[b]);
+                else if (a == b)
+                        printf("%c", components[a >> 1]);
+                else if (b == (a + 1))
+                        printf("%c", "XY"[a >> 1]);
+                else
+                        printf("[%c%c]", components[a], components[b]);
+        }
+}
+
+static int
+bits_for_mode(midgard_reg_mode mode)
+{
+        switch (mode) {
+                case midgard_reg_mode_8:
+                        return 8;
+                case midgard_reg_mode_16:
+                        return 16;
+                case midgard_reg_mode_32:
+                        return 32;
+                case midgard_reg_mode_64:
+                        return 64;
+                default:
+                        return 0;
+        }
+}
+
+static int
+bits_for_mode_halved(midgard_reg_mode mode, bool half)
+{
+        unsigned bits = bits_for_mode(mode);
+
+        if (half)
+                bits >>= 1;
+
+        return bits;
+}
+
+static void
+print_vector_src(unsigned src_binary,
                  midgard_reg_mode mode, unsigned reg,
-                 bool is_int)
+                 midgard_dest_override override, bool is_int)
 {
         midgard_vector_alu_src *src = (midgard_vector_alu_src *)&src_binary;
 
@@ -143,20 +306,7 @@ print_vector_src(unsigned src_binary, bool out_high,
         midgard_int_mod int_mod = src->mod;
 
         if (is_int) {
-                switch (int_mod) {
-                        case midgard_int_sign_extend:
-                                printf("sext(");
-                                break;
-                        case midgard_int_zero_extend:
-                                printf("zext(");
-                                break;
-                        case midgard_int_reserved:
-                                printf("unk(");
-                                break;
-                        case midgard_int_normal:
-                                /* Implicit */
-                                break;
-                }
+                printf("%s", srcmod_names_int[int_mod]);
         } else {
                 if (src->mod & MIDGARD_FLOAT_MOD_NEG)
                         printf("-");
@@ -166,92 +316,24 @@ print_vector_src(unsigned src_binary, bool out_high,
         }
 
         //register
-
-        if (mode == midgard_reg_mode_8) {
-                if (src->half)
-                        printf(" /* half */ ");
-
-                unsigned quarter_reg = reg * 2;
-
-                if (out_high) {
-                        if (!src->rep_low)
-                                quarter_reg++;
-
-                        if (src->rep_high)
-                                printf(" /* rep_high */ ");
-                } else {
-                        if (src->rep_high)
-                                quarter_reg++;
-
-                        if (src->rep_low)
-                                printf(" /* rep_low */ ");
-                }
-
-                print_reg(quarter_reg, 8);
-        } else if (mode == midgard_reg_mode_16) {
-                if (src->half)
-                        printf(" /* half */ ");
-
-                unsigned half_reg = reg * 2;
-
-                if (out_high) {
-                        if (!src->rep_low)
-                                half_reg++;
-
-                        if (src->rep_high)
-                                printf(" /* rep_high */ ");
-                } else {
-                        if (src->rep_high)
-                                half_reg++;
-
-                        if (src->rep_low)
-                                printf(" /* rep_low */ ");
-                }
-
-                print_reg(half_reg, 16);
-        } else if (mode == midgard_reg_mode_32) {
-                if (src->rep_high)
-                        printf(" /* rep_high */ ");
-
-                if (src->half)
-                        print_reg(reg * 2 + src->rep_low, 16);
-                else {
-                        if (src->rep_low)
-                                printf(" /* rep_low */ ");
-
-                        print_reg(reg, 32);
-                }
-        } else if (mode == midgard_reg_mode_64) {
-                if (src->rep_high)
-                        printf(" /* rep_high */ ");
-
-                if (src->rep_low)
-                        printf(" /* rep_low */ ");
-
-                if (src->half)
-                        printf(" /* half */ ");
-
-                if (out_high)
-                        printf(" /* out_high */ ");
-
-                print_reg(reg, 64);
-        }
+        unsigned bits = bits_for_mode_halved(mode, src->half);
+        print_reg(reg, bits);
 
         //swizzle
-
-        if (src->swizzle != 0xE4) { //default swizzle
-                unsigned i;
-                static const char c[4] = "xyzw";
-
-                printf(".");
-
-                for (i = 0; i < 4; i++)
-                        printf("%c", c[(src->swizzle >> (i * 2)) & 3]);
-        }
+        if (bits == 16)
+                print_swizzle_vec8(src->swizzle, src->rep_high, src->rep_low);
+        else if (bits == 8)
+                print_swizzle_vec16(src->swizzle, src->rep_high, src->rep_low, override);
+        else if (bits == 32)
+                print_swizzle_vec4(src->swizzle, src->rep_high, src->rep_low);
+        else if (bits == 64)
+                print_swizzle_vec2(src->swizzle, src->rep_high, src->rep_low);
 
         /* Since we wrapped with a function-looking thing */
 
-        if ((is_int && (int_mod != midgard_int_normal))
+        if (is_int && int_mod == midgard_int_shift)
+                printf(") << %d", bits);
+        else if ((is_int && (int_mod != midgard_int_normal))
                         || (!is_int && src->mod & MIDGARD_FLOAT_MOD_ABS))
                 printf(")");
 }
@@ -275,68 +357,116 @@ print_immediate(uint16_t imm)
                 printf("#%g", _mesa_half_to_float(imm));
 }
 
-static int
-bits_for_mode(midgard_reg_mode mode)
+static unsigned
+print_dest(unsigned reg, midgard_reg_mode mode, midgard_dest_override override)
 {
-        switch (mode) {
-                case midgard_reg_mode_8:
-                        return 8;
-                case midgard_reg_mode_16:
-                        return 16;
-                case midgard_reg_mode_32:
-                        return 32;
-                case midgard_reg_mode_64:
-                        return 64;
-                default:
-                        return 0;
-        }
-}
-
-static void
-print_dest(unsigned reg, midgard_reg_mode mode, midgard_dest_override override, bool out_high)
-{
-        bool overriden = override != midgard_dest_override_none;
-        bool overriden_up = override == midgard_dest_override_upper;
-
         /* Depending on the mode and override, we determine the type of
          * destination addressed. Absent an override, we address just the
-         * type of the operation itself, directly at the out_reg register
-         * (scaled if necessary to disambiguate, raised if necessary) */
+         * type of the operation itself */
 
         unsigned bits = bits_for_mode(mode);
 
-        if (overriden)
+        if (override != midgard_dest_override_none)
                 bits /= 2;
 
-        /* Sanity check the override */
-
-        if (overriden) {
-                bool modeable = (mode == midgard_reg_mode_32) || (mode == midgard_reg_mode_16);
-                bool known = override != 0x3; /* Unused value */
-                bool uppable = !overriden_up || (mode == midgard_reg_mode_32);
-
-                if (!(modeable && known && uppable))
-                        printf("/* do%d */ ", override);
-        }
-
-        switch (mode) {
-                case midgard_reg_mode_8:
-                case midgard_reg_mode_16:
-                        reg = reg * 2 + out_high;
-                        break;
-
-                case midgard_reg_mode_32:
-                        if (overriden) {
-                                reg = (reg * 2) + overriden_up;
-                        }
-
-                        break;
-
-                default:
-                        break;
-        }
-
         print_reg(reg, bits);
+
+        return bits;
+}
+
+static void
+print_mask_vec16(uint8_t mask, midgard_dest_override override)
+{
+        printf(".");
+
+        if (override == midgard_dest_override_none) {
+                for (unsigned i = 0; i < 8; i++) {
+                        if (mask & (1 << i))
+                                printf("%c%c",
+                                        components[i*2 + 0],
+                                        components[i*2 + 1]);
+                }
+        } else {
+                bool upper = (override == midgard_dest_override_upper);
+
+                for (unsigned i = 0; i < 8; i++) {
+                        if (mask & (1 << i))
+                                printf("%c", components[i + (upper ? 8 : 0)]);
+                }
+        }
+}
+
+/* For 16-bit+ masks, we read off from the 8-bit mask field. For 16-bit (vec8),
+ * it's just one bit per channel, easy peasy. For 32-bit (vec4), it's one bit
+ * per channel with one duplicate bit in the middle. For 64-bit (vec2), it's
+ * one-bit per channel with _3_ duplicate bits in the middle. Basically, just
+ * subdividing the 128-bit word in 16-bit increments. For 64-bit, we uppercase
+ * the mask to make it obvious what happened */
+
+static void
+print_mask(uint8_t mask, unsigned bits, midgard_dest_override override)
+{
+        if (bits == 8) {
+                print_mask_vec16(mask, override);
+                return;
+        }
+
+        /* Skip 'complete' masks */
+
+        if (bits >= 32 && mask == 0xFF) return;
+
+        if (bits == 16) {
+                if (mask == 0x0F)
+                        return;
+                else if (mask == 0xF0) {
+                        printf("'");
+                        return;
+                }
+        }
+
+        printf(".");
+
+        unsigned skip = (bits / 16);
+        bool uppercase = bits > 32;
+        bool tripped = false;
+
+        for (unsigned i = 0; i < 8; i += skip) {
+                bool a = (mask & (1 << i)) != 0;
+
+                for (unsigned j = 1; j < skip; ++j) {
+                        bool dupe = (mask & (1 << (i + j))) != 0;
+                        tripped |= (dupe != a);
+                }
+
+                if (a) {
+                        char c = components[i / skip];
+
+                        if (uppercase)
+                                c = toupper(c);
+
+                        printf("%c", c);
+                }
+        }
+
+        if (tripped)
+                printf(" /* %X */", mask);
+}
+
+/* Prints the 4-bit masks found in texture and load/store ops, as opposed to
+ * the 8-bit masks found in (vector) ALU ops */
+
+static void
+print_mask_4(unsigned mask)
+{
+        if (mask == 0xF) return;
+
+        printf(".");
+
+        for (unsigned i = 0; i < 4; ++i) {
+                bool a = (mask & (1 << i)) != 0;
+                if (a)
+                        printf("%c", components[i]);
+        }
 }
 
 static void
@@ -346,75 +476,60 @@ print_vector_field(const char *name, uint16_t *words, uint16_t reg_word,
         midgard_reg_info *reg_info = (midgard_reg_info *)&reg_word;
         midgard_vector_alu *alu_field = (midgard_vector_alu *) words;
         midgard_reg_mode mode = alu_field->reg_mode;
+        unsigned override = alu_field->dest_override;
 
         /* For now, prefix instruction names with their unit, until we
          * understand how this works on a deeper level */
         printf("%s.", name);
 
         print_alu_opcode(alu_field->op);
-        print_outmod(alu_field->outmod);
+
+        /* Postfix with the size to disambiguate if necessary */
+        char postfix = prefix_for_bits(bits_for_mode(mode));
+        bool size_ambiguous = override != midgard_dest_override_none;
+
+        if (size_ambiguous)
+                printf("%c", postfix ? postfix : 'r');
+
+        /* Print the outmod, if there is one */
+        print_outmod(alu_field->outmod,
+                midgard_is_integer_out_op(alu_field->op));
+
         printf(" ");
 
-        bool out_high = false;
-        unsigned mask;
-
-        if (mode == midgard_reg_mode_16
-                || mode == midgard_reg_mode_8) {
-
-                /* For partial views, the mask denotes which adjacent register
-                 * is used as the window into the larger register */
-
-                if (alu_field->mask & 0xF) {
-                        out_high = false;
-
-                        if ((alu_field->mask & 0xF0))
-                                printf("/* %X */ ", alu_field->mask);
-
-                        mask = alu_field->mask;
-                } else {
-                        out_high = true;
-                        mask = alu_field->mask >> 4;
-                }
-        } else {
-                /* For full 32-bit, every other bit is duplicated, so we only
-                 * pick every other to find the effective mask */
-
-                mask = alu_field->mask & 1;
-                mask |= (alu_field->mask & 4) >> 1;
-                mask |= (alu_field->mask & 16) >> 2;
-                mask |= (alu_field->mask & 64) >> 3;
-
-                /* ... but verify! */
-
-                unsigned checked = alu_field->mask & 0x55;
-                unsigned opposite = alu_field->mask & 0xAA;
-
-                if ((checked << 1) != opposite)
-                        printf("/* %X */ ", alu_field->mask);
-        }
+        /* Mask denoting status of 8-lanes */
+        uint8_t mask = alu_field->mask;
 
         /* First, print the destination */
-        print_dest(reg_info->out_reg, mode, alu_field->dest_override, out_high);
+        unsigned dest_size =
+                print_dest(reg_info->out_reg, mode, alu_field->dest_override);
 
-        /* The semantics here are not totally grokked yet */
-        if (alu_field->dest_override == midgard_dest_override_upper)
-                out_high = true;
+        /* Apply the destination override to the mask */
 
-        if (mask != 0xF) {
-                unsigned i;
-                static const char c[4] = "xyzw";
-
-                printf(".");
-
-                for (i = 0; i < 4; i++)
-                        if (mask & (1 << i))
-                                printf("%c", c[i]);
+        if (mode == midgard_reg_mode_32 || mode == midgard_reg_mode_64) {
+                if (override == midgard_dest_override_lower)
+                        mask &= 0x0F;
+                else if (override == midgard_dest_override_upper)
+                        mask &= 0xF0;
+        } else if (mode == midgard_reg_mode_16
+                        && override == midgard_dest_override_lower) {
+                /* stub */
         }
+
+        if (override != midgard_dest_override_none) {
+                bool modeable = (mode != midgard_reg_mode_8);
+                bool known = override != 0x3; /* Unused value */
+
+                if (!(modeable && known))
+                        printf("/* do%d */ ", override);
+        }
+
+        print_mask(mask, dest_size, override);
 
         printf(", ");
 
         bool is_int = midgard_is_integer_op(alu_field->op);
-        print_vector_src(alu_field->src1, out_high, mode, reg_info->src1_reg, is_int);
+        print_vector_src(alu_field->src1, mode, reg_info->src1_reg, override, is_int);
 
         printf(", ");
 
@@ -422,8 +537,8 @@ print_vector_field(const char *name, uint16_t *words, uint16_t reg_word,
                 uint16_t imm = decode_vector_imm(reg_info->src2_reg, alu_field->src2 >> 2);
                 print_immediate(imm);
         } else {
-                print_vector_src(alu_field->src2, out_high, mode,
-                                 reg_info->src2_reg, is_int);
+                print_vector_src(alu_field->src2, mode,
+                                 reg_info->src2_reg, override, is_int);
         }
 
         printf("\n");
@@ -440,14 +555,16 @@ print_scalar_src(unsigned src_binary, unsigned reg)
         if (src->abs)
                 printf("abs(");
 
-        if (src->full)
-                print_reg(reg, 32);
-        else
-                print_reg(reg * 2 + (src->component >> 2), 16);
+        print_reg(reg, src->full ? 32 : 16);
 
-        static const char c[4] = "xyzw";
-        \
-        printf(".%c", c[src->full ? src->component >> 1 : src->component & 3]);
+        unsigned c = src->component;
+
+        if (src->full) {
+                assert((c & 1) == 0);
+                c >>= 1;
+        }
+
+        printf(".%c", components[c]);
 
         if (src->abs)
                 printf(")");
@@ -478,19 +595,20 @@ print_scalar_field(const char *name, uint16_t *words, uint16_t reg_word,
 
         printf("%s.", name);
         print_alu_opcode(alu_field->op);
-        print_outmod(alu_field->outmod);
+        print_outmod(alu_field->outmod,
+                        midgard_is_integer_out_op(alu_field->op));
         printf(" ");
 
-        if (alu_field->output_full)
-                print_reg(reg_info->out_reg, 32);
-        else
-                print_reg(reg_info->out_reg * 2 + (alu_field->output_component >> 2),
-                          16);
+        bool full = alu_field->output_full;
+        print_reg(reg_info->out_reg, full ? 32 : 16);
+        unsigned c = alu_field->output_component;
 
-        static const char c[4] = "xyzw";
-        printf(".%c, ",
-               c[alu_field->output_full ? alu_field->output_component >> 1 :
-                                        alu_field->output_component & 3]);
+        if (full) {
+                assert((c & 1) == 0);
+                c >>= 1;
+        }
+
+        printf(".%c, ", components[c]);
 
         print_scalar_src(alu_field->src1, reg_info->src1_reg);
 
@@ -579,9 +697,10 @@ print_compact_branch_writeout_field(uint16_t word)
                 if (br_uncond.offset >= 0)
                         printf("+");
 
-                printf("%d", br_uncond.offset);
+                printf("%d -> ", br_uncond.offset);
+                print_tag_short(br_uncond.dest_tag);
+                printf("\n");
 
-                printf(" -> %X\n", br_uncond.dest_tag);
                 break;
         }
 
@@ -602,9 +721,10 @@ print_compact_branch_writeout_field(uint16_t word)
                 if (br_cond.offset >= 0)
                         printf("+");
 
-                printf("%d", br_cond.offset);
+                printf("%d -> ", br_cond.offset);
+                print_tag_short(br_cond.dest_tag);
+                printf("\n");
 
-                printf(" -> %X\n", br_cond.dest_tag);
                 break;
         }
         }
@@ -638,9 +758,9 @@ print_extended_branch_writeout_field(uint8_t *words)
         if (br.offset >= 0)
                 printf("+");
 
-        printf("%d", br.offset);
-
-        printf(" -> %X\n", br.dest_tag);
+        printf("%d -> ", br.offset);
+        print_tag_short(br.dest_tag);
+        printf("\n");
 }
 
 static unsigned
@@ -792,40 +912,6 @@ print_alu_word(uint32_t *words, unsigned num_quad_words,
         }
 }
 
-/* Swizzle/mask formats are common between load/store ops and texture ops, it
- * looks like... */
-
-static void
-print_swizzle(uint32_t swizzle)
-{
-        unsigned i;
-
-        if (swizzle != 0xE4) {
-                printf(".");
-
-                for (i = 0; i < 4; i++)
-                        printf("%c", "xyzw"[(swizzle >> (2 * i)) & 3]);
-        }
-}
-
-static void
-print_mask(uint32_t mask)
-{
-        unsigned i;
-
-        if (mask != 0xF) {
-                printf(".");
-
-                for (i = 0; i < 4; i++)
-                        if (mask & (1 << i))
-                                printf("%c", "xyzw"[i]);
-
-                /* Handle degenerate case */
-                if (mask == 0)
-                        printf("0");
-        }
-}
-
 static void
 print_varying_parameters(midgard_load_store_word *word)
 {
@@ -844,12 +930,21 @@ print_varying_parameters(midgard_load_store_word *word)
                         else
                                 printf(".interp%d", param.interpolation);
                 }
-        } else if (param.flat || param.interpolation) {
+
+                if (param.modifier != midgard_varying_mod_none) {
+                        if (param.modifier == midgard_varying_mod_perspective_w)
+                                printf(".perspectivew");
+                        else if (param.modifier == midgard_varying_mod_perspective_z)
+                                printf(".perspectivez");
+                        else
+                                printf(".mod%d", param.modifier);
+                }
+        } else if (param.flat || param.interpolation || param.modifier) {
                 printf(" /* is_varying not set but varying metadata attached */");
         }
 
-        if (param.zero1 || param.zero2)
-                printf(" /* zero tripped, %d %d */ ", param.zero1, param.zero2);
+        if (param.zero0 || param.zero1 || param.zero2)
+                printf(" /* zero tripped, %d %d %d */ ", param.zero0, param.zero1, param.zero2);
 }
 
 static bool
@@ -878,7 +973,7 @@ print_load_store_instr(uint64_t data,
                 print_varying_parameters(word);
 
         printf(" r%d", word->reg);
-        print_mask(word->mask);
+        print_mask_4(word->mask);
 
         int address = word->address;
 
@@ -894,7 +989,7 @@ print_load_store_instr(uint64_t data,
 
         printf(", %d", address);
 
-        print_swizzle(word->swizzle);
+        print_swizzle_vec4(word->swizzle, false, false);
 
         printf(", 0x%X /* %X */\n", word->unknown, word->varying_parameters);
 }
@@ -927,36 +1022,65 @@ print_texture_reg(bool full, bool select, bool upper)
 }
 
 static void
+print_texture_reg_triple(unsigned triple)
+{
+        bool full = triple & 1;
+        bool select = triple & 2;
+        bool upper = triple & 4;
+
+        print_texture_reg(full, select, upper);
+}
+
+static void
 print_texture_format(int format)
 {
         /* Act like a modifier */
         printf(".");
 
         switch (format) {
-                DEFINE_CASE(TEXTURE_2D, "2d");
-                DEFINE_CASE(TEXTURE_3D, "3d");
-                DEFINE_CASE(TEXTURE_CUBE, "cube");
+                DEFINE_CASE(MALI_TEX_1D, "1d");
+                DEFINE_CASE(MALI_TEX_2D, "2d");
+                DEFINE_CASE(MALI_TEX_3D, "3d");
+                DEFINE_CASE(MALI_TEX_CUBE, "cube");
 
         default:
-                printf("fmt_%d", format);
-                break;
+                unreachable("Bad format");
         }
 }
 
 static void
-print_texture_op(int format)
+print_texture_op(unsigned op, bool gather)
 {
-        /* Act like a modifier */
-        printf(".");
+        /* Act like a bare name, like ESSL functions */
 
-        switch (format) {
-                DEFINE_CASE(TEXTURE_OP_NORMAL, "normal");
-                DEFINE_CASE(TEXTURE_OP_TEXEL_FETCH, "texelfetch");
+        if (gather) {
+                printf("textureGather");
+
+                unsigned component = op >> 4;
+                unsigned bottom = op & 0xF;
+
+                if (bottom != 0x2)
+                        printf("_unk%d", bottom);
+
+                printf(".%c", components[component]);
+                return;
+        }
+
+        switch (op) {
+                DEFINE_CASE(TEXTURE_OP_NORMAL, "texture");
+                DEFINE_CASE(TEXTURE_OP_LOD, "textureLod");
+                DEFINE_CASE(TEXTURE_OP_TEXEL_FETCH, "texelFetch");
 
         default:
-                printf("op_%d", format);
+                printf("tex_%d", op);
                 break;
         }
+}
+
+static bool
+texture_op_takes_bias(unsigned op)
+{
+        return op == TEXTURE_OP_NORMAL;
 }
 
 #undef DEFINE_CASE
@@ -966,20 +1090,15 @@ print_texture_word(uint32_t *word, unsigned tabs)
 {
         midgard_texture_word *texture = (midgard_texture_word *) word;
 
-        /* Instruction family, like ALU words have theirs */
-        printf("texture");
-
         /* Broad category of texture operation in question */
-        print_texture_op(texture->op);
+        print_texture_op(texture->op, texture->is_gather);
 
         /* Specific format in question */
         print_texture_format(texture->format);
 
-        /* Instruction "modifiers" parallel the ALU instructions. First group
-         * are modifiers that act alone */
+        assert(texture->zero == 0);
 
-        if (!texture->filter)
-                printf(".raw");
+        /* Instruction "modifiers" parallel the ALU instructions. */
 
         if (texture->shadow)
                 printf(".shadow");
@@ -990,84 +1109,128 @@ print_texture_word(uint32_t *word, unsigned tabs)
         if (texture->last)
                 printf(".last");
 
-        /* Second set are modifiers which take an extra argument each */
-
-        if (texture->has_offset)
-                printf(".offset");
-
-        if (texture->bias)
-                printf(".bias");
-
         printf(" ");
 
         print_texture_reg(texture->out_full, texture->out_reg_select, texture->out_upper);
-        print_mask(texture->mask);
+        print_mask_4(texture->mask);
         printf(", ");
 
         printf("texture%d, ", texture->texture_handle);
 
         printf("sampler%d", texture->sampler_handle);
-        print_swizzle(texture->swizzle);
+        print_swizzle_vec4(texture->swizzle, false, false);
         printf(", ");
 
-        print_texture_reg(/*texture->in_reg_full*/true, texture->in_reg_select, texture->in_reg_upper);
-        printf(".%c%c, ", "xyzw"[texture->in_reg_swizzle_left],
-               "xyzw"[texture->in_reg_swizzle_right]);
+        print_texture_reg(texture->in_reg_full, texture->in_reg_select, texture->in_reg_upper);
+        print_swizzle_vec4(texture->in_reg_swizzle, false, false);
 
-        /* TODO: can offsets be full words? */
-        if (texture->has_offset) {
-                print_texture_reg(false, texture->offset_reg_select, texture->offset_reg_upper);
+        /* There is *always* an offset attached. Of
+         * course, that offset is just immediate #0 for a
+         * GLES call that doesn't take an offset. If there
+         * is a non-negative non-zero offset, this is
+         * specified in immediate offset mode, with the
+         * values in the offset_* fields as immediates. If
+         * this is a negative offset, we instead switch to
+         * a register offset mode, where the offset_*
+         * fields become register triplets */
+
+        if (texture->offset_register) {
+                printf(" + ");
+                print_texture_reg_triple(texture->offset_x);
+
+                /* The less questions you ask, the better. */
+
+                unsigned swizzle_lo, swizzle_hi;
+                unsigned orig_y = texture->offset_y;
+                unsigned orig_z = texture->offset_z;
+
+                memcpy(&swizzle_lo, &orig_y, sizeof(unsigned));
+                memcpy(&swizzle_hi, &orig_z, sizeof(unsigned));
+
+                /* Duplicate hi swizzle over */
+                assert(swizzle_hi < 4);
+                swizzle_hi = (swizzle_hi << 2) | swizzle_hi;
+
+                unsigned swiz = (swizzle_lo << 4) | swizzle_hi;
+                unsigned reversed = util_bitreverse(swiz) >> 24;
+                print_swizzle_vec4(reversed, false, false);
+
+                printf(", ");
+        } else if (texture->offset_x || texture->offset_y || texture->offset_z) {
+                /* Only select ops allow negative immediate offsets, verify */
+
+                bool neg_x = texture->offset_x < 0;
+                bool neg_y = texture->offset_y < 0;
+                bool neg_z = texture->offset_z < 0;
+                bool any_neg = neg_x || neg_y || neg_z;
+
+                if (any_neg && texture->op != TEXTURE_OP_TEXEL_FETCH)
+                        printf("/* invalid negative */ ");
+
+                /* Regardless, just print the immediate offset */
+
+                printf(" + <%d, %d, %d>, ",
+                        texture->offset_x,
+                        texture->offset_y,
+                        texture->offset_z);
+        } else {
                 printf(", ");
         }
 
-        if (texture->bias)
-                printf("%f, ", texture->bias / 256.0f);
+        char lod_operand = texture_op_takes_bias(texture->op) ? '+' : '=';
+
+        if (texture->lod_register) {
+                midgard_tex_register_select sel;
+                uint8_t raw = texture->bias;
+                memcpy(&sel, &raw, sizeof(raw));
+
+                unsigned c = (sel.component_hi << 1) | sel.component_lo;
+
+                printf("lod %c ", lod_operand);
+                print_texture_reg(sel.full, sel.select, sel.upper);
+                printf(".%c, ", components[c]);
+
+                if (!sel.component_hi)
+                        printf(" /* gradient? */");
+
+                if (texture->bias_int)
+                        printf(" /* bias_int = 0x%X */", texture->bias_int);
+
+                if (sel.zero)
+                        printf(" /* sel.zero = 0x%X */", sel.zero);
+        } else if (texture->op == TEXTURE_OP_TEXEL_FETCH) {
+                /* For texel fetch, the int LOD is in the fractional place and
+                 * there is no fraction / possibility of bias. We *always* have
+                 * an explicit LOD, even if it's zero. */
+
+                if (texture->bias_int)
+                        printf(" /* bias_int = 0x%X */ ", texture->bias_int);
+
+                printf("lod = %d, ", texture->bias);
+        } else if (texture->bias || texture->bias_int) {
+                int bias_int = texture->bias_int;
+                float bias_frac = texture->bias / 256.0f;
+                float bias = bias_int + bias_frac;
+
+                bool is_bias = texture_op_takes_bias(texture->op);
+                char operand = is_bias ? '+' : '=';
+
+                printf("lod %c %f, ", operand, bias);
+        }
 
         printf("\n");
 
         /* While not zero in general, for these simple instructions the
          * following unknowns are zero, so we don't include them */
 
-        if (texture->unknown1 ||
-                        texture->unknown2 ||
-                        texture->unknown3 ||
+        if (texture->unknown2 ||
                         texture->unknown4 ||
                         texture->unknownA ||
-                        texture->unknownB ||
-                        texture->unknown8 ||
-                        texture->unknown9) {
-                printf("// unknown1 = 0x%x\n", texture->unknown1);
+                        texture->unknown8) {
                 printf("// unknown2 = 0x%x\n", texture->unknown2);
-                printf("// unknown3 = 0x%x\n", texture->unknown3);
                 printf("// unknown4 = 0x%x\n", texture->unknown4);
                 printf("// unknownA = 0x%x\n", texture->unknownA);
-                printf("// unknownB = 0x%x\n", texture->unknownB);
                 printf("// unknown8 = 0x%x\n", texture->unknown8);
-                printf("// unknown9 = 0x%x\n", texture->unknown9);
-        }
-
-        /* Similarly, if no offset is applied, these are zero. If an offset
-         * -is- applied, or gradients are used, etc, these are nonzero but
-         *  largely unknown still. */
-
-        if (texture->offset_unknown1 ||
-                        texture->offset_reg_select ||
-                        texture->offset_reg_upper ||
-                        texture->offset_unknown4 ||
-                        texture->offset_unknown5 ||
-                        texture->offset_unknown6 ||
-                        texture->offset_unknown7 ||
-                        texture->offset_unknown8 ||
-                        texture->offset_unknown9) {
-                printf("// offset_unknown1 = 0x%x\n", texture->offset_unknown1);
-                printf("// offset_reg_select = 0x%x\n", texture->offset_reg_select);
-                printf("// offset_reg_upper = 0x%x\n", texture->offset_reg_upper);
-                printf("// offset_unknown4 = 0x%x\n", texture->offset_unknown4);
-                printf("// offset_unknown5 = 0x%x\n", texture->offset_unknown5);
-                printf("// offset_unknown6 = 0x%x\n", texture->offset_unknown6);
-                printf("// offset_unknown7 = 0x%x\n", texture->offset_unknown7);
-                printf("// offset_unknown8 = 0x%x\n", texture->offset_unknown8);
-                printf("// offset_unknown9 = 0x%x\n", texture->offset_unknown9);
         }
 
         /* Don't blow up */
@@ -1087,9 +1250,10 @@ disassemble_midgard(uint8_t *code, size_t size)
         unsigned i = 0;
 
         while (i < num_words) {
-                unsigned num_quad_words = midgard_word_size[words[i] & 0xF];
+                unsigned tag = words[i] & 0xF;
+                unsigned num_quad_words = midgard_word_size[tag];
 
-                switch (midgard_word_types[words[i] & 0xF]) {
+                switch (midgard_word_types[tag]) {
                 case midgard_word_type_texture:
                         print_texture_word(&words[i], tabs);
                         break;

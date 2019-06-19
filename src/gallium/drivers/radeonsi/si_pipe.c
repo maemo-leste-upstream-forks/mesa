@@ -505,9 +505,6 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen,
 	si_init_query_functions(sctx);
 	si_init_state_compute_functions(sctx);
 
-	if (sscreen->debug_flags & DBG(FORCE_DMA))
-		sctx->b.resource_copy_region = sctx->dma_copy;
-
 	/* Initialize graphics-only context functions. */
 	if (sctx->has_graphics) {
 		si_init_context_texture_functions(sctx);
@@ -531,6 +528,9 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen,
 		cik_init_sdma_functions(sctx);
 	else
 		si_init_dma_functions(sctx);
+
+	if (sscreen->debug_flags & DBG(FORCE_DMA))
+		sctx->b.resource_copy_region = sctx->dma_copy;
 
 	sctx->sample_mask = 0xffff;
 
@@ -673,7 +673,7 @@ static struct pipe_context *si_pipe_create_context(struct pipe_screen *screen,
 	 * implementation for fence_server_sync is incomplete. */
 	return threaded_context_create(ctx, &sscreen->pool_transfers,
 				       si_replace_buffer_storage,
-				       sscreen->info.drm_major >= 3 ? si_create_fence : NULL,
+				       sscreen->info.is_amdgpu ? si_create_fence : NULL,
 				       &((struct si_context*)ctx)->tc);
 }
 
@@ -721,7 +721,7 @@ static void si_destroy_screen(struct pipe_screen* pscreen)
 			struct si_shader_part *part = parts[i];
 
 			parts[i] = part->next;
-			ac_shader_binary_clean(&part->binary);
+			si_shader_binary_clean(&part->binary);
 			FREE(part);
 		}
 	}
@@ -1060,7 +1060,7 @@ radeonsi_screen_create_impl(struct radeon_winsys *ws,
         * on GFX6. Some CLEAR_STATE cause asic hang on radeon kernel, etc.
         * SPI_VS_OUT_CONFIG. So only enable GFX7 CLEAR_STATE on amdgpu kernel.*/
        sscreen->has_clear_state = sscreen->info.chip_class >= GFX7 &&
-                                  sscreen->info.drm_major == 3;
+                                  sscreen->info.is_amdgpu;
 
 	sscreen->has_distributed_tess =
 		sscreen->info.chip_class >= GFX8 &&

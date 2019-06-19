@@ -1,5 +1,5 @@
 /*
- * © Copyright 2018 Alyssa Rosenzweig
+ * Copyright (C) 2019 Alyssa Rosenzweig <alyssa@rosenzweig.io>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -19,15 +19,35 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
  */
 
-#ifndef __PAN_WALLPAPER_H
-#define __PAN_WALLPAPER_H
-
-#include "pipe/p_state.h"
+#include "compiler.h"
 
 void
-panfrost_draw_wallpaper(struct pipe_context *pipe);
+mir_rewrite_index_src(compiler_context *ctx, unsigned old, unsigned new)
+{
+        mir_foreach_instr_global(ctx, ins) {
+                if (ins->ssa_args.src0 == old)
+                        ins->ssa_args.src0 = new;
 
-#endif
+                if (ins->ssa_args.src1 == old &&
+                                !ins->ssa_args.inline_constant)
+                        ins->ssa_args.src1 = new;
+        }
+}
+
+void
+mir_rewrite_index_dst(compiler_context *ctx, unsigned old, unsigned new)
+{
+        mir_foreach_instr_global(ctx, ins) {
+                if (ins->ssa_args.dest == old)
+                        ins->ssa_args.dest = new;
+        }
+}
+
+void
+mir_rewrite_index(compiler_context *ctx, unsigned old, unsigned new)
+{
+        mir_rewrite_index_src(ctx, old, new);
+        mir_rewrite_index_dst(ctx, old, new);
+}

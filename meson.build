@@ -503,12 +503,6 @@ if not system_has_kms_drm
   else
     error('OMX state tracker can only be built on unix-like OSes.')
   endif
-elif not (with_platform_x11 or with_platform_drm)
-  if ['auto', 'disabled'].contains(_omx)
-    _omx = 'disabled'
-  else
-    error('OMX state tracker requires X11 or drm platform support.')
-  endif
 elif not (with_gallium_r600 or with_gallium_radeonsi or with_gallium_nouveau)
   if ['auto', 'disabled'].contains(_omx)
     _omx = 'disabled'
@@ -586,12 +580,6 @@ _va = get_option('gallium-va')
 if not system_has_kms_drm
   if _va == 'true'
     error('VA state tracker can only be built on unix-like OSes.')
-  else
-    _va = 'false'
-  endif
-elif not (with_platform_x11 or with_platform_drm)
-  if _va == 'true'
-    error('VA state tracker requires X11 or drm or wayland platform support.')
   else
     _va = 'false'
   endif
@@ -834,6 +822,10 @@ if cc.compiles('int foo(void) __attribute__((__noreturn__));',
                name : '__attribute__((__noreturn__))')
   pre_args += '-DHAVE_FUNC_ATTRIBUTE_NORETURN'
 endif
+if cc.compiles('__uint128_t foo(void) { return 0; }',
+               name : '__uint128_t')
+  pre_args += '-DHAVE_UINT128'
+endif
 
 # TODO: this is very incomplete
 if ['linux', 'cygwin', 'gnu'].contains(host_machine.system())
@@ -845,6 +837,8 @@ c_args = []
 foreach a : ['-Werror=implicit-function-declaration',
              '-Werror=missing-prototypes', '-Werror=return-type',
              '-Werror=incompatible-pointer-types',
+             '-Werror=format',
+             '-Wformat-security',
              '-fno-math-errno',
              '-fno-trapping-math', '-Qunused-arguments']
   if cc.has_argument(a)
@@ -866,6 +860,8 @@ endif
 # Check for generic C++ arguments
 cpp_args = []
 foreach a : ['-Werror=return-type',
+             '-Werror=format',
+             '-Wformat-security',
              '-fno-math-errno', '-fno-trapping-math',
              '-Qunused-arguments']
   if cpp.has_argument(a)
@@ -1155,13 +1151,11 @@ dep_m = cc.find_library('m', required : false)
 dep_libdrm_amdgpu = null_dep
 dep_libdrm_radeon = null_dep
 dep_libdrm_nouveau = null_dep
-dep_libdrm_etnaviv = null_dep
 dep_libdrm_intel = null_dep
 
 _drm_amdgpu_ver = '2.4.97'
 _drm_radeon_ver = '2.4.71'
 _drm_nouveau_ver = '2.4.66'
-_drm_etnaviv_ver = '2.4.89'
 _drm_intel_ver = '2.4.75'
 _drm_ver = '2.4.75'
 
@@ -1171,12 +1165,16 @@ _libdrm_checks = [
   ['radeon', (with_gallium_radeonsi or with_dri_r100 or with_dri_r200 or
               with_gallium_r300 or with_gallium_r600)],
   ['nouveau', (with_gallium_nouveau or with_dri_nouveau)],
-  ['etnaviv', with_gallium_etnaviv],
 ]
 
 # VC4 only needs core libdrm support of this version, not a libdrm_vc4
 # library.
 if with_gallium_vc4
+  _drm_ver = '2.4.89'
+endif
+
+# etnaviv only needs core libdrm
+if with_gallium_etnaviv
   _drm_ver = '2.4.89'
 endif
 

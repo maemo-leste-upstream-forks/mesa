@@ -45,24 +45,6 @@
 #include "fd6_format.h"
 #include "fd6_zsa.h"
 
-static uint32_t
-shader_t_to_opcode(gl_shader_stage type)
-{
-	switch (type) {
-	case MESA_SHADER_VERTEX:
-	case MESA_SHADER_TESS_CTRL:
-	case MESA_SHADER_TESS_EVAL:
-	case MESA_SHADER_GEOMETRY:
-		return CP_LOAD_STATE6_GEOM;
-	case MESA_SHADER_FRAGMENT:
-	case MESA_SHADER_COMPUTE:
-	case MESA_SHADER_KERNEL:
-		return CP_LOAD_STATE6_FRAG;
-	default:
-		unreachable("bad shader type");
-	}
-}
-
 /* regid:          base const register
  * prsc or dwords: buffer containing constant values
  * sizedwords:     size of const value buffer
@@ -87,7 +69,7 @@ fd6_emit_const(struct fd_ringbuffer *ring, gl_shader_stage type,
 
 	align_sz = align(sz, 4);
 
-	OUT_PKT7(ring, shader_t_to_opcode(type), 3 + align_sz);
+	OUT_PKT7(ring, fd6_stage2opcode(type), 3 + align_sz);
 	OUT_RING(ring, CP_LOAD_STATE6_0_DST_OFF(regid/4) |
 			CP_LOAD_STATE6_0_STATE_TYPE(ST6_CONSTANTS) |
 			CP_LOAD_STATE6_0_STATE_SRC(src) |
@@ -121,7 +103,7 @@ fd6_emit_const_bo(struct fd_ringbuffer *ring, gl_shader_stage type, boolean writ
 
 	debug_assert((regid % 4) == 0);
 
-	OUT_PKT7(ring, shader_t_to_opcode(type), 3 + (2 * anum));
+	OUT_PKT7(ring, fd6_stage2opcode(type), 3 + (2 * anum));
 	OUT_RING(ring, CP_LOAD_STATE6_0_DST_OFF(regid/4) |
 			CP_LOAD_STATE6_0_STATE_TYPE(ST6_CONSTANTS)|
 			CP_LOAD_STATE6_0_STATE_SRC(SS6_DIRECT) |
@@ -227,15 +209,16 @@ setup_border_colors(struct fd_texture_stateobj *tex, struct bcolor_entry *entrie
 			/*
 			 * HACK: for PIPE_FORMAT_X24S8_UINT we end up w/ the
 			 * stencil border color value in bc->ui[0] but according
-			 * to desc->swizzle and desc->channel, the .x component
+			 * to desc->swizzle and desc->channel, the .x/.w component
 			 * is NONE and the stencil value is in the y component.
-			 * Meanwhile the hardware wants this in the .x componetn.
+			 * Meanwhile the hardware wants this in the .w component
+			 * for x24s8 and the .x component for x32_s8x24.
 			 */
 			if ((format == PIPE_FORMAT_X24S8_UINT) ||
 					(format == PIPE_FORMAT_X32_S8X24_UINT)) {
 				if (j == 0) {
 					c = 1;
-					cd = 0;
+					cd = (format == PIPE_FORMAT_X32_S8X24_UINT) ? 0 : 3;
 				} else {
 					continue;
 				}
@@ -889,6 +872,7 @@ fd6_emit_state(struct fd_ringbuffer *ring, struct fd6_emit *emit)
 	}
 
 	if (dirty & FD_DIRTY_PROG) {
+		fd6_emit_add_group(emit, prog->config_stateobj, FD6_GROUP_PROG_CONFIG, 0x7);
 		fd6_emit_add_group(emit, prog->stateobj, FD6_GROUP_PROG, 0x6);
 		fd6_emit_add_group(emit, prog->binning_stateobj,
 				FD6_GROUP_PROG_BINNING, 0x1);
@@ -1047,6 +1031,9 @@ fd6_emit_state(struct fd_ringbuffer *ring, struct fd6_emit *emit)
 		OUT_PKT4(obj, REG_A6XX_SP_IBO_LO, 2);
 		OUT_RB(obj, state);
 
+		/* TODO if we used CP_SET_DRAW_STATE for compute shaders, we could
+		 * de-duplicate this from program->config_stateobj
+		 */
 		OUT_PKT4(obj, REG_A6XX_SP_IBO_COUNT, 1);
 		OUT_RING(obj, mapping->num_ibo);
 
@@ -1161,6 +1148,8 @@ t7              opcode: CP_WAIT_FOR_IDLE (26) (1 dwords)
 0000000500024068:               70268000
 */
 
+	OUT_WFI5(ring);
+
 	WRITE(REG_A6XX_RB_CCU_CNTL, 0x7c400004);
 	WRITE(REG_A6XX_RB_UNKNOWN_8E04, 0x00100000);
 	WRITE(REG_A6XX_SP_UNKNOWN_AE04, 0x8);
@@ -1173,14 +1162,14 @@ t7              opcode: CP_WAIT_FOR_IDLE (26) (1 dwords)
 
 	WRITE(REG_A6XX_VPC_UNKNOWN_9600, 0);
 	WRITE(REG_A6XX_GRAS_UNKNOWN_8600, 0x880);
-	WRITE(REG_A6XX_HLSQ_UNKNOWN_BE04, 0);
-	WRITE(REG_A6XX_SP_UNKNOWN_AE03, 0x00000410);
+	WRITE(REG_A6XX_HLSQ_UNKNOWN_BE04, 0x80000);
+	WRITE(REG_A6XX_SP_UNKNOWN_AE03, 0x1430);
 	WRITE(REG_A6XX_SP_IBO_COUNT, 0);
 	WRITE(REG_A6XX_SP_UNKNOWN_B182, 0);
 	WRITE(REG_A6XX_HLSQ_UNKNOWN_BB11, 0);
 	WRITE(REG_A6XX_UCHE_UNKNOWN_0E12, 0x3200000);
 	WRITE(REG_A6XX_UCHE_CLIENT_PF, 4);
-	WRITE(REG_A6XX_RB_UNKNOWN_8E01, 0x0);
+	WRITE(REG_A6XX_RB_UNKNOWN_8E01, 0x1);
 	WRITE(REG_A6XX_SP_UNKNOWN_AB00, 0x5);
 	WRITE(REG_A6XX_VFD_UNKNOWN_A009, 0x00000001);
 	WRITE(REG_A6XX_RB_UNKNOWN_8811, 0x00000010);
@@ -1191,7 +1180,7 @@ t7              opcode: CP_WAIT_FOR_IDLE (26) (1 dwords)
 
 	WRITE(REG_A6XX_GRAS_UNKNOWN_8101, 0);
 	WRITE(REG_A6XX_GRAS_SAMPLE_CNTL, 0);
-	WRITE(REG_A6XX_GRAS_UNKNOWN_8110, 0);
+	WRITE(REG_A6XX_GRAS_UNKNOWN_8110, 0x2);
 
 	WRITE(REG_A6XX_RB_RENDER_CONTROL0, 0x401);
 	WRITE(REG_A6XX_RB_RENDER_CONTROL1, 0);
@@ -1237,7 +1226,10 @@ t7              opcode: CP_WAIT_FOR_IDLE (26) (1 dwords)
 	WRITE(REG_A6XX_PC_UNKNOWN_9E72, 0);
 	WRITE(REG_A6XX_VPC_UNKNOWN_9108, 0x3);
 	WRITE(REG_A6XX_SP_TP_UNKNOWN_B304, 0);
-	WRITE(REG_A6XX_SP_TP_UNKNOWN_B309, 0x000000a2);
+	/* NOTE blob seems to (mostly?) use 0xb2 for SP_TP_UNKNOWN_B309
+	 * but this seems to kill texture gather offsets.
+	 */
+	WRITE(REG_A6XX_SP_TP_UNKNOWN_B309, 0xa2);
 	WRITE(REG_A6XX_RB_UNKNOWN_8804, 0);
 	WRITE(REG_A6XX_GRAS_UNKNOWN_80A4, 0);
 	WRITE(REG_A6XX_GRAS_UNKNOWN_80A5, 0);

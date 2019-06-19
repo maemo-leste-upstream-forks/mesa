@@ -43,6 +43,7 @@ static const nir_shader_compiler_options vs_nir_options = {
    .lower_fpow = true,
    .lower_ffract = true,
    .lower_fdiv = true,
+   .lower_fmod = true,
    .lower_fsqrt = true,
    .lower_sub = true,
    .lower_flrp32 = true,
@@ -50,11 +51,13 @@ static const nir_shader_compiler_options vs_nir_options = {
    .lower_ftrunc = true,
    /* could be implemented by clamp */
    .lower_fsat = true,
+   .lower_bitshift = true,
 };
 
 static const nir_shader_compiler_options fs_nir_options = {
    .lower_fpow = true,
    .lower_fdiv = true,
+   .lower_fmod = true,
    .lower_sub = true,
    .lower_flrp32 = true,
    .lower_flrp64 = true,
@@ -116,6 +119,7 @@ lima_program_optimize_vs_nir(struct nir_shader *s)
    } while (progress);
 
    NIR_PASS_V(s, nir_lower_int_to_float);
+   NIR_PASS_V(s, nir_lower_bool_to_float);
    NIR_PASS_V(s, nir_copy_prop);
    NIR_PASS_V(s, nir_lower_locals_to_regs);
    NIR_PASS_V(s, nir_convert_from_ssa, true);
@@ -154,6 +158,7 @@ lima_program_optimize_fs_nir(struct nir_shader *s)
    } while (progress);
 
    NIR_PASS_V(s, nir_lower_int_to_float);
+   NIR_PASS_V(s, nir_lower_bool_to_float);
 
    /* Lower modifiers */
    NIR_PASS_V(s, nir_lower_to_source_mods, nir_lower_all_source_mods);
