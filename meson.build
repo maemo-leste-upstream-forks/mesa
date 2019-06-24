@@ -41,6 +41,12 @@ endif
 cc = meson.get_compiler('c')
 cpp = meson.get_compiler('cpp')
 
+if not cpp.compiles('thread_local int x = 0;', name : 'thread_local')
+  if cpp.has_argument('-std=c++11')
+     add_project_arguments('-std=c++11', language : 'cpp')
+  endif
+endif
+
 null_dep = dependency('', required : false)
 
 if get_option('layout') != 'mirror'
