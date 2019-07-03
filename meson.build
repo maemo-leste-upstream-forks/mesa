@@ -160,9 +160,9 @@ if dri_drivers.contains('auto')
   if system_has_kms_drm
     # TODO: PPC, Sparc
     if ['x86', 'x86_64'].contains(host_machine.cpu_family())
-      dri_drivers = ['i915', 'i965', 'r100', 'r200', 'nouveau']
+      dri_drivers = ['i915', 'i965', 'r100', 'r200', 'nouveau', 'pvr']
     elif ['arm', 'aarch64'].contains(host_machine.cpu_family())
-      dri_drivers = []
+      dri_drivers = ['pvr']
     elif ['mips', 'mips64'].contains(host_machine.cpu_family())
       dri_drivers = ['r100', 'r200', 'nouveau']
     else
@@ -184,6 +184,7 @@ with_dri_r100 = dri_drivers.contains('r100')
 with_dri_r200 = dri_drivers.contains('r200')
 with_dri_nouveau = dri_drivers.contains('nouveau')
 with_dri_swrast = dri_drivers.contains('swrast')
+with_dri_pvr = dri_drivers.contains('pvr')
 
 with_dri = dri_drivers.length() != 0
 
@@ -1385,14 +1386,22 @@ _drm_amdgpu_ver = '2.4.100'
 _drm_radeon_ver = '2.4.71'
 _drm_nouveau_ver = '2.4.102'
 _drm_intel_ver = '2.4.75'
+_drm_pvr_ver = '2.4.60'
 _drm_ver = '2.4.81'
 
 _libdrm_checks = [
-  ['intel', with_dri_i915 or with_gallium_i915],
-  ['amdgpu', with_amd_vk or with_gallium_radeonsi],
+  ['intel', with_dri_i915 or with_gallium_i915, true],
+  ['amdgpu', with_amd_vk or with_gallium_radeonsi, true],
   ['radeon', (with_gallium_radeonsi or with_dri_r100 or with_dri_r200 or
+<<<<<<< HEAD
               with_gallium_r300 or with_gallium_r600)],
   ['nouveau', (with_gallium_nouveau or with_dri_nouveau)],
+=======
+              with_gallium_r300 or with_gallium_r600), true],
+  ['nouveau', (with_gallium_nouveau or with_dri_nouveau), true],
+  ['etnaviv', with_gallium_etnaviv, true],
+  ['pvr', with_dri_pvr, false],
+>>>>>>> eaab67f2cb5... dri/pvr: Introduce PowerVR DRI driver.
 ]
 
 # VC4 only needs core libdrm support of this version, not a libdrm_vc4
@@ -1422,7 +1431,7 @@ endif
 
 # Then get each libdrm module
 foreach d : _libdrm_checks
-  if d[1]
+  if d[1] and d[2]
     set_variable(
       'dep_libdrm_' + d[0],
       dependency('libdrm_' + d[0], version : '>=' + _drm_ver)

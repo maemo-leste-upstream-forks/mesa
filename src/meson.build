@@ -25,6 +25,7 @@ inc_gallium = include_directories('gallium/include')
 inc_gallium_aux = include_directories('gallium/auxiliary')
 inc_amd_common = include_directories('amd/common')
 inc_amd_common_llvm = include_directories('amd/llvm')
+inc_pvr = include_directories('mesa/main', 'mapi/glapi')
 
 libglsl_util = static_library(
   'glsl_util',
