@@ -100,6 +100,8 @@ static nir_ssa_def *
 vtn_variable_resource_index(struct vtn_builder *b, struct vtn_variable *var,
                             nir_ssa_def *desc_array_index)
 {
+   vtn_assert(b->options->environment == NIR_SPIRV_VULKAN);
+
    if (!desc_array_index) {
       vtn_assert(glsl_type_is_struct_or_ifc(var->type->type));
       desc_array_index = nir_imm_int(&b->nb, 0);
@@ -134,6 +136,8 @@ static nir_ssa_def *
 vtn_resource_reindex(struct vtn_builder *b, enum vtn_variable_mode mode,
                      nir_ssa_def *base_index, nir_ssa_def *offset_index)
 {
+   vtn_assert(b->options->environment == NIR_SPIRV_VULKAN);
+
    nir_intrinsic_instr *instr =
       nir_intrinsic_instr_create(b->nb.shader,
                                  nir_intrinsic_vulkan_resource_reindex);
@@ -161,6 +165,8 @@ static nir_ssa_def *
 vtn_descriptor_load(struct vtn_builder *b, enum vtn_variable_mode mode,
                     nir_ssa_def *desc_index)
 {
+   vtn_assert(b->options->environment == NIR_SPIRV_VULKAN);
+
    nir_intrinsic_instr *desc_load =
       nir_intrinsic_instr_create(b->nb.shader,
                                  nir_intrinsic_load_vulkan_descriptor);
@@ -196,7 +202,8 @@ vtn_nir_deref_pointer_dereference(struct vtn_builder *b,
    nir_deref_instr *tail;
    if (base->deref) {
       tail = base->deref;
-   } else if (vtn_pointer_is_external_block(b, base)) {
+   } else if (b->options->environment == NIR_SPIRV_VULKAN &&
+              vtn_pointer_is_external_block(b, base)) {
       nir_ssa_def *block_index = base->block_index;
 
       /* We dereferencing an external block pointer.  Correctness of this
@@ -1288,8 +1295,13 @@ vtn_get_builtin_location(struct vtn_builder *b,
       set_mode_system_value(b, mode);
       break;
    case SpvBuiltInFragCoord:
-      *location = VARYING_SLOT_POS;
       vtn_assert(*mode == nir_var_shader_in);
+      if (b->options && b->options->frag_coord_is_sysval) {
+         *mode = nir_var_system_value;
+         *location = SYSTEM_VALUE_FRAG_COORD;
+      } else {
+         *location = VARYING_SLOT_POS;
+      }
       break;
    case SpvBuiltInPointCoord:
       *location = VARYING_SLOT_PNTC;
@@ -1618,7 +1630,7 @@ var_decoration_cb(struct vtn_builder *b, struct vtn_value *val, int member,
       break;
    case SpvDecorationCounterBuffer:
       /* Counter buffer decorations can safely be ignored by the driver. */
-      break;
+      return;
    default:
       break;
    }
@@ -2136,6 +2148,19 @@ vtn_create_variable(struct vtn_builder *b, struct vtn_value *val,
       var->var->interface_type = NULL;
       break;
 
+   case vtn_variable_mode_ubo:
+   case vtn_variable_mode_ssbo:
+      var->var = rzalloc(b->shader, nir_variable);
+      var->var->name = ralloc_strdup(var->var, val->name);
+
+      var->var->type = var->type->type;
+      var->var->interface_type = var->type->type;
+
+      var->var->data.mode = nir_mode;
+      var->var->data.location = -1;
+
+      break;
+
    case vtn_variable_mode_workgroup:
       if (b->options->lower_workgroup_access_to_offsets) {
          var->shared_location = -1;
@@ -2248,8 +2273,6 @@ vtn_create_variable(struct vtn_builder *b, struct vtn_value *val,
       break;
    }
 
-   case vtn_variable_mode_ubo:
-   case vtn_variable_mode_ssbo:
    case vtn_variable_mode_push_constant:
    case vtn_variable_mode_cross_workgroup:
       /* These don't need actual variables. */
@@ -2274,7 +2297,9 @@ vtn_create_variable(struct vtn_builder *b, struct vtn_value *val,
       assign_missing_member_locations(var);
    }
 
-   if (var->mode == vtn_variable_mode_uniform) {
+   if (var->mode == vtn_variable_mode_uniform ||
+       var->mode == vtn_variable_mode_ubo ||
+       var->mode == vtn_variable_mode_ssbo) {
       /* XXX: We still need the binding information in the nir_variable
        * for these. We should fix that.
        */
@@ -2403,23 +2428,7 @@ vtn_handle_variables(struct vtn_builder *b, SpvOp opcode,
          struct vtn_value *link_val = vtn_untyped_value(b, w[i]);
          if (link_val->value_type == vtn_value_type_constant) {
             chain->link[idx].mode = vtn_access_mode_literal;
-            const unsigned bit_size = glsl_get_bit_size(link_val->type->type);
-            switch (bit_size) {
-            case 8:
-               chain->link[idx].id = link_val->constant->values[0][0].i8;
-               break;
-            case 16:
-               chain->link[idx].id = link_val->constant->values[0][0].i16;
-               break;
-            case 32:
-               chain->link[idx].id = link_val->constant->values[0][0].i32;
-               break;
-            case 64:
-               chain->link[idx].id = link_val->constant->values[0][0].i64;
-               break;
-            default:
-               vtn_fail("Invalid bit size: %u", bit_size);
-            }
+            chain->link[idx].id = vtn_constant_int(b, w[i]);
          } else {
             chain->link[idx].mode = vtn_access_mode_id;
             chain->link[idx].id = w[i];

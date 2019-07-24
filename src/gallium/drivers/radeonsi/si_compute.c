@@ -59,13 +59,16 @@ static const amd_kernel_code_t *si_compute_get_code_object(
 	const struct si_compute *program,
 	uint64_t symbol_offset)
 {
-	if (!program->use_code_object_v2) {
+	const struct si_shader_selector *sel = &program->sel;
+
+	if (program->ir_type != PIPE_SHADER_IR_NATIVE)
 		return NULL;
-	}
 
 	struct ac_rtld_binary rtld;
 	if (!ac_rtld_open(&rtld, (struct ac_rtld_open_info){
-			.info = &program->screen->info,
+			.info = &sel->screen->info,
+			.shader_type = MESA_SHADER_COMPUTE,
+			.wave_size = sel->screen->compute_wave_size,
 			.num_parts = 1,
 			.elf_ptrs = &program->shader.binary.elf_buffer,
 			.elf_sizes = &program->shader.binary.elf_size }))
@@ -106,55 +109,44 @@ static void code_object_to_config(const amd_kernel_code_t *code_object,
 static void si_create_compute_state_async(void *job, int thread_index)
 {
 	struct si_compute *program = (struct si_compute *)job;
+	struct si_shader_selector *sel = &program->sel;
 	struct si_shader *shader = &program->shader;
-	struct si_shader_selector sel;
 	struct ac_llvm_compiler *compiler;
-	struct pipe_debug_callback *debug = &program->compiler_ctx_state.debug;
-	struct si_screen *sscreen = program->screen;
+	struct pipe_debug_callback *debug = &sel->compiler_ctx_state.debug;
+	struct si_screen *sscreen = sel->screen;
 
 	assert(!debug->debug_message || debug->async);
 	assert(thread_index >= 0);
 	assert(thread_index < ARRAY_SIZE(sscreen->compiler));
 	compiler = &sscreen->compiler[thread_index];
 
-	memset(&sel, 0, sizeof(sel));
-
-	sel.screen = sscreen;
-
 	if (program->ir_type == PIPE_SHADER_IR_TGSI) {
-		tgsi_scan_shader(program->ir.tgsi, &sel.info);
-		sel.tokens = program->ir.tgsi;
+		tgsi_scan_shader(sel->tokens, &sel->info);
 	} else {
 		assert(program->ir_type == PIPE_SHADER_IR_NIR);
-		sel.nir = program->ir.nir;
 
-		si_nir_opts(sel.nir);
-		si_nir_scan_shader(sel.nir, &sel.info);
-		si_lower_nir(&sel);
+		si_nir_opts(sel->nir);
+		si_nir_scan_shader(sel->nir, &sel->info);
+		si_lower_nir(sel, sscreen->compute_wave_size);
 	}
 
 	/* Store the declared LDS size into tgsi_shader_info for the shader
 	 * cache to include it.
 	 */
-	sel.info.properties[TGSI_PROPERTY_CS_LOCAL_SIZE] = program->local_size;
+	sel->info.properties[TGSI_PROPERTY_CS_LOCAL_SIZE] = program->local_size;
 
-	sel.type = PIPE_SHADER_COMPUTE;
-	si_get_active_slot_masks(&sel.info,
-				 &program->active_const_and_shader_buffers,
-				 &program->active_samplers_and_images);
+	si_get_active_slot_masks(&sel->info,
+				 &sel->active_const_and_shader_buffers,
+				 &sel->active_samplers_and_images);
 
-	program->shader.selector = &sel;
 	program->shader.is_monolithic = true;
-	program->uses_grid_size = sel.info.uses_grid_size;
-	program->uses_bindless_samplers = sel.info.uses_bindless_samplers;
-	program->uses_bindless_images = sel.info.uses_bindless_images;
 	program->reads_variable_block_size =
-		sel.info.uses_block_size &&
-		sel.info.properties[TGSI_PROPERTY_CS_FIXED_BLOCK_WIDTH] == 0;
+		sel->info.uses_block_size &&
+		sel->info.properties[TGSI_PROPERTY_CS_FIXED_BLOCK_WIDTH] == 0;
 	program->num_cs_user_data_dwords =
-		sel.info.properties[TGSI_PROPERTY_CS_USER_DATA_DWORDS];
+		sel->info.properties[TGSI_PROPERTY_CS_USER_DATA_DWORDS];
 
-	void *ir_binary = si_get_ir_binary(&sel);
+	void *ir_binary = si_get_ir_binary(sel);
 
 	/* Try to load the shader from the shader cache. */
 	mtx_lock(&sscreen->shader_cache_mutex);
@@ -164,8 +156,7 @@ static void si_create_compute_state_async(void *job, int thread_index)
 		mtx_unlock(&sscreen->shader_cache_mutex);
 
 		si_shader_dump_stats_for_shader_db(sscreen, shader, debug);
-		si_shader_dump(sscreen, shader, debug, PIPE_SHADER_COMPUTE,
-			       stderr, true);
+		si_shader_dump(sscreen, shader, debug, stderr, true);
 
 		if (!si_shader_binary_upload(sscreen, shader, 0))
 			program->shader.compilation_failed = true;
@@ -176,31 +167,37 @@ static void si_create_compute_state_async(void *job, int thread_index)
 			program->shader.compilation_failed = true;
 
 			if (program->ir_type == PIPE_SHADER_IR_TGSI)
-				FREE(program->ir.tgsi);
-			program->shader.selector = NULL;
+				FREE(sel->tokens);
 			return;
 		}
 
 		bool scratch_enabled = shader->config.scratch_bytes_per_wave > 0;
 		unsigned user_sgprs = SI_NUM_RESOURCE_SGPRS +
-				      (sel.info.uses_grid_size ? 3 : 0) +
+				      (sel->info.uses_grid_size ? 3 : 0) +
 				      (program->reads_variable_block_size ? 3 : 0) +
 				      program->num_cs_user_data_dwords;
 
 		shader->config.rsrc1 =
-			S_00B848_VGPRS((shader->config.num_vgprs - 1) / 4) |
-			S_00B848_SGPRS((shader->config.num_sgprs - 1) / 8) |
+			S_00B848_VGPRS((shader->config.num_vgprs - 1) /
+				       (sscreen->compute_wave_size == 32 ? 8 : 4)) |
 			S_00B848_DX10_CLAMP(1) |
+			S_00B848_MEM_ORDERED(sscreen->info.chip_class >= GFX10) |
+			S_00B848_WGP_MODE(sscreen->info.chip_class >= GFX10) |
 			S_00B848_FLOAT_MODE(shader->config.float_mode);
+
+		if (sscreen->info.chip_class < GFX10) {
+			shader->config.rsrc1 |=
+				S_00B848_SGPRS((shader->config.num_sgprs - 1) / 8);
+		}
 
 		shader->config.rsrc2 =
 			S_00B84C_USER_SGPR(user_sgprs) |
 			S_00B84C_SCRATCH_EN(scratch_enabled) |
-			S_00B84C_TGID_X_EN(sel.info.uses_block_id[0]) |
-			S_00B84C_TGID_Y_EN(sel.info.uses_block_id[1]) |
-			S_00B84C_TGID_Z_EN(sel.info.uses_block_id[2]) |
-			S_00B84C_TIDIG_COMP_CNT(sel.info.uses_thread_id[2] ? 2 :
-						sel.info.uses_thread_id[1] ? 1 : 0) |
+			S_00B84C_TGID_X_EN(sel->info.uses_block_id[0]) |
+			S_00B84C_TGID_Y_EN(sel->info.uses_block_id[1]) |
+			S_00B84C_TGID_Z_EN(sel->info.uses_block_id[2]) |
+			S_00B84C_TIDIG_COMP_CNT(sel->info.uses_thread_id[2] ? 2 :
+						sel->info.uses_thread_id[1] ? 1 : 0) |
 			S_00B84C_LDS_SIZE(shader->config.lds_size);
 
 		if (ir_binary) {
@@ -212,9 +209,7 @@ static void si_create_compute_state_async(void *job, int thread_index)
 	}
 
 	if (program->ir_type == PIPE_SHADER_IR_TGSI)
-		FREE(program->ir.tgsi);
-
-	program->shader.selector = NULL;
+		FREE(sel->tokens);
 }
 
 static void *si_create_compute_state(
@@ -224,34 +219,36 @@ static void *si_create_compute_state(
 	struct si_context *sctx = (struct si_context *)ctx;
 	struct si_screen *sscreen = (struct si_screen *)ctx->screen;
 	struct si_compute *program = CALLOC_STRUCT(si_compute);
+	struct si_shader_selector *sel = &program->sel;
 
-	pipe_reference_init(&program->reference, 1);
-	program->screen = (struct si_screen *)ctx->screen;
+	pipe_reference_init(&sel->reference, 1);
+	sel->type = PIPE_SHADER_COMPUTE;
+	sel->screen = sscreen;
+	program->shader.selector = &program->sel;
 	program->ir_type = cso->ir_type;
 	program->local_size = cso->req_local_mem;
 	program->private_size = cso->req_private_mem;
 	program->input_size = cso->req_input_mem;
-	program->use_code_object_v2 = cso->ir_type == PIPE_SHADER_IR_NATIVE;
 
 	if (cso->ir_type != PIPE_SHADER_IR_NATIVE) {
 		if (cso->ir_type == PIPE_SHADER_IR_TGSI) {
-			program->ir.tgsi = tgsi_dup_tokens(cso->prog);
-			if (!program->ir.tgsi) {
+			sel->tokens = tgsi_dup_tokens(cso->prog);
+			if (!sel->tokens) {
 				FREE(program);
 				return NULL;
 			}
 		} else {
 			assert(cso->ir_type == PIPE_SHADER_IR_NIR);
-			program->ir.nir = (struct nir_shader *) cso->prog;
+			sel->nir = (struct nir_shader *) cso->prog;
 		}
 
-		program->compiler_ctx_state.debug = sctx->debug;
-		program->compiler_ctx_state.is_debug_context = sctx->is_debug;
+		sel->compiler_ctx_state.debug = sctx->debug;
+		sel->compiler_ctx_state.is_debug_context = sctx->is_debug;
 		p_atomic_inc(&sscreen->num_shaders_created);
 
 		si_schedule_initial_compile(sctx, PIPE_SHADER_COMPUTE,
-					    &program->ready,
-					    &program->compiler_ctx_state,
+					    &sel->ready,
+					    &sel->compiler_ctx_state,
 					    program, si_create_compute_state_async);
 	} else {
 		const struct pipe_llvm_program_header *header;
@@ -271,8 +268,7 @@ static void *si_create_compute_state(
 			si_compute_get_code_object(program, 0);
 		code_object_to_config(code_object, &program->shader.config);
 
-		si_shader_dump(sctx->screen, &program->shader, &sctx->debug,
-			       PIPE_SHADER_COMPUTE, stderr, true);
+		si_shader_dump(sctx->screen, &program->shader, &sctx->debug, stderr, true);
 		if (!si_shader_binary_upload(sctx->screen, &program->shader, 0)) {
 			fprintf(stderr, "LLVM failed to upload shader\n");
 			free((void *)program->shader.binary.elf_buffer);
@@ -288,6 +284,7 @@ static void si_bind_compute_state(struct pipe_context *ctx, void *state)
 {
 	struct si_context *sctx = (struct si_context*)ctx;
 	struct si_compute *program = (struct si_compute*)state;
+	struct si_shader_selector *sel = &program->sel;
 
 	sctx->cs_shader_state.program = program;
 	if (!program)
@@ -295,16 +292,16 @@ static void si_bind_compute_state(struct pipe_context *ctx, void *state)
 
 	/* Wait because we need active slot usage masks. */
 	if (program->ir_type != PIPE_SHADER_IR_NATIVE)
-		util_queue_fence_wait(&program->ready);
+		util_queue_fence_wait(&sel->ready);
 
 	si_set_active_descriptors(sctx,
 				  SI_DESCS_FIRST_COMPUTE +
 				  SI_SHADER_DESCS_CONST_AND_SHADER_BUFFERS,
-				  program->active_const_and_shader_buffers);
+				  sel->active_const_and_shader_buffers);
 	si_set_active_descriptors(sctx,
 				  SI_DESCS_FIRST_COMPUTE +
 				  SI_SHADER_DESCS_SAMPLERS_AND_IMAGES,
-				  program->active_samplers_and_images);
+				  sel->active_samplers_and_images);
 }
 
 static void si_set_global_binding(
@@ -342,7 +339,8 @@ void si_emit_initial_compute_regs(struct si_context *sctx, struct radeon_cmdbuf 
 	uint64_t bc_va;
 
 	radeon_set_sh_reg_seq(cs, R_00B858_COMPUTE_STATIC_THREAD_MGMT_SE0, 2);
-	/* R_00B858_COMPUTE_STATIC_THREAD_MGMT_SE0 / SE1 */
+	/* R_00B858_COMPUTE_STATIC_THREAD_MGMT_SE0 / SE1,
+	 * renamed COMPUTE_DESTINATION_EN_SEn on gfx10. */
 	radeon_emit(cs, S_00B858_SH0_CU_EN(0xffff) | S_00B858_SH1_CU_EN(0xffff));
 	radeon_emit(cs, S_00B858_SH0_CU_EN(0xffff) | S_00B858_SH1_CU_EN(0xffff));
 
@@ -355,6 +353,9 @@ void si_emit_initial_compute_regs(struct si_context *sctx, struct radeon_cmdbuf 
 		radeon_emit(cs, S_00B858_SH0_CU_EN(0xffff) |
 		                S_00B858_SH1_CU_EN(0xffff));
 	}
+
+	if (sctx->chip_class >= GFX10)
+		radeon_set_sh_reg(cs, R_00B8A0_COMPUTE_PGM_RSRC3, 0);
 
 	/* This register has been moved to R_00CD20_COMPUTE_MAX_WAVE_ID
 	 * and is now per pipe, so it should be handled in the
@@ -490,7 +491,7 @@ static bool si_switch_compute_shader(struct si_context *sctx,
 	}
 
 	shader_va = shader->bo->gpu_address + offset;
-	if (program->use_code_object_v2) {
+	if (program->ir_type == PIPE_SHADER_IR_NATIVE) {
 		/* Shader code is placed after the amd_kernel_code_t
 		 * struct. */
 		shader_va += sizeof(amd_kernel_code_t);
@@ -660,21 +661,14 @@ static bool si_upload_compute_input(struct si_context *sctx,
 				    const amd_kernel_code_t *code_object,
 				    const struct pipe_grid_info *info)
 {
-	struct radeon_cmdbuf *cs = sctx->gfx_cs;
 	struct si_compute *program = sctx->cs_shader_state.program;
 	struct si_resource *input_buffer = NULL;
-	unsigned kernel_args_size;
-	unsigned num_work_size_bytes = program->use_code_object_v2 ? 0 : 36;
 	uint32_t kernel_args_offset = 0;
 	uint32_t *kernel_args;
 	void *kernel_args_ptr;
 	uint64_t kernel_args_va;
-	unsigned i;
 
-	/* The extra num_work_size_bytes are for work group / work item size information */
-	kernel_args_size = program->input_size + num_work_size_bytes;
-
-	u_upload_alloc(sctx->b.const_uploader, 0, kernel_args_size,
+	u_upload_alloc(sctx->b.const_uploader, 0, program->input_size,
 		       sctx->screen->info.tcc_cache_line_size,
 		       &kernel_args_offset,
 		       (struct pipe_resource**)&input_buffer, &kernel_args_ptr);
@@ -685,38 +679,18 @@ static bool si_upload_compute_input(struct si_context *sctx,
 	kernel_args = (uint32_t*)kernel_args_ptr;
 	kernel_args_va = input_buffer->gpu_address + kernel_args_offset;
 
-	if (!code_object) {
-		for (i = 0; i < 3; i++) {
-			kernel_args[i] = util_cpu_to_le32(info->grid[i]);
-			kernel_args[i + 3] = util_cpu_to_le32(info->grid[i] * info->block[i]);
-			kernel_args[i + 6] = util_cpu_to_le32(info->block[i]);
-		}
-	}
+	memcpy(kernel_args, info->input, program->input_size);
 
-	memcpy(kernel_args + (num_work_size_bytes / 4), info->input,
-	       program->input_size);
-
-
-	for (i = 0; i < (kernel_args_size / 4); i++) {
+	for (unsigned i = 0; i < program->input_size / 4; i++) {
 		COMPUTE_DBG(sctx->screen, "input %u : %u\n", i,
 			kernel_args[i]);
 	}
 
-
 	radeon_add_to_buffer_list(sctx, sctx->gfx_cs, input_buffer,
 				  RADEON_USAGE_READ, RADEON_PRIO_CONST_BUFFER);
 
-	if (code_object) {
-		si_setup_user_sgprs_co_v2(sctx, code_object, info, kernel_args_va);
-	} else {
-		radeon_set_sh_reg_seq(cs, R_00B900_COMPUTE_USER_DATA_0, 2);
-		radeon_emit(cs, kernel_args_va);
-		radeon_emit(cs, S_008F04_BASE_ADDRESS_HI (kernel_args_va >> 32) |
-		                S_008F04_STRIDE(0));
-	}
-
+	si_setup_user_sgprs_co_v2(sctx, code_object, info, kernel_args_va);
 	si_resource_reference(&input_buffer, NULL);
-
 	return true;
 }
 
@@ -724,17 +698,18 @@ static void si_setup_tgsi_user_data(struct si_context *sctx,
                                 const struct pipe_grid_info *info)
 {
 	struct si_compute *program = sctx->cs_shader_state.program;
+	struct si_shader_selector *sel = &program->sel;
 	struct radeon_cmdbuf *cs = sctx->gfx_cs;
 	unsigned grid_size_reg = R_00B900_COMPUTE_USER_DATA_0 +
 				 4 * SI_NUM_RESOURCE_SGPRS;
 	unsigned block_size_reg = grid_size_reg +
 				  /* 12 bytes = 3 dwords. */
-				  12 * program->uses_grid_size;
+				  12 * sel->info.uses_grid_size;
 	unsigned cs_user_data_reg = block_size_reg +
 				    12 * program->reads_variable_block_size;
 
 	if (info->indirect) {
-		if (program->uses_grid_size) {
+		if (sel->info.uses_grid_size) {
 			for (unsigned i = 0; i < 3; ++i) {
 				si_cp_copy_data(sctx, sctx->gfx_cs,
 						COPY_DATA_REG, NULL, (grid_size_reg >> 2) + i,
@@ -743,7 +718,7 @@ static void si_setup_tgsi_user_data(struct si_context *sctx,
 			}
 		}
 	} else {
-		if (program->uses_grid_size) {
+		if (sel->info.uses_grid_size) {
 			radeon_set_sh_reg_seq(cs, grid_size_reg, 3);
 			radeon_emit(cs, info->grid[0]);
 			radeon_emit(cs, info->grid[1]);
@@ -763,57 +738,34 @@ static void si_setup_tgsi_user_data(struct si_context *sctx,
 	}
 }
 
-unsigned si_get_compute_resource_limits(struct si_screen *sscreen,
-					unsigned waves_per_threadgroup,
-					unsigned max_waves_per_sh,
-					unsigned threadgroups_per_cu)
-{
-	unsigned compute_resource_limits =
-		S_00B854_SIMD_DEST_CNTL(waves_per_threadgroup % 4 == 0);
-
-	if (sscreen->info.chip_class >= GFX7) {
-		unsigned num_cu_per_se = sscreen->info.num_good_compute_units /
-					 sscreen->info.max_se;
-
-		/* Force even distribution on all SIMDs in CU if the workgroup
-		 * size is 64. This has shown some good improvements if # of CUs
-		 * per SE is not a multiple of 4.
-		 */
-		if (num_cu_per_se % 4 && waves_per_threadgroup == 1)
-			compute_resource_limits |= S_00B854_FORCE_SIMD_DIST(1);
-
-		assert(threadgroups_per_cu >= 1 && threadgroups_per_cu <= 8);
-		compute_resource_limits |= S_00B854_WAVES_PER_SH(max_waves_per_sh) |
-					   S_00B854_CU_GROUP_COUNT(threadgroups_per_cu - 1);
-	} else {
-		/* GFX6 */
-		if (max_waves_per_sh) {
-			unsigned limit_div16 = DIV_ROUND_UP(max_waves_per_sh, 16);
-			compute_resource_limits |= S_00B854_WAVES_PER_SH_SI(limit_div16);
-		}
-	}
-	return compute_resource_limits;
-}
-
 static void si_emit_dispatch_packets(struct si_context *sctx,
                                      const struct pipe_grid_info *info)
 {
 	struct si_screen *sscreen = sctx->screen;
 	struct radeon_cmdbuf *cs = sctx->gfx_cs;
 	bool render_cond_bit = sctx->render_cond && !sctx->render_cond_force_off;
+	unsigned threads_per_threadgroup =
+		info->block[0] * info->block[1] * info->block[2];
 	unsigned waves_per_threadgroup =
-		DIV_ROUND_UP(info->block[0] * info->block[1] * info->block[2], 64);
+		DIV_ROUND_UP(threads_per_threadgroup, sscreen->compute_wave_size);
+	unsigned threadgroups_per_cu = 1;
+
+	if (sctx->chip_class >= GFX10 && waves_per_threadgroup == 1)
+		threadgroups_per_cu = 2;
 
 	radeon_set_sh_reg(cs, R_00B854_COMPUTE_RESOURCE_LIMITS,
-			  si_get_compute_resource_limits(sscreen, waves_per_threadgroup,
-							 sctx->cs_max_waves_per_sh, 1));
+			  ac_get_compute_resource_limits(&sscreen->info,
+							 waves_per_threadgroup,
+							 sctx->cs_max_waves_per_sh,
+							 threadgroups_per_cu));
 
 	unsigned dispatch_initiator =
 		S_00B800_COMPUTE_SHADER_EN(1) |
 		S_00B800_FORCE_START_AT_000(1) |
 		/* If the KMD allows it (there is a KMD hw register for it),
 		 * allow launching waves out-of-order. (same as Vulkan) */
-		S_00B800_ORDER_MODE(sctx->chip_class >= GFX7);
+		S_00B800_ORDER_MODE(sctx->chip_class >= GFX7) |
+		S_00B800_CS_W32_EN(sscreen->compute_wave_size == 32);
 
 	const uint *last_block = info->last_block;
 	bool partial_block_en = last_block[0] || last_block[1] || last_block[2];
@@ -917,7 +869,7 @@ static void si_launch_grid(
 		/* Indirect buffers use TC L2 on GFX9, but not older hw. */
 		if (sctx->chip_class <= GFX8 &&
 		    si_resource(info->indirect)->TC_L2_dirty) {
-			sctx->flags |= SI_CONTEXT_WRITEBACK_GLOBAL_L2;
+			sctx->flags |= SI_CONTEXT_WB_L2;
 			si_resource(info->indirect)->TC_L2_dirty = false;
 		}
 	}
@@ -935,7 +887,7 @@ static void si_launch_grid(
 	}
 
 	if (sctx->flags)
-		si_emit_cache_flush(sctx);
+		sctx->emit_cache_flush(sctx);
 
 	if (!si_switch_compute_shader(sctx, program, &program->shader,
 					code_object, info->pc))
@@ -950,11 +902,9 @@ static void si_launch_grid(
 		si_set_atom_dirty(sctx, &sctx->atoms.s.render_cond, false);
 	}
 
-	if ((program->input_size ||
-            program->ir_type == PIPE_SHADER_IR_NATIVE) &&
-           unlikely(!si_upload_compute_input(sctx, code_object, info))) {
+	if (program->ir_type == PIPE_SHADER_IR_NATIVE &&
+	    unlikely(!si_upload_compute_input(sctx, code_object, info)))
 		return;
-	}
 
 	/* Global buffers */
 	for (i = 0; i < MAX_GLOBAL_BUFFERS; i++) {
@@ -989,10 +939,12 @@ static void si_launch_grid(
 
 void si_destroy_compute(struct si_compute *program)
 {
+	struct si_shader_selector *sel = &program->sel;
+
 	if (program->ir_type != PIPE_SHADER_IR_NATIVE) {
-		util_queue_drop_job(&program->screen->shader_compiler_queue,
-				    &program->ready);
-		util_queue_fence_destroy(&program->ready);
+		util_queue_drop_job(&sel->screen->shader_compiler_queue,
+				    &sel->ready);
+		util_queue_fence_destroy(&sel->ready);
 	}
 
 	si_shader_destroy(&program->shader);
@@ -1012,6 +964,7 @@ static void si_delete_compute_state(struct pipe_context *ctx, void* state){
 	if (program == sctx->cs_shader_state.emitted_program)
 		sctx->cs_shader_state.emitted_program = NULL;
 
+	ralloc_free(program->sel.nir);
 	si_compute_reference(&program, NULL);
 }
 

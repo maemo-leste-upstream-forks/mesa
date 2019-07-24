@@ -449,7 +449,7 @@ flush_resource(struct fd_context *ctx, struct fd_resource *rsc, unsigned usage)
 		mtx_unlock(&ctx->screen->lock);
 
 		foreach_batch(batch, &ctx->screen->batch_cache, batch_mask)
-			fd_batch_flush(batch, false, false);
+			fd_batch_flush(batch, false);
 
 		foreach_batch(batch, &ctx->screen->batch_cache, batch_mask) {
 			fd_batch_sync(batch);
@@ -457,7 +457,7 @@ flush_resource(struct fd_context *ctx, struct fd_resource *rsc, unsigned usage)
 		}
 		assert(rsc->batch_mask == 0);
 	} else if (write_batch) {
-		fd_batch_flush(write_batch, true, false);
+		fd_batch_flush(write_batch, true);
 	}
 
 	fd_batch_reference(&write_batch, NULL);
@@ -747,7 +747,7 @@ fd_resource_modifier(struct fd_resource *rsc)
 	return DRM_FORMAT_MOD_INVALID;
 }
 
-static boolean
+static bool
 fd_resource_get_handle(struct pipe_screen *pscreen,
 		struct pipe_context *pctx,
 		struct pipe_resource *prsc,

@@ -35,8 +35,6 @@
 extern "C" {
 #endif
 
-/* Prior to C11 the following may trigger a typedef redeclaration warning */
-typedef struct amdgpu_device *amdgpu_device_handle;
 struct amdgpu_gpu_info;
 
 struct radeon_info {
@@ -53,6 +51,8 @@ struct radeon_info {
 	uint32_t                    pci_id;
 	enum radeon_family          family;
 	enum chip_class             chip_class;
+	uint32_t                    family_id;
+	uint32_t                    chip_external_rev;
 	uint32_t                    num_compute_rings;
 	uint32_t                    num_sdma_rings;
 	uint32_t                    clock_crystal_freq;
@@ -138,6 +138,7 @@ struct radeon_info {
 	bool                        r600_gb_backend_map_valid;
 	uint32_t                    r600_num_banks;
 	uint32_t                    gb_addr_config;
+	uint32_t                    pa_sc_tile_steering_override; /* CLEAR_STATE also sets this */
 	uint32_t                    num_render_backends;
 	uint32_t                    num_tile_pipes; /* pipe count from PIPE_CONFIG */
 	uint32_t                    pipe_interleave_bytes;
@@ -149,7 +150,7 @@ struct radeon_info {
 	uint32_t                    cik_macrotile_mode_array[16];
 };
 
-bool ac_query_gpu_info(int fd, amdgpu_device_handle dev,
+bool ac_query_gpu_info(int fd, void *dev_p,
 		       struct radeon_info *info,
 		       struct amdgpu_gpu_info *amdinfo);
 
@@ -166,6 +167,10 @@ void ac_get_harvested_configs(struct radeon_info *info,
 			      unsigned raster_config,
 			      unsigned *cik_raster_config_1_p,
 			      unsigned *raster_config_se);
+unsigned ac_get_compute_resource_limits(struct radeon_info *info,
+					unsigned waves_per_threadgroup,
+					unsigned max_waves_per_sh,
+					unsigned threadgroups_per_cu);
 
 static inline unsigned ac_get_max_simd_waves(enum radeon_family family)
 {

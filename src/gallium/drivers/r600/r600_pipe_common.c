@@ -60,27 +60,6 @@ struct r600_multi_fence {
 };
 
 /*
- * shader binary helpers.
- */
-void radeon_shader_binary_init(struct ac_shader_binary *b)
-{
-	memset(b, 0, sizeof(*b));
-}
-
-void radeon_shader_binary_clean(struct ac_shader_binary *b)
-{
-	if (!b)
-		return;
-	FREE(b->code);
-	FREE(b->config);
-	FREE(b->rodata);
-	FREE(b->global_symbol_offsets);
-	FREE(b->relocs);
-	FREE(b->disasm_string);
-	FREE(b->llvm_ir_string);
-}
-
-/*
  * pipe_context
  */
 
@@ -1111,10 +1090,10 @@ static void r600_fence_reference(struct pipe_screen *screen,
         *rdst = rsrc;
 }
 
-static boolean r600_fence_finish(struct pipe_screen *screen,
-				 struct pipe_context *ctx,
-				 struct pipe_fence_handle *fence,
-				 uint64_t timeout)
+static bool r600_fence_finish(struct pipe_screen *screen,
+			      struct pipe_context *ctx,
+			      struct pipe_fence_handle *fence,
+			      uint64_t timeout)
 {
 	struct radeon_winsys *rws = ((struct r600_common_screen*)screen)->ws;
 	struct r600_multi_fence *rfence = (struct r600_multi_fence *)fence;

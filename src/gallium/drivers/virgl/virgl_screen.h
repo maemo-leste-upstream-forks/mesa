@@ -27,8 +27,15 @@
 #include "util/slab.h"
 #include "virgl_winsys.h"
 
-#define VIRGL_DEBUG_VERBOSE 1
-#define VIRGL_DEBUG_TGSI    2
+enum virgl_debug_flags {
+   VIRGL_DEBUG_VERBOSE              = 1 << 0,
+   VIRGL_DEBUG_TGSI                 = 1 << 1,
+   VIRGL_DEBUG_EMULATE_BGRA         = 1 << 2,
+   VIRGL_DEBUG_BGRA_DEST_SWIZZLE    = 1 << 3,
+   VIRGL_DEBUG_SYNC                 = 1 << 4,
+   VIRGL_DEBUG_XFER                 = 1 << 5,
+};
+
 extern int virgl_debug;
 
 struct virgl_screen {
@@ -46,6 +53,9 @@ struct virgl_screen {
    struct slab_parent_pool transfer_pool;
 
    uint32_t sub_ctx_id;
+   bool tweak_gles_emulate_bgra;
+   bool tweak_gles_apply_bgra_dest_swizzle;
+   int32_t tweak_gles_tf3_value;
 };
 
 
@@ -55,7 +65,7 @@ virgl_screen(struct pipe_screen *pipe)
    return (struct virgl_screen *)pipe;
 }
 
-boolean
+bool
 virgl_has_readback_format(struct pipe_screen *screen, enum virgl_formats fmt);
 
 /* GL_ARB_map_buffer_alignment requires 64 as the minimum alignment value.  In

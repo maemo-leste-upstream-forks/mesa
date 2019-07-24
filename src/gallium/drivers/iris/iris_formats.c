@@ -394,7 +394,7 @@ iris_format_for_usage(const struct gen_device_info *devinfo,
  * Returns true if the given format is supported for the given usage
  * (PIPE_BIND_*) and sample count.
  */
-boolean
+bool
 iris_is_format_supported(struct pipe_screen *pscreen,
                          enum pipe_format pformat,
                          enum pipe_texture_target target,
@@ -406,8 +406,8 @@ iris_is_format_supported(struct pipe_screen *pscreen,
    const struct gen_device_info *devinfo = &screen->devinfo;
    uint32_t max_samples = devinfo->gen == 8 ? 8 : 16;
 
-   // XXX: msaa max
-   if (sample_count > max_samples || !util_is_power_of_two_or_zero(sample_count))
+   if (sample_count > max_samples ||
+       !util_is_power_of_two_or_zero(sample_count))
       return false;
 
    if (pformat == PIPE_FORMAT_NONE)
@@ -468,11 +468,10 @@ iris_is_format_supported(struct pipe_screen *pscreen,
       /* Dataport doesn't support compression, and we can't resolve an MCS
        * compressed surface.  (Buffer images may have sample count of 0.)
        */
-      supported &= sample_count <= 1;
+      supported &= sample_count == 0;
 
-      // XXX: allow untyped reads
-      supported &= isl_format_supports_typed_reads(devinfo, format) &&
-                   isl_format_supports_typed_writes(devinfo, format);
+      supported &= isl_format_supports_typed_writes(devinfo, format);
+      supported &= isl_has_matching_typed_storage_image_format(devinfo, format);
    }
 
    if (usage & PIPE_BIND_SAMPLER_VIEW) {
@@ -498,38 +497,6 @@ iris_is_format_supported(struct pipe_screen *pscreen,
       supported &= format == ISL_FORMAT_R8_UINT ||
                    format == ISL_FORMAT_R16_UINT ||
                    format == ISL_FORMAT_R32_UINT;
-   }
-
-   if (usage & PIPE_BIND_CONSTANT_BUFFER) {
-      // XXX:
-   }
-
-   if (usage & PIPE_BIND_STREAM_OUTPUT) {
-      // XXX:
-   }
-
-   if (usage & PIPE_BIND_CURSOR) {
-      // XXX:
-   }
-
-   if (usage & PIPE_BIND_CUSTOM) {
-      // XXX:
-   }
-
-   if (usage & PIPE_BIND_SHADER_BUFFER) {
-      // XXX:
-   }
-
-   if (usage & PIPE_BIND_COMPUTE_RESOURCE) {
-      // XXX:
-   }
-
-   if (usage & PIPE_BIND_COMMAND_ARGS_BUFFER) {
-      // XXX:
-   }
-
-   if (usage & PIPE_BIND_QUERY_BUFFER) {
-      // XXX:
    }
 
    return supported;

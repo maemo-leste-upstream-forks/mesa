@@ -16,6 +16,7 @@ fi
 
 rm -rf _build
 meson _build --native-file=native.file \
+      ${CROSS} \
       -D buildtype=debug \
       -D build-tests=true \
       -D libunwind=${UNWIND} \
@@ -30,3 +31,4 @@ cd _build
 meson configure
 ninja -j4
 LC_ALL=C.UTF-8 ninja test
+DESTDIR=$PWD/../install ninja install

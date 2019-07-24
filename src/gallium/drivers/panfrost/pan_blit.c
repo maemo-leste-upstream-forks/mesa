@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2014 Broadcom
- * Copyright (C) 2019 Collabora
+ * Copyright (C) 2019 Collabora, Ltd.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -31,49 +31,51 @@
 #include "util/u_format.h"
 
 static void
-panfrost_blitter_save(struct panfrost_context *ctx)
+panfrost_blitter_save(
+        struct panfrost_context *ctx,
+        struct blitter_context *blitter)
 {
 
-        util_blitter_save_vertex_buffer_slot(ctx->blitter, ctx->vertex_buffers);
-        util_blitter_save_vertex_elements(ctx->blitter, ctx->vertex);
-        util_blitter_save_vertex_shader(ctx->blitter, ctx->vs);
-        util_blitter_save_rasterizer(ctx->blitter, ctx->rasterizer);
-        util_blitter_save_viewport(ctx->blitter, &ctx->pipe_viewport);
-        util_blitter_save_scissor(ctx->blitter, &ctx->scissor);
-        util_blitter_save_fragment_shader(ctx->blitter, ctx->fs);
-        util_blitter_save_blend(ctx->blitter, ctx->blend);
-        util_blitter_save_depth_stencil_alpha(ctx->blitter, ctx->depth_stencil);
-        util_blitter_save_stencil_ref(ctx->blitter, &ctx->stencil_ref);
-	util_blitter_save_so_targets(ctx->blitter, 0, NULL);
+        util_blitter_save_vertex_buffer_slot(blitter, ctx->vertex_buffers);
+        util_blitter_save_vertex_elements(blitter, ctx->vertex);
+        util_blitter_save_vertex_shader(blitter, ctx->vs);
+        util_blitter_save_rasterizer(blitter, ctx->rasterizer);
+        util_blitter_save_viewport(blitter, &ctx->pipe_viewport);
+        util_blitter_save_scissor(blitter, &ctx->scissor);
+        util_blitter_save_fragment_shader(blitter, ctx->fs);
+        util_blitter_save_blend(blitter, ctx->blend);
+        util_blitter_save_depth_stencil_alpha(blitter, ctx->depth_stencil);
+        util_blitter_save_stencil_ref(blitter, &ctx->stencil_ref);
+        util_blitter_save_so_targets(blitter, 0, NULL);
 
-	/* For later */
-//        util_blitter_save_sample_mask(ctx->blitter, ctx->sample_mask);
+        /* For later */
+//        util_blitter_save_sample_mask(blitter, ctx->sample_mask);
 
-        util_blitter_save_framebuffer(ctx->blitter, &ctx->pipe_framebuffer);
-        util_blitter_save_fragment_sampler_states(ctx->blitter,
-						  ctx->sampler_count[PIPE_SHADER_FRAGMENT],
-						  (void **)(&ctx->samplers[PIPE_SHADER_FRAGMENT]));
-        util_blitter_save_fragment_sampler_views(ctx->blitter,
-						 ctx->sampler_view_count[PIPE_SHADER_FRAGMENT],
-						 (struct pipe_sampler_view **)&ctx->sampler_views[PIPE_SHADER_FRAGMENT]);
+        util_blitter_save_framebuffer(blitter, &ctx->pipe_framebuffer);
+        util_blitter_save_fragment_sampler_states(blitter,
+                        ctx->sampler_count[PIPE_SHADER_FRAGMENT],
+                        (void **)(&ctx->samplers[PIPE_SHADER_FRAGMENT]));
+        util_blitter_save_fragment_sampler_views(blitter,
+                        ctx->sampler_view_count[PIPE_SHADER_FRAGMENT],
+                        (struct pipe_sampler_view **)&ctx->sampler_views[PIPE_SHADER_FRAGMENT]);
 }
 
 static bool
 panfrost_u_blitter_blit(struct pipe_context *pipe,
-              const struct pipe_blit_info *info)
+                        const struct pipe_blit_info *info)
 {
         struct panfrost_context *ctx = pan_context(pipe);
 
         if (!util_blitter_is_blit_supported(ctx->blitter, info)) {
                 fprintf(stderr, "blit unsupported %s -> %s\n",
-                util_format_short_name(info->src.resource->format),
-                util_format_short_name(info->dst.resource->format));
+                        util_format_short_name(info->src.resource->format),
+                        util_format_short_name(info->dst.resource->format));
                 return false;
         }
 
         /* TODO: Scissor */
 
-        panfrost_blitter_save(ctx);
+        panfrost_blitter_save(ctx, ctx->blitter);
         util_blitter_blit(ctx->blitter, info);
 
         return true;
@@ -87,14 +89,10 @@ panfrost_blit(struct pipe_context *pipe,
          * u_blitter. We could do a little better by culling
          * vertex jobs, though. */
 
-        /* TODO: Implement blitting. Commented out because u_blitter is not
-         * fully integrated and creates bugs in other places. */
-#if 0
         if (panfrost_u_blitter_blit(pipe, info))
                 return;
 
         fprintf(stderr, "Unhandled blit");
-#endif
 
         return;
 }
@@ -109,25 +107,29 @@ panfrost_blit_wallpaper(struct panfrost_context *ctx)
 {
         struct pipe_blit_info binfo = { };
 
-        panfrost_blitter_save(ctx);
+        panfrost_blitter_save(ctx, ctx->blitter_wallpaper);
 
-	binfo.src.resource = binfo.dst.resource = ctx->pipe_framebuffer.cbufs[0]->texture;
-	binfo.src.level = binfo.dst.level = 0;
-	binfo.src.box.x = binfo.dst.box.x = 0;
-	binfo.src.box.y = binfo.dst.box.y = 0;
-	binfo.src.box.width = binfo.dst.box.width = ctx->pipe_framebuffer.width;
-	binfo.src.box.height = binfo.dst.box.height = ctx->pipe_framebuffer.height;
+        struct pipe_surface *surf = ctx->pipe_framebuffer.cbufs[0];
+        unsigned level = surf->u.tex.level;
+        unsigned layer = surf->u.tex.first_layer;
+        assert(surf->u.tex.last_layer == layer);
 
-	/* This avoids an assert due to missing nir_texop_txb support */
-	//binfo.src.box.depth = binfo.dst.box.depth = 1;
+        binfo.src.resource = binfo.dst.resource = ctx->pipe_framebuffer.cbufs[0]->texture;
+        binfo.src.level = binfo.dst.level = level;
+        binfo.src.box.x = binfo.dst.box.x = 0;
+        binfo.src.box.y = binfo.dst.box.y = 0;
+        binfo.src.box.z = binfo.dst.box.z = layer;
+        binfo.src.box.width = binfo.dst.box.width = ctx->pipe_framebuffer.width;
+        binfo.src.box.height = binfo.dst.box.height = ctx->pipe_framebuffer.height;
+        binfo.src.box.depth = binfo.dst.box.depth = 1;
 
-	binfo.src.format = binfo.dst.format = ctx->pipe_framebuffer.cbufs[0]->texture->format;
+        binfo.src.format = binfo.dst.format = ctx->pipe_framebuffer.cbufs[0]->format;
 
-	assert(ctx->pipe_framebuffer.nr_cbufs == 1);
-	binfo.mask = PIPE_MASK_RGBA;
-	binfo.filter = PIPE_TEX_FILTER_LINEAR;
-	binfo.scissor_enable = FALSE;
+        assert(ctx->pipe_framebuffer.nr_cbufs == 1);
+        binfo.mask = PIPE_MASK_RGBA;
+        binfo.filter = PIPE_TEX_FILTER_LINEAR;
+        binfo.scissor_enable = FALSE;
 
-	util_blitter_blit(ctx->blitter, &binfo);
+        util_blitter_blit(ctx->blitter_wallpaper, &binfo);
 }
 

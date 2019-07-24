@@ -729,7 +729,7 @@ struct anv_fixed_size_state_pool {
 };
 
 #define ANV_MIN_STATE_SIZE_LOG2 6
-#define ANV_MAX_STATE_SIZE_LOG2 20
+#define ANV_MAX_STATE_SIZE_LOG2 21
 
 #define ANV_STATE_BUCKETS (ANV_MAX_STATE_SIZE_LOG2 - ANV_MIN_STATE_SIZE_LOG2 + 1)
 
@@ -2273,6 +2273,7 @@ struct anv_attachment_state {
     * have not been cleared yet when multiview is active.
     */
    uint32_t                                     pending_clear_views;
+   struct anv_image_view *                      image_view;
 };
 
 /** State tracking for particular pipeline bind point
@@ -3627,8 +3628,7 @@ enum anv_dump_action {
 void anv_dump_start(struct anv_device *device, enum anv_dump_action actions);
 void anv_dump_finish(void);
 
-void anv_dump_add_framebuffer(struct anv_cmd_buffer *cmd_buffer,
-                              struct anv_framebuffer *fb);
+void anv_dump_add_attachments(struct anv_cmd_buffer *cmd_buffer);
 
 static inline uint32_t
 anv_get_subpass_id(const struct anv_cmd_state * const cmd_state)

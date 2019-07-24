@@ -426,7 +426,7 @@ iris_resource_alloc_aux(struct iris_screen *screen, struct iris_resource *res)
     * of bytes instead of trying to recalculate based on different format
     * block sizes.
     */
-   res->aux.bo = iris_bo_alloc_tiled(screen->bufmgr, "aux buffer", size,
+   res->aux.bo = iris_bo_alloc_tiled(screen->bufmgr, "aux buffer", size, 4096,
                                      IRIS_MEMZONE_OTHER, I915_TILING_Y,
                                      res->aux.surf.row_pitch_B, alloc_flags);
    if (!res->aux.bo) {
@@ -666,7 +666,7 @@ iris_resource_create_with_modifiers(struct pipe_screen *pscreen,
                             IRIS_RESOURCE_FLAG_SURFACE_MEMZONE |
                             IRIS_RESOURCE_FLAG_DYNAMIC_MEMZONE)));
 
-   res->bo = iris_bo_alloc_tiled(screen->bufmgr, name, res->surf.size_B,
+   res->bo = iris_bo_alloc_tiled(screen->bufmgr, name, res->surf.size_B, 4096,
                                  memzone,
                                  isl_tiling_to_i915_tiling(res->surf.tiling),
                                  res->surf.row_pitch_B, flags);
@@ -782,20 +782,21 @@ iris_resource_from_handle(struct pipe_screen *pscreen,
    if (templ->target == PIPE_BUFFER) {
       res->surf.tiling = ISL_TILING_LINEAR;
    } else {
-      isl_surf_init(&screen->isl_dev, &res->surf,
-                    .dim = target_to_isl_surf_dim(templ->target),
-                    .format = fmt.fmt,
-                    .width = templ->width0,
-                    .height = templ->height0,
-                    .depth = templ->depth0,
-                    .levels = templ->last_level + 1,
-                    .array_len = templ->array_size,
-                    .samples = MAX2(templ->nr_samples, 1),
-                    .min_alignment_B = 0,
-                    .row_pitch_B = whandle->stride,
-                    .usage = isl_usage,
-                    .tiling_flags = 1 << res->mod_info->tiling);
-
+      UNUSED const bool isl_surf_created_successfully =
+         isl_surf_init(&screen->isl_dev, &res->surf,
+                       .dim = target_to_isl_surf_dim(templ->target),
+                       .format = fmt.fmt,
+                       .width = templ->width0,
+                       .height = templ->height0,
+                       .depth = templ->depth0,
+                       .levels = templ->last_level + 1,
+                       .array_len = templ->array_size,
+                       .samples = MAX2(templ->nr_samples, 1),
+                       .min_alignment_B = 0,
+                       .row_pitch_B = whandle->stride,
+                       .usage = isl_usage,
+                       .tiling_flags = 1 << res->mod_info->tiling);
+      assert(isl_surf_created_successfully);
       assert(res->bo->tiling_mode ==
              isl_tiling_to_i915_tiling(res->surf.tiling));
 
@@ -826,7 +827,7 @@ iris_flush_resource(struct pipe_context *ctx, struct pipe_resource *resource)
                                 mod ? mod->supports_clear_color : false);
 }
 
-static boolean
+static bool
 iris_resource_get_handle(struct pipe_screen *pscreen,
                          struct pipe_context *ctx,
                          struct pipe_resource *resource,
@@ -1029,6 +1030,7 @@ iris_map_copy_region(struct iris_transfer *map)
                        xfer->resource, xfer->level, box);
       /* Ensure writes to the staging BO land before we map it below. */
       iris_emit_pipe_control_flush(map->batch,
+                                   "transfer read: flush before mapping",
                                    PIPE_CONTROL_RENDER_TARGET_FLUSH |
                                    PIPE_CONTROL_CS_STALL);
    }
@@ -1274,7 +1276,6 @@ iris_map_tiled_memcpy(struct iris_transfer *map)
 
    const bool has_swizzling = false;
 
-   // XXX: PIPE_TRANSFER_READ?
    if (!(xfer->usage & PIPE_TRANSFER_DISCARD_RANGE)) {
       char *src =
          iris_bo_map(map->dbg, res->bo, (xfer->usage | MAP_RAW) & MAP_FLAGS);
@@ -1471,11 +1472,22 @@ iris_transfer_flush_region(struct pipe_context *ctx,
    if (map->staging)
       iris_flush_staging_region(xfer, box);
 
-   for (int i = 0; i < IRIS_BATCH_COUNT; i++) {
-      if (ice->batches[i].contains_draw ||
-          ice->batches[i].cache.render->entries) {
-         iris_batch_maybe_flush(&ice->batches[i], 24);
-         iris_flush_and_dirty_for_history(ice, &ice->batches[i], res);
+   uint32_t history_flush = 0;
+
+   if (res->base.target == PIPE_BUFFER) {
+      history_flush |= iris_flush_bits_for_history(res) |
+                       (map->staging ? PIPE_CONTROL_RENDER_TARGET_FLUSH : 0);
+   }
+
+   if (history_flush & ~PIPE_CONTROL_CS_STALL) {
+      for (int i = 0; i < IRIS_BATCH_COUNT; i++) {
+         struct iris_batch *batch = &ice->batches[i];
+         if (batch->contains_draw || batch->cache.render->entries) {
+            iris_batch_maybe_flush(batch, 24);
+            iris_emit_pipe_control_flush(batch,
+                                         "cache history: transfer flush",
+                                         history_flush);
+         }
       }
    }
 
@@ -1559,20 +1571,18 @@ iris_flush_bits_for_history(struct iris_resource *res)
 void
 iris_flush_and_dirty_for_history(struct iris_context *ice,
                                  struct iris_batch *batch,
-                                 struct iris_resource *res)
+                                 struct iris_resource *res,
+                                 uint32_t extra_flags,
+                                 const char *reason)
 {
    if (res->base.target != PIPE_BUFFER)
       return;
 
-   uint32_t flush = iris_flush_bits_for_history(res);
+   uint32_t flush = iris_flush_bits_for_history(res) | extra_flags;
 
-   /* We've likely used the rendering engine (i.e. BLORP) to write to this
-    * surface.  Flush the render cache so the data actually lands.
-    */
-   if (batch->name != IRIS_BATCH_COMPUTE)
-      flush |= PIPE_CONTROL_RENDER_TARGET_FLUSH;
+   iris_emit_pipe_control_flush(batch, reason, flush);
 
-   iris_emit_pipe_control_flush(batch, flush);
+   iris_dirty_for_history(ice, res);
 }
 
 bool

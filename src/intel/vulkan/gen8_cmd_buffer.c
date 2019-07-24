@@ -31,11 +31,13 @@
 
 #include "genxml/gen_macros.h"
 #include "genxml/genX_pack.h"
+#include "common/gen_guardband.h"
 
 #if GEN_GEN == 8
 void
 gen8_cmd_buffer_emit_viewport(struct anv_cmd_buffer *cmd_buffer)
 {
+   struct anv_framebuffer *fb = cmd_buffer->state.framebuffer;
    uint32_t count = cmd_buffer->state.gfx.dynamic.viewport.count;
    const VkViewport *viewports =
       cmd_buffer->state.gfx.dynamic.viewport.viewports;
@@ -47,7 +49,7 @@ gen8_cmd_buffer_emit_viewport(struct anv_cmd_buffer *cmd_buffer)
 
       /* The gen7 state struct has just the matrix and guardband fields, the
        * gen8 struct adds the min/max viewport fields. */
-      struct GENX(SF_CLIP_VIEWPORT) sf_clip_viewport = {
+      struct GENX(SF_CLIP_VIEWPORT) sfv = {
          .ViewportMatrixElementm00 = vp->width / 2,
          .ViewportMatrixElementm11 = vp->height / 2,
          .ViewportMatrixElementm22 = vp->maxDepth - vp->minDepth,
@@ -64,8 +66,23 @@ gen8_cmd_buffer_emit_viewport(struct anv_cmd_buffer *cmd_buffer)
          .YMaxViewPort = MAX2(vp->y, vp->y + vp->height) - 1,
       };
 
-      GENX(SF_CLIP_VIEWPORT_pack)(NULL, sf_clip_state.map + i * 64,
-                                 &sf_clip_viewport);
+      if (fb) {
+         /* We can only calculate a "real" guardband clip if we know the
+          * framebuffer at the time we emit the packet.  Otherwise, we have
+          * fall back to a worst-case guardband of [-1, 1].
+          */
+         gen_calculate_guardband_size(fb->width, fb->height,
+                                      sfv.ViewportMatrixElementm00,
+                                      sfv.ViewportMatrixElementm11,
+                                      sfv.ViewportMatrixElementm30,
+                                      sfv.ViewportMatrixElementm31,
+                                      &sfv.XMinClipGuardband,
+                                      &sfv.XMaxClipGuardband,
+                                      &sfv.YMinClipGuardband,
+                                      &sfv.YMaxClipGuardband);
+      }
+
+      GENX(SF_CLIP_VIEWPORT_pack)(NULL, sf_clip_state.map + i * 64, &sfv);
    }
 
    anv_batch_emit(&cmd_buffer->batch,
@@ -355,6 +372,8 @@ want_stencil_pma_fix(struct anv_cmd_buffer *cmd_buffer)
     */
    const bool stc_write_en =
       (ds_iview->image->aspects & VK_IMAGE_ASPECT_STENCIL_BIT) &&
+      (cmd_buffer->state.gfx.dynamic.stencil_write_mask.front ||
+       cmd_buffer->state.gfx.dynamic.stencil_write_mask.back) &&
       pipeline->writes_stencil;
 
    /* STC_TEST_EN && 3DSTATE_PS_EXTRA::PixelShaderComputesStencil */

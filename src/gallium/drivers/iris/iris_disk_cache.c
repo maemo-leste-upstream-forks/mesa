@@ -51,15 +51,13 @@ iris_disk_cache_compute_key(struct disk_cache *cache,
                             uint32_t prog_key_size,
                             cache_key cache_key)
 {
-   gl_shader_stage stage = ish->nir->info.stage;
-
    /* Create a copy of the program key with program_string_id zeroed out.
     * It's essentially random data which we don't want to include in our
     * hashing and comparisons.  We'll set a proper value on a cache hit.
     */
    union brw_any_prog_key prog_key;
    memcpy(&prog_key, orig_prog_key, prog_key_size);
-   brw_prog_key_set_id(&prog_key, stage, 0);
+   prog_key.base.program_string_id = 0;
 
    uint8_t data[sizeof(prog_key) + sizeof(ish->nir_sha1)];
    uint32_t data_size = prog_key_size + sizeof(ish->nir_sha1);
@@ -207,7 +205,11 @@ iris_disk_cache_retrieve(struct iris_context *ice,
     * needed, the constant buffer 0 will be needed, so account for it.
     */
    unsigned num_cbufs = ish->nir->info.num_ubos;
-   if (num_cbufs || num_system_values || ish->nir->num_uniforms)
+
+   if (num_cbufs || ish->nir->num_uniforms)
+      num_cbufs++;
+
+   if (num_system_values)
       num_cbufs++;
 
    /* Upload our newly read shader to the in-memory program cache and

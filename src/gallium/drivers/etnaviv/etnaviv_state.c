@@ -122,6 +122,7 @@ etna_set_framebuffer_state(struct pipe_context *pctx,
 
    /* Set up TS as well. Warning: this state is used by both the RS and PE */
    uint32_t ts_mem_config = 0;
+   uint32_t pe_mem_config = 0;
 
    if (sv->nr_cbufs > 0) { /* at least one color buffer? */
       struct etna_surface *cbuf = etna_surface(sv->cbufs[0]);
@@ -173,12 +174,19 @@ etna_set_framebuffer_state(struct pipe_context *pctx,
 
          cs->TS_COLOR_SURFACE_BASE = cbuf->reloc[0];
          cs->TS_COLOR_SURFACE_BASE.flags = ETNA_RELOC_READ | ETNA_RELOC_WRITE;
-      }
 
-      /* MSAA */
-      if (cbuf->base.texture->nr_samples > 1)
-         ts_mem_config |=
-            VIVS_TS_MEM_CONFIG_COLOR_COMPRESSION | translate_msaa_format(cbuf->base.format);
+         pe_mem_config |= VIVS_PE_MEM_CONFIG_COLOR_TS_MODE(cbuf->level->ts_mode);
+
+         if (cbuf->level->ts_compress_fmt >= 0) {
+            /* overwrite bit breaks v1/v2 compression */
+            if (!ctx->specs.v4_compression)
+               cs->PE_COLOR_FORMAT &= ~VIVS_PE_COLOR_FORMAT_OVERWRITE;
+
+            ts_mem_config |=
+               VIVS_TS_MEM_CONFIG_COLOR_COMPRESSION |
+               VIVS_TS_MEM_CONFIG_COLOR_COMPRESSION_FORMAT(cbuf->level->ts_compress_fmt);
+         }
+      }
 
       nr_samples_color = cbuf->base.texture->nr_samples;
    } else {
@@ -239,15 +247,18 @@ etna_set_framebuffer_state(struct pipe_context *pctx,
 
          cs->TS_DEPTH_SURFACE_BASE = zsbuf->reloc[0];
          cs->TS_DEPTH_SURFACE_BASE.flags = ETNA_RELOC_READ | ETNA_RELOC_WRITE;
+
+         pe_mem_config |= VIVS_PE_MEM_CONFIG_DEPTH_TS_MODE(zsbuf->level->ts_mode);
+
+         if (zsbuf->level->ts_compress_fmt >= 0) {
+            ts_mem_config |=
+               VIVS_TS_MEM_CONFIG_DEPTH_COMPRESSION |
+               COND(zsbuf->level->ts_compress_fmt == COMPRESSION_FORMAT_D24S8,
+                    VIVS_TS_MEM_CONFIG_STENCIL_ENABLE);
+         }
       }
 
       ts_mem_config |= COND(depth_bits == 16, VIVS_TS_MEM_CONFIG_DEPTH_16BPP);
-
-      /* MSAA */
-      if (zsbuf->base.texture->nr_samples > 1)
-         /* XXX VIVS_TS_MEM_CONFIG_DEPTH_COMPRESSION;
-          * Disable without MSAA for now, as it causes corruption in glquake. */
-         ts_mem_config |= VIVS_TS_MEM_CONFIG_DEPTH_COMPRESSION;
 
       nr_samples_depth = zsbuf->base.texture->nr_samples;
    } else {
@@ -316,6 +327,7 @@ etna_set_framebuffer_state(struct pipe_context *pctx,
    cs->SE_CLIP_BOTTOM = (sv->height << 16) + ETNA_SE_CLIP_MARGIN_BOTTOM;
 
    cs->TS_MEM_CONFIG = ts_mem_config;
+   cs->PE_MEM_CONFIG = pe_mem_config;
 
    /* Single buffer setup. There is only one switch for this, not a separate
     * one per color buffer / depth buffer. To keep the logic simple always use

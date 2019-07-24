@@ -21,6 +21,8 @@
 files_libradeonsi = files(
   'cik_sdma.c',
   'driinfo_radeonsi.h',
+  'gfx10_query.c',
+  'gfx10_shader_ngg.c',
   'si_blit.c',
   'si_buffer.c',
   'si_build_pm4.h',
@@ -69,6 +71,7 @@ files_libradeonsi = files(
   '../radeon/radeon_uvd.c',
   '../radeon/radeon_uvd.h',
   '../radeon/radeon_vcn_enc_1_2.c',
+  '../radeon/radeon_vcn_enc_2_0.c',
   '../radeon/radeon_vcn_enc.c',
   '../radeon/radeon_vcn_enc.h',
   '../radeon/radeon_vcn_dec_jpeg.c',
@@ -98,9 +101,21 @@ si_driinfo_h = custom_target(
   capture : true,
 )
 
+gfx10_format_table_h = custom_target(
+  'gfx10_format_table.h',
+  input : files(
+    'gfx10_format_table.py',
+    '../../auxiliary/util/u_format.csv', '../../../amd/registers/gfx10-rsrc.json'
+  ),
+  output : 'gfx10_format_table.h',
+  command : [prog_python, '@INPUT@'],
+  capture : true,
+  depend_files : ['../../../amd/registers/regdb.py']
+)
+
 libradeonsi = static_library(
   'radeonsi',
-  [files_libradeonsi, si_driinfo_h, sid_tables_h],
+  [files_libradeonsi, si_driinfo_h, sid_tables_h, gfx10_format_table_h],
   include_directories : [
     inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_amd_common,
     inc_gallium_drivers,

@@ -75,22 +75,21 @@ void si_flush_gfx_cs(struct si_context *ctx, unsigned flags,
 {
 	struct radeon_cmdbuf *cs = ctx->gfx_cs;
 	struct radeon_winsys *ws = ctx->ws;
+	const unsigned wait_ps_cs = SI_CONTEXT_PS_PARTIAL_FLUSH |
+				    SI_CONTEXT_CS_PARTIAL_FLUSH;
 	unsigned wait_flags = 0;
 
 	if (ctx->gfx_flush_in_progress)
 		return;
 
 	if (!ctx->screen->info.kernel_flushes_tc_l2_after_ib) {
-		wait_flags |= SI_CONTEXT_PS_PARTIAL_FLUSH |
-			      SI_CONTEXT_CS_PARTIAL_FLUSH |
-			      SI_CONTEXT_INV_GLOBAL_L2;
+		wait_flags |= wait_ps_cs |
+			      SI_CONTEXT_INV_L2;
 	} else if (ctx->chip_class == GFX6) {
 		/* The kernel flushes L2 before shaders are finished. */
-		wait_flags |= SI_CONTEXT_PS_PARTIAL_FLUSH |
-			      SI_CONTEXT_CS_PARTIAL_FLUSH;
+		wait_flags |= wait_ps_cs;
 	} else if (!(flags & RADEON_FLUSH_START_NEXT_GFX_IB_NOW)) {
-		wait_flags |= SI_CONTEXT_PS_PARTIAL_FLUSH |
-			      SI_CONTEXT_CS_PARTIAL_FLUSH;
+		wait_flags |= wait_ps_cs;
 	}
 
 	/* Drop this flush if it's a no-op. */
@@ -162,6 +161,13 @@ void si_flush_gfx_cs(struct si_context *ctx, unsigned flags,
 		if (ctx->streamout.begin_emitted) {
 			si_emit_streamout_end(ctx);
 			ctx->streamout.suspended = true;
+
+			/* Since streamout uses GDS on gfx10, we need to make
+			 * GDS idle when we leave the IB, otherwise another
+			 * process might overwrite it while our shaders are busy.
+			 */
+			if (ctx->chip_class >= GFX10)
+				wait_flags |= SI_CONTEXT_PS_PARTIAL_FLUSH;
 		}
 	}
 
@@ -173,9 +179,9 @@ void si_flush_gfx_cs(struct si_context *ctx, unsigned flags,
 	/* Wait for draw calls to finish if needed. */
 	if (wait_flags) {
 		ctx->flags |= wait_flags;
-		si_emit_cache_flush(ctx);
+		ctx->emit_cache_flush(ctx);
 	}
-	ctx->gfx_last_ib_is_busy = wait_flags == 0;
+	ctx->gfx_last_ib_is_busy = (wait_flags & wait_ps_cs) != wait_ps_cs;
 
 	if (ctx->current_saved_cs) {
 		si_trace_emit(ctx);
@@ -278,20 +284,43 @@ static void si_begin_gfx_cs_debug(struct si_context *ctx)
 			      RADEON_USAGE_READWRITE, RADEON_PRIO_TRACE);
 }
 
+static void si_add_gds_to_buffer_list(struct si_context *sctx)
+{
+	if (sctx->gds) {
+		sctx->ws->cs_add_buffer(sctx->gfx_cs, sctx->gds,
+				       RADEON_USAGE_READWRITE, 0, 0);
+		if (sctx->gds_oa) {
+			sctx->ws->cs_add_buffer(sctx->gfx_cs, sctx->gds_oa,
+					       RADEON_USAGE_READWRITE, 0, 0);
+		}
+	}
+}
+
+void si_allocate_gds(struct si_context *sctx)
+{
+	struct radeon_winsys *ws = sctx->ws;
+
+	if (sctx->gds)
+		return;
+
+	assert(sctx->chip_class >= GFX10); /* for gfx10 streamout */
+
+	/* 4 streamout GDS counters.
+	 * We need 256B (64 dw) of GDS, otherwise streamout hangs.
+	 */
+	sctx->gds = ws->buffer_create(ws, 256, 4, RADEON_DOMAIN_GDS, 0);
+	sctx->gds_oa = ws->buffer_create(ws, 4, 1, RADEON_DOMAIN_OA, 0);
+
+	assert(sctx->gds && sctx->gds_oa);
+	si_add_gds_to_buffer_list(sctx);
+}
+
 void si_begin_new_gfx_cs(struct si_context *ctx)
 {
 	if (ctx->is_debug)
 		si_begin_gfx_cs_debug(ctx);
 
-	if (ctx->gds) {
-		ctx->ws->cs_add_buffer(ctx->gfx_cs, ctx->gds,
-				       RADEON_USAGE_READWRITE, 0, 0);
-		if (ctx->gds_oa) {
-			ctx->ws->cs_add_buffer(ctx->gfx_cs, ctx->gds_oa,
-					       RADEON_USAGE_READWRITE, 0, 0);
-		}
-	}
-
+	si_add_gds_to_buffer_list(ctx);
 
 	/* Always invalidate caches at the beginning of IBs, because external
 	 * users (e.g. BO evictions and SDMA/UVD/VCE IBs) can modify our
@@ -304,9 +333,9 @@ void si_begin_new_gfx_cs(struct si_context *ctx)
 	 * TODO: Do we also need to invalidate CB & DB caches?
 	 */
 	ctx->flags |= SI_CONTEXT_INV_ICACHE |
-		      SI_CONTEXT_INV_SMEM_L1 |
-		      SI_CONTEXT_INV_VMEM_L1 |
-		      SI_CONTEXT_INV_GLOBAL_L2 |
+		      SI_CONTEXT_INV_SCACHE |
+		      SI_CONTEXT_INV_VCACHE |
+		      SI_CONTEXT_INV_L2 |
 		      SI_CONTEXT_START_PIPELINE_STATS;
 
 	ctx->cs_shader_state.initialized = false;
@@ -376,7 +405,8 @@ void si_begin_new_gfx_cs(struct si_context *ctx)
 		si_mark_atom_dirty(ctx, &ctx->atoms.s.dpbb_state);
 	si_mark_atom_dirty(ctx, &ctx->atoms.s.stencil_ref);
 	si_mark_atom_dirty(ctx, &ctx->atoms.s.spi_map);
-	si_mark_atom_dirty(ctx, &ctx->atoms.s.streamout_enable);
+	if (ctx->chip_class < GFX10)
+		si_mark_atom_dirty(ctx, &ctx->atoms.s.streamout_enable);
 	si_mark_atom_dirty(ctx, &ctx->atoms.s.render_cond);
 	/* CLEAR_STATE disables all window rectangles. */
 	if (!has_clear_state || ctx->num_window_rectangles > 0)
@@ -411,6 +441,7 @@ void si_begin_new_gfx_cs(struct si_context *ctx)
 	ctx->last_prim = -1;
 	ctx->last_multi_vgt_param = -1;
 	ctx->last_rast_prim = -1;
+	ctx->last_flatshade_first = -1;
 	ctx->last_sc_line_stipple = ~0;
 	ctx->last_vs_state = ~0;
 	ctx->last_ls = NULL;
@@ -418,6 +449,7 @@ void si_begin_new_gfx_cs(struct si_context *ctx)
 	ctx->last_tes_sh_base = -1;
 	ctx->last_num_tcs_input_cp = -1;
 	ctx->last_ls_hs_config = -1; /* impossible value */
+	ctx->last_binning_enabled = -1;
 
 	ctx->prim_discard_compute_ib_initialized = false;
 
@@ -463,7 +495,6 @@ void si_begin_new_gfx_cs(struct si_context *ctx)
 		ctx->tracked_regs.reg_value[SI_TRACKED_VGT_GSVS_RING_OFFSET_1]  = 0x00000000;
 		ctx->tracked_regs.reg_value[SI_TRACKED_VGT_GSVS_RING_OFFSET_2]  = 0x00000000;
 		ctx->tracked_regs.reg_value[SI_TRACKED_VGT_GSVS_RING_OFFSET_3]  = 0x00000000;
-		ctx->tracked_regs.reg_value[SI_TRACKED_VGT_GS_OUT_PRIM_TYPE]    = 0x00000000;
 		ctx->tracked_regs.reg_value[SI_TRACKED_VGT_GSVS_RING_ITEMSIZE]  = 0x00000000;
 		ctx->tracked_regs.reg_value[SI_TRACKED_VGT_GS_MAX_VERT_OUT]  = 0x00000000;
 		ctx->tracked_regs.reg_value[SI_TRACKED_VGT_GS_VERT_ITEMSIZE]  = 0x00000000;
@@ -477,8 +508,12 @@ void si_begin_new_gfx_cs(struct si_context *ctx)
 		ctx->tracked_regs.reg_value[SI_TRACKED_VGT_PRIMITIVEID_EN]  = 0x00000000;
 		ctx->tracked_regs.reg_value[SI_TRACKED_VGT_REUSE_OFF]  = 0x00000000;
 		ctx->tracked_regs.reg_value[SI_TRACKED_SPI_VS_OUT_CONFIG]  = 0x00000000;
+		ctx->tracked_regs.reg_value[SI_TRACKED_GE_MAX_OUTPUT_PER_SUBGROUP]  = 0x00000000;
+		ctx->tracked_regs.reg_value[SI_TRACKED_GE_NGG_SUBGRP_CNTL]  = 0x00000000;
+		ctx->tracked_regs.reg_value[SI_TRACKED_SPI_SHADER_IDX_FORMAT]  = 0x00000000;
 		ctx->tracked_regs.reg_value[SI_TRACKED_SPI_SHADER_POS_FORMAT]  = 0x00000000;
 		ctx->tracked_regs.reg_value[SI_TRACKED_PA_CL_VTE_CNTL]  = 0x00000000;
+		ctx->tracked_regs.reg_value[SI_TRACKED_PA_CL_NGG_CNTL]  = 0x00000000;
 		ctx->tracked_regs.reg_value[SI_TRACKED_SPI_PS_INPUT_ENA]  = 0x00000000;
 		ctx->tracked_regs.reg_value[SI_TRACKED_SPI_PS_INPUT_ADDR]  = 0x00000000;
 		ctx->tracked_regs.reg_value[SI_TRACKED_SPI_BARYC_CNTL]  = 0x00000000;

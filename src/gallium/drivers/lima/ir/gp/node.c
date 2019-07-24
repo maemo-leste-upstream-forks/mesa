@@ -68,21 +68,29 @@ const gpir_op_info gpir_op_infos[] = {
       .name = "floor",
       .src_neg = {true, false, false, false},
       .slots = (int []) { GPIR_INSTR_SLOT_ADD0, GPIR_INSTR_SLOT_ADD1, GPIR_INSTR_SLOT_END },
+      .spillless = true,
+      .may_consume_two_slots = true,
    },
    [gpir_op_sign] = {
       .name = "sign",
       .src_neg = {true, false, false, false},
       .slots = (int []) { GPIR_INSTR_SLOT_ADD0, GPIR_INSTR_SLOT_ADD1, GPIR_INSTR_SLOT_END },
+      .spillless = true,
+      .may_consume_two_slots = true,
    },
    [gpir_op_ge] = {
       .name = "ge",
       .src_neg = {true, true, false, false},
       .slots = (int []) { GPIR_INSTR_SLOT_ADD0, GPIR_INSTR_SLOT_ADD1, GPIR_INSTR_SLOT_END },
+      .spillless = true,
+      .may_consume_two_slots = true,
    },
    [gpir_op_lt] = {
       .name = "lt",
       .src_neg = {true, true, false, false},
       .slots = (int []) { GPIR_INSTR_SLOT_ADD0, GPIR_INSTR_SLOT_ADD1, GPIR_INSTR_SLOT_END },
+      .spillless = true,
+      .may_consume_two_slots = true,
    },
    [gpir_op_min] = {
       .name = "min",
@@ -428,8 +436,6 @@ static void gpir_node_print_node(gpir_node *node, int type, int space)
       [GPIR_DEP_OFFSET] = "offset",
       [GPIR_DEP_READ_AFTER_WRITE] = "RaW",
       [GPIR_DEP_WRITE_AFTER_READ] = "WaR",
-      [GPIR_DEP_VREG_READ_AFTER_WRITE] = "vRaW",
-      [GPIR_DEP_VREG_WRITE_AFTER_READ] = "vWaR",
    };
 
    for (int i = 0; i < space; i++)

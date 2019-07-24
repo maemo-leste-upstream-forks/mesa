@@ -37,6 +37,7 @@
 #include <pwd.h>
 #include <errno.h>
 #include <dirent.h>
+#include <inttypes.h>
 #include "zlib.h"
 
 #include "util/crc32.h"
@@ -732,7 +733,7 @@ static size_t
 deflate_and_write_to_disk(const void *in_data, size_t in_data_size, int dest,
                           const char *filename)
 {
-   unsigned char out[BUFSIZE];
+   unsigned char *out;
 
    /* allocate deflate state */
    z_stream strm;
@@ -749,6 +750,11 @@ deflate_and_write_to_disk(const void *in_data, size_t in_data_size, int dest,
    /* compress until end of in_data */
    size_t compressed_size = 0;
    int flush;
+
+   out = malloc(BUFSIZE * sizeof(unsigned char));
+   if (out == NULL)
+      return 0;
+
    do {
       int remaining = in_data_size - BUFSIZE;
       flush = remaining > 0 ? Z_NO_FLUSH : Z_FINISH;
@@ -770,6 +776,7 @@ deflate_and_write_to_disk(const void *in_data, size_t in_data_size, int dest,
          ssize_t written = write_all(dest, out, have);
          if (written == -1) {
             (void)deflateEnd(&strm);
+            free(out);
             return 0;
          }
       } while (strm.avail_out == 0);
@@ -784,6 +791,7 @@ deflate_and_write_to_disk(const void *in_data, size_t in_data_size, int dest,
 
    /* clean up and return */
    (void)deflateEnd(&strm);
+   free(out);
    return compressed_size;
 }
 

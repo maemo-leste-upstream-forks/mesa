@@ -26,6 +26,7 @@
 #include "si_compute.h"
 #include "sid.h"
 #include "sid_tables.h"
+#include "tgsi/tgsi_from_mesa.h"
 #include "driver_ddebug/dd_util.h"
 #include "util/u_dump.h"
 #include "util/u_log.h"
@@ -98,13 +99,12 @@ void si_destroy_saved_cs(struct si_saved_cs *scs)
 }
 
 static void si_dump_shader(struct si_screen *sscreen,
-			   enum pipe_shader_type processor,
 			   struct si_shader *shader, FILE *f)
 {
 	if (shader->shader_log)
 		fwrite(shader->shader_log, shader->shader_log_size, 1, f);
 	else
-		si_shader_dump(sscreen, shader, NULL, processor, f, false);
+		si_shader_dump(sscreen, shader, NULL, f, false);
 
 	if (shader->bo && sscreen->options.dump_shader_binary) {
 		unsigned size = shader->bo->b.b.width0;
@@ -136,7 +136,6 @@ struct si_log_chunk_shader {
 	 */
 	struct si_context *ctx;
 	struct si_shader *shader;
-	enum pipe_shader_type processor;
 
 	/* For keep-alive reference counts */
 	struct si_shader_selector *sel;
@@ -157,8 +156,7 @@ si_log_chunk_shader_print(void *data, FILE *f)
 {
 	struct si_log_chunk_shader *chunk = data;
 	struct si_screen *sscreen = chunk->ctx->screen;
-	si_dump_shader(sscreen, chunk->processor,
-		       chunk->shader, f);
+	si_dump_shader(sscreen, chunk->shader, f);
 }
 
 static struct u_log_chunk_type si_log_chunk_type_shader = {
@@ -177,7 +175,6 @@ static void si_dump_gfx_shader(struct si_context *ctx,
 
 	struct si_log_chunk_shader *chunk = CALLOC_STRUCT(si_log_chunk_shader);
 	chunk->ctx = ctx;
-	chunk->processor = state->cso->info.processor;
 	chunk->shader = current;
 	si_shader_selector_reference(ctx, &chunk->sel, current->selector);
 	u_log_chunk(log, &si_log_chunk_type_shader, chunk);
@@ -193,7 +190,6 @@ static void si_dump_compute_shader(struct si_context *ctx,
 
 	struct si_log_chunk_shader *chunk = CALLOC_STRUCT(si_log_chunk_shader);
 	chunk->ctx = ctx;
-	chunk->processor = PIPE_SHADER_COMPUTE;
 	chunk->shader = &state->program->shader;
 	si_compute_reference(&chunk->program, state->program);
 	u_log_chunk(log, &si_log_chunk_type_shader, chunk);
@@ -702,6 +698,8 @@ static void
 si_log_chunk_desc_list_print(void *data, FILE *f)
 {
 	struct si_log_chunk_desc_list *chunk = data;
+	unsigned sq_img_rsrc_word0 = chunk->chip_class >= GFX10 ? R_00A000_SQ_IMG_RSRC_WORD0
+								: R_008F10_SQ_IMG_RSRC_WORD0;
 
 	for (unsigned i = 0; i < chunk->num_elements; i++) {
 		unsigned cpu_dw_offset = i * chunk->element_dw_size;
@@ -723,7 +721,7 @@ si_log_chunk_desc_list_print(void *data, FILE *f)
 		case 8:
 			for (unsigned j = 0; j < 8; j++)
 				ac_dump_reg(f, chunk->chip_class,
-					    R_008F10_SQ_IMG_RSRC_WORD0 + j*4,
+					    sq_img_rsrc_word0 + j*4,
 					    gpu_list[j], 0xffffffff);
 
 			fprintf(f, COLOR_CYAN "    Buffer:" COLOR_RESET "\n");
@@ -735,7 +733,7 @@ si_log_chunk_desc_list_print(void *data, FILE *f)
 		case 16:
 			for (unsigned j = 0; j < 8; j++)
 				ac_dump_reg(f, chunk->chip_class,
-					    R_008F10_SQ_IMG_RSRC_WORD0 + j*4,
+					    sq_img_rsrc_word0 + j*4,
 					    gpu_list[j], 0xffffffff);
 
 			fprintf(f, COLOR_CYAN "    Buffer:" COLOR_RESET "\n");
@@ -747,7 +745,7 @@ si_log_chunk_desc_list_print(void *data, FILE *f)
 			fprintf(f, COLOR_CYAN "    FMASK:" COLOR_RESET "\n");
 			for (unsigned j = 0; j < 8; j++)
 				ac_dump_reg(f, chunk->chip_class,
-					    R_008F10_SQ_IMG_RSRC_WORD0 + j*4,
+					    sq_img_rsrc_word0 + j*4,
 					    gpu_list[8+j], 0xffffffff);
 
 			fprintf(f, COLOR_CYAN "    Sampler state:" COLOR_RESET "\n");
@@ -940,10 +938,14 @@ static void si_add_split_disasm(struct si_screen *screen,
 				struct si_shader_binary *binary,
 				uint64_t *addr,
 				unsigned *num,
-				struct si_shader_inst *instructions)
+				struct si_shader_inst *instructions,
+				enum pipe_shader_type shader_type,
+				unsigned wave_size)
 {
 	if (!ac_rtld_open(rtld_binary, (struct ac_rtld_open_info){
 			.info = &screen->info,
+			.shader_type = tgsi_processor_to_shader_stage(shader_type),
+			.wave_size = wave_size,
 			.num_parts = 1,
 			.elf_ptrs = &binary->elf_buffer,
 			.elf_sizes = &binary->elf_size }))
@@ -993,6 +995,7 @@ static void si_print_annotated_shader(struct si_shader *shader,
 		return;
 
 	struct si_screen *screen = shader->selector->screen;
+	enum pipe_shader_type shader_type = shader->selector->type;
 	uint64_t start_addr = shader->bo->gpu_address;
 	uint64_t end_addr = start_addr + shader->bo->b.b.width0;
 	unsigned i;
@@ -1014,31 +1017,32 @@ static void si_print_annotated_shader(struct si_shader *shader,
 	 */
 	unsigned num_inst = 0;
 	uint64_t inst_addr = start_addr;
+	unsigned wave_size = si_get_shader_wave_size(shader);
 	struct ac_rtld_binary rtld_binaries[5] = {};
 	struct si_shader_inst *instructions =
 		calloc(shader->bo->b.b.width0 / 4, sizeof(struct si_shader_inst));
 
 	if (shader->prolog) {
 		si_add_split_disasm(screen, &rtld_binaries[0], &shader->prolog->binary,
-				    &inst_addr, &num_inst, instructions);
+				    &inst_addr, &num_inst, instructions, shader_type, wave_size);
 	}
 	if (shader->previous_stage) {
 		si_add_split_disasm(screen, &rtld_binaries[1], &shader->previous_stage->binary,
-				    &inst_addr, &num_inst, instructions);
+				    &inst_addr, &num_inst, instructions, shader_type, wave_size);
 	}
 	if (shader->prolog2) {
 		si_add_split_disasm(screen, &rtld_binaries[2], &shader->prolog2->binary,
-				    &inst_addr, &num_inst, instructions);
+				    &inst_addr, &num_inst, instructions, shader_type, wave_size);
 	}
 	si_add_split_disasm(screen, &rtld_binaries[3], &shader->binary,
-			    &inst_addr, &num_inst, instructions);
+			    &inst_addr, &num_inst, instructions, shader_type, wave_size);
 	if (shader->epilog) {
 		si_add_split_disasm(screen, &rtld_binaries[4], &shader->epilog->binary,
-				    &inst_addr, &num_inst, instructions);
+				    &inst_addr, &num_inst, instructions, shader_type, wave_size);
 	}
 
 	fprintf(f, COLOR_YELLOW "%s - annotated disassembly:" COLOR_RESET "\n",
-		si_get_shader_name(shader, shader->selector->type));
+		si_get_shader_name(shader));
 
 	/* Print instructions with annotations. */
 	for (i = 0; i < num_inst; i++) {
@@ -1078,7 +1082,7 @@ static void si_print_annotated_shader(struct si_shader *shader,
 static void si_dump_annotated_shaders(struct si_context *sctx, FILE *f)
 {
 	struct ac_wave_info waves[AC_MAX_WAVES_PER_CHIP];
-	unsigned num_waves = ac_get_wave_info(waves);
+	unsigned num_waves = ac_get_wave_info(sctx->chip_class, waves);
 
 	fprintf(f, COLOR_CYAN "The number of active waves = %u" COLOR_RESET
 		"\n\n", num_waves);

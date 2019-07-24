@@ -76,6 +76,8 @@ struct etna_specs {
    unsigned has_new_transcendentals : 1;
    /* has the new dp2/dpX_norm instructions, among others */
    unsigned has_halti2_instructions : 1;
+   /* has V4_COMPRESSION */
+   unsigned v4_compression : 1;
    /* supports single-buffer rendering with multiple pixel pipes */
    unsigned single_buffer : 1;
    /* has unified uniforms memory */
@@ -144,6 +146,8 @@ struct etna_specs {
 struct compiled_blend_color {
    float color[4];
    uint32_t PE_ALPHA_BLEND_COLOR;
+   uint32_t PE_ALPHA_COLOR_EXT0;
+   uint32_t PE_ALPHA_COLOR_EXT1;
 };
 
 /* Compiled pipe_stencil_ref */
@@ -193,6 +197,7 @@ struct compiled_framebuffer_state {
    struct etna_reloc PE_COLOR_ADDR;
    struct etna_reloc PE_PIPE_COLOR_ADDR[ETNA_MAX_PIXELPIPES];
    uint32_t PE_COLOR_STRIDE;
+   uint32_t PE_MEM_CONFIG;
    uint32_t SE_SCISSOR_LEFT;
    uint32_t SE_SCISSOR_TOP;
    uint32_t SE_SCISSOR_RIGHT;

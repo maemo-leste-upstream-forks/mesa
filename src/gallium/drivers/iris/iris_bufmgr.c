@@ -153,6 +153,12 @@ struct iris_bufmgr {
    struct hash_table *name_table;
    struct hash_table *handle_table;
 
+   /**
+    * List of BOs which we've effectively freed, but are hanging on to
+    * until they're idle before closing and returning the VMA.
+    */
+   struct list_head zombie_list;
+
    struct util_vma_heap vma_allocator[IRIS_MEMZONE_COUNT];
 
    bool has_llc:1;
@@ -349,6 +355,7 @@ bo_calloc(void)
 static struct iris_bo *
 alloc_bo_from_cache(struct iris_bufmgr *bufmgr,
                     struct bo_cache_bucket *bucket,
+                    uint32_t alignment,
                     enum iris_memory_zone memzone,
                     unsigned flags,
                     bool match_zone)
@@ -385,10 +392,11 @@ alloc_bo_from_cache(struct iris_bufmgr *bufmgr,
    if (!bo)
       return NULL;
 
-   /* If the cached BO isn't in the right memory zone, free the old
-    * memory and assign it a new address.
+   /* If the cached BO isn't in the right memory zone, or the alignment
+    * isn't sufficient, free the old memory and assign it a new address.
     */
-   if (memzone != iris_memzone_for_address(bo->gtt_offset)) {
+   if (memzone != iris_memzone_for_address(bo->gtt_offset) ||
+       bo->gtt_offset % alignment != 0) {
       vma_free(bufmgr, bo->gtt_offset, bo->size);
       bo->gtt_offset = 0ull;
    }
@@ -456,6 +464,7 @@ static struct iris_bo *
 bo_alloc_internal(struct iris_bufmgr *bufmgr,
                   const char *name,
                   uint64_t size,
+                  uint32_t alignment,
                   enum iris_memory_zone memzone,
                   unsigned flags,
                   uint32_t tiling_mode,
@@ -476,11 +485,13 @@ bo_alloc_internal(struct iris_bufmgr *bufmgr,
    /* Get a buffer out of the cache if available.  First, we try to find
     * one with a matching memory zone so we can avoid reallocating VMA.
     */
-   bo = alloc_bo_from_cache(bufmgr, bucket, memzone, flags, true);
+   bo = alloc_bo_from_cache(bufmgr, bucket, alignment, memzone, flags, true);
 
    /* If that fails, we try for any cached BO, without matching memzone. */
-   if (!bo)
-      bo = alloc_bo_from_cache(bufmgr, bucket, memzone, flags, false);
+   if (!bo) {
+      bo = alloc_bo_from_cache(bufmgr, bucket, alignment, memzone, flags,
+                               false);
+   }
 
    mtx_unlock(&bufmgr->lock);
 
@@ -492,7 +503,7 @@ bo_alloc_internal(struct iris_bufmgr *bufmgr,
 
    if (bo->gtt_offset == 0ull) {
       mtx_lock(&bufmgr->lock);
-      bo->gtt_offset = vma_alloc(bufmgr, memzone, bo->size, 1);
+      bo->gtt_offset = vma_alloc(bufmgr, memzone, bo->size, alignment);
       mtx_unlock(&bufmgr->lock);
 
       if (bo->gtt_offset == 0ull)
@@ -542,16 +553,17 @@ iris_bo_alloc(struct iris_bufmgr *bufmgr,
               uint64_t size,
               enum iris_memory_zone memzone)
 {
-   return bo_alloc_internal(bufmgr, name, size, memzone,
+   return bo_alloc_internal(bufmgr, name, size, 1, memzone,
                             0, I915_TILING_NONE, 0);
 }
 
 struct iris_bo *
 iris_bo_alloc_tiled(struct iris_bufmgr *bufmgr, const char *name,
-                    uint64_t size, enum iris_memory_zone memzone,
+                    uint64_t size, uint32_t alignment,
+                    enum iris_memory_zone memzone,
                     uint32_t tiling_mode, uint32_t pitch, unsigned flags)
 {
-   return bo_alloc_internal(bufmgr, name, size, memzone,
+   return bo_alloc_internal(bufmgr, name, size, alignment, memzone,
                             flags, tiling_mode, pitch);
 }
 
@@ -695,6 +707,25 @@ err_unref:
 }
 
 static void
+bo_close(struct iris_bo *bo)
+{
+   struct iris_bufmgr *bufmgr = bo->bufmgr;
+
+   /* Close this object */
+   struct drm_gem_close close = { .handle = bo->gem_handle };
+   int ret = drm_ioctl(bufmgr->fd, DRM_IOCTL_GEM_CLOSE, &close);
+   if (ret != 0) {
+      DBG("DRM_IOCTL_GEM_CLOSE %d failed (%s): %s\n",
+          bo->gem_handle, bo->name, strerror(errno));
+   }
+
+   /* Return the VMA for reuse */
+   vma_free(bo->bufmgr, bo->gtt_offset, bo->size);
+
+   free(bo);
+}
+
+static void
 bo_free(struct iris_bo *bo)
 {
    struct iris_bufmgr *bufmgr = bo->bufmgr;
@@ -724,17 +755,14 @@ bo_free(struct iris_bo *bo)
       _mesa_hash_table_remove(bufmgr->handle_table, entry);
    }
 
-   /* Close this object */
-   struct drm_gem_close close = { .handle = bo->gem_handle };
-   int ret = drm_ioctl(bufmgr->fd, DRM_IOCTL_GEM_CLOSE, &close);
-   if (ret != 0) {
-      DBG("DRM_IOCTL_GEM_CLOSE %d failed (%s): %s\n",
-          bo->gem_handle, bo->name, strerror(errno));
+   if (bo->idle) {
+      bo_close(bo);
+   } else {
+      /* Defer closing the GEM BO and returning the VMA for reuse until the
+       * BO is idle.  Just move it to the dead list for now.
+       */
+      list_addtail(&bo->head, &bufmgr->zombie_list);
    }
-
-   vma_free(bo->bufmgr, bo->gtt_offset, bo->size);
-
-   free(bo);
 }
 
 /** Frees all cached buffers significantly older than @time. */
@@ -757,6 +785,17 @@ cleanup_bo_cache(struct iris_bufmgr *bufmgr, time_t time)
 
          bo_free(bo);
       }
+   }
+
+   list_for_each_entry_safe(struct iris_bo, bo, &bufmgr->zombie_list, head) {
+      /* Stop once we reach a busy BO - all others past this point were
+       * freed more recently so are likely also busy.
+       */
+      if (!bo->idle && iris_bo_busy(bo))
+         break;
+
+      list_del(&bo->head);
+      bo_close(bo);
    }
 
    bufmgr->time = time;
@@ -1171,6 +1210,12 @@ iris_bufmgr_destroy(struct iris_bufmgr *bufmgr)
       }
    }
 
+   /* Close any buffer objects on the dead list. */
+   list_for_each_entry_safe(struct iris_bo, bo, &bufmgr->zombie_list, head) {
+      list_del(&bo->head);
+      bo_close(bo);
+   }
+
    _mesa_hash_table_destroy(bufmgr->name_table, NULL);
    _mesa_hash_table_destroy(bufmgr->handle_table, NULL);
 
@@ -1556,6 +1601,8 @@ iris_bufmgr_init(struct gen_device_info *devinfo, int fd)
       free(bufmgr);
       return NULL;
    }
+
+   list_inithead(&bufmgr->zombie_list);
 
    bufmgr->has_llc = devinfo->has_llc;
 

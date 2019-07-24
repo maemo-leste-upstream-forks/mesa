@@ -96,6 +96,15 @@ extern void GLAPIENTRY
 _mesa_GetTextureLevelParameteriv(GLuint texture, GLint level,
                                  GLenum pname, GLint *params);
 
+extern void GLAPIENTRY
+_mesa_GetTextureLevelParameterfvEXT(GLuint texture, GLenum target,
+                                    GLint level, GLenum pname,
+                                    GLfloat *params);
+
+extern void GLAPIENTRY
+_mesa_GetTextureLevelParameterivEXT(GLuint texture, GLenum target,
+                                    GLint level, GLenum pname,
+                                    GLint *params);
 
 extern void GLAPIENTRY
 _mesa_GetTexParameterfv( GLenum target, GLenum pname, GLfloat *params );
@@ -109,9 +118,14 @@ _mesa_GetTexParameterIiv(GLenum target, GLenum pname, GLint *params);
 extern void GLAPIENTRY
 _mesa_GetTexParameterIuiv(GLenum target, GLenum pname, GLuint *params);
 
+extern void GLAPIENTRY
+_mesa_GetTextureParameterfvEXT(GLuint texture, GLenum target, GLenum pname, GLfloat *params);
 
 extern void GLAPIENTRY
 _mesa_GetTextureParameterfv(GLuint texture, GLenum pname, GLfloat *params);
+
+extern void GLAPIENTRY
+_mesa_GetTextureParameterivEXT(GLuint texture, GLenum target, GLenum pname, GLint *params );
 
 extern void GLAPIENTRY
 _mesa_GetTextureParameteriv(GLuint texture, GLenum pname, GLint *params);
@@ -142,13 +156,25 @@ extern void GLAPIENTRY
 _mesa_TexParameterIuiv(GLenum target, GLenum pname, const GLuint *params);
 
 extern void GLAPIENTRY
+_mesa_TextureParameterfvEXT(GLuint texture, GLenum target, GLenum pname, const GLfloat *params);
+
+extern void GLAPIENTRY
 _mesa_TextureParameterfv(GLuint texture, GLenum pname, const GLfloat *params);
+
+extern void GLAPIENTRY
+_mesa_TextureParameterfEXT(GLuint texture, GLenum target, GLenum pname, GLfloat param);
 
 extern void GLAPIENTRY
 _mesa_TextureParameterf(GLuint texture, GLenum pname, GLfloat param);
 
 extern void GLAPIENTRY
+_mesa_TextureParameteriEXT(GLuint texture, GLenum target, GLenum pname, GLint param);
+
+extern void GLAPIENTRY
 _mesa_TextureParameteri(GLuint texture, GLenum pname, GLint param);
+
+extern void GLAPIENTRY
+_mesa_TextureParameterivEXT(GLuint texture, GLenum target, GLenum pname, const GLint *params);
 
 extern void GLAPIENTRY
 _mesa_TextureParameteriv(GLuint texture, GLenum pname, const GLint *params);

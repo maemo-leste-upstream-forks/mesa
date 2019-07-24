@@ -112,7 +112,6 @@ endforeach
 
 libanv_files = files(
   'anv_allocator.c',
-  'anv_android_stubs.c',
   'anv_android.h',
   'anv_batch_chain.c',
   'anv_blorp.c',
@@ -127,7 +126,6 @@ libanv_files = files(
   'anv_nir.h',
   'anv_nir_add_base_work_group_id.c',
   'anv_nir_apply_pipeline_layout.c',
-  'anv_nir_lower_input_attachments.c',
   'anv_nir_lower_multiview.c',
   'anv_nir_lower_push_constants.c',
   'anv_nir_lower_ycbcr_textures.c',
@@ -176,6 +174,14 @@ endif
 if with_xlib_lease
   anv_deps += [dep_xcb_xrandr, dep_xlib_xrandr]
   anv_flags += '-DVK_USE_PLATFORM_XLIB_XRANDR_EXT'
+endif
+
+if with_platform_android
+  anv_deps += dep_android
+  anv_flags += '-DVK_USE_PLATFORM_ANDROID_KHR'
+  libanv_files += files('anv_android.c')
+else
+  libanv_files += files('anv_android_stubs.c')
 endif
 
 libanv_common = static_library(
@@ -229,9 +235,9 @@ if with_tests
     c_args : anv_flags,
   )
 
-  foreach t : ['block_pool_no_free', 'state_pool_no_free',
-               'state_pool_free_list_only', 'state_pool',
-               'state_pool_padding']
+  foreach t : ['block_pool_no_free', 'block_pool_grow_first',
+               'state_pool_no_free', 'state_pool_free_list_only',
+               'state_pool', 'state_pool_padding']
     test(
       'anv_@0@'.format(t),
       executable(

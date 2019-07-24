@@ -183,14 +183,16 @@ static void si_emit_derived_tess_state(struct si_context *sctx,
 	 * occupy significantly more CUs.
 	 */
 	unsigned temp_verts_per_tg = *num_patches * max_verts_per_patch;
-	if (temp_verts_per_tg > 64 && temp_verts_per_tg % 64 < 48)
-		*num_patches = (temp_verts_per_tg & ~63) / max_verts_per_patch;
+	unsigned wave_size = sctx->screen->ge_wave_size;
+
+	if (temp_verts_per_tg > wave_size && temp_verts_per_tg % wave_size < wave_size*3/4)
+		*num_patches = (temp_verts_per_tg & ~(wave_size - 1)) / max_verts_per_patch;
 
 	if (sctx->chip_class == GFX6) {
 		/* GFX6 bug workaround, related to power management. Limit LS-HS
 		 * threadgroups to only one wave.
 		 */
-		unsigned one_wave = 64 / max_verts_per_patch;
+		unsigned one_wave = wave_size / max_verts_per_patch;
 		*num_patches = MIN2(*num_patches, one_wave);
 	}
 
@@ -258,8 +260,12 @@ static void si_emit_derived_tess_state(struct si_context *sctx,
 	assert(ls_current->config.lds_size == 0);
 
 	if (sctx->chip_class >= GFX9) {
-		unsigned hs_rsrc2 = ls_current->config.rsrc2 |
-				    S_00B42C_LDS_SIZE(lds_size);
+		unsigned hs_rsrc2 = ls_current->config.rsrc2;
+
+		if (sctx->chip_class >= GFX10)
+			hs_rsrc2 |= S_00B42C_LDS_SIZE_GFX10(lds_size);
+		else
+			hs_rsrc2 |= S_00B42C_LDS_SIZE_GFX9(lds_size);
 
 		radeon_set_sh_reg(cs, R_00B42C_SPI_SHADER_PGM_RSRC2_HS, hs_rsrc2);
 
@@ -549,6 +555,31 @@ static unsigned si_get_ia_multi_vgt_param(struct si_context *sctx,
 	return ia_multi_vgt_param;
 }
 
+static unsigned si_conv_prim_to_gs_out(unsigned mode)
+{
+	static const int prim_conv[] = {
+		[PIPE_PRIM_POINTS]			= V_028A6C_OUTPRIM_TYPE_POINTLIST,
+		[PIPE_PRIM_LINES]			= V_028A6C_OUTPRIM_TYPE_LINESTRIP,
+		[PIPE_PRIM_LINE_LOOP]			= V_028A6C_OUTPRIM_TYPE_LINESTRIP,
+		[PIPE_PRIM_LINE_STRIP]			= V_028A6C_OUTPRIM_TYPE_LINESTRIP,
+		[PIPE_PRIM_TRIANGLES]			= V_028A6C_OUTPRIM_TYPE_TRISTRIP,
+		[PIPE_PRIM_TRIANGLE_STRIP]		= V_028A6C_OUTPRIM_TYPE_TRISTRIP,
+		[PIPE_PRIM_TRIANGLE_FAN]		= V_028A6C_OUTPRIM_TYPE_TRISTRIP,
+		[PIPE_PRIM_QUADS]			= V_028A6C_OUTPRIM_TYPE_TRISTRIP,
+		[PIPE_PRIM_QUAD_STRIP]			= V_028A6C_OUTPRIM_TYPE_TRISTRIP,
+		[PIPE_PRIM_POLYGON]			= V_028A6C_OUTPRIM_TYPE_TRISTRIP,
+		[PIPE_PRIM_LINES_ADJACENCY]		= V_028A6C_OUTPRIM_TYPE_LINESTRIP,
+		[PIPE_PRIM_LINE_STRIP_ADJACENCY]	= V_028A6C_OUTPRIM_TYPE_LINESTRIP,
+		[PIPE_PRIM_TRIANGLES_ADJACENCY]		= V_028A6C_OUTPRIM_TYPE_TRISTRIP,
+		[PIPE_PRIM_TRIANGLE_STRIP_ADJACENCY]	= V_028A6C_OUTPRIM_TYPE_TRISTRIP,
+		[PIPE_PRIM_PATCHES]			= V_028A6C_OUTPRIM_TYPE_POINTLIST,
+		[SI_PRIM_RECTANGLE_LIST]		= V_028A6C_VGT_OUT_RECT_V0,
+	};
+	assert(mode < ARRAY_SIZE(prim_conv));
+
+	return prim_conv[mode];
+}
+
 /* rast_prim is the primitive type after GS. */
 static void si_emit_rasterizer_prim_state(struct si_context *sctx)
 {
@@ -556,24 +587,44 @@ static void si_emit_rasterizer_prim_state(struct si_context *sctx)
 	enum pipe_prim_type rast_prim = sctx->current_rast_prim;
 	struct si_state_rasterizer *rs = sctx->queued.named.rasterizer;
 
-	/* Skip this if not rendering lines. */
-	if (!util_prim_is_lines(rast_prim))
+	if (likely(rast_prim == sctx->last_rast_prim &&
+		   rs->pa_sc_line_stipple == sctx->last_sc_line_stipple &&
+		   (sctx->chip_class <= GFX9 ||
+		    rs->flatshade_first == sctx->last_flatshade_first)))
 		return;
 
-	if (rast_prim == sctx->last_rast_prim &&
-	    rs->pa_sc_line_stipple == sctx->last_sc_line_stipple)
-		return;
+	if (util_prim_is_lines(rast_prim)) {
+		/* For lines, reset the stipple pattern at each primitive. Otherwise,
+		 * reset the stipple pattern at each packet (line strips, line loops).
+		 */
+		radeon_set_context_reg(cs, R_028A0C_PA_SC_LINE_STIPPLE,
+			rs->pa_sc_line_stipple |
+			S_028A0C_AUTO_RESET_CNTL(rast_prim == PIPE_PRIM_LINES ? 1 : 2));
+		sctx->context_roll = true;
+	}
 
-	/* For lines, reset the stipple pattern at each primitive. Otherwise,
-	 * reset the stipple pattern at each packet (line strips, line loops).
-	 */
-	radeon_set_context_reg(cs, R_028A0C_PA_SC_LINE_STIPPLE,
-		rs->pa_sc_line_stipple |
-		S_028A0C_AUTO_RESET_CNTL(rast_prim == PIPE_PRIM_LINES ? 1 : 2));
+	unsigned gs_out = si_conv_prim_to_gs_out(sctx->current_rast_prim);
+
+	if (rast_prim != sctx->last_rast_prim &&
+	    (sctx->ngg || sctx->gs_shader.cso)) {
+		radeon_set_context_reg(cs, R_028A6C_VGT_GS_OUT_PRIM_TYPE, gs_out);
+		sctx->context_roll = true;
+
+		if (sctx->chip_class >= GFX10) {
+			sctx->current_vs_state &= C_VS_STATE_OUTPRIM;
+			sctx->current_vs_state |= S_VS_STATE_OUTPRIM(gs_out);
+		}
+	}
+
+	if (sctx->chip_class >= GFX10) {
+		unsigned vtx_index = rs->flatshade_first ? 0 : gs_out;
+		sctx->current_vs_state &= C_VS_STATE_PROVOKING_VTX_INDEX;
+		sctx->current_vs_state |= S_VS_STATE_PROVOKING_VTX_INDEX(vtx_index);
+	}
 
 	sctx->last_rast_prim = rast_prim;
 	sctx->last_sc_line_stipple = rs->pa_sc_line_stipple;
-	sctx->context_roll = true;
+	sctx->last_flatshade_first = rs->flatshade_first;
 }
 
 static void si_emit_vs_state(struct si_context *sctx,
@@ -591,20 +642,33 @@ static void si_emit_vs_state(struct si_context *sctx,
 	if (sctx->current_vs_state != sctx->last_vs_state) {
 		struct radeon_cmdbuf *cs = sctx->gfx_cs;
 
-		/* For the API vertex shader (VS_STATE_INDEXED). */
+		/* For the API vertex shader (VS_STATE_INDEXED, LS_OUT_*). */
 		radeon_set_sh_reg(cs,
 			sctx->shader_pointers.sh_base[PIPE_SHADER_VERTEX] +
 			SI_SGPR_VS_STATE_BITS * 4,
 			sctx->current_vs_state);
 
-		/* For vertex color clamping, which is done in the last stage
-		 * before the rasterizer. */
-		if (sctx->gs_shader.cso || sctx->tes_shader.cso) {
-			/* GS copy shader or TES if GS is missing. */
+		/* Set CLAMP_VERTEX_COLOR and OUTPRIM in the last stage
+		 * before the rasterizer.
+		 *
+		 * For TES or the GS copy shader without NGG:
+		 */
+		if (sctx->shader_pointers.sh_base[PIPE_SHADER_VERTEX] !=
+		    R_00B130_SPI_SHADER_USER_DATA_VS_0) {
 			radeon_set_sh_reg(cs,
 				R_00B130_SPI_SHADER_USER_DATA_VS_0 +
 				SI_SGPR_VS_STATE_BITS * 4,
 				sctx->current_vs_state);
+		}
+
+		/* For NGG: */
+		if (sctx->chip_class >= GFX10 &&
+		    sctx->shader_pointers.sh_base[PIPE_SHADER_VERTEX] !=
+		    R_00B230_SPI_SHADER_USER_DATA_GS_0) {
+			radeon_set_sh_reg(cs,
+					  R_00B230_SPI_SHADER_USER_DATA_GS_0 +
+					  SI_SGPR_VS_STATE_BITS * 4,
+					  sctx->current_vs_state);
 		}
 
 		sctx->last_vs_state = sctx->current_vs_state;
@@ -620,15 +684,14 @@ static inline bool si_prim_restart_index_changed(struct si_context *sctx,
 		sctx->last_restart_index == SI_RESTART_INDEX_UNKNOWN);
 }
 
-static void si_emit_draw_registers(struct si_context *sctx,
-				   const struct pipe_draw_info *info,
-				   enum pipe_prim_type prim,
-				   unsigned num_patches,
-				   unsigned instance_count,
-				   bool primitive_restart)
+static void si_emit_ia_multi_vgt_param(struct si_context *sctx,
+				       const struct pipe_draw_info *info,
+				       enum pipe_prim_type prim,
+				       unsigned num_patches,
+				       unsigned instance_count,
+				       bool primitive_restart)
 {
 	struct radeon_cmdbuf *cs = sctx->gfx_cs;
-	unsigned vgt_prim = si_conv_pipe_prim(prim);
 	unsigned ia_multi_vgt_param;
 
 	ia_multi_vgt_param = si_get_ia_multi_vgt_param(sctx, info, prim, num_patches,
@@ -636,7 +699,7 @@ static void si_emit_draw_registers(struct si_context *sctx,
 
 	/* Draw state. */
 	if (ia_multi_vgt_param != sctx->last_multi_vgt_param) {
-		if (sctx->chip_class >= GFX9)
+		if (sctx->chip_class == GFX9)
 			radeon_set_uconfig_reg_idx(cs, sctx->screen,
 						   R_030960_IA_MULTI_VGT_PARAM, 4,
 						   ia_multi_vgt_param);
@@ -647,8 +710,67 @@ static void si_emit_draw_registers(struct si_context *sctx,
 
 		sctx->last_multi_vgt_param = ia_multi_vgt_param;
 	}
+}
+
+/* GFX10 removed IA_MULTI_VGT_PARAM in exchange for GE_CNTL.
+ * We overload last_multi_vgt_param.
+ */
+static void gfx10_emit_ge_cntl(struct si_context *sctx, unsigned num_patches)
+{
+	unsigned ge_cntl;
+
+	if (sctx->ngg) {
+		ge_cntl = si_get_vs_state(sctx)->ge_cntl |
+			  S_03096C_PACKET_TO_ONE_PA(sctx->ia_multi_vgt_param_key.u.line_stipple_enabled);
+	} else {
+		union si_vgt_param_key key = sctx->ia_multi_vgt_param_key;
+		unsigned primgroup_size;
+		unsigned vertgroup_size;
+
+		if (sctx->tes_shader.cso) {
+			primgroup_size = num_patches; /* must be a multiple of NUM_PATCHES */
+			vertgroup_size = 0;
+		} else if (sctx->gs_shader.cso) {
+			unsigned vgt_gs_onchip_cntl = sctx->gs_shader.current->ctx_reg.gs.vgt_gs_onchip_cntl;
+			primgroup_size = G_028A44_GS_PRIMS_PER_SUBGRP(vgt_gs_onchip_cntl);
+			vertgroup_size = G_028A44_ES_VERTS_PER_SUBGRP(vgt_gs_onchip_cntl);
+		} else {
+			primgroup_size = 128; /* recommended without a GS and tess */
+			vertgroup_size = 0;
+		}
+
+		ge_cntl = S_03096C_PRIM_GRP_SIZE(primgroup_size) |
+			  S_03096C_VERT_GRP_SIZE(vertgroup_size) |
+			  S_03096C_BREAK_WAVE_AT_EOI(key.u.uses_tess && key.u.tess_uses_prim_id) |
+			  S_03096C_PACKET_TO_ONE_PA(key.u.line_stipple_enabled);
+	}
+
+	if (ge_cntl != sctx->last_multi_vgt_param) {
+		radeon_set_uconfig_reg(sctx->gfx_cs, R_03096C_GE_CNTL, ge_cntl);
+		sctx->last_multi_vgt_param = ge_cntl;
+	}
+}
+
+static void si_emit_draw_registers(struct si_context *sctx,
+				   const struct pipe_draw_info *info,
+				   enum pipe_prim_type prim,
+				   unsigned num_patches,
+				   unsigned instance_count,
+				   bool primitive_restart)
+{
+	struct radeon_cmdbuf *cs = sctx->gfx_cs;
+	unsigned vgt_prim = si_conv_pipe_prim(prim);
+
+	if (sctx->chip_class >= GFX10)
+		gfx10_emit_ge_cntl(sctx, num_patches);
+	else
+		si_emit_ia_multi_vgt_param(sctx, info, prim, num_patches,
+					   instance_count, primitive_restart);
+
 	if (vgt_prim != sctx->last_prim) {
-		if (sctx->chip_class >= GFX7)
+		if (sctx->chip_class >= GFX10)
+			radeon_set_uconfig_reg(cs, R_030908_VGT_PRIMITIVE_TYPE, vgt_prim);
+		else if (sctx->chip_class >= GFX7)
 			radeon_set_uconfig_reg_idx(cs, sctx->screen,
 						   R_030908_VGT_PRIMITIVE_TYPE, 1, vgt_prim);
 		else
@@ -900,7 +1022,9 @@ void si_emit_surface_sync(struct si_context *sctx, struct radeon_cmdbuf *cs,
 	bool compute_ib = !sctx->has_graphics ||
 			  cs == sctx->prim_discard_compute_cs;
 
-	if (sctx->chip_class >= GFX9 || compute_ib) {
+	assert(sctx->chip_class <= GFX9);
+
+	if (sctx->chip_class == GFX9 || compute_ib) {
 		/* Flush caches and wait for the caches to assert idle. */
 		radeon_emit(cs, PKT3(PKT3_ACQUIRE_MEM, 5, 0));
 		radeon_emit(cs, cp_coher_cntl);	/* CP_COHER_CNTL */
@@ -951,6 +1075,191 @@ void si_prim_discard_signal_next_compute_ib_start(struct si_context *sctx)
 	*sctx->last_pkt3_write_data = PKT3(PKT3_NOP, 3, 0);
 }
 
+void gfx10_emit_cache_flush(struct si_context *ctx)
+{
+	struct radeon_cmdbuf *cs = ctx->gfx_cs;
+	uint32_t gcr_cntl = 0;
+	unsigned cb_db_event = 0;
+	unsigned flags = ctx->flags;
+
+	if (!ctx->has_graphics) {
+		/* Only process compute flags. */
+		flags &= SI_CONTEXT_INV_ICACHE |
+			 SI_CONTEXT_INV_SCACHE |
+			 SI_CONTEXT_INV_VCACHE |
+			 SI_CONTEXT_INV_L2 |
+			 SI_CONTEXT_WB_L2 |
+			 SI_CONTEXT_INV_L2_METADATA |
+			 SI_CONTEXT_CS_PARTIAL_FLUSH;
+	}
+
+	/* We don't need these. */
+	assert(!(flags & (SI_CONTEXT_VGT_FLUSH |
+			  SI_CONTEXT_VGT_STREAMOUT_SYNC |
+			  SI_CONTEXT_FLUSH_AND_INV_DB_META)));
+
+	if (flags & SI_CONTEXT_FLUSH_AND_INV_CB)
+		ctx->num_cb_cache_flushes++;
+	if (flags & SI_CONTEXT_FLUSH_AND_INV_DB)
+		ctx->num_db_cache_flushes++;
+
+	if (flags & SI_CONTEXT_INV_ICACHE)
+		gcr_cntl |= S_586_GLI_INV(V_586_GLI_ALL);
+	if (flags & SI_CONTEXT_INV_SCACHE) {
+		/* TODO: When writing to the SMEM L1 cache, we need to set SEQ
+		 * to FORWARD when both L1 and L2 are written out (WB or INV).
+		 */
+		gcr_cntl |= S_586_GL1_INV(1) | S_586_GLK_INV(1);
+	}
+	if (flags & SI_CONTEXT_INV_VCACHE)
+		gcr_cntl |= S_586_GL1_INV(1) | S_586_GLV_INV(1);
+	if (flags & SI_CONTEXT_INV_L2) {
+		/* Writeback and invalidate everything in L2. */
+		gcr_cntl |= S_586_GL2_INV(1) | S_586_GLM_INV(1);
+		ctx->num_L2_invalidates++;
+	} else if (flags & SI_CONTEXT_WB_L2) {
+		/* Writeback but do not invalidate. */
+		gcr_cntl |= S_586_GL2_WB(1);
+	}
+	if (flags & SI_CONTEXT_INV_L2_METADATA)
+		gcr_cntl |= S_586_GLM_INV(1);
+
+	if (flags & (SI_CONTEXT_FLUSH_AND_INV_CB | SI_CONTEXT_FLUSH_AND_INV_DB)) {
+		if (flags & SI_CONTEXT_FLUSH_AND_INV_CB) {
+			/* Flush CMASK/FMASK/DCC. Will wait for idle later. */
+			radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
+			radeon_emit(cs, EVENT_TYPE(V_028A90_FLUSH_AND_INV_CB_META) |
+					EVENT_INDEX(0));
+		}
+		if (flags & SI_CONTEXT_FLUSH_AND_INV_DB) {
+			/* Flush HTILE. Will wait for idle later. */
+			radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
+			radeon_emit(cs, EVENT_TYPE(V_028A90_FLUSH_AND_INV_DB_META) |
+					EVENT_INDEX(0));
+		}
+
+		/* First flush CB/DB, then L1/L2. */
+		gcr_cntl |= S_586_SEQ(V_586_SEQ_FORWARD);
+
+		if ((flags & (SI_CONTEXT_FLUSH_AND_INV_CB | SI_CONTEXT_FLUSH_AND_INV_DB)) ==
+		    (SI_CONTEXT_FLUSH_AND_INV_CB | SI_CONTEXT_FLUSH_AND_INV_DB)) {
+			cb_db_event = V_028A90_CACHE_FLUSH_AND_INV_TS_EVENT;
+		} else if (flags & SI_CONTEXT_FLUSH_AND_INV_CB) {
+			cb_db_event = V_028A90_FLUSH_AND_INV_CB_DATA_TS;
+		} else if (flags & SI_CONTEXT_FLUSH_AND_INV_DB) {
+			cb_db_event = V_028A90_FLUSH_AND_INV_DB_DATA_TS;
+		} else {
+			assert(0);
+		}
+	} else {
+		/* Wait for graphics shaders to go idle if requested. */
+		if (flags & SI_CONTEXT_PS_PARTIAL_FLUSH) {
+			radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
+			radeon_emit(cs, EVENT_TYPE(V_028A90_PS_PARTIAL_FLUSH) | EVENT_INDEX(4));
+			/* Only count explicit shader flushes, not implicit ones. */
+			ctx->num_vs_flushes++;
+			ctx->num_ps_flushes++;
+		} else if (flags & SI_CONTEXT_VS_PARTIAL_FLUSH) {
+			radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
+			radeon_emit(cs, EVENT_TYPE(V_028A90_VS_PARTIAL_FLUSH) | EVENT_INDEX(4));
+			ctx->num_vs_flushes++;
+		}
+	}
+
+	if (flags & SI_CONTEXT_CS_PARTIAL_FLUSH && ctx->compute_is_busy) {
+		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
+		radeon_emit(cs, EVENT_TYPE(V_028A90_CS_PARTIAL_FLUSH | EVENT_INDEX(4)));
+		ctx->num_cs_flushes++;
+		ctx->compute_is_busy = false;
+	}
+
+	if (cb_db_event) {
+		/* CB/DB flush and invalidate (or possibly just a wait for a
+		 * meta flush) via RELEASE_MEM.
+		 *
+		 * Combine this with other cache flushes when possible; this
+		 * requires affected shaders to be idle, so do it after the
+		 * CS_PARTIAL_FLUSH before (VS/PS partial flushes are always
+		 * implied).
+		 */
+		uint64_t va;
+
+		/* Do the flush (enqueue the event and wait for it). */
+		va = ctx->wait_mem_scratch->gpu_address;
+		ctx->wait_mem_number++;
+
+		/* Get GCR_CNTL fields, because the encoding is different in RELEASE_MEM. */
+		unsigned glm_wb = G_586_GLM_WB(gcr_cntl);
+		unsigned glm_inv = G_586_GLM_INV(gcr_cntl);
+		unsigned glv_inv = G_586_GLV_INV(gcr_cntl);
+		unsigned gl1_inv = G_586_GL1_INV(gcr_cntl);
+		assert(G_586_GL2_US(gcr_cntl) == 0);
+		assert(G_586_GL2_RANGE(gcr_cntl) == 0);
+		assert(G_586_GL2_DISCARD(gcr_cntl) == 0);
+		unsigned gl2_inv = G_586_GL2_INV(gcr_cntl);
+		unsigned gl2_wb = G_586_GL2_WB(gcr_cntl);
+		unsigned gcr_seq = G_586_SEQ(gcr_cntl);
+
+		gcr_cntl &= C_586_GLM_WB &
+			    C_586_GLM_INV &
+			    C_586_GLV_INV &
+			    C_586_GL1_INV &
+			    C_586_GL2_INV &
+			    C_586_GL2_WB; /* keep SEQ */
+
+		si_cp_release_mem(ctx, cs, cb_db_event,
+				  S_490_GLM_WB(glm_wb) |
+				  S_490_GLM_INV(glm_inv) |
+				  S_490_GLV_INV(glv_inv) |
+				  S_490_GL1_INV(gl1_inv) |
+				  S_490_GL2_INV(gl2_inv) |
+				  S_490_GL2_WB(gl2_wb) |
+				  S_490_SEQ(gcr_seq),
+				  EOP_DST_SEL_MEM,
+				  EOP_INT_SEL_SEND_DATA_AFTER_WR_CONFIRM,
+				  EOP_DATA_SEL_VALUE_32BIT,
+				  ctx->wait_mem_scratch, va,
+				  ctx->wait_mem_number, SI_NOT_QUERY);
+		si_cp_wait_mem(ctx, ctx->gfx_cs, va, ctx->wait_mem_number, 0xffffffff,
+			       WAIT_REG_MEM_EQUAL);
+	}
+
+	/* Ignore fields that only modify the behavior of other fields. */
+	if (gcr_cntl & C_586_GL1_RANGE & C_586_GL2_RANGE & C_586_SEQ) {
+		/* Flush caches and wait for the caches to assert idle.
+		 * The cache flush is executed in the ME, but the PFP waits
+		 * for completion.
+		 */
+		radeon_emit(cs, PKT3(PKT3_ACQUIRE_MEM, 6, 0));
+		radeon_emit(cs, 0);		/* CP_COHER_CNTL */
+		radeon_emit(cs, 0xffffffff);	/* CP_COHER_SIZE */
+		radeon_emit(cs, 0xffffff);	/* CP_COHER_SIZE_HI */
+		radeon_emit(cs, 0);		/* CP_COHER_BASE */
+		radeon_emit(cs, 0);		/* CP_COHER_BASE_HI */
+		radeon_emit(cs, 0x0000000A);	/* POLL_INTERVAL */
+		radeon_emit(cs, gcr_cntl);	/* GCR_CNTL */
+	} else if (cb_db_event ||
+		   (flags & (SI_CONTEXT_VS_PARTIAL_FLUSH |
+			     SI_CONTEXT_PS_PARTIAL_FLUSH |
+			     SI_CONTEXT_CS_PARTIAL_FLUSH))) {
+		/* We need to ensure that PFP waits as well. */
+		radeon_emit(cs, PKT3(PKT3_PFP_SYNC_ME, 0, 0));
+		radeon_emit(cs, 0);
+	}
+
+	if (flags & SI_CONTEXT_START_PIPELINE_STATS) {
+		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
+		radeon_emit(cs, EVENT_TYPE(V_028A90_PIPELINESTAT_START) |
+			        EVENT_INDEX(0));
+	} else if (flags & SI_CONTEXT_STOP_PIPELINE_STATS) {
+		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
+		radeon_emit(cs, EVENT_TYPE(V_028A90_PIPELINESTAT_STOP) |
+			        EVENT_INDEX(0));
+	}
+
+	ctx->flags = 0;
+}
+
 void si_emit_cache_flush(struct si_context *sctx)
 {
 	struct radeon_cmdbuf *cs = sctx->gfx_cs;
@@ -959,10 +1268,10 @@ void si_emit_cache_flush(struct si_context *sctx)
 	if (!sctx->has_graphics) {
 		/* Only process compute flags. */
 		flags &= SI_CONTEXT_INV_ICACHE |
-			 SI_CONTEXT_INV_SMEM_L1 |
-			 SI_CONTEXT_INV_VMEM_L1 |
-			 SI_CONTEXT_INV_GLOBAL_L2 |
-			 SI_CONTEXT_WRITEBACK_GLOBAL_L2 |
+			 SI_CONTEXT_INV_SCACHE |
+			 SI_CONTEXT_INV_VCACHE |
+			 SI_CONTEXT_INV_L2 |
+			 SI_CONTEXT_WB_L2 |
 			 SI_CONTEXT_INV_L2_METADATA |
 			 SI_CONTEXT_CS_PARTIAL_FLUSH;
 	}
@@ -981,6 +1290,8 @@ void si_emit_cache_flush(struct si_context *sctx)
 				(flags & SI_CONTEXT_CS_PARTIAL_FLUSH &&
 				 sctx->compute_is_busy);
 
+	assert(sctx->chip_class <= GFX9);
+
 	if (flags & SI_CONTEXT_FLUSH_AND_INV_CB)
 		sctx->num_cb_cache_flushes++;
 	if (flags & SI_CONTEXT_FLUSH_AND_INV_DB)
@@ -996,7 +1307,7 @@ void si_emit_cache_flush(struct si_context *sctx)
 
 	if (flags & SI_CONTEXT_INV_ICACHE)
 		cp_coher_cntl |= S_0085F0_SH_ICACHE_ACTION_ENA(1);
-	if (flags & SI_CONTEXT_INV_SMEM_L1)
+	if (flags & SI_CONTEXT_INV_SCACHE)
 		cp_coher_cntl |= S_0085F0_SH_KCACHE_ACTION_ENA(1);
 
 	if (sctx->chip_class <= GFX8) {
@@ -1077,7 +1388,7 @@ void si_emit_cache_flush(struct si_context *sctx)
 	/* GFX9: Wait for idle if we're flushing CB or DB. ACQUIRE_MEM doesn't
 	 * wait for idle on GFX9. We have to use a TS event.
 	 */
-	if (sctx->chip_class >= GFX9 && flush_cb_db) {
+	if (sctx->chip_class == GFX9 && flush_cb_db) {
 		uint64_t va;
 		unsigned tc_flags, cb_db_event;
 
@@ -1114,15 +1425,15 @@ void si_emit_cache_flush(struct si_context *sctx)
 		}
 
 		/* Ideally flush TC together with CB/DB. */
-		if (flags & SI_CONTEXT_INV_GLOBAL_L2) {
+		if (flags & SI_CONTEXT_INV_L2) {
 			/* Writeback and invalidate everything in L2 & L1. */
 			tc_flags = EVENT_TC_ACTION_ENA |
 				   EVENT_TC_WB_ACTION_ENA;
 
 			/* Clear the flags. */
-			flags &= ~(SI_CONTEXT_INV_GLOBAL_L2 |
-				   SI_CONTEXT_WRITEBACK_GLOBAL_L2 |
-				   SI_CONTEXT_INV_VMEM_L1);
+			flags &= ~(SI_CONTEXT_INV_L2 |
+				   SI_CONTEXT_WB_L2 |
+				   SI_CONTEXT_INV_VCACHE);
 			sctx->num_L2_invalidates++;
 		}
 
@@ -1146,9 +1457,9 @@ void si_emit_cache_flush(struct si_context *sctx)
 	if (sctx->has_graphics &&
 	    (cp_coher_cntl ||
 	     (flags & (SI_CONTEXT_CS_PARTIAL_FLUSH |
-		       SI_CONTEXT_INV_VMEM_L1 |
-		       SI_CONTEXT_INV_GLOBAL_L2 |
-		       SI_CONTEXT_WRITEBACK_GLOBAL_L2)))) {
+		       SI_CONTEXT_INV_VCACHE |
+		       SI_CONTEXT_INV_L2 |
+		       SI_CONTEXT_WB_L2)))) {
 		radeon_emit(cs, PKT3(PKT3_PFP_SYNC_ME, 0, 0));
 		radeon_emit(cs, 0);
 	}
@@ -1162,9 +1473,9 @@ void si_emit_cache_flush(struct si_context *sctx)
 	 *
 	 * GFX6-GFX7 don't support L2 write-back.
 	 */
-	if (flags & SI_CONTEXT_INV_GLOBAL_L2 ||
+	if (flags & SI_CONTEXT_INV_L2 ||
 	    (sctx->chip_class <= GFX7 &&
-	     (flags & SI_CONTEXT_WRITEBACK_GLOBAL_L2))) {
+	     (flags & SI_CONTEXT_WB_L2))) {
 		/* Invalidate L1 & L2. (L1 is always invalidated on GFX6)
 		 * WB must be set on GFX8+ when TC_ACTION is set.
 		 */
@@ -1178,7 +1489,7 @@ void si_emit_cache_flush(struct si_context *sctx)
 		/* L1 invalidation and L2 writeback must be done separately,
 		 * because both operations can't be done together.
 		 */
-		if (flags & SI_CONTEXT_WRITEBACK_GLOBAL_L2) {
+		if (flags & SI_CONTEXT_WB_L2) {
 			/* WB = write-back
 			 * NC = apply to non-coherent MTYPEs
 			 *      (i.e. MTYPE <= 1, which is what we use everywhere)
@@ -1191,7 +1502,7 @@ void si_emit_cache_flush(struct si_context *sctx)
 			cp_coher_cntl = 0;
 			sctx->num_L2_writebacks++;
 		}
-		if (flags & SI_CONTEXT_INV_VMEM_L1) {
+		if (flags & SI_CONTEXT_INV_VCACHE) {
 			/* Invalidate per-CU VMEM L1. */
 			si_emit_surface_sync(sctx, sctx->gfx_cs, cp_coher_cntl |
 					     S_0085F0_TCL1_ACTION_ENA(1));
@@ -1483,15 +1794,18 @@ static void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *i
 	 * This must be done after si_decompress_textures, which can call
 	 * draw_vbo recursively, and before si_update_shaders, which uses
 	 * current_rast_prim for this draw_vbo call. */
-	if (sctx->gs_shader.cso)
-		rast_prim = sctx->gs_shader.cso->gs_output_prim;
-	else if (sctx->tes_shader.cso) {
-		if (sctx->tes_shader.cso->info.properties[TGSI_PROPERTY_TES_POINT_MODE])
-			rast_prim = PIPE_PRIM_POINTS;
-		else
-			rast_prim = sctx->tes_shader.cso->info.properties[TGSI_PROPERTY_TES_PRIM_MODE];
-	} else
+	if (sctx->gs_shader.cso) {
+		/* Only possibilities: POINTS, LINE_STRIP, TRIANGLES */
+		rast_prim = sctx->gs_shader.cso->rast_prim;
+	} else if (sctx->tes_shader.cso) {
+		/* Only possibilities: POINTS, LINE_STRIP, TRIANGLES */
+		rast_prim = sctx->tes_shader.cso->rast_prim;
+	} else if (util_rast_prim_is_triangles(prim)) {
+		rast_prim = PIPE_PRIM_TRIANGLES;
+	} else {
+		/* Only possibilities, POINTS, LINE*, RECTANGLES */
 		rast_prim = prim;
+	}
 
 	if (rast_prim != sctx->current_rast_prim) {
 		if (util_prim_is_points_or_lines(sctx->current_rast_prim) !=
@@ -1523,7 +1837,7 @@ static void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *i
 		}
 	}
 
-	if (sctx->gs_shader.cso) {
+	if (sctx->chip_class <= GFX9 && sctx->gs_shader.cso) {
 		/* Determine whether the GS triangle strip adjacency fix should
 		 * be applied. Rotate every other triangle if
 		 * - triangle strips with adjacency are fed to the GS and
@@ -1588,7 +1902,7 @@ static void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *i
 			   si_resource(indexbuf)->TC_L2_dirty) {
 			/* GFX8 reads index buffers through TC L2, so it doesn't
 			 * need this. */
-			sctx->flags |= SI_CONTEXT_WRITEBACK_GLOBAL_L2;
+			sctx->flags |= SI_CONTEXT_WB_L2;
 			si_resource(indexbuf)->TC_L2_dirty = false;
 		}
 	}
@@ -1607,13 +1921,13 @@ static void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *i
 		/* Indirect buffers use TC L2 on GFX9, but not older hw. */
 		if (sctx->chip_class <= GFX8) {
 			if (si_resource(indirect->buffer)->TC_L2_dirty) {
-				sctx->flags |= SI_CONTEXT_WRITEBACK_GLOBAL_L2;
+				sctx->flags |= SI_CONTEXT_WB_L2;
 				si_resource(indirect->buffer)->TC_L2_dirty = false;
 			}
 
 			if (indirect->indirect_draw_count &&
 			    si_resource(indirect->indirect_draw_count)->TC_L2_dirty) {
-				sctx->flags |= SI_CONTEXT_WRITEBACK_GLOBAL_L2;
+				sctx->flags |= SI_CONTEXT_WB_L2;
 				si_resource(indirect->indirect_draw_count)->TC_L2_dirty = false;
 			}
 		}
@@ -1744,7 +2058,7 @@ static void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *i
 		/* Emit all states except possibly render condition. */
 		si_emit_all_states(sctx, info, prim, instance_count,
 				   primitive_restart, masked_atoms);
-		si_emit_cache_flush(sctx);
+		sctx->emit_cache_flush(sctx);
 		/* <-- CUs are idle here. */
 
 		if (si_is_atom_dirty(sctx, &sctx->atoms.s.render_cond))
@@ -1772,7 +2086,7 @@ static void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *i
 		 * states, and draw at the end.
 		 */
 		if (sctx->flags)
-			si_emit_cache_flush(sctx);
+			sctx->emit_cache_flush(sctx);
 
 		/* Only prefetch the API VS and VBO descriptors. */
 		if (sctx->chip_class >= GFX7 && sctx->prefetch_L2_mask)

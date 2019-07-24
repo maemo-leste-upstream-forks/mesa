@@ -812,6 +812,9 @@ copy_prop_vars_block(struct copy_prop_var_state *state,
       case nir_intrinsic_load_deref: {
          if (debug) dump_instr(instr);
 
+         if (nir_intrinsic_access(intrin) & ACCESS_VOLATILE)
+            break;
+
          nir_deref_instr *src = nir_src_as_deref(intrin->src[0]);
 
          /* Direct array_derefs of vectors operate on the vectors (the parent
@@ -892,6 +895,9 @@ copy_prop_vars_block(struct copy_prop_var_state *state,
       case nir_intrinsic_store_deref: {
          if (debug) dump_instr(instr);
 
+         if (nir_intrinsic_access(intrin) & ACCESS_VOLATILE)
+            break;
+
          nir_deref_instr *dst = nir_src_as_deref(intrin->src[0]);
          assert(glsl_type_is_vector_or_scalar(dst->type));
 
@@ -935,6 +941,10 @@ copy_prop_vars_block(struct copy_prop_var_state *state,
 
       case nir_intrinsic_copy_deref: {
          if (debug) dump_instr(instr);
+
+         if ((nir_intrinsic_src_access(intrin) & ACCESS_VOLATILE) ||
+             (nir_intrinsic_dst_access(intrin) & ACCESS_VOLATILE))
+            break;
 
          nir_deref_instr *dst = nir_src_as_deref(intrin->src[0]);
          nir_deref_instr *src = nir_src_as_deref(intrin->src[1]);
@@ -987,6 +997,14 @@ copy_prop_vars_block(struct copy_prop_var_state *state,
             };
          }
 
+         nir_variable *src_var = nir_deref_instr_get_variable(src);
+         if (src_var && src_var->data.cannot_coalesce) {
+            /* The source cannot be coaleseced, which means we can't propagate
+             * this copy.
+             */
+            break;
+         }
+
          struct copy_entry *dst_entry =
             get_entry_and_kill_aliases(copies, dst, full_mask);
          value_set_from_value(&dst_entry->src, &value, 0, full_mask);
@@ -1004,6 +1022,9 @@ copy_prop_vars_block(struct copy_prop_var_state *state,
       case nir_intrinsic_deref_atomic_exchange:
       case nir_intrinsic_deref_atomic_comp_swap:
          if (debug) dump_instr(instr);
+
+         if (nir_intrinsic_access(intrin) & ACCESS_VOLATILE)
+            break;
 
          nir_deref_instr *dst = nir_src_as_deref(intrin->src[0]);
          unsigned num_components = glsl_get_vector_elements(dst->type);

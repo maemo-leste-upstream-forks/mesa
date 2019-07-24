@@ -82,6 +82,7 @@ static const struct nir_shader_compiler_options vector_nir_options = {
    .lower_unpack_unorm_2x16 = true,
    .lower_extract_byte = true,
    .lower_extract_word = true,
+   .intel_vec4 = true,
    .max_unroll_iterations = 32,
 };
 
@@ -132,7 +133,9 @@ brw_compiler_create(void *mem_ctx, const struct gen_device_info *devinfo)
       nir_lower_dceil |
       nir_lower_dfract |
       nir_lower_dround_even |
-      nir_lower_dmod;
+      nir_lower_dmod |
+      nir_lower_dsub |
+      nir_lower_ddiv;
 
    if (!devinfo->has_64bit_types || (INTEL_DEBUG & DEBUG_SOFT64)) {
       int64_options |= nir_lower_mov64 |
@@ -142,7 +145,8 @@ brw_compiler_create(void *mem_ctx, const struct gen_device_info *devinfo)
                        nir_lower_ineg64 |
                        nir_lower_logic64 |
                        nir_lower_minmax64 |
-                       nir_lower_shift64;
+                       nir_lower_shift64 |
+                       nir_lower_extract64;
       fp64_options |= nir_lower_fp64_full_software;
    }
 
@@ -181,6 +185,8 @@ brw_compiler_create(void *mem_ctx, const struct gen_device_info *devinfo)
        */
       nir_options->lower_ffma = devinfo->gen < 6;
       nir_options->lower_flrp32 = devinfo->gen < 6 || devinfo->gen >= 11;
+
+      nir_options->lower_rotate = devinfo->gen < 11;
 
       nir_options->lower_int64_options = int64_options;
       nir_options->lower_doubles_options = fp64_options;
@@ -260,21 +266,4 @@ brw_prog_key_size(gl_shader_stage stage)
    };
    assert((int)stage >= 0 && stage < ARRAY_SIZE(stage_sizes));
    return stage_sizes[stage];
-}
-
-void
-brw_prog_key_set_id(union brw_any_prog_key *key,
-                    gl_shader_stage stage,
-                    unsigned id)
-{
-   static const unsigned stage_offsets[] = {
-      offsetof(struct brw_vs_prog_key, program_string_id),
-      offsetof(struct brw_tcs_prog_key, program_string_id),
-      offsetof(struct brw_tes_prog_key, program_string_id),
-      offsetof(struct brw_gs_prog_key, program_string_id),
-      offsetof(struct brw_wm_prog_key, program_string_id),
-      offsetof(struct brw_cs_prog_key, program_string_id),
-   };
-   assert((int)stage >= 0 && stage < ARRAY_SIZE(stage_offsets));
-   *(unsigned*)((uint8_t*)key + stage_offsets[stage]) = id;
 }

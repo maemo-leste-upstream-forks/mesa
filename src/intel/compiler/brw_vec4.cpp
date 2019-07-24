@@ -1204,8 +1204,30 @@ vec4_instruction::reswizzle(int dst_writemask, int swizzle)
        opcode != BRW_OPCODE_DP3 && opcode != BRW_OPCODE_DP2 &&
        opcode != VEC4_OPCODE_PACK_BYTES) {
       for (int i = 0; i < 3; i++) {
-         if (src[i].file == BAD_FILE || src[i].file == IMM)
+         if (src[i].file == BAD_FILE)
             continue;
+
+         if (src[i].file == IMM) {
+            assert(src[i].type != BRW_REGISTER_TYPE_V &&
+                   src[i].type != BRW_REGISTER_TYPE_UV);
+
+            /* Vector immediate types need to be reswizzled. */
+            if (src[i].type == BRW_REGISTER_TYPE_VF) {
+               const unsigned imm[] = {
+                  (src[i].ud >>  0) & 0x0ff,
+                  (src[i].ud >>  8) & 0x0ff,
+                  (src[i].ud >> 16) & 0x0ff,
+                  (src[i].ud >> 24) & 0x0ff,
+               };
+
+               src[i] = brw_imm_vf4(imm[BRW_GET_SWZ(swizzle, 0)],
+                                    imm[BRW_GET_SWZ(swizzle, 1)],
+                                    imm[BRW_GET_SWZ(swizzle, 2)],
+                                    imm[BRW_GET_SWZ(swizzle, 3)]);
+            }
+
+            continue;
+         }
 
          src[i].swizzle = brw_compose_swizzle(swizzle, src[i].swizzle);
       }
@@ -2823,7 +2845,7 @@ brw_compile_vs(const struct brw_compiler *compiler, void *log_data,
                char **error_str)
 {
    const bool is_scalar = compiler->scalar_stage[MESA_SHADER_VERTEX];
-   brw_nir_apply_sampler_key(shader, compiler, &key->tex, is_scalar);
+   brw_nir_apply_sampler_key(shader, compiler, &key->base.tex, is_scalar);
 
    const unsigned *assembly = NULL;
 
@@ -2939,7 +2961,8 @@ brw_compile_vs(const struct brw_compiler *compiler, void *log_data,
    if (is_scalar) {
       prog_data->base.dispatch_mode = DISPATCH_MODE_SIMD8;
 
-      fs_visitor v(compiler, log_data, mem_ctx, key, &prog_data->base.base,
+      fs_visitor v(compiler, log_data, mem_ctx, &key->base,
+                   &prog_data->base.base,
                    NULL, /* prog; Only used for TEXTURE_RECTANGLE on gen < 8 */
                    shader, 8, shader_time_index);
       if (!v.run_vs()) {

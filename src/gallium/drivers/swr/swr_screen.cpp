@@ -69,9 +69,9 @@ static const char *
 swr_get_name(struct pipe_screen *screen)
 {
    static char buf[100];
-   util_snprintf(buf, sizeof(buf), "SWR (LLVM %u.%u, %u bits)",
-                 HAVE_LLVM >> 8, HAVE_LLVM & 0xff,
-                 lp_native_vector_width );
+   snprintf(buf, sizeof(buf), "SWR (LLVM %u.%u, %u bits)",
+            HAVE_LLVM >> 8, HAVE_LLVM & 0xff,
+            lp_native_vector_width);
    return buf;
 }
 
@@ -81,7 +81,7 @@ swr_get_vendor(struct pipe_screen *screen)
    return "Intel Corporation";
 }
 
-static boolean
+static bool
 swr_is_format_supported(struct pipe_screen *_screen,
                         enum pipe_format format,
                         enum pipe_texture_target target,
@@ -107,23 +107,23 @@ swr_is_format_supported(struct pipe_screen *_screen,
 
    format_desc = util_format_description(format);
    if (!format_desc)
-      return FALSE;
+      return false;
 
    if ((sample_count > screen->msaa_max_count)
       || !util_is_power_of_two_or_zero(sample_count))
-      return FALSE;
+      return false;
 
    if (bind & PIPE_BIND_DISPLAY_TARGET) {
       if (!winsys->is_displaytarget_format_supported(winsys, bind, format))
-         return FALSE;
+         return false;
    }
 
    if (bind & PIPE_BIND_RENDER_TARGET) {
       if (format_desc->colorspace == UTIL_FORMAT_COLORSPACE_ZS)
-         return FALSE;
+         return false;
 
       if (mesa_to_swr_format(format) == (SWR_FORMAT)-1)
-         return FALSE;
+         return false;
 
       /*
        * Although possible, it is unnatural to render into compressed or YUV
@@ -131,25 +131,25 @@ swr_is_format_supported(struct pipe_screen *_screen,
        * inside the state trackers.
        */
       if (format_desc->block.width != 1 || format_desc->block.height != 1)
-         return FALSE;
+         return false;
    }
 
    if (bind & PIPE_BIND_DEPTH_STENCIL) {
       if (format_desc->colorspace != UTIL_FORMAT_COLORSPACE_ZS)
-         return FALSE;
+         return false;
 
       if (mesa_to_swr_format(format) == (SWR_FORMAT)-1)
-         return FALSE;
+         return false;
    }
 
    if (format_desc->layout == UTIL_FORMAT_LAYOUT_BPTC ||
        format_desc->layout == UTIL_FORMAT_LAYOUT_ASTC) {
-      return FALSE;
+      return false;
    }
 
    if (format_desc->layout == UTIL_FORMAT_LAYOUT_ETC &&
        format != PIPE_FORMAT_ETC1_RGB8) {
-      return FALSE;
+      return false;
    }
 
    if ((bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW)) &&
@@ -163,7 +163,7 @@ swr_is_format_supported(struct pipe_screen *_screen,
       if (format_desc->is_array &&
           format_desc->nr_channels == 3 &&
           format_desc->block.bits != 96) {
-         return FALSE;
+         return false;
       }
    }
 
@@ -218,7 +218,7 @@ swr_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
       return 1;
    case PIPE_CAP_MAX_VIEWPORTS:
-      return 1;
+      return KNOB_NUM_VIEWPORTS_SCISSORS;
    case PIPE_CAP_ENDIANNESS:
       return PIPE_ENDIAN_NATIVE;
    case PIPE_CAP_DEPTH_CLIP_DISABLE_SEPARATE:
@@ -228,7 +228,9 @@ swr_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_NPOT_TEXTURES:
    case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
    case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
-   case PIPE_CAP_SM3:
+   case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
+   case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
+   case PIPE_CAP_VERTEX_SHADER_SATURATE:
    case PIPE_CAP_POINT_SPRITE:
    case PIPE_CAP_MAX_DUAL_SOURCE_RENDER_TARGETS:
    case PIPE_CAP_OCCLUSION_QUERY:
@@ -669,7 +671,7 @@ mesa_to_swr_format(enum pipe_format format)
       return it->second;
 }
 
-static boolean
+static bool
 swr_displaytarget_layout(struct swr_screen *screen, struct swr_resource *res)
 {
    struct sw_winsys *winsys = screen->winsys;
@@ -687,7 +689,7 @@ swr_displaytarget_layout(struct swr_screen *screen, struct swr_resource *res)
                                      &stride);
 
    if (dt == NULL)
-      return FALSE;
+      return false;
 
    void *map = winsys->displaytarget_map(winsys, dt, 0);
 
@@ -700,13 +702,13 @@ swr_displaytarget_layout(struct swr_screen *screen, struct swr_resource *res)
 
    winsys->displaytarget_unmap(winsys, dt);
 
-   return TRUE;
+   return true;
 }
 
 static bool
 swr_texture_layout(struct swr_screen *screen,
                    struct swr_resource *res,
-                   boolean allocate)
+                   bool allocate)
 {
    struct pipe_resource *pt = &res->base;
 
@@ -896,7 +898,7 @@ swr_texture_layout(struct swr_screen *screen,
    return true;
 }
 
-static boolean
+static bool
 swr_can_create_resource(struct pipe_screen *screen,
                         const struct pipe_resource *templat)
 {
@@ -908,7 +910,7 @@ swr_can_create_resource(struct pipe_screen *screen,
 
 /* Helper function that conditionally creates a single-sample resolve resource
  * and attaches it to main multisample resource. */
-static boolean
+static bool
 swr_create_resolve_resource(struct pipe_screen *_screen,
                             struct swr_resource *msaa_res)
 {
@@ -1209,4 +1211,3 @@ swr_create_screen_internal(struct sw_winsys *winsys)
 
    return &screen->base;
 }
-

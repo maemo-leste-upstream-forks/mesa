@@ -210,7 +210,7 @@ blorp_vf_invalidate_for_vb_48b_transitions(struct blorp_batch *blorp_batch,
 
    for (unsigned i = 0; i < num_vbs; i++) {
       struct iris_bo *bo = addrs[i].buffer;
-      uint16_t high_bits = bo ? bo->gtt_offset >> 32u : 0;
+      uint16_t high_bits = bo->gtt_offset >> 32u;
 
       if (high_bits != ice->state.last_vbo_high_bits[i]) {
          need_invalidate = true;
@@ -219,8 +219,10 @@ blorp_vf_invalidate_for_vb_48b_transitions(struct blorp_batch *blorp_batch,
    }
 
    if (need_invalidate) {
-      iris_emit_pipe_control_flush(batch, PIPE_CONTROL_VF_CACHE_INVALIDATE |
-                                          PIPE_CONTROL_CS_STALL);
+      iris_emit_pipe_control_flush(batch,
+                                   "workaround: VF cache 32-bit key [blorp]",
+                                   PIPE_CONTROL_VF_CACHE_INVALIDATE |
+                                   PIPE_CONTROL_CS_STALL);
    }
 }
 
@@ -279,6 +281,7 @@ iris_blorp_exec(struct blorp_batch *blorp_batch,
     *     be set in this packet."
     */
    iris_emit_pipe_control_flush(batch,
+                                "workaround: RT BTI change [blorp]",
                                 PIPE_CONTROL_RENDER_TARGET_FLUSH |
                                 PIPE_CONTROL_STALL_AT_SCOREBOARD);
 #endif
@@ -304,17 +307,7 @@ iris_blorp_exec(struct blorp_batch *blorp_batch,
 
    iris_require_command_space(batch, 1400);
 
-   // XXX: Emit L3 state
-
-#if GEN_GEN == 8
-   // XXX: PMA - gen8_write_pma_stall_bits(ice, 0);
-#endif
-
-   // XXX: TODO...drawing rectangle...unrevert Jason's patches on master
-
    blorp_exec(blorp_batch, params);
-
-   // XXX: aperture checks?
 
    /* We've smashed all state compared to what the normal 3D pipeline
     * rendering tracks for GL.

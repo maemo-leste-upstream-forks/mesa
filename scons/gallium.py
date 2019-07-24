@@ -330,7 +330,7 @@ def generate(env):
         '__STDC_CONSTANT_MACROS',
         '__STDC_FORMAT_MACROS',
         '__STDC_LIMIT_MACROS',
-        'HAVE_NO_AUTOCONF',
+        'HAVE_SCONS',
     ]
     if env['build'] in ('debug', 'checked'):
         cppdefines += ['DEBUG']
@@ -370,6 +370,9 @@ def generate(env):
 
         if check_functions(env, ['timespec_get']):
             cppdefines += ['HAVE_TIMESPEC_GET']
+
+        if check_header(env, 'sys/shm.h'):
+            cppdefines += ['HAVE_SYS_SHM_H']
 
     if platform == 'windows':
         cppdefines += [

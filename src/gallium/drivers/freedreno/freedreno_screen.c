@@ -101,7 +101,7 @@ static const char *
 fd_screen_get_name(struct pipe_screen *pscreen)
 {
 	static char buffer[128];
-	util_snprintf(buffer, sizeof(buffer), "FD%03d",
+	snprintf(buffer, sizeof(buffer), "FD%03d",
 			fd_screen(pscreen)->device_id);
 	return buffer;
 }
@@ -217,7 +217,9 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_DEPTH_CLIP_DISABLE_SEPARATE:
 		return 0;
 
-	case PIPE_CAP_SM3:
+	case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
+	case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
+	case PIPE_CAP_VERTEX_SHADER_SATURATE:
 	case PIPE_CAP_PRIMITIVE_RESTART:
 	case PIPE_CAP_TGSI_INSTANCEID:
 	case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
@@ -665,7 +667,7 @@ fd_get_compiler_options(struct pipe_screen *pscreen,
 	return ir2_get_compiler_options();
 }
 
-boolean
+bool
 fd_screen_bo_get_handle(struct pipe_screen *pscreen,
 		struct fd_bo *bo,
 		struct renderonly_scanout *scanout,
@@ -678,14 +680,14 @@ fd_screen_bo_get_handle(struct pipe_screen *pscreen,
 		return fd_bo_get_name(bo, &whandle->handle) == 0;
 	} else if (whandle->type == WINSYS_HANDLE_TYPE_KMS) {
 		if (renderonly_get_handle(scanout, whandle))
-			return TRUE;
+			return true;
 		whandle->handle = fd_bo_handle(bo);
-		return TRUE;
+		return true;
 	} else if (whandle->type == WINSYS_HANDLE_TYPE_FD) {
 		whandle->handle = fd_bo_dmabuf(bo);
-		return TRUE;
+		return true;
 	} else {
-		return FALSE;
+		return false;
 	}
 }
 

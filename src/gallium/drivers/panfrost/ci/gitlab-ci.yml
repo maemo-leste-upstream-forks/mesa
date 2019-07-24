@@ -1,4 +1,4 @@
-# DEBIAN_TAG is the tag of the docker image used for the build jobs. If the
+# IMAGE_TAG is the tag of the docker image used for the build jobs. If the
 # image doesn't exist yet, the docker-image stage generates it.
 #
 # In order to generate a new image, one should generally change the tag.
@@ -16,7 +16,7 @@
 variables:
   UPSTREAM_REPO: mesa/mesa
   DEBIAN_VERSION: testing-slim
-  DEBIAN_TAG: "2019-06-07-1"
+  IMAGE_TAG: "2019-06-26-3"
 
 include:
   - project: 'wayland/ci-templates'
@@ -42,7 +42,7 @@ stages:
   <<: *retry
   variables:
     GIT_STRATEGY: none # no need to pull the whole tree for rebuilding the image
-    IMAGE_LOCAL: "$CI_REGISTRY/$CI_PROJECT_PATH/${DEBIAN_ARCH}:latest"
+    DEBIAN_TAG: '${DEBIAN_ARCH}-${IMAGE_TAG}'
     DEBIAN_EXEC: 'DEBIAN_ARCH=${DEBIAN_ARCH}
                   GCC_ARCH=${GCC_ARCH}
                   KERNEL_ARCH=${KERNEL_ARCH}
@@ -73,7 +73,7 @@ container:arm64:
 
 .build:
   stage: build
-  image: $CI_REGISTRY/$CI_PROJECT_PATH/${DEBIAN_ARCH}:latest
+  image: $CI_REGISTRY_IMAGE/debian/$DEBIAN_VERSION:${DEBIAN_ARCH}-${IMAGE_TAG}
   cache:
     paths:
       - ccache
@@ -143,7 +143,7 @@ build:arm64:
   stage: test
   tags:
     - idle-jobs
-  image: $CI_REGISTRY/$CI_PROJECT_PATH/arm64:latest  # Any of the images will be fine
+  image: $CI_REGISTRY_IMAGE/debian/$DEBIAN_VERSION:arm64-${IMAGE_TAG}  # Any of the images will be fine
   variables:
     GIT_STRATEGY: none # no need to pull the whole tree for submitting the job
   script:
@@ -183,6 +183,8 @@ build:arm64:
         dEQP-GLES2.functional.fbo.render.recreate_stencilbuffer.
         dEQP-GLES2.functional.fbo.render.shared_colorbuffer_clear.rbo_rgb5_a1
         dEQP-GLES2.functional.fbo.render.shared_colorbuffer_clear.rbo_rgba4
+        dEQP-GLES2.functional.fbo.render.shared_colorbuffer_clear.tex2d_rgb
+        dEQP-GLES2.functional.fbo.render.shared_colorbuffer_clear.tex2d_rgba
         dEQP-GLES2.functional.fbo.render.shared_colorbuffer.rbo_rgb5_a1
         dEQP-GLES2.functional.fbo.render.shared_colorbuffer.rbo_rgba4
         dEQP-GLES2.functional.fbo.render.shared_depthbuffer.rbo_rgb5_a1_depth_component16
@@ -197,6 +199,7 @@ build:arm64:
         dEQP-GLES2.functional.polygon_offset.fixed16_factor_0_slope
         dEQP-GLES2.functional.polygon_offset.fixed16_factor_1_slope
         dEQP-GLES2.functional.shaders.invariance.highp.loop_4
+        dEQP-GLES2.functional.shaders.matrix.mul.dynamic_highp_mat4_vec4_vertex
         dEQP-GLES2.functional.shaders.matrix.mul.dynamic_highp_vec4_mat4_fragment
         dEQP-GLES2.functional.shaders.operator.common_functions.smoothstep.mediump_vec3_vertex
         dEQP-GLES2.functional.shaders.random.all_features.fragment.12
@@ -218,6 +221,16 @@ build:arm64:
       FLIP_FLOPS="$FLIP_FLOPS
         dEQP-GLES2.functional.fragment_ops.blend.*
         dEQP-GLES2.functional.shaders.builtin_variable.max_draw_buffers_vertex
+        dEQP-GLES2.functional.shaders.matrix.div.const_lowp_mat2_mat2_vertex
+        dEQP-GLES2.functional.shaders.operator.unary_operator.pre_increment_effect.highp_ivec4_vertex
+        dEQP-GLES2.functional.shaders.texture_functions.vertex.texture2dprojlod_vec3
+        dEQP-GLES2.functional.shaders.swizzles.vector_swizzles.mediump_ivec3_stts_fragment
+        dEQP-GLES2.functional.texture.filtering.2d.nearest_mipmap_nearest_linear_repeat_rgba8888
+        dEQP-GLES2.functional.shaders.swizzles.vector_swizzles.mediump_ivec3_stts_fragment
+        dEQP-GLES2.functional.shaders.loops.do_while_constant_iterations.only_continue_vertex
+        dEQP-GLES2.functional.fbo.render.resize.tex2d_rgb_depth_component16
+        dEQP-GLES2.functional.fbo.render.resize.tex2d_rgba_depth_component16
+        dEQP-GLES2.functional.texture.filtering.2d.linear_mipmap_nearest_nearest_clamp_rgba8888
         "
 
     - for test in $FLIP_FLOPS; do sed -i "/$test/d" results/expected-failures.txt results/results-$lava_job_id.csv; done
@@ -228,10 +241,12 @@ build:arm64:
     - 'echo "Passed: $PASSED ($(expr $PASSED \* 100 / $TOTAL)%)"'
     - 'echo "Failed: $FAILED ($(expr $FAILED \* 100 / $TOTAL)%)"'
     - 'echo "Total: $TOTAL"'
-    - 'if [ $TOTAL != 16375 ]; then echo "WARNING: Unexpected count of results. Incomplete run?"; fi'
+    - 'if [ $TOTAL != 16374 ]; then echo "WARNING: Unexpected count of results. Incomplete run?"; fi'
 
     - sed '/,pass/d' results/results-$lava_job_id.csv | sed 's/,fail//' > results/failures-$lava_job_id.txt
-    - diff -u results/expected-failures.txt results/failures-$lava_job_id.txt
+
+    # Don't error out on RK3288
+    - diff -u results/expected-failures.txt results/failures-$lava_job_id.txt || [ -f results/rk3288-veyron-jaq.dtb ]
   artifacts:
     when: always
     paths:

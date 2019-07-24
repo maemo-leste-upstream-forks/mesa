@@ -101,7 +101,7 @@ static const struct dri2_format_mapping dri2_format_table[] = {
         __DRI_IMAGE_COMPONENTS_R,         PIPE_FORMAT_R16_UNORM },
       { __DRI_IMAGE_FOURCC_GR88,          __DRI_IMAGE_FORMAT_GR88,
         __DRI_IMAGE_COMPONENTS_RG,        PIPE_FORMAT_RG88_UNORM },
-      { __DRI_IMAGE_FOURCC_GR1616,        __DRI_IMAGE_FORMAT_GR88,
+      { __DRI_IMAGE_FOURCC_GR1616,        __DRI_IMAGE_FORMAT_GR1616,
         __DRI_IMAGE_COMPONENTS_RG,        PIPE_FORMAT_RG1616_UNORM },
       { __DRI_IMAGE_FOURCC_YUV420,        __DRI_IMAGE_FORMAT_NONE,
         __DRI_IMAGE_COMPONENTS_Y_U_V,     PIPE_FORMAT_IYUV },
@@ -781,7 +781,7 @@ dri2_update_tex_buffer(struct dri_drawable *drawable,
 
 static __DRIimage *
 dri2_create_image_from_winsys(__DRIscreen *_screen,
-                              int width, int height, enum pipe_format pf,
+                              int width, int height, const struct dri2_format_mapping *map,
                               int num_handles, struct winsys_handle *whandle,
                               void *loaderPrivate)
 {
@@ -791,6 +791,7 @@ dri2_create_image_from_winsys(__DRIscreen *_screen,
    struct pipe_resource templ;
    unsigned tex_usage = 0;
    int i;
+   enum pipe_format pf = map->pipe_format;
 
    if (pscreen->is_format_supported(pscreen, pf, screen->target, 0, 0,
                                     PIPE_BIND_RENDER_TARGET))
@@ -889,7 +890,7 @@ dri2_create_image_from_name(__DRIscreen *_screen,
 
    whandle.stride = pitch * util_format_get_blocksize(map->pipe_format);
 
-   img = dri2_create_image_from_winsys(_screen, width, height, map->pipe_format,
+   img = dri2_create_image_from_winsys(_screen, width, height, map,
                                        1, &whandle, loaderPrivate);
 
    if (!img)
@@ -962,7 +963,7 @@ dri2_create_image_from_fd(__DRIscreen *_screen,
       map = dri2_get_mapping_by_fourcc(fourcc);
    }
 
-   img = dri2_create_image_from_winsys(_screen, width, height, map->pipe_format,
+   img = dri2_create_image_from_winsys(_screen, width, height, map,
                                        num_fds, whandles, loaderPrivate);
    if(img == NULL) {
       err = __DRI_IMAGE_ERROR_BAD_ALLOC;
@@ -1249,7 +1250,7 @@ dri2_from_names(__DRIscreen *screen, int width, int height, int format,
    whandle.offset = offsets[0];
    whandle.modifier = DRM_FORMAT_MOD_INVALID;
 
-   img = dri2_create_image_from_winsys(screen, width, height, map->pipe_format,
+   img = dri2_create_image_from_winsys(screen, width, height, map,
                                        1, &whandle, loaderPrivate);
    if (img == NULL)
       return NULL;

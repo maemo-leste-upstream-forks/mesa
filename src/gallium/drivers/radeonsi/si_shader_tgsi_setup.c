@@ -83,11 +83,15 @@ static void si_diagnostic_handler(LLVMDiagnosticInfoRef di, void *context)
 unsigned si_llvm_compile(LLVMModuleRef M, struct si_shader_binary *binary,
 			 struct ac_llvm_compiler *compiler,
 			 struct pipe_debug_callback *debug,
-			 bool less_optimized)
+			 bool less_optimized, unsigned wave_size)
 {
-	struct ac_compiler_passes *passes =
-		less_optimized && compiler->low_opt_passes ?
-			compiler->low_opt_passes : compiler->passes;
+	struct ac_compiler_passes *passes = compiler->passes;
+
+	if (wave_size == 32)
+		passes = compiler->passes_wave32;
+	else if (less_optimized && compiler->low_opt_passes)
+		passes = compiler->low_opt_passes;
+
 	struct si_llvm_diagnostics diag;
 	LLVMContextRef llvm_ctx;
 
@@ -949,7 +953,8 @@ static void emit_immediate(struct lp_build_tgsi_context *bld_base,
 
 void si_llvm_context_init(struct si_shader_context *ctx,
 			  struct si_screen *sscreen,
-			  struct ac_llvm_compiler *compiler)
+			  struct ac_llvm_compiler *compiler,
+			  unsigned wave_size)
 {
 	struct lp_type type;
 
@@ -962,14 +967,13 @@ void si_llvm_context_init(struct si_shader_context *ctx,
 	ctx->screen = sscreen;
 	ctx->compiler = compiler;
 
-	ac_llvm_context_init(&ctx->ac, sscreen->info.chip_class, sscreen->info.family);
-	ctx->ac.module = ac_create_module(compiler->tm, ctx->ac.context);
-
 	enum ac_float_mode float_mode =
 		sscreen->debug_flags & DBG(UNSAFE_MATH) ?
 			AC_FLOAT_MODE_UNSAFE_FP_MATH :
 			AC_FLOAT_MODE_NO_SIGNED_ZEROS_FP_MATH;
-	ctx->ac.builder = ac_create_builder(ctx->ac.context, float_mode);
+
+	ac_llvm_context_init(&ctx->ac, compiler, sscreen->info.chip_class,
+			     sscreen->info.family, float_mode, wave_size);
 
 	ctx->gallivm.context = ctx->ac.context;
 	ctx->gallivm.module = ctx->ac.module;
@@ -1105,7 +1109,7 @@ void si_llvm_create_func(struct si_shader_context *ctx,
 	LLVMTypeRef main_fn_type, ret_type;
 	LLVMBasicBlockRef main_fn_body;
 	enum si_llvm_calling_convention call_conv;
-	unsigned real_shader_type;
+	enum pipe_shader_type real_shader_type;
 
 	if (num_return_elems)
 		ret_type = LLVMStructTypeInContext(ctx->ac.context,
@@ -1128,7 +1132,7 @@ void si_llvm_create_func(struct si_shader_context *ctx,
 	if (ctx->screen->info.chip_class >= GFX9) {
 		if (ctx->shader->key.as_ls)
 			real_shader_type = PIPE_SHADER_TESS_CTRL;
-		else if (ctx->shader->key.as_es)
+		else if (ctx->shader->key.as_es || ctx->shader->key.as_ngg)
 			real_shader_type = PIPE_SHADER_GEOMETRY;
 	}
 

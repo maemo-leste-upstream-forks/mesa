@@ -1576,6 +1576,7 @@ enum brw_pixel_shader_coverage_mask_mode {
 # define GEN9_PARTIAL_RESOLVE_DISABLE_IN_VC (1 << 1)
 # define GEN8_HIZ_PMA_MASK_BITS \
    REG_MASK(GEN8_HIZ_NP_PMA_FIX_ENABLE | GEN8_HIZ_NP_EARLY_Z_FAILS_DISABLE)
+# define GEN11_DISABLE_REPACKING_FOR_COMPRESSION (1 << 15)
 
 #define GEN7_GT_MODE                    0x7008
 # define GEN9_SUBSLICE_HASHING_8x8      (0 << 8)
@@ -1675,10 +1676,6 @@ enum brw_pixel_shader_coverage_mask_mode {
 # define GLK_SCEC_BARRIER_MODE_3D_HULL     (1 << 7)
 # define GLK_SCEC_BARRIER_MODE_MASK        REG_MASK(1 << 7)
 # define GEN11_STATE_CACHE_REDIRECT_TO_CS_SECTION_ENABLE (1 << 11)
-
-#define COMMON_SLICE_CHICKEN3              0x7304
-# define PS_THREAD_PANIC_DISPATCH          (3 << 6)
-# define PS_THREAD_PANIC_DISPATCH_MASK     REG_MASK(3 << 6)
 
 #define HALF_SLICE_CHICKEN7                0xE194
 # define TEXEL_OFFSET_FIX_ENABLE           (1 << 1)

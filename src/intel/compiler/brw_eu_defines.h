@@ -210,7 +210,9 @@ enum opcode {
    BRW_OPCODE_SMOV =	10,  /**< Gen8+       */ /* Reused */
    /* Reserved - 11 */
    BRW_OPCODE_ASR =	12,
-   /* Reserved - 13-15 */
+   /* Reserved - 13 */
+   BRW_OPCODE_ROR =	14,  /**< Gen11+ */
+   BRW_OPCODE_ROL =	15,  /**< Gen11+ */
    BRW_OPCODE_CMP =	16,
    BRW_OPCODE_CMPN =	17,
    BRW_OPCODE_CSEL =	18,  /**< Gen8+ */
@@ -450,6 +452,17 @@ enum opcode {
    SHADER_OPCODE_BYTE_SCATTERED_READ_LOGICAL,
    SHADER_OPCODE_BYTE_SCATTERED_WRITE_LOGICAL,
 
+   /**
+    * Memory fence messages.
+    *
+    * Source 0: Must be register g0, used as header.
+    * Source 1: Immediate bool to indicate whether or not we need to stall
+    *           until memory transactions prior to the fence are completed.
+    * Source 2: Immediate byte indicating which memory to fence.  Zero means
+    *           global memory; GEN7_BTI_SLM means SLM (for Gen11+ only).
+    *
+    * Vec4 backend only uses Source 0.
+    */
    SHADER_OPCODE_MEMORY_FENCE,
 
    SHADER_OPCODE_GEN4_SCRATCH_READ,

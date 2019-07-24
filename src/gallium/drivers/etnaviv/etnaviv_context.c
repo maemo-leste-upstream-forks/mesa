@@ -342,8 +342,6 @@ etna_cmd_stream_reset_notify(struct etna_cmd_stream *stream, void *priv)
    etna_set_state(stream, VIVS_PA_VIEWPORT_UNK00A80, 0x38a01404);
    etna_set_state(stream, VIVS_PA_VIEWPORT_UNK00A84, fui(8192.0));
    etna_set_state(stream, VIVS_PA_ZFARCLIPPING, 0x00000000);
-   etna_set_state(stream, VIVS_PE_ALPHA_COLOR_EXT0, 0x00000000);
-   etna_set_state(stream, VIVS_PE_ALPHA_COLOR_EXT1, 0x00000000);
    etna_set_state(stream, VIVS_RA_HDEPTH_CONTROL, 0x00007000);
    etna_set_state(stream, VIVS_PE_STENCIL_CONFIG_EXT2, 0x00000000);
    etna_set_state(stream, VIVS_PS_CONTROL_EXT, 0x00000000);
@@ -356,7 +354,6 @@ etna_cmd_stream_reset_notify(struct etna_cmd_stream *stream, void *priv)
       etna_set_state(stream, VIVS_RA_UNK00E0C, 0x00000000);
    }
    if (ctx->specs.halti >= 3) { /* Only on HALTI3+ */
-      etna_set_state(stream, VIVS_PE_MEM_CONFIG, 0x00000000); /* TODO: cache modes */
       etna_set_state(stream, VIVS_PS_HALTI3_UNK0103C, 0x76543210);
    }
    if (ctx->specs.halti >= 4) { /* Only on HALTI4+ */

@@ -1340,9 +1340,16 @@ fs_visitor::nir_emit_alu(const fs_builder &bld, nir_alu_instr *instr,
    case nir_op_ine32: {
       fs_reg dest = result;
 
+      /* On Gen11 we have an additional issue being that src1 cannot be a byte
+       * type. So we convert both operands for the comparison.
+       */
+      fs_reg temp_op[2];
+      temp_op[0] = bld.fix_byte_src(op[0]);
+      temp_op[1] = bld.fix_byte_src(op[1]);
+
       const uint32_t bit_size = nir_src_bit_size(instr->src[0].src);
       if (bit_size != 32)
-         dest = bld.vgrf(op[0].type, 1);
+         dest = bld.vgrf(temp_op[0].type, 1);
 
       brw_conditional_mod cond;
       switch (instr->op) {
@@ -1363,7 +1370,7 @@ fs_visitor::nir_emit_alu(const fs_builder &bld, nir_alu_instr *instr,
       default:
          unreachable("bad opcode");
       }
-      bld.CMP(dest, op[0], op[1], cond);
+      bld.CMP(dest, temp_op[0], temp_op[1], cond);
 
       if (bit_size > 32) {
          bld.MOV(result, subscript(dest, BRW_REGISTER_TYPE_UD, 0));
@@ -1759,6 +1766,13 @@ fs_visitor::nir_emit_alu(const fs_builder &bld, nir_alu_instr *instr,
       break;
    case nir_op_ushr:
       bld.SHR(result, op[0], op[1]);
+      break;
+
+   case nir_op_urol:
+      bld.ROL(result, op[0], op[1]);
+      break;
+   case nir_op_uror:
+      bld.ROR(result, op[0], op[1]);
       break;
 
    case nir_op_pack_half_2x16_split:
@@ -3420,6 +3434,44 @@ alloc_frag_output(fs_visitor *v, unsigned location)
       unreachable("Invalid location");
 }
 
+/* Annoyingly, we get the barycentrics into the shader in a layout that's
+ * optimized for PLN but it doesn't work nearly as well as one would like for
+ * manual interpolation.
+ */
+static void
+shuffle_from_pln_layout(const fs_builder &bld, fs_reg dest, fs_reg pln_data)
+{
+   dest.type = BRW_REGISTER_TYPE_F;
+   pln_data.type = BRW_REGISTER_TYPE_F;
+   const fs_reg dest_u = offset(dest, bld, 0);
+   const fs_reg dest_v = offset(dest, bld, 1);
+
+   for (unsigned g = 0; g < bld.dispatch_width() / 8; g++) {
+      const fs_builder gbld = bld.group(8, g);
+      gbld.MOV(horiz_offset(dest_u, g * 8),
+               byte_offset(pln_data, (g * 2 + 0) * REG_SIZE));
+      gbld.MOV(horiz_offset(dest_v, g * 8),
+               byte_offset(pln_data, (g * 2 + 1) * REG_SIZE));
+   }
+}
+
+static void
+shuffle_to_pln_layout(const fs_builder &bld, fs_reg pln_data, fs_reg src)
+{
+   pln_data.type = BRW_REGISTER_TYPE_F;
+   src.type = BRW_REGISTER_TYPE_F;
+   const fs_reg src_u = offset(src, bld, 0);
+   const fs_reg src_v = offset(src, bld, 1);
+
+   for (unsigned g = 0; g < bld.dispatch_width() / 8; g++) {
+      const fs_builder gbld = bld.group(8, g);
+      gbld.MOV(byte_offset(pln_data, (g * 2 + 0) * REG_SIZE),
+               horiz_offset(src_u, g * 8));
+      gbld.MOV(byte_offset(pln_data, (g * 2 + 1) * REG_SIZE),
+               horiz_offset(src_v, g * 8));
+   }
+}
+
 void
 fs_visitor::nir_emit_fs_intrinsic(const fs_builder &bld,
                                   nir_intrinsic_instr *instr)
@@ -3449,6 +3501,23 @@ fs_visitor::nir_emit_fs_intrinsic(const fs_builder &bld,
       dest.type = BRW_REGISTER_TYPE_UD;
       bld.MOV(dest, fetch_render_target_array_index(bld));
       break;
+
+   case nir_intrinsic_is_helper_invocation: {
+      /* Unlike the regular gl_HelperInvocation, that is defined at dispatch,
+       * the helperInvocationEXT() (aka SpvOpIsHelperInvocationEXT) takes into
+       * consideration demoted invocations.  That information is stored in
+       * f0.1.
+       */
+      dest.type = BRW_REGISTER_TYPE_UD;
+
+      bld.MOV(dest, brw_imm_ud(0));
+
+      fs_inst *mov = bld.MOV(dest, brw_imm_ud(~0));
+      mov->predicate = BRW_PREDICATE_NORMAL;
+      mov->predicate_inverse = true;
+      mov->flag_subreg = 1;
+      break;
+   }
 
    case nir_intrinsic_load_helper_invocation:
    case nir_intrinsic_load_sample_mask_in:
@@ -3497,6 +3566,7 @@ fs_visitor::nir_emit_fs_intrinsic(const fs_builder &bld,
       break;
    }
 
+   case nir_intrinsic_demote:
    case nir_intrinsic_discard:
    case nir_intrinsic_discard_if: {
       /* We track our discarded pixels in f0.1.  By predicating on it, we can
@@ -3556,10 +3626,14 @@ fs_visitor::nir_emit_fs_intrinsic(const fs_builder &bld,
       cmp->flag_subreg = 1;
 
       if (devinfo->gen >= 6) {
+         /* Due to the way we implement discard, the jump will only happen
+          * when the whole quad is discarded.  So we can do this even for
+          * demote as it won't break its uniformity promises.
+          */
          emit_discard_jump();
       }
 
-      limit_dispatch_width(16, "Fragment discard not implemented in SIMD32 mode.");
+      limit_dispatch_width(16, "Fragment discard/demote not implemented in SIMD32 mode.");
       break;
    }
 
@@ -3599,22 +3673,42 @@ fs_visitor::nir_emit_fs_intrinsic(const fs_builder &bld,
       break;
    }
 
+   case nir_intrinsic_load_fs_input_interp_deltas: {
+      assert(stage == MESA_SHADER_FRAGMENT);
+      assert(nir_src_as_uint(instr->src[0]) == 0);
+      fs_reg interp = interp_reg(nir_intrinsic_base(instr),
+                                 nir_intrinsic_component(instr));
+      dest.type = BRW_REGISTER_TYPE_F;
+      bld.MOV(offset(dest, bld, 0), component(interp, 3));
+      bld.MOV(offset(dest, bld, 1), component(interp, 1));
+      bld.MOV(offset(dest, bld, 2), component(interp, 0));
+      break;
+   }
+
    case nir_intrinsic_load_barycentric_pixel:
    case nir_intrinsic_load_barycentric_centroid:
-   case nir_intrinsic_load_barycentric_sample:
-      /* Do nothing - load_interpolated_input handling will handle it later. */
+   case nir_intrinsic_load_barycentric_sample: {
+      /* Use the delta_xy values computed from the payload */
+      const glsl_interp_mode interp_mode =
+         (enum glsl_interp_mode) nir_intrinsic_interp_mode(instr);
+      enum brw_barycentric_mode bary =
+         brw_barycentric_mode(interp_mode, instr->intrinsic);
+
+      shuffle_from_pln_layout(bld, dest, this->delta_xy[bary]);
       break;
+   }
 
    case nir_intrinsic_load_barycentric_at_sample: {
       const glsl_interp_mode interpolation =
          (enum glsl_interp_mode) nir_intrinsic_interp_mode(instr);
 
+      fs_reg tmp = bld.vgrf(BRW_REGISTER_TYPE_F, 2);
       if (nir_src_is_const(instr->src[0])) {
          unsigned msg_data = nir_src_as_uint(instr->src[0]) << 4;
 
          emit_pixel_interpolater_send(bld,
                                       FS_OPCODE_INTERPOLATE_AT_SAMPLE,
-                                      dest,
+                                      tmp,
                                       fs_reg(), /* src */
                                       brw_imm_ud(msg_data),
                                       interpolation);
@@ -3629,7 +3723,7 @@ fs_visitor::nir_emit_fs_intrinsic(const fs_builder &bld,
                .SHL(msg_data, sample_id, brw_imm_ud(4u));
             emit_pixel_interpolater_send(bld,
                                          FS_OPCODE_INTERPOLATE_AT_SAMPLE,
-                                         dest,
+                                         tmp,
                                          fs_reg(), /* src */
                                          msg_data,
                                          interpolation);
@@ -3657,7 +3751,7 @@ fs_visitor::nir_emit_fs_intrinsic(const fs_builder &bld,
             fs_inst *inst =
                emit_pixel_interpolater_send(bld,
                                             FS_OPCODE_INTERPOLATE_AT_SAMPLE,
-                                            dest,
+                                            tmp,
                                             fs_reg(), /* src */
                                             component(msg_data, 0),
                                             interpolation);
@@ -3669,6 +3763,7 @@ fs_visitor::nir_emit_fs_intrinsic(const fs_builder &bld,
                               bld.emit(BRW_OPCODE_WHILE));
          }
       }
+      shuffle_from_pln_layout(bld, dest, tmp);
       break;
    }
 
@@ -3678,6 +3773,7 @@ fs_visitor::nir_emit_fs_intrinsic(const fs_builder &bld,
 
       nir_const_value *const_offset = nir_src_as_const_value(instr->src[0]);
 
+      fs_reg tmp = bld.vgrf(BRW_REGISTER_TYPE_F, 2);
       if (const_offset) {
          assert(nir_src_bit_size(instr->src[0]) == 32);
          unsigned off_x = MIN2((int)(const_offset[0].f32 * 16), 7) & 0xf;
@@ -3685,7 +3781,7 @@ fs_visitor::nir_emit_fs_intrinsic(const fs_builder &bld,
 
          emit_pixel_interpolater_send(bld,
                                       FS_OPCODE_INTERPOLATE_AT_SHARED_OFFSET,
-                                      dest,
+                                      tmp,
                                       fs_reg(), /* src */
                                       brw_imm_ud(off_x | (off_y << 4)),
                                       interpolation);
@@ -3722,11 +3818,12 @@ fs_visitor::nir_emit_fs_intrinsic(const fs_builder &bld,
          const enum opcode opcode = FS_OPCODE_INTERPOLATE_AT_PER_SLOT_OFFSET;
          emit_pixel_interpolater_send(bld,
                                       opcode,
-                                      dest,
+                                      tmp,
                                       src,
                                       brw_imm_ud(0u),
                                       interpolation);
       }
+      shuffle_from_pln_layout(bld, dest, tmp);
       break;
    }
 
@@ -3747,8 +3844,13 @@ fs_visitor::nir_emit_fs_intrinsic(const fs_builder &bld,
 
       if (bary_intrin == nir_intrinsic_load_barycentric_at_offset ||
           bary_intrin == nir_intrinsic_load_barycentric_at_sample) {
-         /* Use the result of the PI message */
-         dst_xy = retype(get_nir_src(instr->src[0]), BRW_REGISTER_TYPE_F);
+         /* Use the result of the PI message.  Because the load_barycentric
+          * intrinsics return a regular vec2 and we need it in PLN layout, we
+          * have to do a translation.  Fortunately, copy-prop cleans this up
+          * reliably.
+          */
+         dst_xy = bld.vgrf(BRW_REGISTER_TYPE_F, 2);
+         shuffle_to_pln_layout(bld, dst_xy, get_nir_src(instr->src[0]));
       } else {
          /* Use the delta_xy values computed from the payload */
          enum brw_barycentric_mode bary =
@@ -3916,7 +4018,7 @@ fs_visitor::nir_emit_cs_intrinsic(const fs_builder &bld,
          fs_reg read_result = bld.vgrf(BRW_REGISTER_TYPE_UD);
          bld.emit(SHADER_OPCODE_BYTE_SCATTERED_READ_LOGICAL,
                   read_result, srcs, SURFACE_LOGICAL_NUM_SRCS);
-         bld.MOV(dest, read_result);
+         bld.MOV(dest, subscript(read_result, dest.type, 0));
       }
       break;
    }
@@ -4314,11 +4416,47 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
    case nir_intrinsic_memory_barrier_buffer:
    case nir_intrinsic_memory_barrier_image:
    case nir_intrinsic_memory_barrier: {
+      bool l3_fence, slm_fence;
+      if (devinfo->gen >= 11) {
+         l3_fence = instr->intrinsic != nir_intrinsic_memory_barrier_shared;
+         slm_fence = instr->intrinsic == nir_intrinsic_group_memory_barrier ||
+                     instr->intrinsic == nir_intrinsic_memory_barrier ||
+                     instr->intrinsic == nir_intrinsic_memory_barrier_shared;
+      } else {
+         /* Prior to gen11, we only have one kind of fence. */
+         l3_fence = true;
+         slm_fence = false;
+      }
+
+      /* Be conservative in Gen11+ and always stall in a fence.  Since there
+       * are two different fences, and shader might want to synchronize
+       * between them.
+       *
+       * TODO: Improve NIR so that scope and visibility information for the
+       * barriers is available here to make a better decision.
+       *
+       * TODO: When emitting more than one fence, it might help emit all
+       * the fences first and then generate the stall moves.
+       */
+      const bool stall = devinfo->gen >= 11;
+
       const fs_builder ubld = bld.group(8, 0);
       const fs_reg tmp = ubld.vgrf(BRW_REGISTER_TYPE_UD, 2);
-      ubld.emit(SHADER_OPCODE_MEMORY_FENCE, tmp,
-                brw_vec8_grf(0, 0), brw_imm_ud(0))
-         ->size_written = 2 * REG_SIZE;
+
+      if (l3_fence) {
+         ubld.emit(SHADER_OPCODE_MEMORY_FENCE, tmp,
+                   brw_vec8_grf(0, 0), brw_imm_ud(stall),
+                   /* bti */ brw_imm_ud(0))
+            ->size_written = 2 * REG_SIZE;
+      }
+
+      if (slm_fence) {
+         ubld.emit(SHADER_OPCODE_MEMORY_FENCE, tmp,
+                   brw_vec8_grf(0, 0), brw_imm_ud(stall),
+                   brw_imm_ud(GEN7_BTI_SLM))
+            ->size_written = 2 * REG_SIZE;
+      }
+
       break;
    }
 
@@ -4506,15 +4644,13 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
          const unsigned bit_size = nir_dest_bit_size(instr->dest);
          assert(bit_size <= 32);
          assert(nir_dest_num_components(instr->dest) == 1);
-         brw_reg_type data_type =
-            brw_reg_type_from_bit_size(bit_size, BRW_REGISTER_TYPE_UD);
          fs_reg tmp = bld.vgrf(BRW_REGISTER_TYPE_UD);
          bld.emit(SHADER_OPCODE_A64_BYTE_SCATTERED_READ_LOGICAL,
                   tmp,
                   get_nir_src(instr->src[0]), /* Address */
                   fs_reg(), /* No source data */
                   brw_imm_ud(bit_size));
-         bld.MOV(retype(dest, data_type), tmp);
+         bld.MOV(dest, subscript(tmp, dest.type, 0));
       }
       break;
    }
@@ -4617,7 +4753,7 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
          fs_reg read_result = bld.vgrf(BRW_REGISTER_TYPE_UD);
          bld.emit(SHADER_OPCODE_BYTE_SCATTERED_READ_LOGICAL,
                   read_result, srcs, SURFACE_LOGICAL_NUM_SRCS);
-         bld.MOV(dest, read_result);
+         bld.MOV(dest, subscript(read_result, dest.type, 0));
       }
       break;
    }
@@ -5136,7 +5272,7 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
       const fs_builder ubld = bld.group(8, 0);
       const fs_reg tmp = ubld.vgrf(BRW_REGISTER_TYPE_UD, 2);
       ubld.emit(SHADER_OPCODE_MEMORY_FENCE, tmp,
-                brw_vec8_grf(0, 0), brw_imm_ud(1))
+                brw_vec8_grf(0, 0), brw_imm_ud(1), brw_imm_ud(0))
          ->size_written = 2 * REG_SIZE;
       break;
    }

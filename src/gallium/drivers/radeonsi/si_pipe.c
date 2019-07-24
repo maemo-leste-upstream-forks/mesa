@@ -63,6 +63,12 @@ static const struct debug_named_value debug_options[] = {
 	{ "unsafemath", DBG(UNSAFE_MATH), "Enable unsafe math shader optimizations" },
 	{ "sisched", DBG(SI_SCHED), "Enable LLVM SI Machine Instruction Scheduler." },
 	{ "gisel", DBG(GISEL), "Enable LLVM global instruction selector." },
+	{ "w32ge", DBG(W32_GE), "Use Wave32 for vertex, tessellation, and geometry shaders." },
+	{ "w32ps", DBG(W32_PS), "Use Wave32 for pixel shaders." },
+	{ "w32cs", DBG(W32_CS), "Use Wave32 for computes shaders." },
+	{ "w64ge", DBG(W64_GE), "Use Wave64 for vertex, tessellation, and geometry shaders." },
+	{ "w64ps", DBG(W64_PS), "Use Wave64 for pixel shaders." },
+	{ "w64cs", DBG(W64_CS), "Use Wave64 for computes shaders." },
 
 	/* Shader compiler options (with no effect on the shader cache): */
 	{ "checkir", DBG(CHECK_IR), "Enable additional sanity checks on shader IR" },
@@ -137,14 +143,14 @@ static void si_init_compiler(struct si_screen *sscreen,
 	ac_init_llvm_compiler(compiler, sscreen->info.family, tm_options);
 	compiler->passes = ac_create_llvm_passes(compiler->tm);
 
+	if (compiler->tm_wave32)
+		compiler->passes_wave32 = ac_create_llvm_passes(compiler->tm_wave32);
 	if (compiler->low_opt_tm)
 		compiler->low_opt_passes = ac_create_llvm_passes(compiler->low_opt_tm);
 }
 
 static void si_destroy_compiler(struct ac_llvm_compiler *compiler)
 {
-	ac_destroy_llvm_passes(compiler->passes);
-	ac_destroy_llvm_passes(compiler->low_opt_passes);
 	ac_destroy_llvm_compiler(compiler);
 }
 
@@ -167,6 +173,9 @@ static void si_destroy_context(struct pipe_context *context)
 		context->set_framebuffer_state(context, &fb);
 
 	si_release_all_descriptors(sctx);
+
+	if (sctx->chip_class >= GFX10)
+		gfx10_destroy_query(sctx);
 
 	pipe_resource_reference(&sctx->esgs_ring, NULL);
 	pipe_resource_reference(&sctx->gsvs_ring, NULL);
@@ -239,6 +248,8 @@ static void si_destroy_context(struct pipe_context *context)
 
 	if (sctx->query_result_shader)
 		sctx->b.delete_compute_state(&sctx->b, sctx->query_result_shader);
+	if (sctx->sh_query_result_shader)
+		sctx->b.delete_compute_state(&sctx->b, sctx->sh_query_result_shader);
 
 	if (sctx->gfx_cs)
 		sctx->ws->cs_destroy(sctx->gfx_cs);
@@ -454,9 +465,7 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen,
 						 0, PIPE_USAGE_DEFAULT,
 						 SI_RESOURCE_FLAG_32BIT |
 						 (use_sdma_upload ?
-							  SI_RESOURCE_FLAG_UPLOAD_FLUSH_EXPLICIT_VIA_SDMA :
-							  (sscreen->cpdma_prefetch_writes_memory ?
-								   0 : SI_RESOURCE_FLAG_READ_ONLY)));
+							  SI_RESOURCE_FLAG_UPLOAD_FLUSH_EXPLICIT_VIA_SDMA : 0));
 	if (!sctx->b.const_uploader)
 		goto fail;
 
@@ -486,7 +495,14 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen,
 	if (!sctx->border_color_map)
 		goto fail;
 
+	sctx->ngg = sctx->chip_class >= GFX10;
+
 	/* Initialize context functions used by graphics and compute. */
+	if (sctx->chip_class >= GFX10)
+		sctx->emit_cache_flush = gfx10_emit_cache_flush;
+	else
+		sctx->emit_cache_flush = si_emit_cache_flush;
+
 	sctx->b.emit_string_marker = si_emit_string_marker;
 	sctx->b.set_debug_callback = si_set_debug_callback;
 	sctx->b.set_log_context = si_set_log_context;
@@ -508,6 +524,8 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen,
 	/* Initialize graphics-only context functions. */
 	if (sctx->has_graphics) {
 		si_init_context_texture_functions(sctx);
+		if (sctx->chip_class >= GFX10)
+			gfx10_init_query(sctx);
 		si_init_msaa_functions(sctx);
 		si_init_shader_functions(sctx);
 		si_init_state_functions(sctx);
@@ -837,9 +855,19 @@ static void si_disk_cache_create(struct si_screen *sscreen)
 	#define ALL_FLAGS (DBG(FS_CORRECT_DERIVS_AFTER_KILL) |	\
 			   DBG(SI_SCHED) |			\
 			   DBG(GISEL) |				\
-			   DBG(UNSAFE_MATH))
-	uint64_t shader_debug_flags = sscreen->debug_flags &
-		ALL_FLAGS;
+			   DBG(UNSAFE_MATH) |			\
+			   DBG(W32_GE) |			\
+			   DBG(W32_PS) |			\
+			   DBG(W32_CS) |			\
+			   DBG(W64_GE) |			\
+			   DBG(W64_PS) |			\
+			   DBG(W64_CS))
+	uint64_t shader_debug_flags = sscreen->debug_flags & ALL_FLAGS;
+
+	if (sscreen->options.enable_nir) {
+		STATIC_ASSERT((ALL_FLAGS & (1u << 31)) == 0);
+		shader_debug_flags |= 1u << 31;
+	}
 
 	/* Add the high bits of 32-bit addresses, which affects
 	 * how 32-bit addresses are expanded to 64 bits.
@@ -847,9 +875,6 @@ static void si_disk_cache_create(struct si_screen *sscreen)
 	STATIC_ASSERT(ALL_FLAGS <= UINT_MAX);
 	assert((int16_t)sscreen->info.address32_hi == (int32_t)sscreen->info.address32_hi);
 	shader_debug_flags |= (uint64_t)(sscreen->info.address32_hi & 0xffff) << 32;
-
-	if (sscreen->options.enable_nir)
-		shader_debug_flags |= 1ull << 48;
 
 	sscreen->disk_shader_cache =
 		disk_cache_create(sscreen->info.name,
@@ -871,13 +896,8 @@ static void si_set_max_shader_compiler_threads(struct pipe_screen *screen,
 
 static bool si_is_parallel_shader_compilation_finished(struct pipe_screen *screen,
 						       void *shader,
-						       unsigned shader_type)
+						       enum pipe_shader_type shader_type)
 {
-	if (shader_type == PIPE_SHADER_COMPUTE) {
-		struct si_compute *cs = (struct si_compute*)shader;
-
-		return util_queue_fence_is_signalled(&cs->ready);
-	}
 	struct si_shader_selector *sel = (struct si_shader_selector *)shader;
 
 	return util_queue_fence_is_signalled(&sel->ready);
@@ -896,6 +916,12 @@ radeonsi_screen_create_impl(struct radeon_winsys *ws,
 
 	sscreen->ws = ws;
 	ws->query_info(ws, &sscreen->info);
+
+	if (sscreen->info.chip_class == GFX10 && HAVE_LLVM < 0x0900) {
+		fprintf(stderr, "radeonsi: Navi family support requires LLVM 9 or higher\n");
+		FREE(sscreen);
+		return NULL;
+	}
 
 	if (sscreen->info.chip_class >= GFX9) {
 		sscreen->se_tile_repeat = 32 * sscreen->info.max_se;
@@ -1017,9 +1043,11 @@ radeonsi_screen_create_impl(struct radeon_winsys *ws,
 	 */
 	unsigned max_offchip_buffers_per_se;
 
+	if (sscreen->info.chip_class >= GFX10)
+		max_offchip_buffers_per_se = 256;
 	/* Only certain chips can use the maximum value. */
-	if (sscreen->info.family == CHIP_VEGA12 ||
-	    sscreen->info.family == CHIP_VEGA20)
+	else if (sscreen->info.family == CHIP_VEGA12 ||
+	         sscreen->info.family == CHIP_VEGA20)
 		max_offchip_buffers_per_se = double_offchip_buffers ? 128 : 64;
 	else
 		max_offchip_buffers_per_se = double_offchip_buffers ? 127 : 63;
@@ -1057,10 +1085,10 @@ radeonsi_screen_create_impl(struct radeon_winsys *ws,
 	}
 
 	/* The mere presense of CLEAR_STATE in the IB causes random GPU hangs
-        * on GFX6. Some CLEAR_STATE cause asic hang on radeon kernel, etc.
-        * SPI_VS_OUT_CONFIG. So only enable GFX7 CLEAR_STATE on amdgpu kernel.*/
-       sscreen->has_clear_state = sscreen->info.chip_class >= GFX7 &&
-                                  sscreen->info.is_amdgpu;
+	 * on GFX6. Some CLEAR_STATE cause asic hang on radeon kernel, etc.
+	 * SPI_VS_OUT_CONFIG. So only enable GFX7 CLEAR_STATE on amdgpu kernel. */
+	sscreen->has_clear_state = sscreen->info.chip_class >= GFX7 &&
+				   sscreen->info.is_amdgpu;
 
 	sscreen->has_distributed_tess =
 		sscreen->info.chip_class >= GFX8 &&
@@ -1101,14 +1129,17 @@ radeonsi_screen_create_impl(struct radeon_winsys *ws,
 					   sscreen->info.family == CHIP_RAVEN;
 	sscreen->has_ls_vgpr_init_bug = sscreen->info.family == CHIP_VEGA10 ||
 					sscreen->info.family == CHIP_RAVEN;
-	sscreen->has_dcc_constant_encode = sscreen->info.family == CHIP_RAVEN2;
+	sscreen->has_dcc_constant_encode = sscreen->info.family == CHIP_RAVEN2 ||
+					   sscreen->info.chip_class >= GFX10;
 
 	/* Only enable primitive binning on APUs by default. */
-	sscreen->dpbb_allowed = sscreen->info.family == CHIP_RAVEN ||
-				sscreen->info.family == CHIP_RAVEN2;
-
-	sscreen->dfsm_allowed = sscreen->info.family == CHIP_RAVEN ||
-				sscreen->info.family == CHIP_RAVEN2;
+	if (sscreen->info.chip_class >= GFX10) {
+		sscreen->dpbb_allowed = true;
+		sscreen->dfsm_allowed = !sscreen->info.has_dedicated_vram;
+	} else if (sscreen->info.chip_class == GFX9) {
+		sscreen->dpbb_allowed = !sscreen->info.has_dedicated_vram;
+		sscreen->dfsm_allowed = !sscreen->info.has_dedicated_vram;
+	}
 
 	/* Process DPBB enable flags. */
 	if (sscreen->debug_flags & DBG(DPBB)) {
@@ -1126,10 +1157,9 @@ radeonsi_screen_create_impl(struct radeon_winsys *ws,
 	}
 
 	/* While it would be nice not to have this flag, we are constrained
-	 * by the reality that LLVM 5.0 doesn't have working VGPR indexing
-	 * on GFX9.
+	 * by the reality that LLVM 9.0 has buggy VGPR indexing on GFX9.
 	 */
-	sscreen->llvm_has_working_vgpr_indexing = sscreen->info.chip_class <= GFX8;
+	sscreen->llvm_has_working_vgpr_indexing = sscreen->info.chip_class != GFX9;
 
 	/* Some chips have RB+ registers, but don't support RB+. Those must
 	 * always disable it.
@@ -1155,11 +1185,11 @@ radeonsi_screen_create_impl(struct radeon_winsys *ws,
 	sscreen->use_monolithic_shaders =
 		(sscreen->debug_flags & DBG(MONOLITHIC_SHADERS)) != 0;
 
-	sscreen->barrier_flags.cp_to_L2 = SI_CONTEXT_INV_SMEM_L1 |
-					    SI_CONTEXT_INV_VMEM_L1;
+	sscreen->barrier_flags.cp_to_L2 = SI_CONTEXT_INV_SCACHE |
+					  SI_CONTEXT_INV_VCACHE;
 	if (sscreen->info.chip_class <= GFX8) {
-		sscreen->barrier_flags.cp_to_L2 |= SI_CONTEXT_INV_GLOBAL_L2;
-		sscreen->barrier_flags.L2_to_cp |= SI_CONTEXT_WRITEBACK_GLOBAL_L2;
+		sscreen->barrier_flags.cp_to_L2 |= SI_CONTEXT_INV_L2;
+		sscreen->barrier_flags.L2_to_cp |= SI_CONTEXT_WB_L2;
 	}
 
 	if (debug_get_bool_option("RADEON_DUMP_SHADERS", false))
@@ -1194,6 +1224,31 @@ radeonsi_screen_create_impl(struct radeon_winsys *ws,
 		si_init_compiler(sscreen, &sscreen->compiler[i]);
 	for (i = 0; i < num_comp_lo_threads; i++)
 		si_init_compiler(sscreen, &sscreen->compiler_lowp[i]);
+
+	sscreen->ge_wave_size = 64;
+	sscreen->ps_wave_size = 64;
+	sscreen->compute_wave_size = 64;
+
+	if (sscreen->info.chip_class >= GFX10) {
+		/* Pixels shaders: Wave64 is recommended.
+		 * Compute shaders: There are piglit failures with Wave32.
+		 */
+		sscreen->ge_wave_size = 32;
+
+		if (sscreen->debug_flags & DBG(W32_GE))
+			sscreen->ge_wave_size = 32;
+		if (sscreen->debug_flags & DBG(W32_PS))
+			sscreen->ps_wave_size = 32;
+		if (sscreen->debug_flags & DBG(W32_CS))
+			sscreen->compute_wave_size = 32;
+
+		if (sscreen->debug_flags & DBG(W64_GE))
+			sscreen->ge_wave_size = 64;
+		if (sscreen->debug_flags & DBG(W64_PS))
+			sscreen->ps_wave_size = 64;
+		if (sscreen->debug_flags & DBG(W64_CS))
+			sscreen->compute_wave_size = 64;
+	}
 
 	/* Create the auxiliary context. This must be done last. */
 	sscreen->aux_context = si_create_context(

@@ -357,8 +357,7 @@ struct iris_shader_state {
    struct pipe_shader_buffer constbuf[PIPE_MAX_CONSTANT_BUFFERS];
    struct iris_state_ref constbuf_surf_state[PIPE_MAX_CONSTANT_BUFFERS];
 
-   struct pipe_constant_buffer cbuf0;
-   bool cbuf0_needs_upload;
+   bool sysvals_need_upload;
 
    /** Shader Storage Buffers */
    struct pipe_shader_buffer ssbo[PIPE_MAX_SHADER_BUFFERS];
@@ -455,7 +454,8 @@ struct iris_vtable {
                         struct iris_bo *dst_bo, uint32_t dst_offset,
                         struct iris_bo *src_bo, uint32_t src_offset,
                         unsigned bytes);
-   void (*emit_raw_pipe_control)(struct iris_batch *batch, uint32_t flags,
+   void (*emit_raw_pipe_control)(struct iris_batch *batch,
+                                 const char *reason, uint32_t flags,
                                  struct iris_bo *bo, uint32_t offset,
                                  uint64_t imm);
 
@@ -475,6 +475,7 @@ struct iris_vtable {
    void (*populate_gs_key)(const struct iris_context *ice,
                            struct brw_gs_prog_key *key);
    void (*populate_fs_key)(const struct iris_context *ice,
+                           const struct shader_info *info,
                            struct brw_wm_prog_key *key);
    void (*populate_cs_key)(const struct iris_context *ice,
                            struct brw_cs_prog_key *key);
@@ -681,9 +682,6 @@ struct iris_context {
       /** 3DSTATE_STREAMOUT and 3DSTATE_SO_DECL_LIST packets */
       uint32_t *streamout;
 
-      /** Current strides for each streamout buffer */
-      uint16_t *streamout_strides;
-
       /** The SURFACE_STATE for a 1x1x1 null surface. */
       struct iris_state_ref unbound_tex;
 
@@ -691,8 +689,6 @@ struct iris_context {
       struct iris_state_ref null_fb;
 
       struct u_upload_mgr *surface_uploader;
-      // XXX: may want a separate uploader for "hey I made a CSO!" vs
-      // "I'm streaming this out at draw time and never want it again!"
       struct u_upload_mgr *dynamic_uploader;
 
       struct iris_binder binder;
@@ -715,6 +711,8 @@ struct iris_context {
          struct pipe_resource *scissor;
          struct pipe_resource *blend;
          struct pipe_resource *index_buffer;
+         struct pipe_resource *cs_thread_ids;
+         struct pipe_resource *cs_desc;
       } last_res;
 
       /** Records the size of variable-length state for INTEL_DEBUG=bat */
@@ -771,12 +769,13 @@ void iris_launch_grid(struct pipe_context *, const struct pipe_grid_info *);
 /* iris_pipe_control.c */
 
 void iris_emit_pipe_control_flush(struct iris_batch *batch,
-                                  uint32_t flags);
-void iris_emit_pipe_control_write(struct iris_batch *batch, uint32_t flags,
+                                  const char *reason, uint32_t flags);
+void iris_emit_pipe_control_write(struct iris_batch *batch,
+                                  const char *reason, uint32_t flags,
                                   struct iris_bo *bo, uint32_t offset,
                                   uint64_t imm);
 void iris_emit_end_of_pipe_sync(struct iris_batch *batch,
-                                uint32_t flags);
+                                const char *reason, uint32_t flags);
 
 void iris_init_flush_functions(struct pipe_context *ctx);
 
@@ -891,8 +890,6 @@ void iris_math_add32_gpr0(struct iris_context *ice,
                           struct iris_batch *batch,
                           uint32_t x);
 
-uint64_t iris_timebase_scale(const struct gen_device_info *devinfo,
-                             uint64_t gpu_timestamp);
 void iris_resolve_conditional_render(struct iris_context *ice);
 
 /* iris_resolve.c */

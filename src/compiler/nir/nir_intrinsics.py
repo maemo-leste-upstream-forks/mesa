@@ -111,6 +111,8 @@ IMAGE_DIM = "NIR_INTRINSIC_IMAGE_DIM"
 IMAGE_ARRAY = "NIR_INTRINSIC_IMAGE_ARRAY"
 # Access qualifiers for image and memory access intrinsics
 ACCESS = "NIR_INTRINSIC_ACCESS"
+DST_ACCESS = "NIR_INTRINSIC_DST_ACCESS"
+SRC_ACCESS = "NIR_INTRINSIC_SRC_ACCESS"
 # Image format for image intrinsics
 FORMAT = "NIR_INTRINSIC_FORMAT"
 # Offset or address alignment
@@ -156,7 +158,7 @@ intrinsic("load_param", dest_comp=0, indices=[PARAM_IDX], flags=[CAN_ELIMINATE])
 intrinsic("load_deref", dest_comp=0, src_comp=[-1],
           indices=[ACCESS], flags=[CAN_ELIMINATE])
 intrinsic("store_deref", src_comp=[-1, 0], indices=[WRMASK, ACCESS])
-intrinsic("copy_deref", src_comp=[-1, -1])
+intrinsic("copy_deref", src_comp=[-1, -1], indices=[DST_ACCESS, SRC_ACCESS])
 
 # Interpolation of input.  The interp_deref_at* intrinsics are similar to the
 # load_var intrinsic acting on a shader input except that they interpolate the
@@ -187,6 +189,16 @@ def barrier(name):
 
 barrier("barrier")
 barrier("discard")
+
+# Demote fragment shader invocation to a helper invocation.  Any stores to
+# memory after this instruction are suppressed and the fragment does not write
+# outputs to the framebuffer.  Unlike discard, demote needs to ensure that
+# derivatives will still work for invocations that were not demoted.
+#
+# As specified by SPV_EXT_demote_to_helper_invocation.
+barrier("demote")
+intrinsic("is_helper_invocation", dest_comp=1, flags=[CAN_ELIMINATE])
+
 
 # Memory barrier with semantics analogous to the memoryBarrier() GLSL
 # intrinsic.
@@ -345,7 +357,8 @@ atomic3("atomic_counter_comp_swap")
 # either one or two additional scalar arguments with the same meaning as in
 # the ARB_shader_image_load_store specification.
 def image(name, src_comp=[], **kwargs):
-    intrinsic("image_deref_" + name, src_comp=[1] + src_comp, **kwargs)
+    intrinsic("image_deref_" + name, src_comp=[1] + src_comp,
+              indices=[ACCESS], **kwargs)
     intrinsic("image_" + name, src_comp=[1] + src_comp,
               indices=[IMAGE_DIM, IMAGE_ARRAY, FORMAT, ACCESS], **kwargs)
     intrinsic("bindless_image_" + name, src_comp=[1] + src_comp,
@@ -522,6 +535,7 @@ def system_value(name, dest_comp, indices=[], bit_sizes=[32]):
               bit_sizes=bit_sizes)
 
 system_value("frag_coord", 4)
+system_value("point_coord", 2)
 system_value("front_face", 1, bit_sizes=[1, 32])
 system_value("vertex_id", 1)
 system_value("vertex_id_zero_base", 1)
@@ -591,6 +605,12 @@ system_value("blend_const_color_rgba", 4)
 system_value("blend_const_color_rgba8888_unorm", 1)
 system_value("blend_const_color_aaaa8888_unorm", 1)
 
+# System values for gl_Color, for radeonsi which interpolates these in the
+# shader prolog to handle two-sided color without recompiles and therefore
+# doesn't handle these in the main shader part like normal varyings.
+system_value("color0", 4)
+system_value("color1", 4)
+
 # Barycentric coordinate intrinsics.
 #
 # These set up the barycentric coordinates for a particular interpolation.
@@ -626,6 +646,19 @@ intrinsic("load_sample_pos_from_id", src_comp=[1], dest_comp=2,
 
 # Loads what I believe is the primitive size, for scaling ij to pixel size:
 intrinsic("load_size_ir3", dest_comp=1, flags=[CAN_ELIMINATE, CAN_REORDER])
+
+# Fragment shader input interpolation delta intrinsic.
+#
+# For hw where fragment shader input interpolation is handled in shader, the
+# load_fs_input_interp deltas intrinsics can be used to load the input deltas
+# used for interpolation as follows:
+#
+#    vec3 iid = load_fs_input_interp_deltas(varying_slot)
+#    vec2 bary = load_barycentric_*(...)
+#    float result = iid.x + iid.y * bary.y + iid.z * bary.x
+
+intrinsic("load_fs_input_interp_deltas", src_comp=[1], dest_comp=3,
+          indices=[BASE, COMPONENT], flags=[CAN_ELIMINATE, CAN_REORDER])
 
 # Load operations pull data from some piece of GPU memory.  All load
 # operations operate in terms of offsets into some piece of theoretical
@@ -728,3 +761,37 @@ intrinsic("ssbo_atomic_or_ir3",         src_comp=[1, 1, 1, 1],    dest_comp=1)
 intrinsic("ssbo_atomic_xor_ir3",        src_comp=[1, 1, 1, 1],    dest_comp=1)
 intrinsic("ssbo_atomic_exchange_ir3",   src_comp=[1, 1, 1, 1],    dest_comp=1)
 intrinsic("ssbo_atomic_comp_swap_ir3",  src_comp=[1, 1, 1, 1, 1], dest_comp=1)
+
+# Intrinsics used by the Midgard/Bifrost blend pipeline. These are defined
+# within a blend shader to read/write the raw value from the tile buffer,
+# without applying any format conversion in the process. If the shader needs
+# usable pixel values, it must apply format conversions itself.
+#
+# These definitions are generic, but they are explicitly vendored to prevent
+# other drivers from using them, as their semantics is defined in terms of the
+# Midgard/Bifrost hardware tile buffer and may not line up with anything sane.
+# One notable divergence is sRGB, which is asymmetric: raw_input_pan requires
+# an sRGB->linear conversion, but linear values should be written to
+# raw_output_pan and the hardware handles linear->sRGB.
+
+# src[] = { value }
+store("raw_output_pan", 1, [])
+load("raw_output_pan", 0, [], [CAN_ELIMINATE, CAN_REORDER])
+
+# V3D-specific instrinc for tile buffer color reads.
+#
+# The hardware requires that we read the samples and components of a pixel
+# in order, so we cannot eliminate or remove any loads in a sequence.
+#
+# src[] = { render_target }
+# BASE = sample index
+load("tlb_color_v3d", 1, [BASE, COMPONENT], [])
+
+# V3D-specific instrinc for per-sample tile buffer color writes.
+#
+# The driver backend needs to identify per-sample color writes and emit
+# specific code for them.
+#
+# src[] = { value, render_target }
+# BASE = sample index
+store("tlb_sample_color_v3d", 2, [BASE, COMPONENT, TYPE], [])

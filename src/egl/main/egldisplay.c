@@ -35,6 +35,7 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <fcntl.h>
 #include "c11/threads.h"
 #include "util/u_atomic.h"
@@ -261,12 +262,10 @@ _eglFindDisplay(_EGLPlatformType plat, void *plat_dpy,
    mtx_lock(_eglGlobal.Mutex);
 
    /* search the display list first */
-   disp = _eglGlobal.DisplayList;
-   while (disp) {
+   for (disp = _eglGlobal.DisplayList; disp; disp = disp->Next) {
       if (disp->Platform == plat && disp->PlatformDisplay == plat_dpy &&
           _eglSameAttribs(disp->Options.Attribs, attrib_list))
          break;
-      disp = disp->Next;
    }
 
    /* create a new display */
@@ -567,6 +566,22 @@ _eglGetSurfacelessDisplay(void *native_display,
 }
 #endif /* HAVE_SURFACELESS_PLATFORM */
 
+#ifdef HAVE_ANDROID_PLATFORM
+_EGLDisplay*
+_eglGetAndroidDisplay(void *native_display,
+                          const EGLAttrib *attrib_list)
+{
+
+   /* This platform recognizes no display attributes. */
+   if (attrib_list != NULL && attrib_list[0] != EGL_NONE) {
+      _eglError(EGL_BAD_ATTRIBUTE, "eglGetPlatformDisplay");
+      return NULL;
+   }
+
+   return _eglFindDisplay(_EGL_PLATFORM_ANDROID, native_display,
+                          attrib_list);
+}
+#endif /* HAVE_ANDROID_PLATFORM */
 
 _EGLDisplay*
 _eglGetDeviceDisplay(void *native_display,

@@ -31,11 +31,13 @@ LIBGLSL_FILES = \
 	glsl/gl_nir_lower_samplers.c \
 	glsl/gl_nir_lower_samplers_as_deref.c \
 	glsl/gl_nir_link_atomics.c \
+	glsl/gl_nir_link_uniform_blocks.c \
 	glsl/gl_nir_link_uniform_initializers.c \
 	glsl/gl_nir_link_uniforms.c \
 	glsl/gl_nir_link_xfb.c \
 	glsl/gl_nir_linker.c \
 	glsl/gl_nir_linker.h \
+	glsl/gl_nir_opt_access.c \
 	glsl/gl_nir.h \
 	glsl/glsl_parser_extras.cpp \
 	glsl/glsl_parser_extras.h \
@@ -254,7 +256,9 @@ NIR_FILES = \
 	nir/nir_lower_locals_to_regs.c \
 	nir/nir_lower_idiv.c \
 	nir/nir_lower_indirect_derefs.c \
+	nir/nir_lower_input_attachments.c \
 	nir/nir_lower_int64.c \
+	nir/nir_lower_interpolation.c \
 	nir/nir_lower_int_to_float.c \
 	nir/nir_lower_io.c \
 	nir/nir_lower_io_arrays_to_elements.c \

@@ -98,7 +98,7 @@ svga_get_name( struct pipe_screen *pscreen )
    llvm = "LLVM;";
 #endif
 
-   util_snprintf(name, sizeof(name), "SVGA3D; %s %s %s", build, mutex, llvm);
+   snprintf(name, sizeof(name), "SVGA3D; %s %s %s", build, mutex, llvm);
    return name;
 }
 
@@ -283,7 +283,9 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_DEPTH_CLIP_DISABLE_SEPARATE:
       return 0;
 
-   case PIPE_CAP_SM3:
+   case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
+   case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
+   case PIPE_CAP_VERTEX_SHADER_SATURATE:
       return 1;
 
    case PIPE_CAP_DEPTH_CLIP_DISABLE:
@@ -351,6 +353,8 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return sws->have_sm4_1 ? 1 : 0; /* only single-channel textures */
    case PIPE_CAP_MAX_VARYINGS:
       return sws->have_vgpu10 ? VGPU10_MAX_FS_INPUTS : 10;
+   case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
+      return sws->have_coherent;
 
    /* Unsupported features */
    case PIPE_CAP_TEXTURE_MIRROR_CLAMP:
@@ -366,7 +370,6 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_QUERY_PIPELINE_STATISTICS:
    case PIPE_CAP_TGSI_VS_LAYER_VIEWPORT:
    case PIPE_CAP_TEXTURE_GATHER_SM5:
-   case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
    case PIPE_CAP_TEXTURE_GATHER_OFFSETS:
    case PIPE_CAP_TGSI_VS_WINDOW_SPACE_POSITION:
    case PIPE_CAP_DRAW_INDIRECT:
@@ -478,6 +481,8 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_PACKED_UNIFORMS:
    case PIPE_CAP_PROGRAMMABLE_SAMPLE_LOCATIONS:
       return 0;
+   case PIPE_CAP_TGSI_DIV:
+      return 1;
    case PIPE_CAP_MAX_GS_INVOCATIONS:
       return 32;
    case PIPE_CAP_MAX_SHADER_BUFFER_SIZE:
@@ -776,14 +781,14 @@ svga_fence_reference(struct pipe_screen *screen,
 }
 
 
-static boolean
+static bool
 svga_fence_finish(struct pipe_screen *screen,
                   struct pipe_context *ctx,
                   struct pipe_fence_handle *fence,
                   uint64_t timeout)
 {
    struct svga_winsys_screen *sws = svga_screen(screen)->sws;
-   boolean retVal;
+   bool retVal;
 
    SVGA_STATS_TIME_PUSH(sws, SVGA_STATS_TIME_FENCEFINISH);
 
@@ -895,12 +900,12 @@ init_logging(struct pipe_screen *screen)
    char host_log[1000];
 
    /* Log Version to Host */
-   util_snprintf(host_log, sizeof(host_log) - strlen(log_prefix),
-                 "%s%s\n", log_prefix, svga_get_name(screen));
+   snprintf(host_log, sizeof(host_log) - strlen(log_prefix),
+            "%s%s\n", log_prefix, svga_get_name(screen));
    svgascreen->sws->host_log(svgascreen->sws, host_log);
 
-   util_snprintf(host_log, sizeof(host_log) - strlen(log_prefix),
-                 "%s" PACKAGE_VERSION MESA_GIT_SHA1, log_prefix);
+   snprintf(host_log, sizeof(host_log) - strlen(log_prefix),
+            "%s" PACKAGE_VERSION MESA_GIT_SHA1, log_prefix);
    svgascreen->sws->host_log(svgascreen->sws, host_log);
 
    /* If the SVGA_EXTRA_LOGGING env var is set, log the process's command
@@ -909,8 +914,8 @@ init_logging(struct pipe_screen *screen)
    if (debug_get_bool_option("SVGA_EXTRA_LOGGING", FALSE)) {
       char cmdline[1000];
       if (os_get_command_line(cmdline, sizeof(cmdline))) {
-         util_snprintf(host_log, sizeof(host_log) - strlen(log_prefix),
-                       "%s%s\n", log_prefix, cmdline);
+         snprintf(host_log, sizeof(host_log) - strlen(log_prefix),
+                  "%s%s\n", log_prefix, cmdline);
          svgascreen->sws->host_log(svgascreen->sws, host_log);
       }
    }

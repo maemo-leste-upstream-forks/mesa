@@ -178,6 +178,41 @@ _mesa_spirv_link_shaders(struct gl_context *ctx, struct gl_shader_program *prog)
 
    if (last_vert_stage)
       prog->last_vert_prog = prog->_LinkedShaders[last_vert_stage - 1]->Program;
+
+   /* Some shaders have to be linked with some other shaders present. */
+   if (!prog->SeparateShader) {
+      static const struct {
+         gl_shader_stage a, b;
+      } stage_pairs[] = {
+         { MESA_SHADER_GEOMETRY, MESA_SHADER_VERTEX },
+         { MESA_SHADER_TESS_EVAL, MESA_SHADER_VERTEX },
+         { MESA_SHADER_TESS_CTRL, MESA_SHADER_VERTEX },
+         { MESA_SHADER_TESS_CTRL, MESA_SHADER_TESS_EVAL },
+      };
+
+      for (unsigned i = 0; i < ARRAY_SIZE(stage_pairs); i++) {
+         gl_shader_stage a = stage_pairs[i].a;
+         gl_shader_stage b = stage_pairs[i].b;
+         if ((prog->data->linked_stages & ((1 << a) | (1 << b))) == (1 << a)) {
+            ralloc_asprintf_append(&prog->data->InfoLog,
+                                   "%s shader must be linked with %s shader\n",
+                                   _mesa_shader_stage_to_string(a),
+                                   _mesa_shader_stage_to_string(b));
+            prog->data->LinkStatus = LINKING_FAILURE;
+            return;
+         }
+      }
+   }
+
+   /* Compute shaders have additional restrictions. */
+   if ((prog->data->linked_stages & (1 << MESA_SHADER_COMPUTE)) &&
+       (prog->data->linked_stages & ~(1 << MESA_SHADER_COMPUTE))) {
+      ralloc_asprintf_append(&prog->data->InfoLog,
+                             "Compute shaders may not be linked with any other "
+                             "type of shader\n");
+      prog->data->LinkStatus = LINKING_FAILURE;
+      return;
+   }
 }
 
 nir_shader *
@@ -211,8 +246,16 @@ _mesa_spirv_to_nir(struct gl_context *ctx,
    const struct spirv_to_nir_options spirv_options = {
       .environment = NIR_SPIRV_OPENGL,
       .lower_workgroup_access_to_offsets = true,
-      .lower_ubo_ssbo_access_to_offsets = true,
-      .caps = ctx->Const.SpirVCapabilities
+      .caps = ctx->Const.SpirVCapabilities,
+      .ubo_addr_format = nir_address_format_32bit_index_offset,
+      .ssbo_addr_format = nir_address_format_32bit_index_offset,
+
+      /* TODO: Consider changing this to an address format that has the NULL
+       * pointer equals to 0.  That might be a better format to play nice
+       * with certain code / code generators.
+       */
+      .shared_addr_format = nir_address_format_32bit_offset,
+
    };
 
    nir_shader *nir =
@@ -261,6 +304,8 @@ _mesa_spirv_to_nir(struct gl_context *ctx,
 
    if (nir->info.stage == MESA_SHADER_VERTEX)
       nir_remap_dual_slot_attributes(nir, &linked_shader->Program->DualSlotInputs);
+
+   NIR_PASS_V(nir, nir_lower_frexp);
 
    return nir;
 }

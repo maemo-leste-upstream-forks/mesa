@@ -661,6 +661,22 @@ util_copy_constant_buffer(struct pipe_constant_buffer *dst,
 }
 
 static inline void
+util_copy_shader_buffer(struct pipe_shader_buffer *dst,
+                        const struct pipe_shader_buffer *src)
+{
+   if (src) {
+      pipe_resource_reference(&dst->buffer, src->buffer);
+      dst->buffer_offset = src->buffer_offset;
+      dst->buffer_size = src->buffer_size;
+   }
+   else {
+      pipe_resource_reference(&dst->buffer, NULL);
+      dst->buffer_offset = 0;
+      dst->buffer_size = 0;
+   }
+}
+
+static inline void
 util_copy_image_view(struct pipe_image_view *dst,
                      const struct pipe_image_view *src)
 {
@@ -668,11 +684,13 @@ util_copy_image_view(struct pipe_image_view *dst,
       pipe_resource_reference(&dst->resource, src->resource);
       dst->format = src->format;
       dst->access = src->access;
+      dst->shader_access = src->shader_access;
       dst->u = src->u;
    } else {
       pipe_resource_reference(&dst->resource, NULL);
       dst->format = PIPE_FORMAT_NONE;
       dst->access = 0;
+      dst->shader_access = 0;
       memset(&dst->u, 0, sizeof(dst->u));
    }
 }

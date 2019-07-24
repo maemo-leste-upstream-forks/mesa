@@ -40,6 +40,7 @@ static const nir_shader_compiler_options options = {
 	.lower_all_io_to_temps = true,
 	.vertex_id_zero_based = true, /* its not implemented anyway */
 	.lower_bitshift = true,
+	.lower_rotate = true,
 };
 
 const nir_shader_compiler_options *
@@ -286,10 +287,6 @@ instr_create_alu(struct ir2_context *ctx, nir_op opcode, unsigned ncomp)
 
 		[nir_op_mov] = {MAXs, MAXv},
 		[nir_op_fsign] = {-1, CNDGTEv},
-		[nir_op_fnot] = {SETEs, SETEv},
-		[nir_op_for] = {MAXs, MAXv},
-		[nir_op_fand] = {MINs, MINv},
-		[nir_op_fxor] = {-1, SETNEv},
 		[nir_op_fadd] = {ADDs, ADDv},
 		[nir_op_fsub] = {ADDs, ADDv},
 		[nir_op_fmul] = {MULs, MULv},

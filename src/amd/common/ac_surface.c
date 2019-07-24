@@ -49,113 +49,6 @@
 #define CIASICIDGFXENGINE_ARCTICISLAND 0x0000000D
 #endif
 
-static unsigned get_first(unsigned x, unsigned y)
-{
-	return x;
-}
-
-static void addrlib_family_rev_id(enum radeon_family family,
-                                 unsigned *addrlib_family,
-                                 unsigned *addrlib_revid)
-{
-	switch (family) {
-	case CHIP_TAHITI:
-		*addrlib_family = FAMILY_SI;
-		*addrlib_revid = get_first(AMDGPU_TAHITI_RANGE);
-		break;
-	case CHIP_PITCAIRN:
-		*addrlib_family = FAMILY_SI;
-		*addrlib_revid = get_first(AMDGPU_PITCAIRN_RANGE);
-		break;
-	case CHIP_VERDE:
-		*addrlib_family = FAMILY_SI;
-		*addrlib_revid =  get_first(AMDGPU_CAPEVERDE_RANGE);
-		break;
-	case CHIP_OLAND:
-		*addrlib_family = FAMILY_SI;
-		*addrlib_revid = get_first(AMDGPU_OLAND_RANGE);
-		break;
-	case CHIP_HAINAN:
-		*addrlib_family = FAMILY_SI;
-		*addrlib_revid = get_first(AMDGPU_HAINAN_RANGE);
-		break;
-	case CHIP_BONAIRE:
-		*addrlib_family = FAMILY_CI;
-		*addrlib_revid = get_first(AMDGPU_BONAIRE_RANGE);
-		break;
-	case CHIP_KAVERI:
-		*addrlib_family = FAMILY_KV;
-		*addrlib_revid = get_first(AMDGPU_SPECTRE_RANGE);
-		break;
-	case CHIP_KABINI:
-		*addrlib_family = FAMILY_KV;
-		*addrlib_revid = get_first(AMDGPU_KALINDI_RANGE);
-		break;
-	case CHIP_HAWAII:
-		*addrlib_family = FAMILY_CI;
-		*addrlib_revid = get_first(AMDGPU_HAWAII_RANGE);
-		break;
-	case CHIP_TONGA:
-		*addrlib_family = FAMILY_VI;
-		*addrlib_revid = get_first(AMDGPU_TONGA_RANGE);
-		break;
-	case CHIP_ICELAND:
-		*addrlib_family = FAMILY_VI;
-		*addrlib_revid = get_first(AMDGPU_ICELAND_RANGE);
-		break;
-	case CHIP_CARRIZO:
-		*addrlib_family = FAMILY_CZ;
-		*addrlib_revid = get_first(AMDGPU_CARRIZO_RANGE);
-		break;
-	case CHIP_STONEY:
-		*addrlib_family = FAMILY_CZ;
-		*addrlib_revid = get_first(AMDGPU_STONEY_RANGE);
-		break;
-	case CHIP_FIJI:
-		*addrlib_family = FAMILY_VI;
-		*addrlib_revid = get_first(AMDGPU_FIJI_RANGE);
-		break;
-	case CHIP_POLARIS10:
-		*addrlib_family = FAMILY_VI;
-		*addrlib_revid = get_first(AMDGPU_POLARIS10_RANGE);
-		break;
-	case CHIP_POLARIS11:
-		*addrlib_family = FAMILY_VI;
-		*addrlib_revid = get_first(AMDGPU_POLARIS11_RANGE);
-		break;
-	case CHIP_POLARIS12:
-		*addrlib_family = FAMILY_VI;
-		*addrlib_revid = get_first(AMDGPU_POLARIS12_RANGE);
-		break;
-	case CHIP_VEGAM:
-		*addrlib_family = FAMILY_VI;
-		*addrlib_revid = get_first(AMDGPU_VEGAM_RANGE);
-		break;
-	case CHIP_VEGA10:
-		*addrlib_family = FAMILY_AI;
-		*addrlib_revid = get_first(AMDGPU_VEGA10_RANGE);
-		break;
-	case CHIP_VEGA12:
-		*addrlib_family = FAMILY_AI;
-		*addrlib_revid = get_first(AMDGPU_VEGA12_RANGE);
-		break;
-	case CHIP_VEGA20:
-		*addrlib_family = FAMILY_AI;
-		*addrlib_revid = get_first(AMDGPU_VEGA20_RANGE);
-		break;
-	case CHIP_RAVEN:
-		*addrlib_family = FAMILY_RV;
-		*addrlib_revid = get_first(AMDGPU_RAVEN_RANGE);
-		break;
-	case CHIP_RAVEN2:
-		*addrlib_family = FAMILY_RV;
-		*addrlib_revid = get_first(AMDGPU_RAVEN2_RANGE);
-		break;
-	default:
-		fprintf(stderr, "amdgpu: Unknown family.\n");
-	}
-}
-
 static void *ADDR_API allocSysMem(const ADDR_ALLOCSYSMEM_INPUT * pInput)
 {
 	return malloc(pInput->sizeInBytes);
@@ -175,7 +68,7 @@ ADDR_HANDLE amdgpu_addr_create(const struct radeon_info *info,
 	ADDR_CREATE_OUTPUT addrCreateOutput = {0};
 	ADDR_REGISTER_VALUE regValue = {0};
 	ADDR_CREATE_FLAGS createFlags = {{0}};
-	ADDR_GET_MAX_ALINGMENTS_OUTPUT addrGetMaxAlignmentsOutput = {0};
+	ADDR_GET_MAX_ALIGNMENTS_OUTPUT addrGetMaxAlignmentsOutput = {0};
 	ADDR_E_RETURNCODE addrRet;
 
 	addrCreateInput.size = sizeof(ADDR_CREATE_INPUT);
@@ -184,7 +77,9 @@ ADDR_HANDLE amdgpu_addr_create(const struct radeon_info *info,
 	regValue.gbAddrConfig = amdinfo->gb_addr_cfg;
 	createFlags.value = 0;
 
-       addrlib_family_rev_id(info->family, &addrCreateInput.chipFamily, &addrCreateInput.chipRevision);
+	addrCreateInput.chipFamily = info->family_id;
+	addrCreateInput.chipRevision = info->chip_external_rev;
+
 	if (addrCreateInput.chipFamily == FAMILY_UNKNOWN)
 		return NULL;
 
@@ -407,6 +302,39 @@ static int gfx6_compute_level(ADDR_HANDLE addrlib,
 				surf_level->dcc_fast_clear_size = AddrDccOut->dccFastClearSize;
 			else
 				surf_level->dcc_fast_clear_size = 0;
+
+			/* Compute the DCC slice size because addrlib doesn't
+			 * provide this info. As DCC memory is linear (each
+			 * slice is the same size) it's easy to compute.
+			 */
+			surf->dcc_slice_size = AddrDccOut->dccRamSize / config->info.array_size;
+
+			/* For arrays, we have to compute the DCC info again
+			 * with one slice size to get a correct fast clear
+			 * size.
+			 */
+			if (config->info.array_size > 1) {
+				AddrDccIn->colorSurfSize = AddrSurfInfoOut->sliceSize;
+				AddrDccIn->tileMode = AddrSurfInfoOut->tileMode;
+				AddrDccIn->tileInfo = *AddrSurfInfoOut->pTileInfo;
+				AddrDccIn->tileIndex = AddrSurfInfoOut->tileIndex;
+				AddrDccIn->macroModeIndex = AddrSurfInfoOut->macroModeIndex;
+
+				ret = AddrComputeDccInfo(addrlib,
+							 AddrDccIn, AddrDccOut);
+				if (ret == ADDR_OK) {
+					/* If the DCC memory isn't properly
+					 * aligned, the data are interleaved
+					 * accross slices.
+					 */
+					if (AddrDccOut->dccRamSizeAligned)
+						surf_level->dcc_slice_fast_clear_size = AddrDccOut->dccFastClearSize;
+					else
+						surf_level->dcc_slice_fast_clear_size = 0;
+				}
+			} else {
+				surf_level->dcc_slice_fast_clear_size = surf_level->dcc_fast_clear_size;
+			}
 		}
 	}
 
@@ -609,7 +537,8 @@ static void ac_compute_cmask(const struct radeon_info *info,
 		num_layers = config->info.array_size;
 
 	surf->cmask_alignment = MAX2(256, base_align);
-	surf->cmask_size = align(slice_bytes, base_align) * num_layers;
+	surf->cmask_slice_size = align(slice_bytes, base_align);
+	surf->cmask_size = surf->cmask_slice_size * num_layers;
 }
 
 /**
@@ -953,6 +882,7 @@ static int gfx6_compute_surface(ADDR_HANDLE addrlib,
 		surf->u.legacy.fmask.tiling_index = fout.tileIndex;
 		surf->u.legacy.fmask.bankh = fout.pTileInfo->bankHeight;
 		surf->u.legacy.fmask.pitch_in_pixels = fout.pitch;
+		surf->u.legacy.fmask.slice_size = fout.sliceSize;
 
 		/* Compute tile swizzle for FMASK. */
 		if (config->info.fmask_surf_index &&
@@ -1074,6 +1004,14 @@ gfx9_get_preferred_swizzle_mode(ADDR_HANDLE addrlib,
 	return 0;
 }
 
+static bool gfx9_is_dcc_capable(const struct radeon_info *info, unsigned sw_mode)
+{
+	if (info->chip_class >= GFX10)
+		return sw_mode == ADDR_SW_64KB_Z_X || sw_mode == ADDR_SW_64KB_R_X;
+
+	return sw_mode != ADDR_SW_LINEAR;
+}
+
 static int gfx9_compute_miptree(ADDR_HANDLE addrlib,
 				const struct radeon_info *info,
 				const struct ac_surf_config *config,
@@ -1184,9 +1122,8 @@ static int gfx9_compute_miptree(ADDR_HANDLE addrlib,
 		}
 
 		/* DCC */
-		if (!(surf->flags & RADEON_SURF_DISABLE_DCC) &&
-		    !compressed &&
-		    in->swizzleMode != ADDR_SW_LINEAR) {
+		if (!(surf->flags & RADEON_SURF_DISABLE_DCC) && !compressed &&
+		    gfx9_is_dcc_capable(info, in->swizzleMode)) {
 			ADDR2_COMPUTE_DCCINFO_INPUT din = {0};
 			ADDR2_COMPUTE_DCCINFO_OUTPUT dout = {0};
 			ADDR2_META_MIP_INFO meta_mip_info[RADEON_SURF_MAX_LEVELS] = {};
@@ -1409,8 +1346,9 @@ static int gfx9_compute_miptree(ADDR_HANDLE addrlib,
 			}
 		}
 
-		/* CMASK */
-		if (in->swizzleMode != ADDR_SW_LINEAR) {
+		/* CMASK -- on GFX10 only for FMASK */
+		if (in->swizzleMode != ADDR_SW_LINEAR &&
+		    (info->chip_class <= GFX9 || in->numSamples > 1)) {
 			ADDR2_COMPUTE_CMASK_INFO_INPUT cin = {0};
 			ADDR2_COMPUTE_CMASK_INFO_OUTPUT cout = {0};
 
@@ -1533,6 +1471,8 @@ static int gfx9_compute_surface(ADDR_HANDLE addrlib,
 	 * must sample 1D textures as 2D. */
 	if (config->is_3d)
 		AddrSurfInfoIn.resourceType = ADDR_RSRC_TEX_3D;
+	else if (info->chip_class != GFX9 && config->is_1d)
+		AddrSurfInfoIn.resourceType = ADDR_RSRC_TEX_1D;
 	else
 		AddrSurfInfoIn.resourceType = ADDR_RSRC_TEX_2D;
 
@@ -1572,7 +1512,7 @@ static int gfx9_compute_surface(ADDR_HANDLE addrlib,
 
 	case RADEON_SURF_MODE_1D:
 	case RADEON_SURF_MODE_2D:
-		if (surf->flags & RADEON_SURF_IMPORTED) {
+		if (surf->flags & (RADEON_SURF_IMPORTED | RADEON_SURF_FORCE_SWIZZLE_MODE)) {
 			AddrSurfInfoIn.swizzleMode = surf->u.gfx9.surf.swizzle_mode;
 			break;
 		}
@@ -1674,7 +1614,7 @@ static int gfx9_compute_surface(ADDR_HANDLE addrlib,
 			surf->micro_tile_mode = RADEON_MICRO_MODE_DISPLAY;
 			break;
 
-		/* R = rotated. */
+		/* R = rotated (gfx9), render target (gfx10). */
 		case ADDR_SW_256B_R:
 		case ADDR_SW_4KB_R:
 		case ADDR_SW_64KB_R:
@@ -1684,13 +1624,13 @@ static int gfx9_compute_surface(ADDR_HANDLE addrlib,
 		case ADDR_SW_64KB_R_X:
 		case ADDR_SW_VAR_R_X:
 			/* The rotated micro tile mode doesn't work if both CMASK and RB+ are
-			 * used at the same time. This case is not currently expected to occur
-			 * because we don't use rotated. Enforce this restriction on all chips
-			 * to facilitate testing.
+			 * used at the same time. We currently do not use rotated
+			 * in gfx9.
 			 */
-			assert(!"rotate micro tile mode is unsupported");
-			r = ADDR_ERROR;
-			goto error;
+			assert(info->chip_class >= GFX10 ||
+			       !"rotate micro tile mode is unsupported");
+			surf->micro_tile_mode = RADEON_MICRO_MODE_ROTATED;
+			break;
 
 		/* Z = depth. */
 		case ADDR_SW_4KB_Z:

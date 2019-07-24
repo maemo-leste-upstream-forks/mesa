@@ -48,7 +48,7 @@ struct pipe_fence_handle {
 static void fence_flush(struct pipe_fence_handle *fence)
 {
 	if (fence->batch)
-		fd_batch_flush(fence->batch, true, true);
+		fd_batch_flush(fence->batch, true);
 	debug_assert(!fence->batch);
 }
 
@@ -80,7 +80,7 @@ void fd_fence_ref(struct pipe_screen *pscreen,
 	*ptr = pfence;
 }
 
-boolean fd_fence_finish(struct pipe_screen *pscreen,
+bool fd_fence_finish(struct pipe_screen *pscreen,
 		struct pipe_context *ctx,
 		struct pipe_fence_handle *fence,
 		uint64_t timeout)

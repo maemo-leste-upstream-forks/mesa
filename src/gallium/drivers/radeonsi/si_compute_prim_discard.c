@@ -473,7 +473,7 @@ void si_build_prim_discard_compute_shader(struct si_shader_context *ctx)
 		for (unsigned i = 0; i < 3; i++) {
 			index[i] = ac_build_buffer_load_format(&ctx->ac, input_indexbuf,
 							       index[i], ctx->i32_0, 1,
-							       false, true);
+							       0, true);
 			index[i] = ac_to_integer(&ctx->ac, index[i]);
 		}
 	}
@@ -667,7 +667,7 @@ void si_build_prim_discard_compute_shader(struct si_shader_context *ctx)
 		vs_params[param_vertex_id] = index[i];
 		vs_params[param_instance_id] = instance_id;
 
-		LLVMValueRef ret = LLVMBuildCall(builder, vs, vs_params, num_vs_params, "");
+		LLVMValueRef ret = ac_build_call(&ctx->ac, vs, vs_params, num_vs_params);
 		for (unsigned chan = 0; chan < 4; chan++)
 			pos[i][chan] = LLVMBuildExtractValue(builder, ret, chan, "");
 	}
@@ -797,7 +797,7 @@ void si_build_prim_discard_compute_shader(struct si_shader_context *ctx)
 		count = LLVMBuildMul(builder, count,
 				     LLVMConstInt(ctx->i32, vertices_per_prim, 0), "");
 
-		/* VI needs to disable caching, so that the CP can see the stored value.
+		/* GFX8 needs to disable caching, so that the CP can see the stored value.
 		 * MTYPE=3 bypasses TC L2.
 		 */
 		if (ctx->screen->info.chip_class <= GFX8) {
@@ -811,7 +811,7 @@ void si_build_prim_discard_compute_shader(struct si_shader_context *ctx)
 			};
 			LLVMValueRef rsrc = ac_build_gather_values(&ctx->ac, desc, 4);
 			ac_build_buffer_store_dword(&ctx->ac, rsrc, count, 1, ctx->i32_0,
-						    ctx->i32_0, 0, true, true, true, false);
+						    ctx->i32_0, 0, ac_glc | ac_slc, false);
 		} else {
 			LLVMBuildStore(builder, count,
 				       si_expand_32bit_pointer(ctx, vertex_count_addr));
@@ -863,8 +863,8 @@ void si_build_prim_discard_compute_shader(struct si_shader_context *ctx)
 			vdata = ac_build_expand_to_vec4(&ctx->ac, vdata, 3);
 
 		ac_build_buffer_store_format(&ctx->ac, output_indexbuf, vdata,
-					     vindex, ctx->i32_0, 3, true,
-					     INDEX_STORES_USE_SLC, true);
+					     vindex, ctx->i32_0, 3,
+					     ac_glc | (INDEX_STORES_USE_SLC ? ac_slc : 0));
 	}
 	lp_build_endif(&if_accepted);
 
@@ -1103,7 +1103,7 @@ si_prepare_prim_discard_or_split_draw(struct si_context *sctx,
 
 	/* The compute IB is always chained, but we need to call cs_check_space to add more space. */
 	struct radeon_cmdbuf *cs = sctx->prim_discard_compute_cs;
-	bool compute_has_space = sctx->ws->cs_check_space(cs, need_compute_dw, false);
+	MAYBE_UNUSED bool compute_has_space = sctx->ws->cs_check_space(cs, need_compute_dw, false);
 	assert(compute_has_space);
 	assert(si_check_ring_space(sctx, out_indexbuf_size));
 	return SI_PRIM_DISCARD_ENABLED;
@@ -1196,6 +1196,8 @@ void si_dispatch_prim_discard_cs_and_draw(struct si_context *sctx,
 
 		/* This needs to be done at the beginning of IBs due to possible
 		 * TTM buffer moves in the kernel.
+		 *
+		 * TODO: update for GFX10
 		 */
 		si_emit_surface_sync(sctx, cs,
 				     S_0085F0_TC_ACTION_ENA(1) |
@@ -1424,8 +1426,10 @@ void si_dispatch_prim_discard_cs_and_draw(struct si_context *sctx,
 				S_00B84C_LDS_SIZE(shader->config.lds_size));
 
 		radeon_set_sh_reg(cs, R_00B854_COMPUTE_RESOURCE_LIMITS,
-			si_get_compute_resource_limits(sctx->screen, WAVES_PER_TG,
-						       MAX_WAVES_PER_SH, THREADGROUPS_PER_CU));
+			ac_get_compute_resource_limits(&sctx->screen->info,
+						       WAVES_PER_TG,
+						       MAX_WAVES_PER_SH,
+						       THREADGROUPS_PER_CU));
 		sctx->compute_ib_last_shader = shader;
 	}
 

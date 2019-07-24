@@ -28,77 +28,11 @@
 #include "virgl_resource.h"
 #include "virgl_screen.h"
 
-static void *virgl_buffer_transfer_map(struct pipe_context *ctx,
-                                       struct pipe_resource *resource,
-                                       unsigned level,
-                                       unsigned usage,
-                                       const struct pipe_box *box,
-                                       struct pipe_transfer **transfer)
-{
-   struct virgl_context *vctx = virgl_context(ctx);
-   struct virgl_screen *vs = virgl_screen(ctx->screen);
-   struct virgl_resource *vbuf = virgl_resource(resource);
-   struct virgl_transfer *trans;
-   enum virgl_transfer_map_type map_type;
-   void *map_addr;
-
-   trans = virgl_resource_create_transfer(vctx, resource,
-                                          &vbuf->metadata, level, usage, box);
-
-   map_type = virgl_resource_transfer_prepare(vctx, trans);
-   switch (map_type) {
-   case VIRGL_TRANSFER_MAP_REALLOC:
-      if (!virgl_resource_realloc(vctx, vbuf)) {
-         map_addr = NULL;
-         break;
-      }
-      vs->vws->resource_reference(vs->vws, &trans->hw_res, vbuf->hw_res);
-      /* fall through */
-   case VIRGL_TRANSFER_MAP_HW_RES:
-      trans->hw_res_map = vs->vws->resource_map(vs->vws, vbuf->hw_res);
-      if (trans->hw_res_map)
-         map_addr = trans->hw_res_map + trans->offset;
-      else
-         map_addr = NULL;
-      break;
-   case VIRGL_TRANSFER_MAP_STAGING:
-      map_addr = virgl_transfer_uploader_map(vctx, trans);
-      /* Copy transfers don't make use of hw_res_map at the moment. */
-      trans->hw_res_map = NULL;
-      break;
-   case VIRGL_TRANSFER_MAP_ERROR:
-   default:
-      trans->hw_res_map = NULL;
-      map_addr = NULL;
-      break;
-   }
-
-   if (!map_addr) {
-      virgl_resource_destroy_transfer(vctx, trans);
-      return NULL;
-   }
-
-   if (usage & PIPE_TRANSFER_WRITE)
-       util_range_add(&vbuf->valid_buffer_range, box->x, box->x + box->width);
-
-   *transfer = &trans->base;
-   return map_addr;
-}
-
 static void virgl_buffer_transfer_unmap(struct pipe_context *ctx,
                                         struct pipe_transfer *transfer)
 {
    struct virgl_context *vctx = virgl_context(ctx);
    struct virgl_transfer *trans = virgl_transfer(transfer);
-   struct virgl_screen *vs = virgl_screen(ctx->screen);
-   struct pipe_resource *res = transfer->resource;
-
-   /* We don't need to transfer the contents of staging buffers, since they
-    * don't have any host-side storage. */
-   if (pipe_to_virgl_bind(vs, res->bind, res->flags) == VIRGL_BIND_STAGING) {
-      virgl_resource_destroy_transfer(vctx, trans);
-      return;
-   }
 
    if (trans->base.usage & PIPE_TRANSFER_WRITE) {
       if (transfer->usage & PIPE_TRANSFER_FLUSH_EXPLICIT) {
@@ -112,10 +46,8 @@ static void virgl_buffer_transfer_unmap(struct pipe_context *ctx,
          trans->offset = transfer->box.x;
       }
 
-      if (trans->copy_src_res) {
+      if (trans->copy_src_hw_res) {
          virgl_encode_copy_transfer(vctx, trans);
-         /* It's now safe for other mappings to use the transfer_uploader. */
-         vctx->transfer_uploader_in_use = false;
          virgl_resource_destroy_transfer(vctx, trans);
       } else {
          virgl_transfer_queue_unmap(&vctx->queue, trans);
@@ -146,7 +78,7 @@ static const struct u_resource_vtbl virgl_buffer_vtbl =
 {
    u_default_resource_get_handle,            /* get_handle */
    virgl_resource_destroy,                   /* resource_destroy */
-   virgl_buffer_transfer_map,                /* transfer_map */
+   virgl_resource_transfer_map,              /* transfer_map */
    virgl_buffer_transfer_flush_region,       /* transfer_flush_region */
    virgl_buffer_transfer_unmap,              /* transfer_unmap */
 };

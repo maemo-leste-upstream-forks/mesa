@@ -200,18 +200,6 @@ genX(init_device_state)(struct anv_device *device)
       lri.DataDWord      = half_slice_chicken7;
    }
 
-   /* WA_2204188704: Pixel Shader Panic dispatch must be disabled.
-    */
-   uint32_t common_slice_chicken3;
-   anv_pack_struct(&common_slice_chicken3, GENX(COMMON_SLICE_CHICKEN3),
-                   .PSThreadPanicDispatch = 0x3,
-                   .PSThreadPanicDispatchMask = 0x3);
-
-    anv_batch_emit(&batch, GENX(MI_LOAD_REGISTER_IMM), lri) {
-      lri.RegisterOffset = GENX(COMMON_SLICE_CHICKEN3_num);
-      lri.DataDWord      = common_slice_chicken3;
-   }
-
    /* WaEnableStateCacheRedirectToCS:icl */
    uint32_t slice_common_eco_chicken1;
    anv_pack_struct(&slice_common_eco_chicken1,
@@ -222,6 +210,24 @@ genX(init_device_state)(struct anv_device *device)
    anv_batch_emit(&batch, GENX(MI_LOAD_REGISTER_IMM), lri) {
       lri.RegisterOffset = GENX(SLICE_COMMON_ECO_CHICKEN1_num);
       lri.DataDWord      = slice_common_eco_chicken1;
+   }
+#endif
+
+#if GEN_GEN >= 11
+   /* hardware specification recommends disabling repacking for
+    * the compatibility with decompression mechanism in display controller.
+    */
+   if (device->info.disable_ccs_repack) {
+      uint32_t cache_mode_0;
+      anv_pack_struct(&cache_mode_0,
+                      GENX(CACHE_MODE_0),
+                      .DisableRepackingforCompression = true,
+                      .DisableRepackingforCompressionMask = true);
+
+      anv_batch_emit(&batch, GENX(MI_LOAD_REGISTER_IMM), lri) {
+         lri.RegisterOffset = GENX(CACHE_MODE_0_num);
+         lri.DataDWord      = cache_mode_0;
+      }
    }
 #endif
 

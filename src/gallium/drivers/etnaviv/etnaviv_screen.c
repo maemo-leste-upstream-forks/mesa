@@ -110,8 +110,8 @@ etna_screen_get_name(struct pipe_screen *pscreen)
    struct etna_screen *priv = etna_screen(pscreen);
    static char buffer[128];
 
-   util_snprintf(buffer, sizeof(buffer), "Vivante GC%x rev %04x", priv->model,
-                 priv->revision);
+   snprintf(buffer, sizeof(buffer), "Vivante GC%x rev %04x", priv->model,
+            priv->revision);
 
    return buffer;
 }
@@ -140,7 +140,9 @@ etna_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_BLEND_EQUATION_SEPARATE:
    case PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT:
    case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
-   case PIPE_CAP_SM3:
+   case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
+   case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
+   case PIPE_CAP_VERTEX_SHADER_SATURATE:
    case PIPE_CAP_TEXTURE_BARRIER:
    case PIPE_CAP_QUADS_FOLLOW_PROVOKING_VERTEX_CONVENTION:
    case PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY:
@@ -384,7 +386,7 @@ gpu_supports_texure_format(struct etna_screen *screen, uint32_t fmt,
    return true;
 }
 
-static boolean
+static bool
 etna_screen_is_format_supported(struct pipe_screen *pscreen,
                                 enum pipe_format format,
                                 enum pipe_texture_target target,
@@ -401,7 +403,7 @@ etna_screen_is_format_supported(struct pipe_screen *pscreen,
        target != PIPE_TEXTURE_3D &&
        target != PIPE_TEXTURE_CUBE &&
        target != PIPE_TEXTURE_RECT)
-      return FALSE;
+      return false;
 
    if (MAX2(1, sample_count) != MAX2(1, storage_sample_count))
       return false;
@@ -413,7 +415,7 @@ etna_screen_is_format_supported(struct pipe_screen *pscreen,
           * must have MSAA'able format. */
          if (sample_count > 1) {
             if (translate_samples_to_xyscale(sample_count, NULL, NULL, NULL) &&
-                translate_msaa_format(format) != ETNA_NO_MATCH) {
+                translate_ts_format(format) != ETNA_NO_MATCH) {
                allowed |= PIPE_BIND_RENDER_TARGET;
             }
          } else {
@@ -590,8 +592,10 @@ etna_get_specs(struct etna_screen *screen)
    screen->specs.bits_per_tile =
       VIV_FEATURE(screen, chipMinorFeatures0, 2BITPERTILE) ? 2 : 4;
    screen->specs.ts_clear_value =
-      VIV_FEATURE(screen, chipMinorFeatures0, 2BITPERTILE) ? 0x55555555
-                                                           : 0x11111111;
+      VIV_FEATURE(screen, chipMinorFeatures5, BLT_ENGINE)  ? 0xffffffff :
+      VIV_FEATURE(screen, chipMinorFeatures0, 2BITPERTILE) ? 0x55555555 :
+                                                             0x11111111;
+
 
    /* vertex and fragment samplers live in one address space */
    screen->specs.vertex_sampler_offset = 8;
@@ -611,6 +615,8 @@ etna_get_specs(struct etna_screen *screen)
       VIV_FEATURE(screen, chipMinorFeatures3, HAS_FAST_TRANSCENDENTALS);
    screen->specs.has_halti2_instructions =
       VIV_FEATURE(screen, chipMinorFeatures4, HALTI2);
+   screen->specs.v4_compression =
+      VIV_FEATURE(screen, chipMinorFeatures6, V4_COMPRESSION);
 
    if (screen->specs.halti >= 5) {
       /* GC7000 - this core must load shaders from memory. */
@@ -829,6 +835,12 @@ etna_screen_create(struct etna_device *dev, struct etna_gpu *gpu,
       goto fail;
    }
    screen->features[6] = val;
+
+   if (etna_gpu_get_param(screen->gpu, ETNA_GPU_FEATURES_7, &val)) {
+      DBG("could not get ETNA_GPU_FEATURES_7");
+      goto fail;
+   }
+   screen->features[7] = val;
 
    if (!etna_get_specs(screen))
       goto fail;

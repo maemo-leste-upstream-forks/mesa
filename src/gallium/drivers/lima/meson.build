@@ -29,8 +29,7 @@ files_lima = files(
   'ir/gp/codegen.h',
   'ir/gp/codegen.c',
   'ir/gp/reduce_scheduler.c',
-  'ir/gp/value_regalloc.c',
-  'ir/gp/physical_regalloc.c',
+  'ir/gp/regalloc.c',
   'ir/gp/disasm.c',
 
   'ir/pp/ppir.h',
@@ -69,8 +68,6 @@ files_lima = files(
   'lima_texture.h',
   'lima_fence.c',
   'lima_fence.h',
-  'lima_tiling.c',
-  'lima_tiling.h',
 )
 
 liblima = static_library(
@@ -78,12 +75,39 @@ liblima = static_library(
   files_lima,
   include_directories : [
     inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+    inc_panfrost
   ],
   dependencies : [dep_libdrm, idep_nir_headers],
 )
 
 driver_lima = declare_dependency(
   compile_args : '-DGALLIUM_LIMA',
-  link_with : [liblima, liblimawinsys],
+  link_with : [liblima, liblimawinsys, libpanfrost_shared],
   dependencies : idep_nir,
 )
+
+
+lima_compiler = executable(
+  'lima_compiler',
+  files(
+    'standalone/lima_compiler_cmdline.c',
+    'standalone/glsl.cpp'
+  ),
+  include_directories : [
+    inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers, inc_mesa, inc_mapi, inc_compiler,
+  ],
+  dependencies : [
+    dep_thread,
+    idep_nir,
+  ],
+  link_with : [
+    liblima,
+    libgallium,
+    libglsl_standalone,
+    libmesa_util,
+    libpanfrost_shared,
+  ],
+  build_by_default : with_tools.contains('lima'),
+  install : with_tools.contains('lima'),
+)
+

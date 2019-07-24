@@ -1890,8 +1890,8 @@ fs_visitor::split_virtual_grfs()
     * destination), we mark the used slots as inseparable.  Then we go
     * through and split the registers into the smallest pieces we can.
     */
-   bool split_points[reg_count];
-   memset(split_points, 0, sizeof(split_points));
+   bool *split_points = new bool[reg_count];
+   memset(split_points, 0, reg_count * sizeof(*split_points));
 
    /* Mark all used registers as fully splittable */
    foreach_block_and_inst(block, fs_inst, inst, cfg) {
@@ -1925,8 +1925,8 @@ fs_visitor::split_virtual_grfs()
       }
    }
 
-   int new_virtual_grf[reg_count];
-   int new_reg_offset[reg_count];
+   int *new_virtual_grf = new int[reg_count];
+   int *new_reg_offset = new int[reg_count];
 
    int reg = 0;
    for (int i = 0; i < num_vars; i++) {
@@ -1982,6 +1982,10 @@ fs_visitor::split_virtual_grfs()
       }
    }
    invalidate_live_intervals();
+
+   delete[] split_points;
+   delete[] new_virtual_grf;
+   delete[] new_reg_offset;
 }
 
 /**
@@ -1997,8 +2001,8 @@ bool
 fs_visitor::compact_virtual_grfs()
 {
    bool progress = false;
-   int remap_table[this->alloc.count];
-   memset(remap_table, -1, sizeof(remap_table));
+   int *remap_table = new int[this->alloc.count];
+   memset(remap_table, -1, this->alloc.count * sizeof(int));
 
    /* Mark which virtual GRFs are used. */
    foreach_block_and_inst(block, const fs_inst, inst, cfg) {
@@ -2053,6 +2057,8 @@ fs_visitor::compact_virtual_grfs()
          }
       }
    }
+
+   delete[] remap_table;
 
    return progress;
 }
@@ -3845,47 +3851,6 @@ fs_visitor::lower_load_payload()
             dst.type = BRW_REGISTER_TYPE_UD;
          }
          dst = offset(dst, ibld, 1);
-      }
-
-      inst->remove(block);
-      progress = true;
-   }
-
-   if (progress)
-      invalidate_live_intervals();
-
-   return progress;
-}
-
-bool
-fs_visitor::lower_linterp()
-{
-   bool progress = false;
-
-   if (devinfo->gen < 11)
-      return false;
-
-   foreach_block_and_inst_safe(block, fs_inst, inst, cfg) {
-      const fs_builder ibld(this, block, inst);
-
-      if (inst->opcode != FS_OPCODE_LINTERP)
-         continue;
-
-      fs_reg dwP = component(inst->src[1], 0);
-      fs_reg dwQ = component(inst->src[1], 1);
-      fs_reg dwR = component(inst->src[1], 3);
-      for (unsigned i = 0; i < DIV_ROUND_UP(dispatch_width, 8); i++) {
-         const fs_builder hbld(ibld.half(i));
-         fs_reg dst = half(inst->dst, i);
-         fs_reg delta_xy = offset(inst->src[0], ibld, i);
-         hbld.MAD(dst, dwR, half(delta_xy, 0), dwP);
-         fs_inst *mad = hbld.MAD(dst, dst, half(delta_xy, 1), dwQ);
-
-         /* Propagate conditional mod and saturate from the original
-          * instruction to the second MAD instruction.
-          */
-         set_saturate(inst->saturate, mad);
-         set_condmod(inst->conditional_mod, mad);
       }
 
       inst->remove(block);
@@ -7095,11 +7060,6 @@ fs_visitor::optimize()
       OPT(compact_virtual_grfs);
    } while (progress);
 
-   if (OPT(lower_linterp)) {
-      OPT(opt_copy_propagation);
-      OPT(dead_code_eliminate);
-   }
-
    /* Do this after cmod propagation has had every possible opportunity to
     * propagate results into SEL instructions.
     */
@@ -7743,6 +7703,27 @@ fs_visitor::run_cs(unsigned min_dispatch_width)
    return !failed;
 }
 
+static bool
+is_used_in_not_interp_frag_coord(nir_ssa_def *def)
+{
+   nir_foreach_use(src, def) {
+      if (src->parent_instr->type != nir_instr_type_intrinsic)
+         return true;
+
+      nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(src->parent_instr);
+      if (intrin->intrinsic != nir_intrinsic_load_interpolated_input)
+         return true;
+
+      if (nir_intrinsic_base(intrin) != VARYING_SLOT_POS)
+         return true;
+   }
+
+   nir_foreach_if_use(src, def)
+      return true;
+
+   return false;
+}
+
 /**
  * Return a bitfield where bit n is set if barycentric interpolation mode n
  * (see enum brw_barycentric_mode) is needed by the fragment shader.
@@ -7767,14 +7748,20 @@ brw_compute_barycentric_interp_modes(const struct gen_device_info *devinfo,
                continue;
 
             nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
-            if (intrin->intrinsic != nir_intrinsic_load_interpolated_input)
+            switch (intrin->intrinsic) {
+            case nir_intrinsic_load_barycentric_pixel:
+            case nir_intrinsic_load_barycentric_centroid:
+            case nir_intrinsic_load_barycentric_sample:
+               break;
+            default:
                continue;
+            }
 
             /* Ignore WPOS; it doesn't require interpolation. */
-            if (nir_intrinsic_base(intrin) == VARYING_SLOT_POS)
+            assert(intrin->dest.is_ssa);
+            if (!is_used_in_not_interp_frag_coord(&intrin->dest.ssa))
                continue;
 
-            intrin = nir_instr_as_intrinsic(intrin->src[0].ssa->parent_instr);
             enum glsl_interp_mode interp = (enum glsl_interp_mode)
                nir_intrinsic_interp_mode(intrin);
             nir_intrinsic_op bary_op = intrin->intrinsic;
@@ -7980,7 +7967,7 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
 {
    const struct gen_device_info *devinfo = compiler->devinfo;
 
-   brw_nir_apply_sampler_key(shader, compiler, &key->tex, true);
+   brw_nir_apply_sampler_key(shader, compiler, &key->base.tex, true);
    brw_nir_lower_fs_inputs(shader, devinfo, key);
    brw_nir_lower_fs_outputs(shader);
 
@@ -8022,7 +8009,7 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
 
    cfg_t *simd8_cfg = NULL, *simd16_cfg = NULL, *simd32_cfg = NULL;
 
-   fs_visitor v8(compiler, log_data, mem_ctx, key,
+   fs_visitor v8(compiler, log_data, mem_ctx, &key->base,
                  &prog_data->base, prog, shader, 8,
                  shader_time_index8);
    if (!v8.run_fs(allow_spilling, false /* do_rep_send */)) {
@@ -8039,7 +8026,7 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
    if (v8.max_dispatch_width >= 16 &&
        likely(!(INTEL_DEBUG & DEBUG_NO16) || use_rep_send)) {
       /* Try a SIMD16 compile */
-      fs_visitor v16(compiler, log_data, mem_ctx, key,
+      fs_visitor v16(compiler, log_data, mem_ctx, &key->base,
                      &prog_data->base, prog, shader, 16,
                      shader_time_index16);
       v16.import_uniforms(&v8);
@@ -8059,7 +8046,7 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
        compiler->devinfo->gen >= 6 &&
        unlikely(INTEL_DEBUG & DEBUG_DO32)) {
       /* Try a SIMD32 compile */
-      fs_visitor v32(compiler, log_data, mem_ctx, key,
+      fs_visitor v32(compiler, log_data, mem_ctx, &key->base,
                      &prog_data->base, prog, shader, 32,
                      shader_time_index32);
       v32.import_uniforms(&v8);
@@ -8241,7 +8228,7 @@ compile_cs_to_nir(const struct brw_compiler *compiler,
                   unsigned dispatch_width)
 {
    nir_shader *shader = nir_shader_clone(mem_ctx, src_shader);
-   brw_nir_apply_sampler_key(shader, compiler, &key->tex, true);
+   brw_nir_apply_sampler_key(shader, compiler, &key->base.tex, true);
 
    NIR_PASS_V(shader, brw_nir_lower_cs_intrinsics, dispatch_width);
 
@@ -8286,7 +8273,8 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
    if (min_dispatch_width <= 8) {
       nir_shader *nir8 = compile_cs_to_nir(compiler, mem_ctx, key,
                                            src_shader, 8);
-      v8 = new fs_visitor(compiler, log_data, mem_ctx, key, &prog_data->base,
+      v8 = new fs_visitor(compiler, log_data, mem_ctx, &key->base,
+                          &prog_data->base,
                           NULL, /* Never used in core profile */
                           nir8, 8, shader_time_index);
       if (!v8->run_cs(min_dispatch_width)) {
@@ -8307,7 +8295,8 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
       /* Try a SIMD16 compile */
       nir_shader *nir16 = compile_cs_to_nir(compiler, mem_ctx, key,
                                             src_shader, 16);
-      v16 = new fs_visitor(compiler, log_data, mem_ctx, key, &prog_data->base,
+      v16 = new fs_visitor(compiler, log_data, mem_ctx, &key->base,
+                           &prog_data->base,
                            NULL, /* Never used in core profile */
                            nir16, 16, shader_time_index);
       if (v8)
@@ -8340,7 +8329,8 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
       /* Try a SIMD32 compile */
       nir_shader *nir32 = compile_cs_to_nir(compiler, mem_ctx, key,
                                             src_shader, 32);
-      v32 = new fs_visitor(compiler, log_data, mem_ctx, key, &prog_data->base,
+      v32 = new fs_visitor(compiler, log_data, mem_ctx, &key->base,
+                           &prog_data->base,
                            NULL, /* Never used in core profile */
                            nir32, 32, shader_time_index);
       if (v8)

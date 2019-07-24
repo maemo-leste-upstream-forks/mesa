@@ -71,7 +71,9 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT:
 	case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
 	case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER:
-	case PIPE_CAP_SM3:
+	case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
+	case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
+	case PIPE_CAP_VERTEX_SHADER_SATURATE:
 	case PIPE_CAP_SEAMLESS_CUBE_MAP:
 	case PIPE_CAP_PRIMITIVE_RESTART:
 	case PIPE_CAP_CONDITIONAL_RENDER:
@@ -140,7 +142,6 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_QUERY_TIMESTAMP:
 	case PIPE_CAP_QUERY_TIME_ELAPSED:
 	case PIPE_CAP_NIR_SAMPLERS_AS_DEREF:
-	case PIPE_CAP_QUERY_SO_OVERFLOW:
 	case PIPE_CAP_MEMOBJ:
 	case PIPE_CAP_LOAD_CONSTBUF:
 	case PIPE_CAP_INT64:
@@ -156,7 +157,14 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_COMPUTE_GRID_INFO_LAST_BLOCK:
 	case PIPE_CAP_IMAGE_LOAD_FORMATTED:
 	case PIPE_CAP_PREFER_COMPUTE_BLIT_FOR_MULTIMEDIA:
+        case PIPE_CAP_TGSI_DIV:
 		return 1;
+
+	case PIPE_CAP_QUERY_SO_OVERFLOW:
+		return sscreen->info.chip_class <= GFX9;
+
+	case PIPE_CAP_POST_DEPTH_COVERAGE:
+		return sscreen->info.chip_class >= GFX10;
 
 	case PIPE_CAP_RESOURCE_FROM_USER_MEMORY:
 		return !SI_BIG_ENDIAN && sscreen->info.has_userptr;
@@ -219,7 +227,6 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_TGSI_MUL_ZERO_WINS:
 	case PIPE_CAP_UMA:
 	case PIPE_CAP_POLYGON_MODE_FILL_RECTANGLE:
-	case PIPE_CAP_POST_DEPTH_COVERAGE:
 	case PIPE_CAP_TILE_RASTER_ORDER:
 	case PIPE_CAP_MAX_COMBINED_SHADER_OUTPUT_RESOURCES:
 	case PIPE_CAP_CONTEXT_PRIORITY_MASK:
@@ -283,9 +290,13 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
 		return 15; /* 16384 */
 	case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
+		if (sscreen->info.chip_class >= GFX10)
+			return 14;
 		/* textures support 8192, but layered rendering supports 2048 */
 		return 12;
 	case PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS:
+		if (sscreen->info.chip_class >= GFX10)
+			return 8192;
 		/* textures support 8192, but layered rendering supports 2048 */
 		return 2048;
 
@@ -487,12 +498,12 @@ static const struct nir_shader_compiler_options nir_options = {
 	.lower_flrp64 = true,
 	.lower_fsat = true,
 	.lower_fdiv = true,
+	.lower_bitfield_insert_to_bitfield_select = true,
+	.lower_bitfield_extract = true,
 	.lower_sub = true,
 	.lower_ffma = true,
 	.lower_fmod = true,
-	.lower_pack_snorm_2x16 = true,
 	.lower_pack_snorm_4x8 = true,
-	.lower_pack_unorm_2x16 = true,
 	.lower_pack_unorm_4x8 = true,
 	.lower_unpack_snorm_2x16 = true,
 	.lower_unpack_snorm_4x8 = true,
@@ -500,8 +511,10 @@ static const struct nir_shader_compiler_options nir_options = {
 	.lower_unpack_unorm_4x8 = true,
 	.lower_extract_byte = true,
 	.lower_extract_word = true,
+	.lower_rotate = true,
 	.optimize_sample_mask_in = true,
 	.max_unroll_iterations = 32,
+	.use_interpolated_input_intrinsics = true,
 };
 
 static const void *
@@ -573,12 +586,10 @@ static int si_get_video_param(struct pipe_screen *screen,
 		case PIPE_VIDEO_CAP_SUPPORTED:
 			return (codec == PIPE_VIDEO_FORMAT_MPEG4_AVC &&
 				(si_vce_is_fw_version_supported(sscreen) ||
-				 sscreen->info.family == CHIP_RAVEN ||
-				 sscreen->info.family == CHIP_RAVEN2)) ||
+				sscreen->info.family >= CHIP_RAVEN)) ||
 				(profile == PIPE_VIDEO_PROFILE_HEVC_MAIN &&
-				(sscreen->info.family == CHIP_RAVEN ||
-				 sscreen->info.family == CHIP_RAVEN2 ||
-				 si_radeon_uvd_enc_supported(sscreen)));
+				(sscreen->info.family >= CHIP_RAVEN ||
+				si_radeon_uvd_enc_supported(sscreen)));
 		case PIPE_VIDEO_CAP_NPOT_TEXTURES:
 			return 1;
 		case PIPE_VIDEO_CAP_MAX_WIDTH:
@@ -627,7 +638,8 @@ static int si_get_video_param(struct pipe_screen *screen,
 			return false;
 		case PIPE_VIDEO_FORMAT_JPEG:
 			if (sscreen->info.family == CHIP_RAVEN ||
-			    sscreen->info.family == CHIP_RAVEN2)
+			    sscreen->info.family == CHIP_RAVEN2 ||
+			    sscreen->info.family == CHIP_NAVI10)
 				return true;
 			if (sscreen->info.family < CHIP_CARRIZO || sscreen->info.family >= CHIP_VEGA10)
 				return false;
@@ -702,15 +714,20 @@ static int si_get_video_param(struct pipe_screen *screen,
 	}
 }
 
-static boolean si_vid_is_format_supported(struct pipe_screen *screen,
-					  enum pipe_format format,
-					  enum pipe_video_profile profile,
-					  enum pipe_video_entrypoint entrypoint)
+static bool si_vid_is_format_supported(struct pipe_screen *screen,
+				       enum pipe_format format,
+				       enum pipe_video_profile profile,
+				       enum pipe_video_entrypoint entrypoint)
 {
 	/* HEVC 10 bit decoding should use P016 instead of NV12 if possible */
 	if (profile == PIPE_VIDEO_PROFILE_HEVC_MAIN_10)
 		return (format == PIPE_FORMAT_NV12) ||
 			(format == PIPE_FORMAT_P016);
+
+	/* Vp9 profile 2 supports 10 bit decoding using P016 */
+	if (profile == PIPE_VIDEO_PROFILE_VP9_PROFILE2)
+		return format == PIPE_FORMAT_P016;
+
 
 	/* we can only handle this one with UVD */
 	if (profile != PIPE_VIDEO_PROFILE_UNKNOWN)
@@ -864,7 +881,7 @@ static int si_get_compute_param(struct pipe_screen *screen,
 	case PIPE_COMPUTE_CAP_SUBGROUP_SIZE:
 		if (ret) {
 			uint32_t *subgroup_size = ret;
-			*subgroup_size = 64;
+			*subgroup_size = sscreen->compute_wave_size;
 		}
 		return sizeof(uint32_t);
 	case PIPE_COMPUTE_CAP_MAX_VARIABLE_THREADS_PER_BLOCK:

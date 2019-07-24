@@ -103,7 +103,7 @@ i915_get_name(struct pipe_screen *screen)
       break;
    }
 
-   util_snprintf(buffer, sizeof(buffer), "i915 (chipset: %s)", chipset);
+   snprintf(buffer, sizeof(buffer), "i915 (chipset: %s)", chipset);
    return buffer;
 }
 
@@ -219,7 +219,9 @@ i915_get_param(struct pipe_screen *screen, enum pipe_cap cap)
    case PIPE_CAP_TEXTURE_MIRROR_CLAMP_TO_EDGE:
    case PIPE_CAP_TEXTURE_SWIZZLE:
    case PIPE_CAP_QUERY_TIME_ELAPSED:
-   case PIPE_CAP_SM3:
+   case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
+   case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
+   case PIPE_CAP_VERTEX_SHADER_SATURATE:
    case PIPE_CAP_SEAMLESS_CUBE_MAP:
    case PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE:
    case PIPE_CAP_FRAGMENT_COLOR_CLAMPED:
@@ -469,7 +471,7 @@ i915_get_paramf(struct pipe_screen *screen, enum pipe_capf cap)
    }
 }
 
-boolean
+bool
 i915_is_format_supported(struct pipe_screen *screen,
                          enum pipe_format format,
                          enum pipe_texture_target target,
@@ -528,7 +530,7 @@ i915_is_format_supported(struct pipe_screen *screen,
    uint i;
 
    if (sample_count > 1)
-      return FALSE;
+      return false;
 
    if (MAX2(1, sample_count) != MAX2(1, storage_sample_count))
       return false;
@@ -540,14 +542,14 @@ i915_is_format_supported(struct pipe_screen *screen,
    else if (tex_usage & PIPE_BIND_SAMPLER_VIEW)
       list = tex_supported;
    else
-      return TRUE; /* PIPE_BIND_{VERTEX,INDEX}_BUFFER */
+      return true; /* PIPE_BIND_{VERTEX,INDEX}_BUFFER */
 
    for (i = 0; list[i] != PIPE_FORMAT_NONE; i++) {
       if (list[i] == format)
-         return TRUE;
+         return true;
    }
 
-   return FALSE;
+   return false;
 }
 
 
@@ -566,7 +568,7 @@ i915_fence_reference(struct pipe_screen *screen,
    is->iws->fence_reference(is->iws, ptr, fence);
 }
 
-static boolean
+static bool
 i915_fence_finish(struct pipe_screen *screen,
                   struct pipe_context *ctx,
                   struct pipe_fence_handle *fence,

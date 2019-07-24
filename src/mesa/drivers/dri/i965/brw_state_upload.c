@@ -109,16 +109,19 @@ brw_upload_initial_gpu_state(struct brw_context *brw)
       brw_load_register_imm32(brw, GEN8_L3CNTLREG,
                               GEN8_L3CNTLREG_EDBC_NO_HANG);
 
-      /* WA_2204188704: Pixel Shader Panic dispatch must be disabled.
-       */
-       brw_load_register_imm32(brw, COMMON_SLICE_CHICKEN3,
-                               PS_THREAD_PANIC_DISPATCH_MASK |
-                               PS_THREAD_PANIC_DISPATCH);
-
        /* WaEnableStateCacheRedirectToCS:icl */
        brw_load_register_imm32(brw, SLICE_COMMON_ECO_CHICKEN1,
                                GEN11_STATE_CACHE_REDIRECT_TO_CS_SECTION_ENABLE |
                                REG_MASK(GEN11_STATE_CACHE_REDIRECT_TO_CS_SECTION_ENABLE));
+   }
+
+   /* hardware specification recommends disabling repacking for
+    * the compatibility with decompression mechanism in display controller.
+    */
+   if (devinfo->disable_ccs_repack) {
+      brw_load_register_imm32(brw, GEN7_CACHE_MODE_0,
+                              GEN11_DISABLE_REPACKING_FOR_COMPRESSION |
+                              REG_MASK(GEN11_DISABLE_REPACKING_FOR_COMPRESSION));
    }
 
    if (devinfo->gen == 10 || devinfo->gen == 11) {

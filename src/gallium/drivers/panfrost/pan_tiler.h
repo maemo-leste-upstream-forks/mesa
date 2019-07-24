@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 Collabora
+ * Copyright (C) 2019 Collabora, Ltd.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -36,8 +36,8 @@ panfrost_tiler_body_size(unsigned width, unsigned height, uint8_t mask);
 
 unsigned
 panfrost_choose_hierarchy_mask(
-                unsigned width, unsigned height,
-                unsigned vertex_count);
+        unsigned width, unsigned height,
+        unsigned vertex_count);
 
 #endif
 

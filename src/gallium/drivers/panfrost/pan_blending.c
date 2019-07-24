@@ -26,6 +26,7 @@
 #include "pan_blending.h"
 #include "pan_context.h"
 #include "gallium/auxiliary/util/u_blend.h"
+#include "util/u_format.h"
 
 /*
  * Implements fixed-function blending on Midgard.
@@ -97,6 +98,40 @@
  *
  * The following routines implement this fixed function blending encoding
  */
+
+/* Not all formats can be blended by fixed-function hardware */
+
+bool
+panfrost_can_fixed_blend(enum pipe_format format)
+{
+        /* Fixed-function can handle sRGB */
+        format = util_format_linear(format);
+
+        /* Decompose the format */
+        const struct util_format_description *desc =
+                util_format_description(format);
+
+        /* Any 8-bit unorm is supported */
+        if (util_format_is_unorm8(desc))
+                return true;
+
+        /* Certain special formats are, too */
+        switch (format) {
+        case PIPE_FORMAT_B5G6R5_UNORM:
+        case PIPE_FORMAT_R10G10B10A2_UNORM:
+        case PIPE_FORMAT_B10G10R10A2_UNORM:
+        case PIPE_FORMAT_R10G10B10X2_UNORM:
+        case PIPE_FORMAT_B10G10R10X2_UNORM:
+        case PIPE_FORMAT_B4G4R4A4_UNORM:
+        case PIPE_FORMAT_B4G4R4X4_UNORM:
+        case PIPE_FORMAT_A4R4_UNORM:
+        case PIPE_FORMAT_R4A4_UNORM:
+        case PIPE_FORMAT_A4B4G4R4_UNORM:
+                return true;
+        default:
+                return false;
+        }
+}
 
 /* Helper to find the uncomplemented Gallium blend factor corresponding to a
  * complemented Gallium blend factor */
@@ -206,14 +241,14 @@ panfrost_make_fixed_blend_part(unsigned func, unsigned src_factor, unsigned dst_
         /* Make sure that the blend function is representible */
 
         switch (func) {
-                case PIPE_BLEND_ADD:
-                        break;
+        case PIPE_BLEND_ADD:
+                break;
 
-                /* TODO: Reenable subtraction modes when those fixed */
-                case PIPE_BLEND_SUBTRACT:
-                case PIPE_BLEND_REVERSE_SUBTRACT:
-                default:
-                        return false;
+        /* TODO: Reenable subtraction modes when those fixed */
+        case PIPE_BLEND_SUBTRACT:
+        case PIPE_BLEND_REVERSE_SUBTRACT:
+        default:
+                return false;
         }
 
         part.clip_modifier = MALI_BLEND_MOD_NORMAL;
@@ -238,7 +273,7 @@ panfrost_make_fixed_blend_part(unsigned func, unsigned src_factor, unsigned dst_
         } else if (src_factor == dst_factor) {
                 /* XXX: Why? */
                 part.dominant = func == PIPE_BLEND_ADD ?
-                        MALI_BLEND_DOM_DESTINATION : MALI_BLEND_DOM_SOURCE;
+                                MALI_BLEND_DOM_DESTINATION : MALI_BLEND_DOM_SOURCE;
 
                 part.nondominant_mode = MALI_BLEND_NON_MIRROR;
         } else if (src_factor == complement_factor(dst_factor)) {
@@ -289,53 +324,24 @@ panfrost_make_fixed_blend_part(unsigned func, unsigned src_factor, unsigned dst_
         return true;
 }
 
-/* We can upload a single constant for all of the factors. So, scan the factors
- * for constants used, and scan the constants for the constants used. If there
- * is a single unique constant, output that. If there are multiple,
- * fixed-function operation breaks down. */
+/* We can upload a single constant for all of the factors. So, scan
+ * the factors for constants used to create a mask to check later. */
 
-static bool
-panfrost_make_constant(unsigned *factors, unsigned num_factors, const struct pipe_blend_color *blend_color, void *out)
+static unsigned
+panfrost_constant_mask(unsigned *factors, unsigned num_factors)
 {
-        /* Color components used */
-        bool cc[4] = { false };
+        unsigned mask = 0;
 
         for (unsigned i = 0; i < num_factors; ++i) {
                 unsigned factor = uncomplement_factor(factors[i]);
 
                 if (factor == PIPE_BLENDFACTOR_CONST_COLOR)
-                        cc[0] = cc[1] = cc[2] = true;
+                        mask |= 0b0111; /* RGB */
                 else if (factor == PIPE_BLENDFACTOR_CONST_ALPHA)
-                        cc[3] = true;
+                        mask |= 0b1000; /* A */
         }
 
-        /* Find the actual constant associated with the components used*/
-
-        float constant = 0.0;
-        bool has_constant = false;
-
-        for (unsigned i = 0; i < 4; ++i) {
-                /* If the component is unused, nothing to do */
-                if (!cc[i]) continue;
-
-                float value = blend_color->color[i];
-
-                /* Either there's a second constant, in which case we fail, or
-                 * there's no constant / a first constant, in which case we use
-                 * that constant */
-
-                if (has_constant && constant != value) {
-                        return false;
-                } else {
-                        has_constant = true;
-                        constant = value;
-                }
-        }
-
-        /* We have the constant -- success! */
-
-        memcpy(out, &constant, sizeof(float));
-        return true;
+        return mask;
 }
 
 /* Create the descriptor for a fixed blend mode given the corresponding Gallium
@@ -345,11 +351,15 @@ panfrost_make_constant(unsigned *factors, unsigned num_factors, const struct pip
  */
 
 bool
-panfrost_make_fixed_blend_mode(const struct pipe_rt_blend_state *blend, struct panfrost_blend_state *so, unsigned colormask, const struct pipe_blend_color *blend_color)
+panfrost_make_fixed_blend_mode(
+        const struct pipe_rt_blend_state *blend,
+        struct mali_blend_equation *out,
+        unsigned *constant_mask,
+        unsigned colormask)
 {
-        struct mali_blend_equation *out = &so->equation;
+        /* Gallium and Mali represent colour masks identically. XXX: Static
+         * assert for future proof */
 
-        /* Gallium and Mali represent colour masks identically. XXX: Static assert for future proof */
         out->color_mask = colormask;
 
         /* If no blending is enabled, default back on `replace` mode */
@@ -360,28 +370,30 @@ panfrost_make_fixed_blend_mode(const struct pipe_rt_blend_state *blend, struct p
                 return true;
         }
 
-        /* We have room only for a single float32 constant between the four
-         * components. If we need more, spill to the programmable pipeline. */
+        /* At draw-time, we'll need to analyze the blend constant, so
+         * precompute a mask for it -- even if we don't end up able to use
+         * fixed-function blending */
 
         unsigned factors[] = {
                 blend->rgb_src_factor, blend->rgb_dst_factor,
                 blend->alpha_src_factor, blend->alpha_dst_factor,
         };
 
-        if (!panfrost_make_constant(factors, ARRAY_SIZE(factors), blend_color, &so->constant))
-                return false;
+        *constant_mask = panfrost_constant_mask(factors, ARRAY_SIZE(factors));
+
+        /* Try to compile the actual fixed-function blend */
 
         unsigned rgb_mode = 0;
         unsigned alpha_mode = 0;
 
         if (!panfrost_make_fixed_blend_part(
-                                blend->rgb_func, blend->rgb_src_factor, blend->rgb_dst_factor,
-                                &rgb_mode))
+                    blend->rgb_func, blend->rgb_src_factor, blend->rgb_dst_factor,
+                    &rgb_mode))
                 return false;
 
         if (!panfrost_make_fixed_blend_part(
-                                blend->alpha_func, blend->alpha_src_factor, blend->alpha_dst_factor,
-                                &alpha_mode))
+                    blend->alpha_func, blend->alpha_src_factor, blend->alpha_dst_factor,
+                    &alpha_mode))
                 return false;
 
         out->rgb_mode = rgb_mode;

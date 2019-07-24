@@ -44,7 +44,7 @@
 #include "lima_resource.h"
 #include "lima_bo.h"
 #include "lima_util.h"
-#include "lima_tiling.h"
+#include "pan_tiling.h"
 
 static struct pipe_resource *
 lima_resource_create_scanout(struct pipe_screen *pscreen,
@@ -321,7 +321,7 @@ err_out:
    return NULL;
 }
 
-static boolean
+static bool
 lima_resource_get_handle(struct pipe_screen *pscreen,
                          struct pipe_context *pctx,
                          struct pipe_resource *pres,
@@ -334,13 +334,13 @@ lima_resource_get_handle(struct pipe_screen *pscreen,
 
    if (handle->type == WINSYS_HANDLE_TYPE_KMS && screen->ro &&
        renderonly_get_handle(res->scanout, handle))
-      return TRUE;
+      return true;
 
    if (!lima_bo_export(res->bo, handle))
-      return FALSE;
+      return false;
 
    handle->stride = res->levels[0].stride;
-   return TRUE;
+   return true;
 }
 
 void
@@ -505,7 +505,7 @@ lima_transfer_map(struct pipe_context *pctx,
       trans->staging = malloc(ptrans->stride * ptrans->box.height * ptrans->box.depth);
 
       if (usage & PIPE_TRANSFER_READ)
-         lima_load_tiled_image(trans->staging, bo->map + res->levels[level].offset,
+         panfrost_load_tiled_image(trans->staging, bo->map + res->levels[level].offset,
                               &ptrans->box,
                               ptrans->stride,
                               res->levels[level].stride,
@@ -545,7 +545,7 @@ lima_transfer_unmap(struct pipe_context *pctx,
    if (trans->staging) {
       pres = &res->base;
       if (ptrans->usage & PIPE_TRANSFER_WRITE)
-         lima_store_tiled_image(bo->map + res->levels[ptrans->level].offset, trans->staging,
+         panfrost_store_tiled_image(bo->map + res->levels[ptrans->level].offset, trans->staging,
                               &ptrans->box,
                               res->levels[ptrans->level].stride,
                               ptrans->stride,

@@ -33,12 +33,6 @@
 #include "virgl_screen.h"
 #define VR_MAX_TEXTURE_2D_LEVELS 15
 
-/* Indicates that the resource will be used as a staging buffer, not requiring
- * dedicated host-side storage. Can only be used with PIPE_BUFFER resources
- * that have a PIPE_BIND_CUSTOM bind type.
- */
-#define VIRGL_RESOURCE_FLAG_STAGING (PIPE_RESOURCE_FLAG_DRV_PRIV << 0)
-
 struct winsys_handle;
 struct virgl_screen;
 struct virgl_context;
@@ -70,19 +64,6 @@ struct virgl_resource {
    unsigned bind_history;
 };
 
-enum virgl_transfer_map_type {
-   VIRGL_TRANSFER_MAP_ERROR = -1,
-   VIRGL_TRANSFER_MAP_HW_RES,
-
-   /* Map a range of a staging buffer. The updated contents should be transferred
-    * with a copy transfer.
-    */
-   VIRGL_TRANSFER_MAP_STAGING,
-
-   /* Reallocate the underlying virgl_hw_res. */
-   VIRGL_TRANSFER_MAP_REALLOC,
-};
-
 struct virgl_transfer {
    struct pipe_transfer base;
    uint32_t offset, l_stride;
@@ -96,7 +77,7 @@ struct virgl_transfer {
     * that the transfer source data should be taken from this
     * resource instead of the original transfer resource.
     */
-   struct pipe_resource *copy_src_res;
+   struct virgl_hw_res *copy_src_hw_res;
    /* The offset in the copy source resource to copy data from. */
    uint32_t copy_src_offset;
 };
@@ -144,14 +125,12 @@ static inline unsigned pipe_to_virgl_bind(const struct virgl_screen *vs,
       outbind |= VIRGL_BIND_STREAM_OUTPUT;
    if (pbind & PIPE_BIND_CURSOR)
       outbind |= VIRGL_BIND_CURSOR;
-   if (pbind & PIPE_BIND_CUSTOM) {
-      if (flags & VIRGL_RESOURCE_FLAG_STAGING)
-         outbind |= VIRGL_BIND_STAGING;
-      else
-         outbind |= VIRGL_BIND_CUSTOM;
-   }
+   if (pbind & PIPE_BIND_CUSTOM)
+      outbind |= VIRGL_BIND_CUSTOM;
    if (pbind & PIPE_BIND_SCANOUT)
       outbind |= VIRGL_BIND_SCANOUT;
+   if (pbind & PIPE_BIND_SHARED)
+      outbind |= VIRGL_BIND_SHARED;
    if (pbind & PIPE_BIND_SHADER_BUFFER)
       outbind |= VIRGL_BIND_SHADER_BUFFER;
    if (pbind & PIPE_BIND_QUERY_BUFFER)
@@ -159,12 +138,22 @@ static inline unsigned pipe_to_virgl_bind(const struct virgl_screen *vs,
    if (pbind & PIPE_BIND_COMMAND_ARGS_BUFFER)
       if (vs->caps.caps.v2.capability_bits & VIRGL_CAP_BIND_COMMAND_ARGS)
          outbind |= VIRGL_BIND_COMMAND_ARGS;
+
+   /* Staging resources should only be created directly through the winsys,
+    * not using pipe_resources.
+    */
+   assert(!(outbind & VIRGL_BIND_STAGING));
+
    return outbind;
 }
 
-enum virgl_transfer_map_type
-virgl_resource_transfer_prepare(struct virgl_context *vctx,
-                                struct virgl_transfer *xfer);
+void *
+virgl_resource_transfer_map(struct pipe_context *ctx,
+                            struct pipe_resource *resource,
+                            unsigned level,
+                            unsigned usage,
+                            const struct pipe_box *box,
+                            struct pipe_transfer **transfer);
 
 void virgl_resource_layout(struct pipe_resource *pt,
                            struct virgl_resource_metadata *metadata);
@@ -182,17 +171,10 @@ void virgl_resource_destroy_transfer(struct virgl_context *vctx,
 void virgl_resource_destroy(struct pipe_screen *screen,
                             struct pipe_resource *resource);
 
-boolean virgl_resource_get_handle(struct pipe_screen *screen,
-                                  struct pipe_resource *resource,
-                                  struct winsys_handle *whandle);
+bool virgl_resource_get_handle(struct pipe_screen *screen,
+                               struct pipe_resource *resource,
+                               struct winsys_handle *whandle);
 
 void virgl_resource_dirty(struct virgl_resource *res, uint32_t level);
-
-void *virgl_transfer_uploader_map(struct virgl_context *vctx,
-                                  struct virgl_transfer *vtransfer);
-
-bool
-virgl_resource_realloc(struct virgl_context *vctx,
-                       struct virgl_resource *res);
 
 #endif

@@ -238,6 +238,8 @@ iris_init_batch(struct iris_batch *batch,
       gen_batch_decode_ctx_init(&batch->decoder, &screen->devinfo,
                                 stderr, decode_flags, NULL,
                                 decode_get_bo, decode_get_state_size, batch);
+      batch->decoder.dynamic_base = IRIS_MEMZONE_DYNAMIC_START;
+      batch->decoder.instruction_base = IRIS_MEMZONE_SHADER_START;
       batch->decoder.max_vbo_decoded_lines = 32;
    }
 
@@ -374,6 +376,7 @@ iris_batch_reset(struct iris_batch *batch)
    iris_bo_unreference(batch->bo);
    batch->primary_batch_size = 0;
    batch->contains_draw = false;
+   batch->decoder.surface_base = batch->last_surface_base_address;
 
    create_batch(batch);
    assert(batch->bo->index == 0);
@@ -616,7 +619,8 @@ _iris_batch_flush(struct iris_batch *batch, const char *file, int line)
 
    iris_finish_batch(batch);
 
-   if (unlikely(INTEL_DEBUG & (DEBUG_BATCH | DEBUG_SUBMIT))) {
+   if (unlikely(INTEL_DEBUG &
+                (DEBUG_BATCH | DEBUG_SUBMIT | DEBUG_PIPE_CONTROL))) {
       int bytes_for_commands = iris_batch_bytes_used(batch);
       int second_bytes = 0;
       if (batch->bo != batch->exec_bos[0]) {
@@ -630,12 +634,15 @@ _iris_batch_flush(struct iris_batch *batch, const char *file, int line)
               100.0f * bytes_for_commands / BATCH_SZ,
               batch->exec_count,
               (float) batch->aperture_space / (1024 * 1024));
-      dump_fence_list(batch);
-      dump_validation_list(batch);
-   }
 
-   if (unlikely(INTEL_DEBUG & DEBUG_BATCH)) {
-      decode_batch(batch);
+      if (INTEL_DEBUG & (DEBUG_BATCH | DEBUG_SUBMIT)) {
+         dump_fence_list(batch);
+         dump_validation_list(batch);
+      }
+
+      if (INTEL_DEBUG & DEBUG_BATCH) {
+         decode_batch(batch);
+      }
    }
 
    int ret = submit_batch(batch);
@@ -675,10 +682,7 @@ _iris_batch_flush(struct iris_batch *batch, const char *file, int line)
       ret = 0;
    }
 
-   if (ret >= 0) {
-      //if (iris->ctx.Const.ResetStrategy == GL_LOSE_CONTEXT_ON_RESET_ARB)
-         //iris_check_for_reset(ice);
-   } else {
+   if (ret < 0) {
 #ifdef DEBUG
       const bool color = INTEL_DEBUG & DEBUG_COLOR;
       fprintf(stderr, "%siris: Failed to submit batchbuffer: %-80s%s\n",

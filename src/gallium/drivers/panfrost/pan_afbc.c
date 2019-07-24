@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 Collabora
+ * Copyright (C) 2019 Collabora, Ltd.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -93,7 +93,12 @@ panfrost_format_supports_afbc(enum pipe_format format)
         if (util_format_is_rgba8_variant(desc))
                 return true;
 
-        if (format == PIPE_FORMAT_Z32_UNORM)
+        /* Z32/Z16/S8 are all compressible as well, but they are implemented as
+         * Z24S8 with wasted bits. So Z24S8 is the only format we actually need
+         * to handle compressed, and we can make the state tracker deal with
+         * the rest. */
+
+        if (format == PIPE_FORMAT_Z24_UNORM_S8_UINT)
                 return true;
 
         /* TODO: AFBC of other formats */
@@ -101,51 +106,22 @@ panfrost_format_supports_afbc(enum pipe_format format)
         return false;
 }
 
-/* AFBC is enabled on a per-resource basis (AFBC enabling is theoretically
- * indepdent between color buffers and depth/stencil). To enable, we allocate
- * the AFBC metadata buffer and mark that it is enabled. We do -not- actually
- * edit the fragment job here. This routine should be called ONCE per
- * AFBC-compressed buffer, rather than on every frame. */
-
-void
-panfrost_enable_afbc(struct panfrost_context *ctx, struct panfrost_resource *rsrc, bool ds)
+unsigned
+panfrost_afbc_header_size(unsigned width, unsigned height)
 {
-        struct pipe_context *gallium = (struct pipe_context *) ctx;
-        struct panfrost_screen *screen = pan_screen(gallium->screen);
-
-        unsigned width  = rsrc->base.width0;
-        unsigned height = rsrc->base.height0;
-        unsigned bytes_per_pixel = util_format_get_blocksize(rsrc->base.format);
-
         /* Align to tile */
-        unsigned aligned_width  = ALIGN(width,  AFBC_TILE_WIDTH);
-        unsigned aligned_height = ALIGN(height, AFBC_TILE_HEIGHT);
+        unsigned aligned_width  = ALIGN_POT(width,  AFBC_TILE_WIDTH);
+        unsigned aligned_height = ALIGN_POT(height, AFBC_TILE_HEIGHT);
 
         /* Compute size in tiles, rather than pixels */
         unsigned tile_count_x = aligned_width  / AFBC_TILE_WIDTH;
         unsigned tile_count_y = aligned_height / AFBC_TILE_HEIGHT;
         unsigned tile_count = tile_count_x * tile_count_y;
 
+        /* Multiply to find the header size */
         unsigned header_bytes = tile_count * AFBC_HEADER_BYTES_PER_TILE;
-        unsigned header_size = ALIGN(header_bytes, AFBC_CACHE_ALIGN);
 
-        /* The stride is a normal stride, but aligned */
-        unsigned unaligned_stride = aligned_width * bytes_per_pixel;
-        unsigned stride = ALIGN(unaligned_stride, AFBC_CACHE_ALIGN);
+        /* Align and go */
+        return ALIGN_POT(header_bytes, AFBC_CACHE_ALIGN);
 
-        /* Compute the entire buffer size */
-        unsigned body_size = stride * aligned_height;
-        unsigned buffer_size = header_size + body_size;
-
-        /* Allocate the AFBC slab itself, large enough to hold the above */
-        screen->driver->allocate_slab(screen, &rsrc->bo->afbc_slab,
-                               ALIGN(buffer_size, 4096) / 4096,
-                               true, 0, 0, 0);
-
-        /* Compressed textured reads use a tagged pointer to the metadata */
-        rsrc->bo->layout = PAN_AFBC;
-        rsrc->bo->gpu = rsrc->bo->afbc_slab.gpu | (ds ? 0 : 1);
-        rsrc->bo->cpu = rsrc->bo->afbc_slab.cpu;
-        rsrc->bo->gem_handle = rsrc->bo->afbc_slab.gem_handle;
-        rsrc->bo->afbc_metadata_size = header_size;
 }

@@ -8271,6 +8271,13 @@
         <param name="data" type="const GLvoid *"/>
         <param name="flags" type="GLbitfield"/>
     </function>
+
+   <function name="NamedBufferStorageEXT">
+      <param name="buffer" type="GLuint" />
+      <param name="size" type="GLsizeiptr" />
+      <param name="data" type="const GLvoid *" />
+      <param name="flags" type="GLbitfield" />
+   </function>
 </category>
 
 <xi:include href="ARB_clear_texture.xml" xmlns:xi="http://www.w3.org/2001/XInclude"/>
@@ -8416,6 +8423,10 @@
 <!-- ARB extension 180 - 189 -->
 
 <xi:include href="ARB_gl_spirv.xml" xmlns:xi="http://www.w3.org/2001/XInclude"/>
+
+<!-- ARB extensions 191 - 193 -->
+
+<xi:include href="ARB_spirv_extensions.xml" xmlns:xi="http://www.w3.org/2001/XInclude"/>
 
 <!-- Non-ARB extensions sorted by extension number. -->
 

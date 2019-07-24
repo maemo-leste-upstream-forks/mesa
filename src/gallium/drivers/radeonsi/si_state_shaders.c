@@ -418,7 +418,8 @@ static void polaris_set_vgt_vertex_reuse(struct si_screen *sscreen,
 {
 	unsigned type = sel->type;
 
-	if (sscreen->info.family < CHIP_POLARIS10)
+	if (sscreen->info.family < CHIP_POLARIS10 ||
+	    sscreen->info.chip_class >= GFX10)
 		return;
 
 	/* VS as VS, or VS as ES: */
@@ -508,22 +509,39 @@ static void si_shader_hs(struct si_screen *sscreen, struct si_shader *shader)
 	si_pm4_add_bo(pm4, shader->bo, RADEON_USAGE_READ, RADEON_PRIO_SHADER_BINARY);
 
 	if (sscreen->info.chip_class >= GFX9) {
-		si_pm4_set_reg(pm4, R_00B410_SPI_SHADER_PGM_LO_LS, va >> 8);
-		si_pm4_set_reg(pm4, R_00B414_SPI_SHADER_PGM_HI_LS, S_00B414_MEM_BASE(va >> 40));
+		if (sscreen->info.chip_class >= GFX10) {
+			si_pm4_set_reg(pm4, R_00B520_SPI_SHADER_PGM_LO_LS, va >> 8);
+			si_pm4_set_reg(pm4, R_00B524_SPI_SHADER_PGM_HI_LS, S_00B524_MEM_BASE(va >> 40));
+		} else {
+			si_pm4_set_reg(pm4, R_00B410_SPI_SHADER_PGM_LO_LS, va >> 8);
+			si_pm4_set_reg(pm4, R_00B414_SPI_SHADER_PGM_HI_LS, S_00B414_MEM_BASE(va >> 40));
+		}
 
 		/* We need at least 2 components for LS.
-		 * VGPR0-3: (VertexID, RelAutoindex, InstanceID / StepRate0, InstanceID).
-		 * StepRate0 is set to 1. so that VGPR3 doesn't have to be loaded.
+		 * GFX9  VGPR0-3: (VertexID, RelAutoindex, InstanceID / StepRate0, InstanceID).
+		 * GFX10 VGPR0-3: (VertexID, RelAutoindex, UserVGPR1, InstanceID).
+		 * On gfx9, StepRate0 is set to 1 so that VGPR3 doesn't have to
+		 * be loaded.
 		 */
-		ls_vgpr_comp_cnt = shader->info.uses_instanceid ? 2 : 1;
+		ls_vgpr_comp_cnt = 1;
+		if (shader->info.uses_instanceid) {
+			if (sscreen->info.chip_class >= GFX10)
+				ls_vgpr_comp_cnt = 3;
+			else
+				ls_vgpr_comp_cnt = 2;
+		}
 
 		unsigned num_user_sgprs =
 			si_get_num_vs_user_sgprs(GFX9_TCS_NUM_USER_SGPR);
 
 		shader->config.rsrc2 =
 			S_00B42C_USER_SGPR(num_user_sgprs) |
-			S_00B42C_USER_SGPR_MSB(num_user_sgprs >> 5) |
 			S_00B42C_SCRATCH_EN(shader->config.scratch_bytes_per_wave > 0);
+
+		if (sscreen->info.chip_class >= GFX10)
+			shader->config.rsrc2 |= S_00B42C_USER_SGPR_MSB_GFX10(num_user_sgprs >> 5);
+		else
+			shader->config.rsrc2 |= S_00B42C_USER_SGPR_MSB_GFX9(num_user_sgprs >> 5);
 	} else {
 		si_pm4_set_reg(pm4, R_00B420_SPI_SHADER_PGM_LO_HS, va >> 8);
 		si_pm4_set_reg(pm4, R_00B424_SPI_SHADER_PGM_HI_HS, S_00B424_MEM_BASE(va >> 40));
@@ -535,9 +553,13 @@ static void si_shader_hs(struct si_screen *sscreen, struct si_shader *shader)
 	}
 
 	si_pm4_set_reg(pm4, R_00B428_SPI_SHADER_PGM_RSRC1_HS,
-		       S_00B428_VGPRS((shader->config.num_vgprs - 1) / 4) |
-		       S_00B428_SGPRS((shader->config.num_sgprs - 1) / 8) |
+		       S_00B428_VGPRS((shader->config.num_vgprs - 1) /
+				      (sscreen->ge_wave_size == 32 ? 8 : 4)) |
+		       (sscreen->info.chip_class <= GFX9 ?
+				S_00B428_SGPRS((shader->config.num_sgprs - 1) / 8) : 0) |
 		       S_00B428_DX10_CLAMP(1) |
+		       S_00B428_MEM_ORDERED(sscreen->info.chip_class >= GFX10) |
+		       S_00B428_WGP_MODE(sscreen->info.chip_class >= GFX10) |
 		       S_00B428_FLOAT_MODE(shader->config.float_mode) |
 		       S_00B428_LS_VGPR_COMP_CNT(ls_vgpr_comp_cnt));
 
@@ -620,30 +642,6 @@ static void si_shader_es(struct si_screen *sscreen, struct si_shader *shader)
 		si_set_tesseval_regs(sscreen, shader->selector, pm4);
 
 	polaris_set_vgt_vertex_reuse(sscreen, shader->selector, shader, pm4);
-}
-
-static unsigned si_conv_prim_to_gs_out(unsigned mode)
-{
-	static const int prim_conv[] = {
-		[PIPE_PRIM_POINTS]			= V_028A6C_OUTPRIM_TYPE_POINTLIST,
-		[PIPE_PRIM_LINES]			= V_028A6C_OUTPRIM_TYPE_LINESTRIP,
-		[PIPE_PRIM_LINE_LOOP]			= V_028A6C_OUTPRIM_TYPE_LINESTRIP,
-		[PIPE_PRIM_LINE_STRIP]			= V_028A6C_OUTPRIM_TYPE_LINESTRIP,
-		[PIPE_PRIM_TRIANGLES]			= V_028A6C_OUTPRIM_TYPE_TRISTRIP,
-		[PIPE_PRIM_TRIANGLE_STRIP]		= V_028A6C_OUTPRIM_TYPE_TRISTRIP,
-		[PIPE_PRIM_TRIANGLE_FAN]		= V_028A6C_OUTPRIM_TYPE_TRISTRIP,
-		[PIPE_PRIM_QUADS]			= V_028A6C_OUTPRIM_TYPE_TRISTRIP,
-		[PIPE_PRIM_QUAD_STRIP]			= V_028A6C_OUTPRIM_TYPE_TRISTRIP,
-		[PIPE_PRIM_POLYGON]			= V_028A6C_OUTPRIM_TYPE_TRISTRIP,
-		[PIPE_PRIM_LINES_ADJACENCY]		= V_028A6C_OUTPRIM_TYPE_LINESTRIP,
-		[PIPE_PRIM_LINE_STRIP_ADJACENCY]	= V_028A6C_OUTPRIM_TYPE_LINESTRIP,
-		[PIPE_PRIM_TRIANGLES_ADJACENCY]		= V_028A6C_OUTPRIM_TYPE_TRISTRIP,
-		[PIPE_PRIM_TRIANGLE_STRIP_ADJACENCY]	= V_028A6C_OUTPRIM_TYPE_TRISTRIP,
-		[PIPE_PRIM_PATCHES]			= V_028A6C_OUTPRIM_TYPE_POINTLIST,
-	};
-	assert(mode < ARRAY_SIZE(prim_conv));
-
-	return prim_conv[mode];
 }
 
 void gfx9_get_gs_info(struct si_shader_selector *es,
@@ -753,14 +751,12 @@ static void si_emit_shader_gs(struct si_context *sctx)
 		return;
 
 	/* R_028A60_VGT_GSVS_RING_OFFSET_1, R_028A64_VGT_GSVS_RING_OFFSET_2
-	 * R_028A68_VGT_GSVS_RING_OFFSET_3, R_028A6C_VGT_GS_OUT_PRIM_TYPE */
-	radeon_opt_set_context_reg4(sctx, R_028A60_VGT_GSVS_RING_OFFSET_1,
+	 * R_028A68_VGT_GSVS_RING_OFFSET_3 */
+	radeon_opt_set_context_reg3(sctx, R_028A60_VGT_GSVS_RING_OFFSET_1,
 				    SI_TRACKED_VGT_GSVS_RING_OFFSET_1,
 				    shader->ctx_reg.gs.vgt_gsvs_ring_offset_1,
 				    shader->ctx_reg.gs.vgt_gsvs_ring_offset_2,
-				    shader->ctx_reg.gs.vgt_gsvs_ring_offset_3,
-				    shader->ctx_reg.gs.vgt_gs_out_prim_type);
-
+				    shader->ctx_reg.gs.vgt_gsvs_ring_offset_3);
 
 	/* R_028AB0_VGT_GSVS_RING_ITEMSIZE */
 	radeon_opt_set_context_reg(sctx, R_028AB0_VGT_GSVS_RING_ITEMSIZE,
@@ -841,9 +837,6 @@ static void si_shader_gs(struct si_screen *sscreen, struct si_shader *shader)
 		offset += num_components[2] * sel->gs_max_out_vertices;
 	shader->ctx_reg.gs.vgt_gsvs_ring_offset_3 = offset;
 
-	shader->ctx_reg.gs.vgt_gs_out_prim_type =
-		si_conv_prim_to_gs_out(sel->gs_output_prim);
-
 	if (max_stream >= 3)
 		offset += num_components[3] * sel->gs_max_out_vertices;
 	shader->ctx_reg.gs.vgt_gsvs_ring_itemsize = offset;
@@ -895,22 +888,37 @@ static void si_shader_gs(struct si_screen *sscreen, struct si_shader *shader)
 		else
 			num_user_sgprs = GFX9_TESGS_NUM_USER_SGPR;
 
-		si_pm4_set_reg(pm4, R_00B210_SPI_SHADER_PGM_LO_ES, va >> 8);
-		si_pm4_set_reg(pm4, R_00B214_SPI_SHADER_PGM_HI_ES, S_00B214_MEM_BASE(va >> 40));
+		if (sscreen->info.chip_class >= GFX10) {
+			si_pm4_set_reg(pm4, R_00B320_SPI_SHADER_PGM_LO_ES, va >> 8);
+			si_pm4_set_reg(pm4, R_00B324_SPI_SHADER_PGM_HI_ES, S_00B324_MEM_BASE(va >> 40));
+		} else {
+			si_pm4_set_reg(pm4, R_00B210_SPI_SHADER_PGM_LO_ES, va >> 8);
+			si_pm4_set_reg(pm4, R_00B214_SPI_SHADER_PGM_HI_ES, S_00B214_MEM_BASE(va >> 40));
+		}
 
-		si_pm4_set_reg(pm4, R_00B228_SPI_SHADER_PGM_RSRC1_GS,
-			       S_00B228_VGPRS((shader->config.num_vgprs - 1) / 4) |
-			       S_00B228_SGPRS((shader->config.num_sgprs - 1) / 8) |
-			       S_00B228_DX10_CLAMP(1) |
-			       S_00B228_FLOAT_MODE(shader->config.float_mode) |
-			       S_00B228_GS_VGPR_COMP_CNT(gs_vgpr_comp_cnt));
-		si_pm4_set_reg(pm4, R_00B22C_SPI_SHADER_PGM_RSRC2_GS,
-			       S_00B22C_USER_SGPR(num_user_sgprs) |
-			       S_00B22C_USER_SGPR_MSB(num_user_sgprs >> 5) |
-			       S_00B22C_ES_VGPR_COMP_CNT(es_vgpr_comp_cnt) |
-			       S_00B22C_OC_LDS_EN(es_type == PIPE_SHADER_TESS_EVAL) |
-			       S_00B22C_LDS_SIZE(shader->config.lds_size) |
-			       S_00B22C_SCRATCH_EN(shader->config.scratch_bytes_per_wave > 0));
+		uint32_t rsrc1 =
+			S_00B228_VGPRS((shader->config.num_vgprs - 1) / 4) |
+			S_00B228_DX10_CLAMP(1) |
+			S_00B228_MEM_ORDERED(sscreen->info.chip_class >= GFX10) |
+			S_00B228_WGP_MODE(sscreen->info.chip_class >= GFX10) |
+			S_00B228_FLOAT_MODE(shader->config.float_mode) |
+			S_00B228_GS_VGPR_COMP_CNT(gs_vgpr_comp_cnt);
+		uint32_t rsrc2 =
+			S_00B22C_USER_SGPR(num_user_sgprs) |
+			S_00B22C_ES_VGPR_COMP_CNT(es_vgpr_comp_cnt) |
+			S_00B22C_OC_LDS_EN(es_type == PIPE_SHADER_TESS_EVAL) |
+			S_00B22C_LDS_SIZE(shader->config.lds_size) |
+			S_00B22C_SCRATCH_EN(shader->config.scratch_bytes_per_wave > 0);
+
+		if (sscreen->info.chip_class >= GFX10) {
+			rsrc2 |= S_00B22C_USER_SGPR_MSB_GFX10(num_user_sgprs >> 5);
+		} else {
+			rsrc1 |= S_00B228_SGPRS((shader->config.num_sgprs - 1) / 8);
+			rsrc2 |= S_00B22C_USER_SGPR_MSB_GFX9(num_user_sgprs >> 5);
+		}
+
+		si_pm4_set_reg(pm4, R_00B228_SPI_SHADER_PGM_RSRC1_GS, rsrc1);
+		si_pm4_set_reg(pm4, R_00B22C_SPI_SHADER_PGM_RSRC2_GS, rsrc2);
 
 		shader->ctx_reg.gs.vgt_gs_onchip_cntl =
 			S_028A44_ES_VERTS_PER_SUBGRP(shader->gs_info.es_verts_per_subgroup) |
@@ -939,6 +947,303 @@ static void si_shader_gs(struct si_screen *sscreen, struct si_shader *shader)
 			       S_00B22C_USER_SGPR(GFX6_GS_NUM_USER_SGPR) |
 			       S_00B22C_SCRATCH_EN(shader->config.scratch_bytes_per_wave > 0));
 	}
+}
+
+/* Common tail code for NGG primitive shaders. */
+static void gfx10_emit_shader_ngg_tail(struct si_context *sctx,
+				       struct si_shader *shader,
+				       unsigned initial_cdw)
+{
+	radeon_opt_set_context_reg(sctx, R_0287FC_GE_MAX_OUTPUT_PER_SUBGROUP,
+				   SI_TRACKED_GE_MAX_OUTPUT_PER_SUBGROUP,
+				   shader->ctx_reg.ngg.ge_max_output_per_subgroup);
+	radeon_opt_set_context_reg(sctx, R_028B4C_GE_NGG_SUBGRP_CNTL,
+				   SI_TRACKED_GE_NGG_SUBGRP_CNTL,
+				   shader->ctx_reg.ngg.ge_ngg_subgrp_cntl);
+	radeon_opt_set_context_reg(sctx, R_028A84_VGT_PRIMITIVEID_EN,
+				   SI_TRACKED_VGT_PRIMITIVEID_EN,
+				   shader->ctx_reg.ngg.vgt_primitiveid_en);
+	radeon_opt_set_context_reg(sctx, R_028A44_VGT_GS_ONCHIP_CNTL,
+				   SI_TRACKED_VGT_GS_ONCHIP_CNTL,
+				   shader->ctx_reg.ngg.vgt_gs_onchip_cntl);
+	radeon_opt_set_context_reg(sctx, R_028B90_VGT_GS_INSTANCE_CNT,
+				   SI_TRACKED_VGT_GS_INSTANCE_CNT,
+				   shader->ctx_reg.ngg.vgt_gs_instance_cnt);
+	radeon_opt_set_context_reg(sctx, R_028AAC_VGT_ESGS_RING_ITEMSIZE,
+				   SI_TRACKED_VGT_ESGS_RING_ITEMSIZE,
+				   shader->ctx_reg.ngg.vgt_esgs_ring_itemsize);
+	radeon_opt_set_context_reg(sctx, R_028AB4_VGT_REUSE_OFF,
+				   SI_TRACKED_VGT_REUSE_OFF,
+				   shader->ctx_reg.ngg.vgt_reuse_off);
+	radeon_opt_set_context_reg(sctx, R_0286C4_SPI_VS_OUT_CONFIG,
+				   SI_TRACKED_SPI_VS_OUT_CONFIG,
+				   shader->ctx_reg.ngg.spi_vs_out_config);
+	radeon_opt_set_context_reg2(sctx, R_028708_SPI_SHADER_IDX_FORMAT,
+				   SI_TRACKED_SPI_SHADER_IDX_FORMAT,
+				   shader->ctx_reg.ngg.spi_shader_idx_format,
+				   shader->ctx_reg.ngg.spi_shader_pos_format);
+	radeon_opt_set_context_reg(sctx, R_028818_PA_CL_VTE_CNTL,
+				   SI_TRACKED_PA_CL_VTE_CNTL,
+				   shader->ctx_reg.ngg.pa_cl_vte_cntl);
+	radeon_opt_set_context_reg(sctx, R_028838_PA_CL_NGG_CNTL,
+				   SI_TRACKED_PA_CL_NGG_CNTL,
+				   shader->ctx_reg.ngg.pa_cl_ngg_cntl);
+
+	if (initial_cdw != sctx->gfx_cs->current.cdw)
+		sctx->context_roll = true;
+}
+
+static void gfx10_emit_shader_ngg_notess_nogs(struct si_context *sctx)
+{
+	struct si_shader *shader = sctx->queued.named.gs->shader;
+	unsigned initial_cdw = sctx->gfx_cs->current.cdw;
+
+	if (!shader)
+		return;
+
+	gfx10_emit_shader_ngg_tail(sctx, shader, initial_cdw);
+}
+
+static void gfx10_emit_shader_ngg_tess_nogs(struct si_context *sctx)
+{
+	struct si_shader *shader = sctx->queued.named.gs->shader;
+	unsigned initial_cdw = sctx->gfx_cs->current.cdw;
+
+	if (!shader)
+		return;
+
+	radeon_opt_set_context_reg(sctx, R_028B6C_VGT_TF_PARAM,
+				   SI_TRACKED_VGT_TF_PARAM,
+				   shader->vgt_tf_param);
+
+	gfx10_emit_shader_ngg_tail(sctx, shader, initial_cdw);
+}
+
+static void gfx10_emit_shader_ngg_notess_gs(struct si_context *sctx)
+{
+	struct si_shader *shader = sctx->queued.named.gs->shader;
+	unsigned initial_cdw = sctx->gfx_cs->current.cdw;
+
+	if (!shader)
+		return;
+
+	radeon_opt_set_context_reg(sctx, R_028B38_VGT_GS_MAX_VERT_OUT,
+				   SI_TRACKED_VGT_GS_MAX_VERT_OUT,
+				   shader->ctx_reg.ngg.vgt_gs_max_vert_out);
+
+	gfx10_emit_shader_ngg_tail(sctx, shader, initial_cdw);
+}
+
+static void gfx10_emit_shader_ngg_tess_gs(struct si_context *sctx)
+{
+	struct si_shader *shader = sctx->queued.named.gs->shader;
+	unsigned initial_cdw = sctx->gfx_cs->current.cdw;
+
+	if (!shader)
+		return;
+
+	radeon_opt_set_context_reg(sctx, R_028B38_VGT_GS_MAX_VERT_OUT,
+				   SI_TRACKED_VGT_GS_MAX_VERT_OUT,
+				   shader->ctx_reg.ngg.vgt_gs_max_vert_out);
+	radeon_opt_set_context_reg(sctx, R_028B6C_VGT_TF_PARAM,
+				   SI_TRACKED_VGT_TF_PARAM,
+				   shader->vgt_tf_param);
+
+	gfx10_emit_shader_ngg_tail(sctx, shader, initial_cdw);
+}
+
+static void si_set_ge_pc_alloc(struct si_screen *sscreen,
+			       struct si_pm4_state *pm4, bool culling)
+{
+	si_pm4_set_reg(pm4, R_030980_GE_PC_ALLOC,
+		       S_030980_OVERSUB_EN(1) |
+		       S_030980_NUM_PC_LINES((culling ? 256 : 128) * sscreen->info.max_se - 1));
+}
+
+unsigned si_get_input_prim(const struct si_shader_selector *gs)
+{
+	if (gs->type == PIPE_SHADER_GEOMETRY)
+		return gs->info.properties[TGSI_PROPERTY_GS_INPUT_PRIM];
+
+	if (gs->type == PIPE_SHADER_TESS_EVAL) {
+		if (gs->info.properties[TGSI_PROPERTY_TES_POINT_MODE])
+			return PIPE_PRIM_POINTS;
+		if (gs->info.properties[TGSI_PROPERTY_TES_PRIM_MODE] == PIPE_PRIM_LINES)
+			return PIPE_PRIM_LINES;
+		return PIPE_PRIM_TRIANGLES;
+	}
+
+	/* TODO: Set this correctly if the primitive type is set in the shader key. */
+	return PIPE_PRIM_TRIANGLES; /* worst case for all callers */
+}
+
+/**
+ * Prepare the PM4 image for \p shader, which will run as a merged ESGS shader
+ * in NGG mode.
+ */
+static void gfx10_shader_ngg(struct si_screen *sscreen, struct si_shader *shader)
+{
+	const struct si_shader_selector *gs_sel = shader->selector;
+	const struct tgsi_shader_info *gs_info = &gs_sel->info;
+	enum pipe_shader_type gs_type = shader->selector->type;
+	const struct si_shader_selector *es_sel =
+		shader->previous_stage_sel ? shader->previous_stage_sel : shader->selector;
+	const struct tgsi_shader_info *es_info = &es_sel->info;
+	enum pipe_shader_type es_type = es_sel->type;
+	unsigned num_user_sgprs;
+	unsigned nparams, es_vgpr_comp_cnt, gs_vgpr_comp_cnt;
+	uint64_t va;
+	unsigned window_space =
+		gs_info->properties[TGSI_PROPERTY_VS_WINDOW_SPACE_POSITION];
+	bool es_enable_prim_id = shader->key.mono.u.vs_export_prim_id || es_info->uses_primid;
+	unsigned gs_num_invocations = MAX2(gs_sel->gs_num_invocations, 1);
+	unsigned input_prim = si_get_input_prim(gs_sel);
+	bool break_wave_at_eoi = false;
+	struct si_pm4_state *pm4 = si_get_shader_pm4_state(shader);
+	if (!pm4)
+		return;
+
+	if (es_type == PIPE_SHADER_TESS_EVAL) {
+		pm4->atom.emit = gs_type == PIPE_SHADER_GEOMETRY ? gfx10_emit_shader_ngg_tess_gs
+								 : gfx10_emit_shader_ngg_tess_nogs;
+	} else {
+		pm4->atom.emit = gs_type == PIPE_SHADER_GEOMETRY ? gfx10_emit_shader_ngg_notess_gs
+								 : gfx10_emit_shader_ngg_notess_nogs;
+	}
+
+	va = shader->bo->gpu_address;
+	si_pm4_add_bo(pm4, shader->bo, RADEON_USAGE_READ, RADEON_PRIO_SHADER_BINARY);
+
+	if (es_type == PIPE_SHADER_VERTEX) {
+		/* VGPR5-8: (VertexID, UserVGPR0, UserVGPR1, UserVGPR2 / InstanceID) */
+		es_vgpr_comp_cnt = shader->info.uses_instanceid ? 3 : 0;
+
+		if (es_info->properties[TGSI_PROPERTY_VS_BLIT_SGPRS]) {
+			num_user_sgprs = SI_SGPR_VS_BLIT_DATA +
+					 es_info->properties[TGSI_PROPERTY_VS_BLIT_SGPRS];
+		} else {
+			num_user_sgprs = si_get_num_vs_user_sgprs(GFX9_VSGS_NUM_USER_SGPR);
+		}
+	} else {
+		assert(es_type == PIPE_SHADER_TESS_EVAL);
+		es_vgpr_comp_cnt = es_enable_prim_id ? 3 : 2;
+		num_user_sgprs = GFX9_TESGS_NUM_USER_SGPR;
+
+		if (es_enable_prim_id || gs_info->uses_primid)
+			break_wave_at_eoi = true;
+	}
+
+	/* If offsets 4, 5 are used, GS_VGPR_COMP_CNT is ignored and
+	 * VGPR[0:4] are always loaded.
+	 *
+	 * Vertex shaders always need to load VGPR3, because they need to
+	 * pass edge flags for decomposed primitives (such as quads) to the PA
+	 * for the GL_LINE polygon mode to skip rendering lines on inner edges.
+	 */
+	if (gs_info->uses_invocationid || gs_type == PIPE_SHADER_VERTEX)
+		gs_vgpr_comp_cnt = 3; /* VGPR3 contains InvocationID, edge flags. */
+	else if (gs_info->uses_primid)
+		gs_vgpr_comp_cnt = 2; /* VGPR2 contains PrimitiveID. */
+	else if (input_prim >= PIPE_PRIM_TRIANGLES)
+		gs_vgpr_comp_cnt = 1; /* VGPR1 contains offsets 2, 3 */
+	else
+		gs_vgpr_comp_cnt = 0; /* VGPR0 contains offsets 0, 1 */
+
+	si_pm4_set_reg(pm4, R_00B320_SPI_SHADER_PGM_LO_ES, va >> 8);
+	si_pm4_set_reg(pm4, R_00B324_SPI_SHADER_PGM_HI_ES, va >> 40);
+	si_pm4_set_reg(pm4, R_00B228_SPI_SHADER_PGM_RSRC1_GS,
+		       S_00B228_VGPRS((shader->config.num_vgprs - 1) /
+				      (sscreen->ge_wave_size == 32 ? 8 : 4)) |
+		       S_00B228_FLOAT_MODE(shader->config.float_mode) |
+		       S_00B228_DX10_CLAMP(1) |
+		       S_00B228_MEM_ORDERED(1) |
+		       S_00B228_WGP_MODE(1) |
+		       S_00B228_GS_VGPR_COMP_CNT(gs_vgpr_comp_cnt));
+	si_pm4_set_reg(pm4, R_00B22C_SPI_SHADER_PGM_RSRC2_GS,
+		       S_00B22C_SCRATCH_EN(shader->config.scratch_bytes_per_wave > 0) |
+		       S_00B22C_USER_SGPR(num_user_sgprs) |
+		       S_00B22C_ES_VGPR_COMP_CNT(es_vgpr_comp_cnt) |
+		       S_00B22C_USER_SGPR_MSB_GFX10(num_user_sgprs >> 5) |
+		       S_00B22C_OC_LDS_EN(es_type == PIPE_SHADER_TESS_EVAL) |
+		       S_00B22C_LDS_SIZE(shader->config.lds_size));
+	si_set_ge_pc_alloc(sscreen, pm4, false);
+
+	nparams = MAX2(shader->info.nr_param_exports, 1);
+	shader->ctx_reg.ngg.spi_vs_out_config =
+		S_0286C4_VS_EXPORT_COUNT(nparams - 1) |
+		S_0286C4_NO_PC_EXPORT(shader->info.nr_param_exports == 0);
+
+	shader->ctx_reg.ngg.spi_shader_idx_format =
+		S_028708_IDX0_EXPORT_FORMAT(V_028708_SPI_SHADER_1COMP);
+	shader->ctx_reg.ngg.spi_shader_pos_format =
+		S_02870C_POS0_EXPORT_FORMAT(V_02870C_SPI_SHADER_4COMP) |
+		S_02870C_POS1_EXPORT_FORMAT(shader->info.nr_pos_exports > 1 ?
+					    V_02870C_SPI_SHADER_4COMP :
+					    V_02870C_SPI_SHADER_NONE) |
+		S_02870C_POS2_EXPORT_FORMAT(shader->info.nr_pos_exports > 2 ?
+					    V_02870C_SPI_SHADER_4COMP :
+					    V_02870C_SPI_SHADER_NONE) |
+		S_02870C_POS3_EXPORT_FORMAT(shader->info.nr_pos_exports > 3 ?
+					    V_02870C_SPI_SHADER_4COMP :
+					    V_02870C_SPI_SHADER_NONE);
+
+	shader->ctx_reg.ngg.vgt_primitiveid_en =
+		S_028A84_PRIMITIVEID_EN(es_enable_prim_id) |
+		S_028A84_NGG_DISABLE_PROVOK_REUSE(es_enable_prim_id);
+
+	if (gs_type == PIPE_SHADER_GEOMETRY) {
+		shader->ctx_reg.ngg.vgt_esgs_ring_itemsize = es_sel->esgs_itemsize / 4;
+		shader->ctx_reg.ngg.vgt_gs_max_vert_out = gs_sel->gs_max_out_vertices;
+	} else {
+		shader->ctx_reg.ngg.vgt_esgs_ring_itemsize = 1;
+	}
+
+	if (es_type == PIPE_SHADER_TESS_EVAL)
+		si_set_tesseval_regs(sscreen, es_sel, pm4);
+
+	shader->ctx_reg.ngg.vgt_gs_onchip_cntl =
+		S_028A44_ES_VERTS_PER_SUBGRP(shader->ngg.hw_max_esverts) |
+		S_028A44_GS_PRIMS_PER_SUBGRP(shader->ngg.max_gsprims) |
+		S_028A44_GS_INST_PRIMS_IN_SUBGRP(shader->ngg.max_gsprims * gs_num_invocations);
+	shader->ctx_reg.ngg.ge_max_output_per_subgroup =
+		S_0287FC_MAX_VERTS_PER_SUBGROUP(shader->ngg.max_out_verts);
+	shader->ctx_reg.ngg.ge_ngg_subgrp_cntl =
+		S_028B4C_PRIM_AMP_FACTOR(shader->ngg.prim_amp_factor) |
+		S_028B4C_THDS_PER_SUBGRP(0); /* for fast launch */
+	shader->ctx_reg.ngg.vgt_gs_instance_cnt =
+		S_028B90_CNT(gs_num_invocations) |
+		S_028B90_ENABLE(gs_num_invocations > 1) |
+		S_028B90_EN_MAX_VERT_OUT_PER_GS_INSTANCE(
+			shader->ngg.max_vert_out_per_gs_instance);
+
+	/* Always output hw-generated edge flags and pass them via the prim
+	 * export to prevent drawing lines on internal edges of decomposed
+	 * primitives (such as quads) with polygon mode = lines. Only VS needs
+	 * this.
+	 */
+	shader->ctx_reg.ngg.pa_cl_ngg_cntl =
+		S_028838_INDEX_BUF_EDGE_FLAG_ENA(gs_type == PIPE_SHADER_VERTEX);
+
+	shader->ge_cntl =
+		S_03096C_PRIM_GRP_SIZE(shader->ngg.max_gsprims) |
+		S_03096C_VERT_GRP_SIZE(shader->ngg.hw_max_esverts) |
+		S_03096C_BREAK_WAVE_AT_EOI(break_wave_at_eoi);
+
+	if (window_space) {
+		shader->ctx_reg.ngg.pa_cl_vte_cntl =
+			S_028818_VTX_XY_FMT(1) | S_028818_VTX_Z_FMT(1);
+	} else {
+		shader->ctx_reg.ngg.pa_cl_vte_cntl =
+			S_028818_VTX_W0_FMT(1) |
+			S_028818_VPORT_X_SCALE_ENA(1) | S_028818_VPORT_X_OFFSET_ENA(1) |
+			S_028818_VPORT_Y_SCALE_ENA(1) | S_028818_VPORT_Y_OFFSET_ENA(1) |
+			S_028818_VPORT_Z_SCALE_ENA(1) | S_028818_VPORT_Z_OFFSET_ENA(1);
+	}
+
+	shader->ctx_reg.ngg.vgt_reuse_off =
+		S_028AB4_REUSE_OFF(sscreen->info.family == CHIP_NAVI10 &&
+				   sscreen->info.chip_external_rev == 0x1 &&
+				   es_type == PIPE_SHADER_TESS_EVAL);
 }
 
 static void si_emit_shader_vs(struct si_context *sctx)
@@ -1070,6 +1375,11 @@ static void si_shader_vs(struct si_screen *sscreen, struct si_shader *shader,
 	nparams = MAX2(shader->info.nr_param_exports, 1);
 	shader->ctx_reg.vs.spi_vs_out_config = S_0286C4_VS_EXPORT_COUNT(nparams - 1);
 
+	if (sscreen->info.chip_class >= GFX10) {
+		shader->ctx_reg.vs.spi_vs_out_config |=
+			S_0286C4_NO_PC_EXPORT(shader->info.nr_param_exports == 0);
+	}
+
 	shader->ctx_reg.vs.spi_shader_pos_format =
 			S_02870C_POS0_EXPORT_FORMAT(V_02870C_SPI_SHADER_4COMP) |
 			S_02870C_POS1_EXPORT_FORMAT(shader->info.nr_pos_exports > 1 ?
@@ -1086,21 +1396,30 @@ static void si_shader_vs(struct si_screen *sscreen, struct si_shader *shader,
 
 	si_pm4_set_reg(pm4, R_00B120_SPI_SHADER_PGM_LO_VS, va >> 8);
 	si_pm4_set_reg(pm4, R_00B124_SPI_SHADER_PGM_HI_VS, S_00B124_MEM_BASE(va >> 40));
-	si_pm4_set_reg(pm4, R_00B128_SPI_SHADER_PGM_RSRC1_VS,
-		       S_00B128_VGPRS((shader->config.num_vgprs - 1) / 4) |
-		       S_00B128_SGPRS((shader->config.num_sgprs - 1) / 8) |
-		       S_00B128_VGPR_COMP_CNT(vgpr_comp_cnt) |
-		       S_00B128_DX10_CLAMP(1) |
-		       S_00B128_FLOAT_MODE(shader->config.float_mode));
-	si_pm4_set_reg(pm4, R_00B12C_SPI_SHADER_PGM_RSRC2_VS,
-		       S_00B12C_USER_SGPR(num_user_sgprs) |
-		       S_00B12C_OC_LDS_EN(oc_lds_en) |
-		       S_00B12C_SO_BASE0_EN(!!shader->selector->so.stride[0]) |
-		       S_00B12C_SO_BASE1_EN(!!shader->selector->so.stride[1]) |
-		       S_00B12C_SO_BASE2_EN(!!shader->selector->so.stride[2]) |
-		       S_00B12C_SO_BASE3_EN(!!shader->selector->so.stride[3]) |
-		       S_00B12C_SO_EN(!!shader->selector->so.num_outputs) |
-		       S_00B12C_SCRATCH_EN(shader->config.scratch_bytes_per_wave > 0));
+	if (sscreen->info.chip_class >= GFX10)
+		si_set_ge_pc_alloc(sscreen, pm4, false);
+
+	uint32_t rsrc1 = S_00B128_VGPRS((shader->config.num_vgprs - 1) /
+					(sscreen->ge_wave_size == 32 ? 8 : 4)) |
+			 S_00B128_VGPR_COMP_CNT(vgpr_comp_cnt) |
+			 S_00B128_DX10_CLAMP(1) |
+			 S_00B128_MEM_ORDERED(sscreen->info.chip_class >= GFX10) |
+			 S_00B128_FLOAT_MODE(shader->config.float_mode);
+	uint32_t rsrc2 = S_00B12C_USER_SGPR(num_user_sgprs) |
+			 S_00B12C_OC_LDS_EN(oc_lds_en) |
+			 S_00B12C_SCRATCH_EN(shader->config.scratch_bytes_per_wave > 0);
+
+	if (sscreen->info.chip_class <= GFX9) {
+		rsrc1 |= S_00B128_SGPRS((shader->config.num_sgprs - 1) / 8);
+		rsrc2 |= S_00B12C_SO_BASE0_EN(!!shader->selector->so.stride[0]) |
+			 S_00B12C_SO_BASE1_EN(!!shader->selector->so.stride[1]) |
+			 S_00B12C_SO_BASE2_EN(!!shader->selector->so.stride[2]) |
+			 S_00B12C_SO_BASE3_EN(!!shader->selector->so.stride[3]) |
+			 S_00B12C_SO_EN(!!shader->selector->so.num_outputs);
+	}
+
+	si_pm4_set_reg(pm4, R_00B128_SPI_SHADER_PGM_RSRC1_VS, rsrc1);
+	si_pm4_set_reg(pm4, R_00B12C_SPI_SHADER_PGM_RSRC2_VS, rsrc2);
 
 	if (window_space)
 		shader->ctx_reg.vs.pa_cl_vte_cntl =
@@ -1180,7 +1499,7 @@ static void si_emit_shader_ps(struct si_context *sctx)
 		sctx->context_roll = true;
 }
 
-static void si_shader_ps(struct si_shader *shader)
+static void si_shader_ps(struct si_screen *sscreen, struct si_shader *shader)
 {
 	struct tgsi_shader_info *info = &shader->selector->info;
 	struct si_pm4_state *pm4;
@@ -1276,8 +1595,15 @@ static void si_shader_ps(struct si_shader *shader)
 	 *    stalls without this setting.
 	 *
 	 * Don't add this to CB_SHADER_MASK.
+	 *
+	 * GFX10 supports pixel shaders without exports by setting both
+	 * the color and Z formats to SPI_SHADER_ZERO. The hw will skip export
+	 * instructions if any are present.
 	 */
-	if (!spi_shader_col_format &&
+	if ((sscreen->info.chip_class <= GFX9 ||
+	     info->uses_kill ||
+	     shader->key.part.ps.epilog.alpha_func != PIPE_FUNC_ALWAYS) &&
+	    !spi_shader_col_format &&
 	    !info->writes_z && !info->writes_stencil && !info->writes_samplemask)
 		spi_shader_col_format = V_028714_SPI_SHADER_32_R;
 
@@ -1285,7 +1611,8 @@ static void si_shader_ps(struct si_shader *shader)
 	shader->ctx_reg.ps.spi_ps_input_addr = shader->config.spi_ps_input_addr;
 
 	/* Set interpolation controls. */
-	spi_ps_in_control = S_0286D8_NUM_INTERP(si_get_ps_num_interp(shader));
+	spi_ps_in_control = S_0286D8_NUM_INTERP(si_get_ps_num_interp(shader)) |
+			    S_0286D8_PS_W32_EN(sscreen->ps_wave_size == 32);
 
 	shader->ctx_reg.ps.spi_baryc_cntl = spi_baryc_cntl;
 	shader->ctx_reg.ps.spi_ps_in_control = spi_ps_in_control;
@@ -1301,11 +1628,18 @@ static void si_shader_ps(struct si_shader *shader)
 	si_pm4_set_reg(pm4, R_00B020_SPI_SHADER_PGM_LO_PS, va >> 8);
 	si_pm4_set_reg(pm4, R_00B024_SPI_SHADER_PGM_HI_PS, S_00B024_MEM_BASE(va >> 40));
 
-	si_pm4_set_reg(pm4, R_00B028_SPI_SHADER_PGM_RSRC1_PS,
-		       S_00B028_VGPRS((shader->config.num_vgprs - 1) / 4) |
-		       S_00B028_SGPRS((shader->config.num_sgprs - 1) / 8) |
-		       S_00B028_DX10_CLAMP(1) |
-		       S_00B028_FLOAT_MODE(shader->config.float_mode));
+	uint32_t rsrc1 =
+		S_00B028_VGPRS((shader->config.num_vgprs - 1) /
+			       (sscreen->ps_wave_size == 32 ? 8 : 4)) |
+		S_00B028_DX10_CLAMP(1) |
+		S_00B028_MEM_ORDERED(sscreen->info.chip_class >= GFX10) |
+		S_00B028_FLOAT_MODE(shader->config.float_mode);
+
+	if (sscreen->info.chip_class < GFX10) {
+		rsrc1 |= S_00B028_SGPRS((shader->config.num_sgprs - 1) / 8);
+	}
+
+	si_pm4_set_reg(pm4, R_00B028_SPI_SHADER_PGM_RSRC1_PS, rsrc1);
 	si_pm4_set_reg(pm4, R_00B02C_SPI_SHADER_PGM_RSRC2_PS,
 		       S_00B02C_EXTRA_LDS_SIZE(shader->config.lds_size) |
 		       S_00B02C_USER_SGPR(SI_PS_NUM_USER_SGPR) |
@@ -1321,6 +1655,8 @@ static void si_shader_init_pm4_state(struct si_screen *sscreen,
 			si_shader_ls(sscreen, shader);
 		else if (shader->key.as_es)
 			si_shader_es(sscreen, shader);
+		else if (shader->key.as_ngg)
+			gfx10_shader_ngg(sscreen, shader);
 		else
 			si_shader_vs(sscreen, shader, NULL);
 		break;
@@ -1330,14 +1666,19 @@ static void si_shader_init_pm4_state(struct si_screen *sscreen,
 	case PIPE_SHADER_TESS_EVAL:
 		if (shader->key.as_es)
 			si_shader_es(sscreen, shader);
+		else if (shader->key.as_ngg)
+			gfx10_shader_ngg(sscreen, shader);
 		else
 			si_shader_vs(sscreen, shader, NULL);
 		break;
 	case PIPE_SHADER_GEOMETRY:
-		si_shader_gs(sscreen, shader);
+		if (shader->key.as_ngg)
+			gfx10_shader_ngg(sscreen, shader);
+		else
+			si_shader_gs(sscreen, shader);
 		break;
 	case PIPE_SHADER_FRAGMENT:
-		si_shader_ps(shader);
+		si_shader_ps(sscreen, shader);
 		break;
 	default:
 		assert(0);
@@ -1454,6 +1795,7 @@ static void si_shader_selector_key_hw_vs(struct si_context *sctx,
 /* Compute the key for the hw shader variant */
 static inline void si_shader_selector_key(struct pipe_context *ctx,
 					  struct si_shader_selector *sel,
+					  union si_vgt_stages_key stages_key,
 					  struct si_shader_key *key)
 {
 	struct si_context *sctx = (struct si_context *)ctx;
@@ -1469,6 +1811,7 @@ static inline void si_shader_selector_key(struct pipe_context *ctx,
 		else if (sctx->gs_shader.cso)
 			key->as_es = 1;
 		else {
+			key->as_ngg = stages_key.u.ngg;
 			si_shader_selector_key_hw_vs(sctx, sel, key);
 
 			if (sctx->ps_shader.cso && sctx->ps_shader.cso->info.uses_primid)
@@ -1507,6 +1850,8 @@ static inline void si_shader_selector_key(struct pipe_context *ctx,
 			key->mono.u.ff_tcs_inputs_to_copy = sctx->vs_shader.cso->outputs_written;
 		break;
 	case PIPE_SHADER_TESS_EVAL:
+		key->as_ngg = stages_key.u.ngg;
+
 		if (sctx->gs_shader.cso)
 			key->as_es = 1;
 		else {
@@ -1526,6 +1871,8 @@ static inline void si_shader_selector_key(struct pipe_context *ctx,
 				key->part.gs.es = sctx->vs_shader.cso;
 				key->part.gs.prolog.gfx9_prev_is_vs = 1;
 			}
+
+			key->as_ngg = stages_key.u.ngg;
 
 			/* Merged ES-GS can have unbalanced wave usage.
 			 *
@@ -1658,7 +2005,8 @@ static inline void si_shader_selector_key(struct pipe_context *ctx,
 				sel->info.uses_linear_centroid +
 				sel->info.uses_linear_sample > 1;
 
-			if (sel->info.opcode_count[TGSI_OPCODE_INTERP_SAMPLE])
+			if (sel->info.uses_persp_opcode_interp_sample ||
+			    sel->info.uses_linear_opcode_interp_sample)
 				key->mono.u.ps.interpolate_at_sample_force_center = 1;
 		}
 
@@ -1725,7 +2073,7 @@ static void si_build_shader_variant(struct si_shader *shader,
 		FILE *f = open_memstream(&shader->shader_log,
 					 &shader->shader_log_size);
 		if (f) {
-			si_shader_dump(sscreen, shader, NULL, sel->type, f, false);
+			si_shader_dump(sscreen, shader, NULL, f, false);
 			fclose(f);
 		}
 	}
@@ -1765,6 +2113,7 @@ static bool si_check_missing_main_part(struct si_screen *sscreen,
 		main_part->selector = sel;
 		main_part->key.as_es = key->as_es;
 		main_part->key.as_ls = key->as_ls;
+		main_part->key.as_ngg = key->as_ngg;
 		main_part->is_monolithic = false;
 
 		if (si_compile_tgsi_shader(sscreen, compiler_state->compiler,
@@ -1898,11 +2247,14 @@ current_not_ready:
 	 */
 	if (!is_pure_monolithic &&
 	    !key->opt.vs_as_prim_discard_cs) {
-		bool ok;
+		bool ok = true;
 
 		/* Make sure the main shader part is present. This is needed
 		 * for shaders that can be compiled as VS, LS, or ES, and only
 		 * one of them is compiled at creation.
+		 *
+		 * It is also needed for GS, which can be compiled as non-NGG
+		 * and NGG.
 		 *
 		 * For merged shaders, check that the starting shader's main
 		 * part is present.
@@ -1917,15 +2269,22 @@ current_not_ready:
 			else
 				assert(0);
 
+			if (sel->type == PIPE_SHADER_GEOMETRY &&
+			    previous_stage_sel->type == PIPE_SHADER_TESS_EVAL)
+				shader1_key.as_ngg = key->as_ngg;
+
 			mtx_lock(&previous_stage_sel->mutex);
 			ok = si_check_missing_main_part(sscreen,
 							previous_stage_sel,
 							compiler_state, &shader1_key);
 			mtx_unlock(&previous_stage_sel->mutex);
-		} else {
+		}
+
+		if (ok) {
 			ok = si_check_missing_main_part(sscreen, sel,
 							compiler_state, key);
 		}
+
 		if (!ok) {
 			FREE(shader);
 			mtx_unlock(&sel->mutex);
@@ -2008,12 +2367,13 @@ current_not_ready:
 
 static int si_shader_select(struct pipe_context *ctx,
 			    struct si_shader_ctx_state *state,
+			    union si_vgt_stages_key stages_key,
 			    struct si_compiler_ctx_state *compiler_state)
 {
 	struct si_context *sctx = (struct si_context *)ctx;
 	struct si_shader_key key;
 
-	si_shader_selector_key(ctx, state->cso, &key);
+	si_shader_selector_key(ctx, state->cso, stages_key, &key);
 	return si_shader_select_with_key(sctx->screen, state, compiler_state,
 					 &key, -1, false);
 }
@@ -2070,8 +2430,11 @@ static void si_init_shader_selector_async(void *job, int thread_index)
 	assert(thread_index < ARRAY_SIZE(sscreen->compiler));
 	compiler = &sscreen->compiler[thread_index];
 
-	if (sel->nir)
-		si_lower_nir(sel);
+	if (sel->nir) {
+		/* TODO: GS always sets wave size = default. Legacy GS will have
+		 * incorrect subgroup_size and ballot_bit_size. */
+		si_lower_nir(sel, si_get_wave_size(sscreen, sel->type, true, false));
+	}
 
 	/* Compile the main shader part for use with a prolog and/or epilog.
 	 * If this fails, the driver will try to compile a monolithic shader
@@ -2095,6 +2458,12 @@ static void si_init_shader_selector_async(void *job, int thread_index)
 		si_parse_next_shader_property(&sel->info,
 					      sel->so.num_outputs != 0,
 					      &shader->key);
+		if (sscreen->info.chip_class >= GFX10 &&
+		    ((sel->type == PIPE_SHADER_VERTEX &&
+		      !shader->key.as_ls && !shader->key.as_es) ||
+		     sel->type == PIPE_SHADER_TESS_EVAL ||
+		     sel->type == PIPE_SHADER_GEOMETRY))
+			shader->key.as_ngg = 1;
 
 		if (sel->tokens || sel->nir)
 			ir_binary = si_get_ir_binary(sel);
@@ -2172,7 +2541,8 @@ static void si_init_shader_selector_async(void *job, int thread_index)
 	}
 
 	/* The GS copy shader is always pre-compiled. */
-	if (sel->type == PIPE_SHADER_GEOMETRY) {
+	if (sel->type == PIPE_SHADER_GEOMETRY &&
+	    (sscreen->info.chip_class <= GFX9 || sel->tess_turns_off_ngg)) {
 		sel->gs_copy_shader = si_generate_gs_copy_shader(sscreen, compiler, sel, debug);
 		if (!sel->gs_copy_shader) {
 			fprintf(stderr, "radeonsi: can't create GS copy shader\n");
@@ -2308,6 +2678,14 @@ static void *si_create_shader_selector(struct pipe_context *ctx,
 		!sel->info.properties[TGSI_PROPERTY_VS_WINDOW_SPACE_POSITION] &&
 		!sel->so.num_outputs;
 
+	if (sel->type == PIPE_SHADER_VERTEX &&
+	    sel->info.writes_edgeflag) {
+		if (sscreen->info.chip_class >= GFX10)
+			sel->ngg_writes_edgeflag = true;
+		else
+			sel->pos_writes_edgeflag = true;
+	}
+
 	/* Set which opcode uses which (i,j) pair. */
 	if (sel->info.uses_persp_opcode_interp_centroid)
 		sel->info.uses_persp_centroid = true;
@@ -2327,6 +2705,12 @@ static void *si_create_shader_selector(struct pipe_context *ctx,
 	case PIPE_SHADER_GEOMETRY:
 		sel->gs_output_prim =
 			sel->info.properties[TGSI_PROPERTY_GS_OUTPUT_PRIM];
+
+		/* Only possibilities: POINTS, LINE_STRIP, TRIANGLES */
+		sel->rast_prim = sel->gs_output_prim;
+		if (util_rast_prim_is_triangles(sel->rast_prim))
+			sel->rast_prim = PIPE_PRIM_TRIANGLES;
+
 		sel->gs_max_out_vertices =
 			sel->info.properties[TGSI_PROPERTY_GS_MAX_OUTPUT_VERTICES];
 		sel->gs_num_invocations =
@@ -2342,6 +2726,13 @@ static void *si_create_shader_selector(struct pipe_context *ctx,
 
 		sel->gs_input_verts_per_prim =
 			u_vertices_per_prim(sel->info.properties[TGSI_PROPERTY_GS_INPUT_PRIM]);
+
+		/* EN_MAX_VERT_OUT_PER_GS_INSTANCE does not work with tesselation. */
+		sel->tess_turns_off_ngg =
+			(sscreen->info.family == CHIP_NAVI10 ||
+			 sscreen->info.family == CHIP_NAVI12 ||
+			 sscreen->info.family == CHIP_NAVI14) &&
+			sel->gs_num_invocations * sel->gs_max_out_vertices > 256;
 		break;
 
 	case PIPE_SHADER_TESS_CTRL:
@@ -2395,6 +2786,14 @@ static void *si_create_shader_selector(struct pipe_context *ctx,
 			sel->esgs_itemsize += 4;
 
 		assert(((sel->esgs_itemsize / 4) & C_028AAC_ITEMSIZE) == 0);
+
+		/* Only for TES: */
+		if (sel->info.properties[TGSI_PROPERTY_TES_POINT_MODE])
+			sel->rast_prim = PIPE_PRIM_POINTS;
+		else if (sel->info.properties[TGSI_PROPERTY_TES_PRIM_MODE] == PIPE_PRIM_LINES)
+			sel->rast_prim = PIPE_PRIM_LINE_STRIP;
+		else
+			sel->rast_prim = PIPE_PRIM_TRIANGLES;
 		break;
 
 	case PIPE_SHADER_FRAGMENT:
@@ -2428,15 +2827,16 @@ static void *si_create_shader_selector(struct pipe_context *ctx,
 			}
 		}
 		break;
+	default:;
 	}
 
 	/* PA_CL_VS_OUT_CNTL */
 	bool misc_vec_ena =
-		sel->info.writes_psize || sel->info.writes_edgeflag ||
+		sel->info.writes_psize || sel->pos_writes_edgeflag ||
 		sel->info.writes_layer || sel->info.writes_viewport_index;
 	sel->pa_cl_vs_out_cntl =
 		S_02881C_USE_VTX_POINT_SIZE(sel->info.writes_psize) |
-		S_02881C_USE_VTX_EDGE_FLAG(sel->info.writes_edgeflag) |
+		S_02881C_USE_VTX_EDGE_FLAG(sel->pos_writes_edgeflag) |
 		S_02881C_USE_VTX_RENDER_TARGET_INDX(sel->info.writes_layer) |
 		S_02881C_USE_VTX_VIEWPORT_INDX(sel->info.writes_viewport_index) |
 		S_02881C_VS_OUT_MISC_VEC_ENA(misc_vec_ena) |
@@ -2495,6 +2895,9 @@ static void *si_create_shader_selector(struct pipe_context *ctx,
 		/* Case 1. */
 		sel->db_shader_control |= S_02880C_Z_ORDER(V_02880C_EARLY_Z_THEN_LATE_Z);
 	}
+
+	if (sel->info.properties[TGSI_PROPERTY_FS_POST_DEPTH_COVERAGE])
+		sel->db_shader_control |= S_02880C_PRE_SHADER_DEPTH_COVERAGE_ENABLE(1);
 
 	(void) mtx_init(&sel->mutex, mtx_plain);
 
@@ -2588,6 +2991,25 @@ static void si_update_tess_uses_prim_id(struct si_context *sctx)
 		 sctx->ps_shader.cso->info.uses_primid);
 }
 
+static bool si_update_ngg(struct si_context *sctx)
+{
+	if (sctx->chip_class <= GFX9)
+		return false;
+
+	bool new_ngg = true;
+
+	if (sctx->gs_shader.cso && sctx->tes_shader.cso &&
+	    sctx->gs_shader.cso->tess_turns_off_ngg)
+		new_ngg = false;
+
+	if (new_ngg != sctx->ngg) {
+		sctx->ngg = new_ngg;
+		sctx->last_rast_prim = -1; /* reset this so that it gets updated */
+		return true;
+	}
+	return false;
+}
+
 static void si_bind_gs_shader(struct pipe_context *ctx, void *state)
 {
 	struct si_context *sctx = (struct si_context *)ctx;
@@ -2595,6 +3017,7 @@ static void si_bind_gs_shader(struct pipe_context *ctx, void *state)
 	struct si_shader *old_hw_vs_variant = si_get_vs_state(sctx);
 	struct si_shader_selector *sel = state;
 	bool enable_changed = !!sctx->gs_shader.cso != !!sel;
+	bool ngg_changed;
 
 	if (sctx->gs_shader.cso == sel)
 		return;
@@ -2606,8 +3029,10 @@ static void si_bind_gs_shader(struct pipe_context *ctx, void *state)
 	si_update_common_shader_state(sctx);
 	sctx->last_rast_prim = -1; /* reset this so that it gets updated */
 
-	if (enable_changed) {
+	ngg_changed = si_update_ngg(sctx);
+	if (ngg_changed || enable_changed)
 		si_shader_change_notify(sctx);
+	if (enable_changed) {
 		if (sctx->ia_multi_vgt_param_key.u.uses_tess)
 			si_update_tess_uses_prim_id(sctx);
 	}
@@ -2659,6 +3084,7 @@ static void si_bind_tes_shader(struct pipe_context *ctx, void *state)
 	sctx->last_rast_prim = -1; /* reset this so that it gets updated */
 
 	if (enable_changed) {
+		si_update_ngg(sctx);
 		si_shader_change_notify(sctx);
 		sctx->last_tes_sh_base = -1; /* invalidate derived tess state */
 	}
@@ -2712,6 +3138,11 @@ static void si_delete_shader(struct si_context *sctx, struct si_shader *shader)
 	util_queue_fence_destroy(&shader->ready);
 
 	if (shader->pm4) {
+		/* If destroyed shaders were not unbound, the next compiled
+		 * shader variant could get the same pointer address and so
+		 * binding it to the same shader stage would be considered
+		 * a no-op, causing random behavior.
+		 */
 		switch (shader->selector->type) {
 		case PIPE_SHADER_VERTEX:
 			if (shader->key.as_ls) {
@@ -2720,6 +3151,8 @@ static void si_delete_shader(struct si_context *sctx, struct si_shader *shader)
 			} else if (shader->key.as_es) {
 				assert(sctx->chip_class <= GFX8);
 				si_pm4_delete_state(sctx, es, shader->pm4);
+			} else if (shader->key.as_ngg) {
+				si_pm4_delete_state(sctx, gs, shader->pm4);
 			} else {
 				si_pm4_delete_state(sctx, vs, shader->pm4);
 			}
@@ -2731,6 +3164,8 @@ static void si_delete_shader(struct si_context *sctx, struct si_shader *shader)
 			if (shader->key.as_es) {
 				assert(sctx->chip_class <= GFX8);
 				si_pm4_delete_state(sctx, es, shader->pm4);
+			} else if (shader->key.as_ngg) {
+				si_pm4_delete_state(sctx, gs, shader->pm4);
 			} else {
 				si_pm4_delete_state(sctx, vs, shader->pm4);
 			}
@@ -2744,6 +3179,7 @@ static void si_delete_shader(struct si_context *sctx, struct si_shader *shader)
 		case PIPE_SHADER_FRAGMENT:
 			si_pm4_delete_state(sctx, ps, shader->pm4);
 			break;
+		default:;
 		}
 	}
 
@@ -2783,6 +3219,8 @@ void si_destroy_shader_selector(struct si_context *sctx,
 		si_delete_shader(sctx, sel->main_shader_part_ls);
 	if (sel->main_shader_part_es)
 		si_delete_shader(sctx, sel->main_shader_part_es);
+	if (sel->main_shader_part_ngg)
+		si_delete_shader(sctx, sel->main_shader_part_ngg);
 	if (sel->gs_copy_shader)
 		si_delete_shader(sctx, sel->gs_copy_shader);
 
@@ -2845,8 +3283,8 @@ static unsigned si_get_ps_input_cntl(struct si_context *sctx,
 		}
 	}
 
-	if (name == TGSI_SEMANTIC_PRIMID)
-		/* PrimID is written after the last output. */
+	if (j == vsinfo->num_outputs && name == TGSI_SEMANTIC_PRIMID)
+		/* PrimID is written after the last output when HW VS is used. */
 		ps_input_cntl |= S_028644_OFFSET(vs->info.vs_output_param_offset[vsinfo->num_outputs]);
 	else if (j == vsinfo->num_outputs && !G_028644_PT_SPRITE_TEX(ps_input_cntl)) {
 		/* No corresponding output found, load defaults into input.
@@ -3199,10 +3637,12 @@ static bool si_update_scratch_relocs(struct si_context *sctx)
 	if (r < 0)
 		return false;
 	if (r == 1) {
-		if (sctx->tes_shader.current)
+		if (sctx->vs_shader.current->key.as_ls)
 			si_pm4_bind_state(sctx, ls, sctx->vs_shader.current->pm4);
-		else if (sctx->gs_shader.current)
+		else if (sctx->vs_shader.current->key.as_es)
 			si_pm4_bind_state(sctx, es, sctx->vs_shader.current->pm4);
+		else if (sctx->vs_shader.current->key.as_ngg)
+			si_pm4_bind_state(sctx, gs, sctx->vs_shader.current->pm4);
 		else
 			si_pm4_bind_state(sctx, vs, sctx->vs_shader.current->pm4);
 	}
@@ -3212,8 +3652,10 @@ static bool si_update_scratch_relocs(struct si_context *sctx)
 	if (r < 0)
 		return false;
 	if (r == 1) {
-		if (sctx->gs_shader.current)
+		if (sctx->tes_shader.current->key.as_es)
 			si_pm4_bind_state(sctx, es, sctx->tes_shader.current->pm4);
+		else if (sctx->tes_shader.current->key.as_ngg)
+			si_pm4_bind_state(sctx, gs, sctx->tes_shader.current->pm4);
 		else
 			si_pm4_bind_state(sctx, vs, sctx->tes_shader.current->pm4);
 	}
@@ -3296,7 +3738,10 @@ static void si_init_tess_factor_ring(struct si_context *sctx)
 			       S_030938_SIZE(sctx->screen->tess_factor_ring_size / 4));
 		si_pm4_set_reg(sctx->init_config, R_030940_VGT_TF_MEMORY_BASE,
 			       factor_va >> 8);
-		if (sctx->chip_class >= GFX9)
+		if (sctx->chip_class >= GFX10)
+			si_pm4_set_reg(sctx->init_config, R_030984_VGT_TF_MEMORY_BASE_HI_UMD,
+				       S_030984_BASE_HI(factor_va >> 40));
+		else if (sctx->chip_class == GFX9)
 			si_pm4_set_reg(sctx->init_config, R_030944_VGT_TF_MEMORY_BASE_HI,
 				       S_030944_BASE_HI(factor_va >> 40));
 		si_pm4_set_reg(sctx->init_config, R_03093C_VGT_HS_OFFCHIP_PARAM,
@@ -3318,39 +3763,57 @@ static void si_init_tess_factor_ring(struct si_context *sctx)
 	si_flush_gfx_cs(sctx, RADEON_FLUSH_ASYNC_START_NEXT_GFX_IB_NOW, NULL);
 }
 
-static void si_update_vgt_shader_config(struct si_context *sctx)
+static struct si_pm4_state *si_build_vgt_shader_config(struct si_screen *screen,
+						       union si_vgt_stages_key key)
 {
-	/* Calculate the index of the config.
-	 * 0 = VS, 1 = VS+GS, 2 = VS+Tess, 3 = VS+Tess+GS */
-	unsigned index = 2*!!sctx->tes_shader.cso + !!sctx->gs_shader.cso;
-	struct si_pm4_state **pm4 = &sctx->vgt_shader_config[index];
+	struct si_pm4_state *pm4 = CALLOC_STRUCT(si_pm4_state);
+	uint32_t stages = 0;
 
-	if (!*pm4) {
-		uint32_t stages = 0;
+	if (key.u.tess) {
+		stages |= S_028B54_LS_EN(V_028B54_LS_STAGE_ON) |
+		          S_028B54_HS_EN(1) | S_028B54_DYNAMIC_HS(1);
 
-		*pm4 = CALLOC_STRUCT(si_pm4_state);
-
-		if (sctx->tes_shader.cso) {
-			stages |= S_028B54_LS_EN(V_028B54_LS_STAGE_ON) |
-				  S_028B54_HS_EN(1) | S_028B54_DYNAMIC_HS(1);
-
-			if (sctx->gs_shader.cso)
-				stages |= S_028B54_ES_EN(V_028B54_ES_STAGE_DS) |
-					  S_028B54_GS_EN(1) |
-				          S_028B54_VS_EN(V_028B54_VS_STAGE_COPY_SHADER);
-			else
-				stages |= S_028B54_VS_EN(V_028B54_VS_STAGE_DS);
-		} else if (sctx->gs_shader.cso) {
-			stages |= S_028B54_ES_EN(V_028B54_ES_STAGE_REAL) |
-				  S_028B54_GS_EN(1) |
-			          S_028B54_VS_EN(V_028B54_VS_STAGE_COPY_SHADER);
-		}
-
-		if (sctx->chip_class >= GFX9)
-			stages |= S_028B54_MAX_PRIMGRP_IN_WAVE(2);
-
-		si_pm4_set_reg(*pm4, R_028B54_VGT_SHADER_STAGES_EN, stages);
+		if (key.u.gs)
+			stages |= S_028B54_ES_EN(V_028B54_ES_STAGE_DS) |
+				  S_028B54_GS_EN(1);
+		else if (key.u.ngg)
+			stages |= S_028B54_ES_EN(V_028B54_ES_STAGE_DS);
+		else
+			stages |= S_028B54_VS_EN(V_028B54_VS_STAGE_DS);
+	} else if (key.u.gs) {
+		stages |= S_028B54_ES_EN(V_028B54_ES_STAGE_REAL) |
+			  S_028B54_GS_EN(1);
+	} else if (key.u.ngg) {
+		stages |= S_028B54_ES_EN(V_028B54_ES_STAGE_REAL);
 	}
+
+	if (key.u.ngg) {
+		stages |= S_028B54_PRIMGEN_EN(1);
+		if (key.u.streamout)
+			stages |= S_028B54_NGG_WAVE_ID_EN(1);
+	} else if (key.u.gs)
+		stages |= S_028B54_VS_EN(V_028B54_VS_STAGE_COPY_SHADER);
+
+	if (screen->info.chip_class >= GFX9)
+		stages |= S_028B54_MAX_PRIMGRP_IN_WAVE(2);
+
+	if (screen->info.chip_class >= GFX10 && screen->ge_wave_size == 32) {
+		stages |= S_028B54_HS_W32_EN(1) |
+			  S_028B54_GS_W32_EN(key.u.ngg) | /* legacy GS only supports Wave64 */
+			  S_028B54_VS_W32_EN(1);
+	}
+
+	si_pm4_set_reg(pm4, R_028B54_VGT_SHADER_STAGES_EN, stages);
+	return pm4;
+}
+
+static void si_update_vgt_shader_config(struct si_context *sctx,
+					union si_vgt_stages_key key)
+{
+	struct si_pm4_state **pm4 = &sctx->vgt_shader_config[key.index];
+
+	if (unlikely(!*pm4))
+		*pm4 = si_build_vgt_shader_config(sctx->screen, key);
 	si_pm4_bind_state(sctx, vgt_shader_config, *pm4);
 }
 
@@ -3362,6 +3825,7 @@ bool si_update_shaders(struct si_context *sctx)
 	struct si_shader *old_vs = si_get_vs_state(sctx);
 	bool old_clip_disable = old_vs ? old_vs->key.opt.clip_disable : false;
 	struct si_shader *old_ps = sctx->ps_shader.current;
+	union si_vgt_stages_key key;
 	unsigned old_spi_shader_col_format =
 		old_ps ? old_ps->key.part.ps.epilog.spi_shader_col_format : 0;
 	int r;
@@ -3370,7 +3834,25 @@ bool si_update_shaders(struct si_context *sctx)
 	compiler_state.debug = sctx->debug;
 	compiler_state.is_debug_context = sctx->is_debug;
 
-	/* Update stages before GS. */
+	key.index = 0;
+
+	if (sctx->tes_shader.cso)
+		key.u.tess = 1;
+	if (sctx->gs_shader.cso)
+		key.u.gs = 1;
+
+	if (sctx->chip_class >= GFX10) {
+		key.u.ngg = sctx->ngg;
+
+		if (sctx->gs_shader.cso)
+			key.u.streamout = !!sctx->gs_shader.cso->so.num_outputs;
+		else if (sctx->tes_shader.cso)
+			key.u.streamout = !!sctx->tes_shader.cso->so.num_outputs;
+		else
+			key.u.streamout = !!sctx->vs_shader.cso->so.num_outputs;
+	}
+
+	/* Update TCS and TES. */
 	if (sctx->tes_shader.cso) {
 		if (!sctx->tess_rings) {
 			si_init_tess_factor_ring(sctx);
@@ -3378,17 +3860,8 @@ bool si_update_shaders(struct si_context *sctx)
 				return false;
 		}
 
-		/* VS as LS */
-		if (sctx->chip_class <= GFX8) {
-			r = si_shader_select(ctx, &sctx->vs_shader,
-					     &compiler_state);
-			if (r)
-				return false;
-			si_pm4_bind_state(sctx, ls, sctx->vs_shader.current->pm4);
-		}
-
 		if (sctx->tcs_shader.cso) {
-			r = si_shader_select(ctx, &sctx->tcs_shader,
+			r = si_shader_select(ctx, &sctx->tcs_shader, key,
 					     &compiler_state);
 			if (r)
 				return false;
@@ -3402,69 +3875,78 @@ bool si_update_shaders(struct si_context *sctx)
 			}
 
 			r = si_shader_select(ctx, &sctx->fixed_func_tcs_shader,
-					     &compiler_state);
+					     key, &compiler_state);
 			if (r)
 				return false;
 			si_pm4_bind_state(sctx, hs,
 					  sctx->fixed_func_tcs_shader.current->pm4);
 		}
 
-		if (sctx->gs_shader.cso) {
-			/* TES as ES */
-			if (sctx->chip_class <= GFX8) {
-				r = si_shader_select(ctx, &sctx->tes_shader,
-						     &compiler_state);
-				if (r)
-					return false;
-				si_pm4_bind_state(sctx, es, sctx->tes_shader.current->pm4);
-			}
-		} else {
-			/* TES as VS */
-			r = si_shader_select(ctx, &sctx->tes_shader,
-					     &compiler_state);
+		if (!sctx->gs_shader.cso || sctx->chip_class <= GFX8) {
+			r = si_shader_select(ctx, &sctx->tes_shader, key, &compiler_state);
 			if (r)
 				return false;
-			si_pm4_bind_state(sctx, vs, sctx->tes_shader.current->pm4);
-		}
-	} else if (sctx->gs_shader.cso) {
-		if (sctx->chip_class <= GFX8) {
-			/* VS as ES */
-			r = si_shader_select(ctx, &sctx->vs_shader,
-					     &compiler_state);
-			if (r)
-				return false;
-			si_pm4_bind_state(sctx, es, sctx->vs_shader.current->pm4);
 
-			si_pm4_bind_state(sctx, ls, NULL);
-			si_pm4_bind_state(sctx, hs, NULL);
+			if (sctx->gs_shader.cso) {
+				/* TES as ES */
+				assert(sctx->chip_class <= GFX8);
+				si_pm4_bind_state(sctx, es, sctx->tes_shader.current->pm4);
+			} else if (key.u.ngg) {
+				si_pm4_bind_state(sctx, gs, sctx->tes_shader.current->pm4);
+			} else {
+				si_pm4_bind_state(sctx, vs, sctx->tes_shader.current->pm4);
+			}
 		}
 	} else {
-		/* VS as VS */
-		r = si_shader_select(ctx, &sctx->vs_shader, &compiler_state);
-		if (r)
-			return false;
-		si_pm4_bind_state(sctx, vs, sctx->vs_shader.current->pm4);
-		si_pm4_bind_state(sctx, ls, NULL);
+		if (sctx->chip_class <= GFX8)
+			si_pm4_bind_state(sctx, ls, NULL);
 		si_pm4_bind_state(sctx, hs, NULL);
 	}
 
 	/* Update GS. */
 	if (sctx->gs_shader.cso) {
-		r = si_shader_select(ctx, &sctx->gs_shader, &compiler_state);
+		r = si_shader_select(ctx, &sctx->gs_shader, key, &compiler_state);
 		if (r)
 			return false;
 		si_pm4_bind_state(sctx, gs, sctx->gs_shader.current->pm4);
-		si_pm4_bind_state(sctx, vs, sctx->gs_shader.cso->gs_copy_shader->pm4);
+		if (!key.u.ngg) {
+			si_pm4_bind_state(sctx, vs, sctx->gs_shader.cso->gs_copy_shader->pm4);
 
-		if (!si_update_gs_ring_buffers(sctx))
-			return false;
+			if (!si_update_gs_ring_buffers(sctx))
+				return false;
+		} else {
+			si_pm4_bind_state(sctx, vs, NULL);
+		}
 	} else {
-		si_pm4_bind_state(sctx, gs, NULL);
-		if (sctx->chip_class <= GFX8)
-			si_pm4_bind_state(sctx, es, NULL);
+		if (!key.u.ngg) {
+			si_pm4_bind_state(sctx, gs, NULL);
+			if (sctx->chip_class <= GFX8)
+				si_pm4_bind_state(sctx, es, NULL);
+		}
 	}
 
-	si_update_vgt_shader_config(sctx);
+	/* Update VS. */
+	if ((!key.u.tess && !key.u.gs) || sctx->chip_class <= GFX8) {
+		r = si_shader_select(ctx, &sctx->vs_shader, key, &compiler_state);
+		if (r)
+			return false;
+
+		if (!key.u.tess && !key.u.gs) {
+			if (key.u.ngg) {
+				si_pm4_bind_state(sctx, gs, sctx->vs_shader.current->pm4);
+				si_pm4_bind_state(sctx, vs, NULL);
+			} else {
+				si_pm4_bind_state(sctx, vs, sctx->vs_shader.current->pm4);
+			}
+		} else if (sctx->tes_shader.cso) {
+			si_pm4_bind_state(sctx, ls, sctx->vs_shader.current->pm4);
+		} else {
+			assert(sctx->gs_shader.cso);
+			si_pm4_bind_state(sctx, es, sctx->vs_shader.current->pm4);
+		}
+	}
+
+	si_update_vgt_shader_config(sctx, key);
 
 	if (old_clip_disable != si_get_vs_state(sctx)->key.opt.clip_disable)
 		si_mark_atom_dirty(sctx, &sctx->atoms.s.clip_regs);
@@ -3472,7 +3954,7 @@ bool si_update_shaders(struct si_context *sctx)
 	if (sctx->ps_shader.cso) {
 		unsigned db_shader_control;
 
-		r = si_shader_select(ctx, &sctx->ps_shader, &compiler_state);
+		r = si_shader_select(ctx, &sctx->ps_shader, key, &compiler_state);
 		if (r)
 			return false;
 		si_pm4_bind_state(sctx, ps, sctx->ps_shader.current->pm4);
@@ -3481,7 +3963,9 @@ bool si_update_shaders(struct si_context *sctx)
 			sctx->ps_shader.cso->db_shader_control |
 			S_02880C_KILL_ENABLE(si_get_alpha_test_func(sctx) != PIPE_FUNC_ALWAYS);
 
-		if (si_pm4_state_changed(sctx, ps) || si_pm4_state_changed(sctx, vs) ||
+		if (si_pm4_state_changed(sctx, ps) ||
+		    si_pm4_state_changed(sctx, vs) ||
+		    (key.u.ngg && si_pm4_state_changed(sctx, gs)) ||
 		    sctx->sprite_coord_enable != rs->sprite_coord_enable ||
 		    sctx->flatshade != rs->flatshade) {
 			sctx->sprite_coord_enable = rs->sprite_coord_enable;

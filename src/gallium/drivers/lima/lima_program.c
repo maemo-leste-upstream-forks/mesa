@@ -52,9 +52,11 @@ static const nir_shader_compiler_options vs_nir_options = {
    /* could be implemented by clamp */
    .lower_fsat = true,
    .lower_bitshift = true,
+   .lower_rotate = true,
 };
 
 static const nir_shader_compiler_options fs_nir_options = {
+   .lower_ffma = true,
    .lower_fpow = true,
    .lower_fdiv = true,
    .lower_fmod = true,
@@ -62,6 +64,7 @@ static const nir_shader_compiler_options fs_nir_options = {
    .lower_flrp32 = true,
    .lower_flrp64 = true,
    .lower_fsign = true,
+   .lower_rotate = true,
 };
 
 const void *
@@ -83,7 +86,7 @@ type_size(const struct glsl_type *type, bool bindless)
    return glsl_count_attribute_slots(type, false);
 }
 
-static void
+void
 lima_program_optimize_vs_nir(struct nir_shader *s)
 {
    bool progress;
@@ -127,7 +130,7 @@ lima_program_optimize_vs_nir(struct nir_shader *s)
    nir_sweep(s);
 }
 
-static void
+void
 lima_program_optimize_fs_nir(struct nir_shader *s)
 {
    bool progress;
