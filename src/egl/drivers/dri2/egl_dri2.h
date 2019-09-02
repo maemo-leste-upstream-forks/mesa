@@ -102,6 +102,7 @@ struct wl_buffer;
 #ifdef HAVE_NULL_PLATFORM
 struct display_output {
    bool                   in_use;
+   bool                   in_fence_supported;
    uint32_t               connector_id;
    drmModePropertyRes   **connector_prop_res;
    uint32_t               crtc_id;
@@ -345,6 +346,7 @@ struct swap_queue_elem
    uint32_t             swap_interval;
    uint32_t             back_id;
    uint32_t             fb_id;
+   int                  kms_in_fence_fd;
 };
 
 enum {
