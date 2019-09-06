@@ -699,6 +699,13 @@ _mesa_TexStorage1D(GLenum target, GLsizei levels, GLenum internalformat,
                     "glTexStorage1D");
 }
 
+void GLAPIENTRY
+_mesa_TexStorage1DEXT(GLenum target, GLsizei levels, GLenum internalformat,
+                      GLsizei width)
+{
+   texstorage_error(1, target, levels, internalformat, width, 1, 1,
+                    "glTexStorage1DEXT");
+}
 
 void GLAPIENTRY
 _mesa_TexStorage2D_no_error(GLenum target, GLsizei levels,
@@ -717,6 +724,13 @@ _mesa_TexStorage2D(GLenum target, GLsizei levels, GLenum internalformat,
                     "glTexStorage2D");
 }
 
+void GLAPIENTRY
+_mesa_TexStorage2DEXT(GLenum target, GLsizei levels, GLenum internalformat,
+                      GLsizei width, GLsizei height)
+{
+   texstorage_error(2, target, levels, internalformat, width, height, 1,
+                    "glTexStorage2DEXT");
+}
 
 void GLAPIENTRY
 _mesa_TexStorage3D_no_error(GLenum target, GLsizei levels,
@@ -726,6 +740,13 @@ _mesa_TexStorage3D_no_error(GLenum target, GLsizei levels,
    texstorage_no_error(3, target, levels, internalformat, width, height, depth);
 }
 
+void GLAPIENTRY
+_mesa_TexStorage3DEXT(GLenum target, GLsizei levels, GLenum internalformat,
+                      GLsizei width, GLsizei height, GLsizei depth)
+{
+   texstorage_error(3, target, levels, internalformat, width, height, depth,
+                    "glTexStorage3DEXT");
+}
 
 void GLAPIENTRY
 _mesa_TexStorage3D(GLenum target, GLsizei levels, GLenum internalformat,

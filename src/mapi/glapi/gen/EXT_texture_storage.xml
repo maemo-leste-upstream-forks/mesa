@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<!DOCTYPE OpenGLAPI SYSTEM "gl_API.dtd">
+
+<OpenGLAPI>
+
+<category name="GL_EXT_texture_storage" number="108">
+
+    <function name="TexStorage1DEXT" es1="1.0" es2="2.0">
+        <param name="target" type="GLenum"/>
+        <param name="levels" type="GLsizei"/>
+        <param name="internalformat" type="GLenum"/>
+        <param name="width" type="GLsizei"/>
+    </function>
+
+    <function name="TexStorage2DEXT" es1="1.0" es2="2.0">
+        <param name="target" type="GLenum"/>
+        <param name="levels" type="GLsizei"/>
+        <param name="internalformat" type="GLenum"/>
+        <param name="width" type="GLsizei"/>
+        <param name="height" type="GLsizei"/>
+    </function>
+
+    <function name="TexStorage3DEXT" es1="1.0" es2="2.0">
+        <param name="target" type="GLenum"/>
+        <param name="levels" type="GLsizei"/>
+        <param name="internalformat" type="GLenum"/>
+        <param name="width" type="GLsizei"/>
+        <param name="height" type="GLsizei"/>
+        <param name="depth" type="GLsizei"/>
+    </function>
+
+<!-- TextureStorage versions already defined in GL_ARB_texture_storage.xml -->
+
+</category>
+
+</OpenGLAPI>

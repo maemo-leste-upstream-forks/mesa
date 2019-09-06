@@ -1737,6 +1737,9 @@ offsets = {
     "FramebufferTextureLayerARB" : 1701,
     "FramebufferTextureFaceARB" : 1702,
     "GetIntegeri_vIMG": 1703,
+    "TexStorage1DEXT": 1704,
+    "TexStorage2DEXT": 1705,
+    "TexStorage3DEXT": 1706,
 }
 
 functions = [

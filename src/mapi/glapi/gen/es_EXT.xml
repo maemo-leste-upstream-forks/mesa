@@ -845,6 +845,9 @@
 
 <xi:include href="EXT_multisampled_render_to_texture.xml" xmlns:xi="http://www.w3.org/2001/XInclude"/>
 
+<!-- 108. GL_EXT_texture_storage -->
+<xi:include href="EXT_texture_storage.xml" xmlns:xi="http://www.w3.org/2001/XInclude"/>
+
 <!-- 110. GL_ANGLE_pack_reverse_row_order -->
 <category name="GL_ANGLE_pack_reverse_row_order" number="110">
     <enum name="PACK_REVERSE_ROW_ORDER_ANGLE"           value="0x93A4"/>

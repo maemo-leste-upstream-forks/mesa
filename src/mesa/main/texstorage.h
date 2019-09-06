@@ -54,6 +54,18 @@ _mesa_valid_tex_storage_dim(GLsizei width, GLsizei height, GLsizei depth)
 
 /*@}*/
 
+extern void GLAPIENTRY
+_mesa_TexStorage1DEXT(GLenum target, GLsizei levels, GLenum internalformat,
+                      GLsizei width);
+
+extern void GLAPIENTRY
+_mesa_TexStorage2DEXT(GLenum target, GLsizei levels, GLenum internalformat,
+                      GLsizei width, GLsizei height);
+
+extern void GLAPIENTRY
+_mesa_TexStorage3DEXT(GLenum target, GLsizei levels, GLenum internalformat,
+                      GLsizei width, GLsizei height, GLsizei depth);
+
 extern GLboolean
 _mesa_is_legal_tex_storage_format(const struct gl_context *ctx,
                                   GLenum internalformat);
