@@ -113,6 +113,8 @@ struct display_output {
    uint32_t               mode_blob_id;
    unsigned               formats;
    drmModeAtomicReq      *atomic_state;
+   uint32_t               in_formats_id;
+   struct u_vector        modifiers;
 };
 #endif
 
@@ -319,6 +321,7 @@ struct dri2_egl_display
 
 #ifdef HAVE_NULL_PLATFORM
    bool                      atomic_enabled;
+   bool                      in_formats_enabled;
    struct display_output     output;
 #endif
 
