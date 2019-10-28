@@ -175,7 +175,7 @@ static void si_emit_derived_tess_state(struct si_context *sctx,
 	/* When distributed tessellation is unsupported, switch between SEs
 	 * at a higher frequency to compensate for it.
 	 */
-	if (!sctx->screen->has_distributed_tess && sctx->screen->info.max_se > 1)
+	if (!sctx->screen->info.has_distributed_tess && sctx->screen->info.max_se > 1)
 		*num_patches = MIN2(*num_patches, 16); /* recommended */
 
 	/* Make sure that vector lanes are reasonably occupied. It probably
@@ -363,7 +363,7 @@ si_get_init_multi_vgt_param(struct si_screen *sscreen,
 			partial_vs_wave = true;
 
 		/* Needed for 028B6C_DISTRIBUTION_MODE != 0. (implies >= GFX8) */
-		if (sscreen->has_distributed_tess) {
+		if (sscreen->info.has_distributed_tess) {
 			if (key->u.uses_gs) {
 				if (sscreen->info.chip_class == GFX8)
 					partial_es_wave = true;
@@ -586,10 +586,11 @@ static void si_emit_rasterizer_prim_state(struct si_context *sctx)
 	struct radeon_cmdbuf *cs = sctx->gfx_cs;
 	enum pipe_prim_type rast_prim = sctx->current_rast_prim;
 	struct si_state_rasterizer *rs = sctx->queued.named.rasterizer;
+	bool use_ngg = sctx->screen->use_ngg;
 
 	if (likely(rast_prim == sctx->last_rast_prim &&
 		   rs->pa_sc_line_stipple == sctx->last_sc_line_stipple &&
-		   (sctx->chip_class <= GFX9 ||
+		   (!use_ngg ||
 		    rs->flatshade_first == sctx->last_flatshade_first)))
 		return;
 
@@ -610,13 +611,13 @@ static void si_emit_rasterizer_prim_state(struct si_context *sctx)
 		radeon_set_context_reg(cs, R_028A6C_VGT_GS_OUT_PRIM_TYPE, gs_out);
 		sctx->context_roll = true;
 
-		if (sctx->chip_class >= GFX10) {
+		if (use_ngg) {
 			sctx->current_vs_state &= C_VS_STATE_OUTPRIM;
 			sctx->current_vs_state |= S_VS_STATE_OUTPRIM(gs_out);
 		}
 	}
 
-	if (sctx->chip_class >= GFX10) {
+	if (use_ngg) {
 		unsigned vtx_index = rs->flatshade_first ? 0 : gs_out;
 		sctx->current_vs_state &= C_VS_STATE_PROVOKING_VTX_INDEX;
 		sctx->current_vs_state |= S_VS_STATE_PROVOKING_VTX_INDEX(vtx_index);
@@ -662,7 +663,7 @@ static void si_emit_vs_state(struct si_context *sctx,
 		}
 
 		/* For NGG: */
-		if (sctx->chip_class >= GFX10 &&
+		if (sctx->screen->use_ngg &&
 		    sctx->shader_pointers.sh_base[PIPE_SHADER_VERTEX] !=
 		    R_00B230_SPI_SHADER_USER_DATA_GS_0) {
 			radeon_set_sh_reg(cs,
@@ -717,13 +718,18 @@ static void si_emit_ia_multi_vgt_param(struct si_context *sctx,
  */
 static void gfx10_emit_ge_cntl(struct si_context *sctx, unsigned num_patches)
 {
+	union si_vgt_param_key key = sctx->ia_multi_vgt_param_key;
 	unsigned ge_cntl;
 
 	if (sctx->ngg) {
-		ge_cntl = si_get_vs_state(sctx)->ge_cntl |
-			  S_03096C_PACKET_TO_ONE_PA(sctx->ia_multi_vgt_param_key.u.line_stipple_enabled);
+		if (sctx->tes_shader.cso) {
+			ge_cntl = S_03096C_PRIM_GRP_SIZE(num_patches) |
+				  S_03096C_VERT_GRP_SIZE(0) |
+				  S_03096C_BREAK_WAVE_AT_EOI(key.u.tess_uses_prim_id);
+		} else {
+			ge_cntl = si_get_vs_state(sctx)->ge_cntl;
+		}
 	} else {
-		union si_vgt_param_key key = sctx->ia_multi_vgt_param_key;
 		unsigned primgroup_size;
 		unsigned vertgroup_size;
 
@@ -741,9 +747,10 @@ static void gfx10_emit_ge_cntl(struct si_context *sctx, unsigned num_patches)
 
 		ge_cntl = S_03096C_PRIM_GRP_SIZE(primgroup_size) |
 			  S_03096C_VERT_GRP_SIZE(vertgroup_size) |
-			  S_03096C_BREAK_WAVE_AT_EOI(key.u.uses_tess && key.u.tess_uses_prim_id) |
-			  S_03096C_PACKET_TO_ONE_PA(key.u.line_stipple_enabled);
+			  S_03096C_BREAK_WAVE_AT_EOI(key.u.uses_tess && key.u.tess_uses_prim_id);
 	}
+
+	ge_cntl |= S_03096C_PACKET_TO_ONE_PA(key.u.line_stipple_enabled);
 
 	if (ge_cntl != sctx->last_multi_vgt_param) {
 		radeon_set_uconfig_reg(sctx->gfx_cs, R_03096C_GE_CNTL, ge_cntl);
@@ -868,6 +875,12 @@ static void si_emit_draw_packets(struct si_context *sctx,
 		if (original_index_size) {
 			index_max_size = (indexbuf->width0 - index_offset) /
 					  original_index_size;
+			/* Skip draw calls with 0-sized index buffers.
+			 * They cause a hang on some chips, like Navi10-14.
+			 */
+			if (!index_max_size)
+				return;
+
 			index_va = si_resource(indexbuf)->gpu_address + index_offset;
 
 			radeon_add_to_buffer_list(sctx, sctx->gfx_cs,
@@ -1094,9 +1107,13 @@ void gfx10_emit_cache_flush(struct si_context *ctx)
 	}
 
 	/* We don't need these. */
-	assert(!(flags & (SI_CONTEXT_VGT_FLUSH |
-			  SI_CONTEXT_VGT_STREAMOUT_SYNC |
+	assert(!(flags & (SI_CONTEXT_VGT_STREAMOUT_SYNC |
 			  SI_CONTEXT_FLUSH_AND_INV_DB_META)));
+
+	if (flags & SI_CONTEXT_VGT_FLUSH) {
+		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
+		radeon_emit(cs, EVENT_TYPE(V_028A90_VGT_FLUSH) | EVENT_INDEX(0));
+	}
 
 	if (flags & SI_CONTEXT_FLUSH_AND_INV_CB)
 		ctx->num_cb_cache_flushes++;
@@ -1113,16 +1130,28 @@ void gfx10_emit_cache_flush(struct si_context *ctx)
 	}
 	if (flags & SI_CONTEXT_INV_VCACHE)
 		gcr_cntl |= S_586_GL1_INV(1) | S_586_GLV_INV(1);
+
+	/* The L2 cache ops are:
+	 * - INV: - invalidate lines that reflect memory (were loaded from memory)
+	 *        - don't touch lines that were overwritten (were stored by gfx clients)
+	 * - WB: - don't touch lines that reflect memory
+	 *       - write back lines that were overwritten
+	 * - WB | INV: - invalidate lines that reflect memory
+	 *             - write back lines that were overwritten
+	 *
+	 * GLM doesn't support WB alone. If WB is set, INV must be set too.
+	 */
 	if (flags & SI_CONTEXT_INV_L2) {
 		/* Writeback and invalidate everything in L2. */
-		gcr_cntl |= S_586_GL2_INV(1) | S_586_GLM_INV(1);
+		gcr_cntl |= S_586_GL2_INV(1) | S_586_GL2_WB(1) |
+			    S_586_GLM_INV(1) | S_586_GLM_WB(1);
 		ctx->num_L2_invalidates++;
 	} else if (flags & SI_CONTEXT_WB_L2) {
-		/* Writeback but do not invalidate. */
-		gcr_cntl |= S_586_GL2_WB(1);
+		gcr_cntl |= S_586_GL2_WB(1) |
+			    S_586_GLM_WB(1) | S_586_GLM_INV(1);
+	} else if (flags & SI_CONTEXT_INV_L2_METADATA) {
+		gcr_cntl |= S_586_GLM_INV(1) | S_586_GLM_WB(1);
 	}
-	if (flags & SI_CONTEXT_INV_L2_METADATA)
-		gcr_cntl |= S_586_GLM_INV(1);
 
 	if (flags & (SI_CONTEXT_FLUSH_AND_INV_CB | SI_CONTEXT_FLUSH_AND_INV_DB)) {
 		if (flags & SI_CONTEXT_FLUSH_AND_INV_CB) {
@@ -1762,7 +1791,6 @@ static void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *i
 	}
 
 	if (unlikely(!sctx->vs_shader.cso ||
-		     !rs ||
 		     (!sctx->ps_shader.cso && !rs->rasterizer_discard) ||
 		     (!!sctx->tes_shader.cso != (prim == PIPE_PRIM_PATCHES)))) {
 		assert(0);
@@ -1817,7 +1845,7 @@ static void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *i
 	}
 
 	if (sctx->tes_shader.cso &&
-	    sctx->screen->has_ls_vgpr_init_bug) {
+	    sctx->screen->info.has_ls_vgpr_init_bug) {
 		/* Determine whether the LS VGPR fix should be applied.
 		 *
 		 * It is only required when num input CPs > num output CPs,
@@ -2027,10 +2055,9 @@ static void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *i
 	 * written (i.e. the GPU rolls the context), PA_SC_VPORT_SCISSOR
 	 * registers must be written too.
 	 */
-	bool has_gfx9_scissor_bug = sctx->screen->has_gfx9_scissor_bug;
 	unsigned masked_atoms = 0;
 
-	if (has_gfx9_scissor_bug) {
+	if (sctx->screen->info.has_gfx9_scissor_bug) {
 		masked_atoms |= si_get_atom_bit(sctx, &sctx->atoms.s.scissors);
 
 		if (info->count_from_stream_output ||
@@ -2064,7 +2091,7 @@ static void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *i
 		if (si_is_atom_dirty(sctx, &sctx->atoms.s.render_cond))
 			sctx->atoms.s.render_cond.emit(sctx);
 
-		if (has_gfx9_scissor_bug &&
+		if (sctx->screen->info.has_gfx9_scissor_bug &&
 		    (sctx->context_roll ||
 		     si_is_atom_dirty(sctx, &sctx->atoms.s.scissors)))
 			sctx->atoms.s.scissors.emit(sctx);
@@ -2098,7 +2125,7 @@ static void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *i
 		si_emit_all_states(sctx, info, prim, instance_count,
 				   primitive_restart, masked_atoms);
 
-		if (has_gfx9_scissor_bug &&
+		if (sctx->screen->info.has_gfx9_scissor_bug &&
 		    (sctx->context_roll ||
 		     si_is_atom_dirty(sctx, &sctx->atoms.s.scissors)))
 			sctx->atoms.s.scissors.emit(sctx);

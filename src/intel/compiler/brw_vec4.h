@@ -45,7 +45,8 @@ brw_vec4_generate_assembly(const struct brw_compiler *compiler,
                            void *mem_ctx,
                            const nir_shader *nir,
                            struct brw_vue_prog_data *prog_data,
-                           const struct cfg_t *cfg);
+                           const struct cfg_t *cfg,
+                           struct brw_compile_stats *stats);
 
 #ifdef __cplusplus
 } /* extern "C" */
@@ -109,7 +110,6 @@ public:
    int *virtual_grf_start;
    int *virtual_grf_end;
    brw::vec4_live_variables *live_intervals;
-   dst_reg userplane[MAX_CLIP_PLANES];
 
    bool need_all_constants_in_pull_buffer;
 

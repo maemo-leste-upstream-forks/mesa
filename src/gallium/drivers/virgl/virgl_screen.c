@@ -115,7 +115,11 @@ virgl_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TGSI_FS_COORD_ORIGIN_LOWER_LEFT:
       return vscreen->caps.caps.v1.bset.fragment_coord_conventions;
    case PIPE_CAP_DEPTH_CLIP_DISABLE:
-      return vscreen->caps.caps.v1.bset.depth_clip_disable;
+      if (vscreen->caps.caps.v1.bset.depth_clip_disable)
+         return 1;
+      if (vscreen->caps.caps.v2.host_feature_check_version >= 3)
+         return 2;
+      return 0;
    case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
       return vscreen->caps.caps.v1.max_streamout_buffers;
    case PIPE_CAP_MAX_STREAM_OUTPUT_SEPARATE_COMPONENTS:
@@ -459,8 +463,6 @@ virgl_get_shader_param(struct pipe_screen *screen,
       case PIPE_SHADER_CAP_INT64_ATOMICS:
       case PIPE_SHADER_CAP_FP16:
          return 0;
-      case PIPE_SHADER_CAP_SCALAR_ISA:
-         return 1;
       default:
          return 0;
       }
@@ -550,7 +552,7 @@ has_format_bit(struct virgl_supported_format_mask *mask,
    unsigned idx = val / 32;
    unsigned bit = val % 32;
    assert(idx < ARRAY_SIZE(mask->bitmask));
-   return (mask->bitmask[val / 32] & (1u << bit)) != 0;
+   return (mask->bitmask[idx] & (1u << bit)) != 0;
 }
 
 bool
@@ -606,8 +608,9 @@ virgl_format_check_bitmask(enum pipe_format format,
                            uint32_t bitmask[16],
                            bool may_emulate_bgra)
 {
-   int big = format / 32;
-   int small = format % 32;
+   enum virgl_formats vformat = pipe_to_virgl_format(format);
+   int big = vformat / 32;
+   int small = vformat % 32;
    if ((bitmask[big] & (1 << small)))
       return true;
 
@@ -622,8 +625,9 @@ virgl_format_check_bitmask(enum pipe_format format,
          return false;
       }
 
-      big = format / 32;
-      small = format % 32;
+      vformat = pipe_to_virgl_format(format);
+      big = vformat / 32;
+      small = vformat % 32;
       if (bitmask[big] & (1 << small))
          return true;
    }
@@ -647,9 +651,15 @@ virgl_is_format_supported( struct pipe_screen *screen,
    const struct util_format_description *format_desc;
    int i;
 
-   boolean may_emulate_bgra = false;
+   union virgl_caps *caps = &vscreen->caps.caps; 
+   boolean may_emulate_bgra = (caps->v2.capability_bits &
+                               VIRGL_CAP_APP_TWEAK_SUPPORT) &&
+                               vscreen->tweak_gles_emulate_bgra;
 
    if (MAX2(1, sample_count) != MAX2(1, storage_sample_count))
+      return false;
+
+   if (!util_is_power_of_two_or_zero(sample_count))
       return false;
 
    assert(target == PIPE_BUFFER ||
@@ -670,15 +680,15 @@ virgl_is_format_supported( struct pipe_screen *screen,
       return false;
 
    if (sample_count > 1) {
-      if (!vscreen->caps.caps.v1.bset.texture_multisample)
+      if (!caps->v1.bset.texture_multisample)
          return false;
 
       if (bind & PIPE_BIND_SHADER_IMAGE) {
-         if (sample_count > vscreen->caps.caps.v2.max_image_samples)
+         if (sample_count > caps->v2.max_image_samples)
             return false;
       }
 
-      if (sample_count > vscreen->caps.caps.v1.max_samples)
+      if (sample_count > caps->v1.max_samples)
          return false;
    }
 
@@ -702,9 +712,6 @@ virgl_is_format_supported( struct pipe_screen *screen,
        target == PIPE_TEXTURE_3D)
       return false;
 
-   may_emulate_bgra = (vscreen->caps.caps.v2.capability_bits &
-                       VIRGL_CAP_APP_TWEAK_SUPPORT) &&
-                      vscreen->tweak_gles_emulate_bgra;
 
    if (bind & PIPE_BIND_RENDER_TARGET) {
       /* For ARB_framebuffer_no_attachments. */
@@ -724,13 +731,18 @@ virgl_is_format_supported( struct pipe_screen *screen,
          return false;
 
       if (!virgl_format_check_bitmask(format,
-                                      vscreen->caps.caps.v1.render.bitmask,
+                                      caps->v1.render.bitmask,
                                       may_emulate_bgra))
          return false;
    }
 
    if (bind & PIPE_BIND_DEPTH_STENCIL) {
       if (format_desc->colorspace != UTIL_FORMAT_COLORSPACE_ZS)
+         return false;
+   }
+
+   if (bind & PIPE_BIND_SCANOUT) {
+      if (!virgl_format_check_bitmask(format, caps->v2.scanout.bitmask, false))
          return false;
    }
 
@@ -770,7 +782,7 @@ virgl_is_format_supported( struct pipe_screen *screen,
 
  out_lookup:
    return virgl_format_check_bitmask(format,
-                                     vscreen->caps.caps.v1.sampler.bitmask,
+                                     caps->v1.sampler.bitmask,
                                      may_emulate_bgra);
 }
 
@@ -838,21 +850,19 @@ virgl_destroy_screen(struct pipe_screen *screen)
 }
 
 static void
-fixup_readback_format(union virgl_caps *caps)
+fixup_formats(union virgl_caps *caps, struct virgl_supported_format_mask *mask)
 {
-   const size_t size = ARRAY_SIZE(caps->v2.supported_readback_formats.bitmask);
+   const size_t size = ARRAY_SIZE(mask->bitmask);
    for (int i = 0; i < size; ++i) {
-      if (caps->v2.supported_readback_formats.bitmask[i] != 0)
+      if (mask->bitmask[i] != 0)
          return; /* we got some formats, we definately have a new protocol */
    }
 
    /* old protocol used; fall back to considering all sampleable formats valid
     * readback-formats
     */
-   for (int i = 0; i < size; ++i) {
-      caps->v2.supported_readback_formats.bitmask[i] =
-         caps->v1.sampler.bitmask[i];
-   }
+   for (int i = 0; i < size; ++i)
+      mask->bitmask[i] = caps->v1.sampler.bitmask[i];
 }
 
 struct pipe_screen *
@@ -901,7 +911,9 @@ virgl_create_screen(struct virgl_winsys *vws, const struct pipe_screen_config *c
    virgl_init_screen_resource_functions(&screen->base);
 
    vws->get_caps(vws, &screen->caps);
-   fixup_readback_format(&screen->caps.caps);
+   fixup_formats(&screen->caps.caps,
+                 &screen->caps.caps.v2.supported_readback_formats);
+   fixup_formats(&screen->caps.caps, &screen->caps.caps.v2.scanout);
 
    screen->refcnt = 1;
 

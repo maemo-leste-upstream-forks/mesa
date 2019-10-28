@@ -97,7 +97,7 @@ void si_flush_gfx_cs(struct si_context *ctx, unsigned flags,
 	    (!wait_flags || !ctx->gfx_last_ib_is_busy))
 		return;
 
-	if (si_check_device_reset(ctx))
+	if (ctx->b.get_device_reset_status(&ctx->b) != PIPE_NO_RESET)
 		return;
 
 	if (ctx->screen->debug_flags & DBG(CHECK_VM))
@@ -162,11 +162,11 @@ void si_flush_gfx_cs(struct si_context *ctx, unsigned flags,
 			si_emit_streamout_end(ctx);
 			ctx->streamout.suspended = true;
 
-			/* Since streamout uses GDS on gfx10, we need to make
-			 * GDS idle when we leave the IB, otherwise another
-			 * process might overwrite it while our shaders are busy.
+			/* Since NGG streamout uses GDS, we need to make GDS
+			 * idle when we leave the IB, otherwise another process
+			 * might overwrite it while our shaders are busy.
 			 */
-			if (ctx->chip_class >= GFX10)
+			if (ctx->screen->use_ngg_streamout)
 				wait_flags |= SI_CONTEXT_PS_PARTIAL_FLUSH;
 		}
 	}
@@ -303,7 +303,7 @@ void si_allocate_gds(struct si_context *sctx)
 	if (sctx->gds)
 		return;
 
-	assert(sctx->chip_class >= GFX10); /* for gfx10 streamout */
+	assert(sctx->screen->use_ngg_streamout);
 
 	/* 4 streamout GDS counters.
 	 * We need 256B (64 dw) of GDS, otherwise streamout hangs.
@@ -372,7 +372,7 @@ void si_begin_new_gfx_cs(struct si_context *ctx)
 		ctx->prefetch_L2_mask |= SI_PREFETCH_VBO_DESCRIPTORS;
 
 	/* CLEAR_STATE disables all colorbuffers, so only enable bound ones. */
-	bool has_clear_state = ctx->screen->has_clear_state;
+	bool has_clear_state = ctx->screen->info.has_clear_state;
 	if (has_clear_state) {
 		ctx->framebuffer.dirty_cbufs =
 			 u_bit_consecutive(0, ctx->framebuffer.state.nr_cbufs);
@@ -405,7 +405,7 @@ void si_begin_new_gfx_cs(struct si_context *ctx)
 		si_mark_atom_dirty(ctx, &ctx->atoms.s.dpbb_state);
 	si_mark_atom_dirty(ctx, &ctx->atoms.s.stencil_ref);
 	si_mark_atom_dirty(ctx, &ctx->atoms.s.spi_map);
-	if (ctx->chip_class < GFX10)
+	if (!ctx->screen->use_ngg_streamout)
 		si_mark_atom_dirty(ctx, &ctx->atoms.s.streamout_enable);
 	si_mark_atom_dirty(ctx, &ctx->atoms.s.render_cond);
 	/* CLEAR_STATE disables all window rectangles. */
@@ -464,6 +464,8 @@ void si_begin_new_gfx_cs(struct si_context *ctx)
 
         ctx->index_ring_offset = 0;
 
+	STATIC_ASSERT(SI_NUM_TRACKED_REGS <= sizeof(ctx->tracked_regs.reg_saved) * 8);
+
 	if (has_clear_state) {
 		ctx->tracked_regs.reg_value[SI_TRACKED_DB_RENDER_CONTROL] = 0x00000000;
 		ctx->tracked_regs.reg_value[SI_TRACKED_DB_COUNT_CONTROL] = 0x00000000;
@@ -480,7 +482,8 @@ void si_begin_new_gfx_cs(struct si_context *ctx)
 		ctx->tracked_regs.reg_value[SI_TRACKED_PA_SC_MODE_CNTL_1] = 0x00000000;
 		ctx->tracked_regs.reg_value[SI_TRACKED_PA_SU_PRIM_FILTER_CNTL] = 0;
 		ctx->tracked_regs.reg_value[SI_TRACKED_PA_SU_SMALL_PRIM_FILTER_CNTL] = 0x00000000;
-		ctx->tracked_regs.reg_value[SI_TRACKED_PA_CL_VS_OUT_CNTL] = 0x00000000;
+		ctx->tracked_regs.reg_value[SI_TRACKED_PA_CL_VS_OUT_CNTL__VS] = 0x00000000;
+		ctx->tracked_regs.reg_value[SI_TRACKED_PA_CL_VS_OUT_CNTL__CL] = 0x00000000;
 		ctx->tracked_regs.reg_value[SI_TRACKED_PA_CL_CLIP_CNTL]	= 0x00090000;
 		ctx->tracked_regs.reg_value[SI_TRACKED_PA_SC_BINNER_CNTL_0] = 0x00000003;
 		ctx->tracked_regs.reg_value[SI_TRACKED_DB_DFSM_CONTROL]	= 0x00000000;

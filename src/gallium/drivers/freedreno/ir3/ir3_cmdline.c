@@ -57,7 +57,7 @@
 static void dump_info(struct ir3_shader_variant *so, const char *str)
 {
 	uint32_t *bin;
-	const char *type = ir3_shader_stage(so->shader);
+	const char *type = ir3_shader_stage(so);
 	bin = ir3_shader_assemble(so, so->shader->compiler->gpu_id);
 	debug_printf("; %s: %s\n", type, str);
 	ir3_shader_disasm(so, bin, stdout);
@@ -236,7 +236,6 @@ load_spirv(const char *filename, const char *entry, gl_shader_stage stage)
 			.int64 = true,
 			.variable_pointers = true,
 		},
-		.lower_workgroup_access_to_offsets = true,
 		.lower_ubo_ssbo_access_to_offsets = true,
 		.debug = {
 			.func = debug_func,

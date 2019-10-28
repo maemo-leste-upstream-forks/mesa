@@ -29,6 +29,7 @@
 #include "vk_util.h"
 #include "util/fast_idiv_by_const.h"
 
+#include "common/gen_aux_map.h"
 #include "common/gen_l3_config.h"
 #include "genxml/gen_macros.h"
 #include "genxml/genX_pack.h"
@@ -589,23 +590,6 @@ set_image_fast_clear_state(struct anv_cmd_buffer *cmd_buffer,
    if (fast_clear != ANV_FAST_CLEAR_NONE)
       set_image_compressed_bit(cmd_buffer, image, aspect, 0, 0, 1, true);
 }
-
-#if GEN_IS_HASWELL || GEN_GEN >= 8
-static inline uint32_t
-mi_alu(uint32_t opcode, uint32_t operand1, uint32_t operand2)
-{
-   struct GENX(MI_MATH_ALU_INSTRUCTION) instr = {
-      .ALUOpcode = opcode,
-      .Operand1 = operand1,
-      .Operand2 = operand2,
-   };
-
-   uint32_t dw;
-   GENX(MI_MATH_ALU_INSTRUCTION_pack)(NULL, &dw, &instr);
-
-   return dw;
-}
-#endif
 
 /* This is only really practical on haswell and above because it requires
  * MI math in order to get it correct.
@@ -1612,6 +1596,7 @@ genX(CmdExecuteCommands)(
     */
    primary->state.current_pipeline = UINT32_MAX;
    primary->state.current_l3_config = NULL;
+   primary->state.current_hash_scale = 0;
 
    /* Each of the secondary command buffers will use its own state base
     * address.  We need to re-emit state base address for the primary after
@@ -1643,7 +1628,7 @@ genX(cmd_buffer_config_l3)(struct anv_cmd_buffer *cmd_buffer,
       gen_dump_l3_config(cfg, stderr);
    }
 
-   const bool has_slm = cfg->n[GEN_L3P_SLM];
+   UNUSED const bool has_slm = cfg->n[GEN_L3P_SLM];
 
    /* According to the hardware docs, the L3 partitioning can only be changed
     * while the pipeline is completely drained and the caches are flushed,
@@ -1690,9 +1675,19 @@ genX(cmd_buffer_config_l3)(struct anv_cmd_buffer *cmd_buffer,
 
    assert(!cfg->n[GEN_L3P_IS] && !cfg->n[GEN_L3P_C] && !cfg->n[GEN_L3P_T]);
 
+#if GEN_GEN >= 12
+#define L3_ALLOCATION_REG GENX(L3ALLOC)
+#define L3_ALLOCATION_REG_num GENX(L3ALLOC_num)
+#else
+#define L3_ALLOCATION_REG GENX(L3CNTLREG)
+#define L3_ALLOCATION_REG_num GENX(L3CNTLREG_num)
+#endif
+
    uint32_t l3cr;
-   anv_pack_struct(&l3cr, GENX(L3CNTLREG),
+   anv_pack_struct(&l3cr, L3_ALLOCATION_REG,
+#if GEN_GEN < 12
                    .SLMEnable = has_slm,
+#endif
 #if GEN_GEN == 11
    /* WA_1406697149: Bit 9 "Error Detection Behavior Control" must be set
     * in L3CNTLREG register. The default setting of the bit is not the
@@ -1707,7 +1702,7 @@ genX(cmd_buffer_config_l3)(struct anv_cmd_buffer *cmd_buffer,
                    .AllAllocation = cfg->n[GEN_L3P_ALL]);
 
    /* Set up the L3 partitioning. */
-   emit_lri(&cmd_buffer->batch, GENX(L3CNTLREG_num), l3cr);
+   emit_lri(&cmd_buffer->batch, L3_ALLOCATION_REG_num, l3cr);
 
 #else
 
@@ -1731,7 +1726,7 @@ genX(cmd_buffer_config_l3)(struct anv_cmd_buffer *cmd_buffer,
    assert(!urb_low_bw || cfg->n[GEN_L3P_URB] == cfg->n[GEN_L3P_SLM]);
 
    /* Minimum number of ways that can be allocated to the URB. */
-   MAYBE_UNUSED const unsigned n0_urb = devinfo->is_baytrail ? 32 : 0;
+   const unsigned n0_urb = devinfo->is_baytrail ? 32 : 0;
    assert(cfg->n[GEN_L3P_URB] >= n0_urb);
 
    uint32_t l3sqcr1, l3cr2, l3cr3;
@@ -2666,6 +2661,34 @@ cmd_buffer_flush_push_constants(struct anv_cmd_buffer *cmd_buffer,
    cmd_buffer->state.push_constants_dirty &= ~flushed;
 }
 
+#if GEN_GEN >= 12
+void
+genX(cmd_buffer_aux_map_state)(struct anv_cmd_buffer *cmd_buffer)
+{
+   void *aux_map_ctx = cmd_buffer->device->aux_map_ctx;
+   if (!aux_map_ctx)
+      return;
+   uint32_t aux_map_state_num = gen_aux_map_get_state_num(aux_map_ctx);
+   if (cmd_buffer->state.last_aux_map_state != aux_map_state_num) {
+      /* If the aux-map state number increased, then we need to rewrite the
+       * register. Rewriting the register is used to both set the aux-map
+       * translation table address, and also to invalidate any previously
+       * cached translations.
+       */
+      uint64_t base_addr = gen_aux_map_get_base(aux_map_ctx);
+      anv_batch_emit(&cmd_buffer->batch, GENX(MI_LOAD_REGISTER_IMM), lri) {
+         lri.RegisterOffset = GENX(GFX_AUX_TABLE_BASE_ADDR_num);
+         lri.DataDWord = base_addr & 0xffffffff;
+      }
+      anv_batch_emit(&cmd_buffer->batch, GENX(MI_LOAD_REGISTER_IMM), lri) {
+         lri.RegisterOffset = GENX(GFX_AUX_TABLE_BASE_ADDR_num) + 4;
+         lri.DataDWord = base_addr >> 32;
+      }
+      cmd_buffer->state.last_aux_map_state = aux_map_state_num;
+   }
+}
+#endif
+
 void
 genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
 {
@@ -2680,7 +2703,13 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
 
    genX(cmd_buffer_config_l3)(cmd_buffer, pipeline->urb.l3_config);
 
+   genX(cmd_buffer_emit_hashing_mode)(cmd_buffer, UINT_MAX, UINT_MAX, 1);
+
    genX(flush_pipeline_select_3d)(cmd_buffer);
+
+#if GEN_GEN >= 12
+   genX(cmd_buffer_aux_map_state)(cmd_buffer);
+#endif
 
    if (vb_emit) {
       const uint32_t num_buffers = __builtin_popcount(vb_emit);
@@ -3540,13 +3569,17 @@ void
 genX(cmd_buffer_flush_compute_state)(struct anv_cmd_buffer *cmd_buffer)
 {
    struct anv_pipeline *pipeline = cmd_buffer->state.compute.base.pipeline;
-   MAYBE_UNUSED VkResult result;
+   VkResult result;
 
    assert(pipeline->active_stages == VK_SHADER_STAGE_COMPUTE_BIT);
 
    genX(cmd_buffer_config_l3)(cmd_buffer, pipeline->urb.l3_config);
 
    genX(flush_pipeline_select_gpgpu)(cmd_buffer);
+
+#if GEN_GEN >= 12
+   genX(cmd_buffer_aux_map_state)(cmd_buffer);
+#endif
 
    if (cmd_buffer->state.compute.pipeline_dirty) {
       /* From the Sky Lake PRM Vol 2a, MEDIA_VFE_STATE:
@@ -3827,6 +3860,25 @@ genX(flush_pipeline_select)(struct anv_cmd_buffer *cmd_buffer,
       anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_CC_STATE_POINTERS), t);
 #endif
 
+#if GEN_GEN == 9
+   if (pipeline == _3D) {
+      /* There is a mid-object preemption workaround which requires you to
+       * re-emit MEDIA_VFE_STATE after switching from GPGPU to 3D.  However,
+       * even without preemption, we have issues with geometry flickering when
+       * GPGPU and 3D are back-to-back and this seems to fix it.  We don't
+       * really know why.
+       */
+      const uint32_t subslices =
+         MAX2(cmd_buffer->device->instance->physicalDevice.subslice_total, 1);
+      anv_batch_emit(&cmd_buffer->batch, GENX(MEDIA_VFE_STATE), vfe) {
+         vfe.MaximumNumberofThreads =
+            devinfo->max_cs_threads * subslices - 1;
+         vfe.NumberofURBEntries     = 2;
+         vfe.URBEntryAllocationSize = 2;
+      }
+   }
+#endif
+
    /* From "BXML » GT » MI » vol1a GPU Overview » [Instruction]
     * PIPELINE_SELECT [DevBWR+]":
     *
@@ -3921,6 +3973,98 @@ genX(cmd_buffer_emit_gen7_depth_flush)(struct anv_cmd_buffer *cmd_buffer)
    anv_batch_emit(&cmd_buffer->batch, GENX(PIPE_CONTROL), pipe) {
       pipe.DepthStallEnable = true;
    }
+}
+
+/**
+ * Update the pixel hashing modes that determine the balancing of PS threads
+ * across subslices and slices.
+ *
+ * \param width Width bound of the rendering area (already scaled down if \p
+ *              scale is greater than 1).
+ * \param height Height bound of the rendering area (already scaled down if \p
+ *               scale is greater than 1).
+ * \param scale The number of framebuffer samples that could potentially be
+ *              affected by an individual channel of the PS thread.  This is
+ *              typically one for single-sampled rendering, but for operations
+ *              like CCS resolves and fast clears a single PS invocation may
+ *              update a huge number of pixels, in which case a finer
+ *              balancing is desirable in order to maximally utilize the
+ *              bandwidth available.  UINT_MAX can be used as shorthand for
+ *              "finest hashing mode available".
+ */
+void
+genX(cmd_buffer_emit_hashing_mode)(struct anv_cmd_buffer *cmd_buffer,
+                                   unsigned width, unsigned height,
+                                   unsigned scale)
+{
+#if GEN_GEN == 9
+   const struct gen_device_info *devinfo = &cmd_buffer->device->info;
+   const unsigned slice_hashing[] = {
+      /* Because all Gen9 platforms with more than one slice require
+       * three-way subslice hashing, a single "normal" 16x16 slice hashing
+       * block is guaranteed to suffer from substantial imbalance, with one
+       * subslice receiving twice as much work as the other two in the
+       * slice.
+       *
+       * The performance impact of that would be particularly severe when
+       * three-way hashing is also in use for slice balancing (which is the
+       * case for all Gen9 GT4 platforms), because one of the slices
+       * receives one every three 16x16 blocks in either direction, which
+       * is roughly the periodicity of the underlying subslice imbalance
+       * pattern ("roughly" because in reality the hardware's
+       * implementation of three-way hashing doesn't do exact modulo 3
+       * arithmetic, which somewhat decreases the magnitude of this effect
+       * in practice).  This leads to a systematic subslice imbalance
+       * within that slice regardless of the size of the primitive.  The
+       * 32x32 hashing mode guarantees that the subslice imbalance within a
+       * single slice hashing block is minimal, largely eliminating this
+       * effect.
+       */
+      _32x32,
+      /* Finest slice hashing mode available. */
+      NORMAL
+   };
+   const unsigned subslice_hashing[] = {
+      /* 16x16 would provide a slight cache locality benefit especially
+       * visible in the sampler L1 cache efficiency of low-bandwidth
+       * non-LLC platforms, but it comes at the cost of greater subslice
+       * imbalance for primitives of dimensions approximately intermediate
+       * between 16x4 and 16x16.
+       */
+      _16x4,
+      /* Finest subslice hashing mode available. */
+      _8x4
+   };
+   /* Dimensions of the smallest hashing block of a given hashing mode.  If
+    * the rendering area is smaller than this there can't possibly be any
+    * benefit from switching to this mode, so we optimize out the
+    * transition.
+    */
+   const unsigned min_size[][2] = {
+         { 16, 4 },
+         { 8, 4 }
+   };
+   const unsigned idx = scale > 1;
+
+   if (cmd_buffer->state.current_hash_scale != scale &&
+       (width > min_size[idx][0] || height > min_size[idx][1])) {
+      uint32_t gt_mode;
+
+      anv_pack_struct(&gt_mode, GENX(GT_MODE),
+                      .SliceHashing = (devinfo->num_slices > 1 ? slice_hashing[idx] : 0),
+                      .SliceHashingMask = (devinfo->num_slices > 1 ? -1 : 0),
+                      .SubsliceHashing = subslice_hashing[idx],
+                      .SubsliceHashingMask = -1);
+
+      cmd_buffer->state.pending_pipe_bits |=
+         ANV_PIPE_CS_STALL_BIT | ANV_PIPE_STALL_AT_SCOREBOARD_BIT;
+      genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
+
+      emit_lri(&cmd_buffer->batch, GENX(GT_MODE_num), gt_mode);
+
+      cmd_buffer->state.current_hash_scale = scale;
+   }
+#endif
 }
 
 static void
@@ -4983,4 +5127,58 @@ void genX(CmdWaitEvents)(
                             memoryBarrierCount, pMemoryBarriers,
                             bufferMemoryBarrierCount, pBufferMemoryBarriers,
                             imageMemoryBarrierCount, pImageMemoryBarriers);
+}
+
+VkResult genX(CmdSetPerformanceOverrideINTEL)(
+    VkCommandBuffer                             commandBuffer,
+    const VkPerformanceOverrideInfoINTEL*       pOverrideInfo)
+{
+   ANV_FROM_HANDLE(anv_cmd_buffer, cmd_buffer, commandBuffer);
+
+   switch (pOverrideInfo->type) {
+   case VK_PERFORMANCE_OVERRIDE_TYPE_NULL_HARDWARE_INTEL: {
+      uint32_t dw;
+
+#if GEN_GEN >= 9
+      anv_pack_struct(&dw, GENX(CS_DEBUG_MODE2),
+                      ._3DRenderingInstructionDisable = pOverrideInfo->enable,
+                      .MediaInstructionDisable = pOverrideInfo->enable,
+                      ._3DRenderingInstructionDisableMask = true,
+                      .MediaInstructionDisableMask = true);
+      emit_lri(&cmd_buffer->batch, GENX(CS_DEBUG_MODE2_num), dw);
+#else
+      anv_pack_struct(&dw, GENX(INSTPM),
+                      ._3DRenderingInstructionDisable = pOverrideInfo->enable,
+                      .MediaInstructionDisable = pOverrideInfo->enable,
+                      ._3DRenderingInstructionDisableMask = true,
+                      .MediaInstructionDisableMask = true);
+      emit_lri(&cmd_buffer->batch, GENX(INSTPM_num), dw);
+#endif
+      break;
+   }
+
+   case VK_PERFORMANCE_OVERRIDE_TYPE_FLUSH_GPU_CACHES_INTEL:
+      if (pOverrideInfo->enable) {
+         /* FLUSH ALL THE THINGS! As requested by the MDAPI team. */
+         cmd_buffer->state.pending_pipe_bits |=
+            ANV_PIPE_FLUSH_BITS |
+            ANV_PIPE_INVALIDATE_BITS;
+         genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
+      }
+      break;
+
+   default:
+      unreachable("Invalid override");
+   }
+
+   return VK_SUCCESS;
+}
+
+VkResult genX(CmdSetPerformanceStreamMarkerINTEL)(
+    VkCommandBuffer                             commandBuffer,
+    const VkPerformanceStreamMarkerInfoINTEL*   pMarkerInfo)
+{
+   /* TODO: Waiting on the register to write, might depend on generation. */
+
+   return VK_SUCCESS;
 }

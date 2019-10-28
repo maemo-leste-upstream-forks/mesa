@@ -39,8 +39,10 @@ static const nir_shader_compiler_options options = {
 	/* .fdot_replicates = true, it is replicated, but it makes things worse */
 	.lower_all_io_to_temps = true,
 	.vertex_id_zero_based = true, /* its not implemented anyway */
-	.lower_bitshift = true,
+	.lower_bitops = true,
 	.lower_rotate = true,
+	.lower_vector_cmp = true,
+	.lower_fdph = true,
 };
 
 const nir_shader_compiler_options *
@@ -121,7 +123,7 @@ ir2_optimize_nir(nir_shader *s, bool lower)
 	ir2_optimize_loop(s);
 
 	OPT_V(s, nir_remove_dead_variables, nir_var_function_temp);
-	OPT_V(s, nir_move_load_const);
+	OPT_V(s, nir_opt_sink, nir_move_const_undef);
 
 	/* TODO we dont want to get shaders writing to depth for depth textures */
 	if (s->info.stage == MESA_SHADER_FRAGMENT) {
@@ -286,6 +288,9 @@ instr_create_alu(struct ir2_context *ctx, nir_op opcode, unsigned ncomp)
 		[0 ... nir_num_opcodes - 1] = {-1, -1},
 
 		[nir_op_mov] = {MAXs, MAXv},
+		[nir_op_fneg] = {MAXs, MAXv},
+		[nir_op_fabs] = {MAXs, MAXv},
+		[nir_op_fsat] = {MAXs, MAXv},
 		[nir_op_fsign] = {-1, CNDGTEv},
 		[nir_op_fadd] = {ADDs, ADDv},
 		[nir_op_fsub] = {ADDs, ADDv},
@@ -428,6 +433,15 @@ emit_alu(struct ir2_context *ctx, nir_alu_instr * alu)
 
 	/* workarounds for NIR ops that don't map directly to a2xx ops */
 	switch (alu->op) {
+	case nir_op_fneg:
+		instr->src[0].negate = 1;
+		break;
+	case nir_op_fabs:
+		instr->src[0].abs = 1;
+		break;
+	case nir_op_fsat:
+		instr->alu.saturate = 1;
+		break;
 	case nir_op_slt:
 		tmp = instr->src[0];
 		instr->src[0] = instr->src[1];
@@ -490,14 +504,6 @@ load_input(struct ir2_context *ctx, nir_dest *dst, unsigned idx)
 	assert(slot >= 0);
 
 	switch (slot) {
-	case VARYING_SLOT_PNTC:
-		/* need to extract with abs and invert y */
-		instr = instr_create_alu_dest(ctx, nir_op_ffma, dst);
-		instr->src[0] = ir2_src(ctx->f->inputs_count, IR2_SWIZZLE_ZW, IR2_SRC_INPUT);
-		instr->src[0].abs = true;
-		instr->src[1] = load_const(ctx, (float[]) {1.0f, -1.0f}, 2);
-		instr->src[2] = load_const(ctx, (float[]) {0.0f, 1.0f}, 2);
-		break;
 	case VARYING_SLOT_POS:
 		/* need to extract xy with abs and add tile offset on a20x
 		 * zw from fragcoord input (w inverted in fragment shader)
@@ -626,6 +632,13 @@ emit_intrinsic(struct ir2_context *ctx, nir_intrinsic_instr *intr)
 		instr->src[0] = ir2_src(tmp->idx, 0, IR2_SRC_SSA);
 		instr->src[1] = ir2_zero(ctx);
 		break;
+	case nir_intrinsic_load_point_coord:
+		/* param.zw (note: abs might be needed like fragcoord in param.xy?) */
+		ctx->so->need_param = true;
+
+		instr = instr_create_alu_dest(ctx, nir_op_mov, &intr->dest);
+		instr->src[0] = ir2_src(ctx->f->inputs_count, IR2_SWIZZLE_ZW, IR2_SRC_INPUT);
+		break;
 	default:
 		compile_error(ctx, "unimplemented intr %d\n", intr->intrinsic);
 		break;
@@ -716,7 +729,7 @@ emit_tex(struct ir2_context *ctx, nir_tex_instr * tex)
 
 	instr = ir2_instr_create_fetch(ctx, &tex->dest, TEX_FETCH);
 	instr->src[0] = src_coord;
-	instr->src[0].swizzle = is_cube ? IR2_SWIZZLE_XYW : 0;
+	instr->src[0].swizzle = is_cube ? IR2_SWIZZLE_YXW : 0;
 	instr->fetch.tex.is_cube = is_cube;
 	instr->fetch.tex.is_rect = is_rect;
 	instr->fetch.tex.samp_id = tex->sampler_index;
@@ -746,11 +759,6 @@ setup_input(struct ir2_context *ctx, nir_variable * in)
 
 	if (ctx->so->type != MESA_SHADER_FRAGMENT)
 		compile_error(ctx, "unknown shader type: %d\n", ctx->so->type);
-
-	if (slot == VARYING_SLOT_PNTC) {
-		so->need_param = true;
-		return;
-	}
 
 	n = ctx->f->inputs_count++;
 
@@ -1049,6 +1057,29 @@ static void cleanup_binning(struct ir2_context *ctx)
 	ir2_optimize_nir(ctx->nir, false);
 }
 
+static bool
+ir2_alu_to_scalar_filter_cb(const nir_instr *instr, const void *data)
+{
+	if (instr->type != nir_instr_type_alu)
+		return false;
+
+	nir_alu_instr *alu = nir_instr_as_alu(instr);
+	switch (alu->op) {
+	case nir_op_frsq:
+	case nir_op_frcp:
+	case nir_op_flog2:
+	case nir_op_fexp2:
+	case nir_op_fsqrt:
+	case nir_op_fcos:
+	case nir_op_fsin:
+		return true;
+	default:
+		break;
+	}
+
+	return false;
+}
+
 void
 ir2_nir_compile(struct ir2_context *ctx, bool binning)
 {
@@ -1061,19 +1092,17 @@ ir2_nir_compile(struct ir2_context *ctx, bool binning)
 	if (binning)
 		cleanup_binning(ctx);
 
-	/* postprocess */
-	OPT_V(ctx->nir, nir_opt_algebraic_late);
-
-	OPT_V(ctx->nir, nir_lower_to_source_mods, nir_lower_all_source_mods);
 	OPT_V(ctx->nir, nir_copy_prop);
 	OPT_V(ctx->nir, nir_opt_dce);
-	OPT_V(ctx->nir, nir_opt_move_comparisons);
+	OPT_V(ctx->nir, nir_opt_move, nir_move_comparisons);
 
-	OPT_V(ctx->nir, nir_lower_bool_to_float);
 	OPT_V(ctx->nir, nir_lower_int_to_float);
+	OPT_V(ctx->nir, nir_lower_bool_to_float);
+	while(OPT(ctx->nir, nir_opt_algebraic));
+	OPT_V(ctx->nir, nir_opt_algebraic_late);
+	OPT_V(ctx->nir, nir_lower_to_source_mods, nir_lower_all_source_mods);
 
-	/* lower to scalar instructions that can only be scalar on a2xx */
-	OPT_V(ctx->nir, ir2_nir_lower_scalar);
+	OPT_V(ctx->nir, nir_lower_alu_to_scalar, ir2_alu_to_scalar_filter_cb, NULL);
 
 	OPT_V(ctx->nir, nir_lower_locals_to_regs);
 

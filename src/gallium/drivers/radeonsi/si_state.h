@@ -37,6 +37,7 @@
 #define SI_NUM_SAMPLERS			32 /* OpenGL textures units per shader */
 #define SI_NUM_CONST_BUFFERS		16
 #define SI_NUM_IMAGES			16
+#define SI_NUM_IMAGE_SLOTS		(SI_NUM_IMAGES * 2) /* the second half are FMASK slots */
 #define SI_NUM_SHADER_BUFFERS		16
 
 struct si_screen;
@@ -56,6 +57,7 @@ struct si_state_blend {
 	unsigned		blend_enable_4bit;
 	unsigned		need_src_alpha_4bit;
 	unsigned		commutative_4bit;
+	unsigned		dcc_msaa_corruption_4bit;
 	bool			alpha_to_coverage:1;
 	bool			alpha_to_one:1;
 	bool			dual_src_blend:1;
@@ -258,6 +260,14 @@ struct si_shader_data {
 	uint32_t		sh_base[SI_NUM_SHADERS];
 };
 
+#define SI_TRACKED_PA_CL_VS_OUT_CNTL__VS_MASK \
+	(S_02881C_USE_VTX_POINT_SIZE(1) | \
+	 S_02881C_USE_VTX_EDGE_FLAG(1) | \
+	 S_02881C_USE_VTX_RENDER_TARGET_INDX(1) | \
+	 S_02881C_USE_VTX_VIEWPORT_INDX(1) | \
+	 S_02881C_VS_OUT_MISC_VEC_ENA(1) | \
+	 S_02881C_VS_OUT_MISC_SIDE_BUS_ENA(1))
+
 /* The list of registers whose emitted values are remembered by si_context. */
 enum si_tracked_reg {
 	SI_TRACKED_DB_RENDER_CONTROL, /* 2 consecutive registers */
@@ -282,7 +292,8 @@ enum si_tracked_reg {
 	SI_TRACKED_PA_SU_PRIM_FILTER_CNTL,
 	SI_TRACKED_PA_SU_SMALL_PRIM_FILTER_CNTL,
 
-	SI_TRACKED_PA_CL_VS_OUT_CNTL,
+	SI_TRACKED_PA_CL_VS_OUT_CNTL__VS, /* set with SI_TRACKED_PA_CL_VS_OUT_CNTL__VS_MASK*/
+	SI_TRACKED_PA_CL_VS_OUT_CNTL__CL, /* set with ~SI_TRACKED_PA_CL_VS_OUT_CNTL__VS_MASK */
 	SI_TRACKED_PA_CL_CLIP_CNTL,
 
 	SI_TRACKED_PA_SC_BINNER_CNTL_0,
@@ -572,7 +583,7 @@ si_compute_fast_udiv_info32(uint32_t D, unsigned num_bits);
 void si_emit_dpbb_state(struct si_context *sctx);
 
 /* si_state_shaders.c */
-void *si_get_ir_binary(struct si_shader_selector *sel);
+void *si_get_ir_binary(struct si_shader_selector *sel, bool ngg, bool es);
 bool si_shader_cache_load_shader(struct si_screen *sscreen, void *ir_binary,
 				 struct si_shader *shader);
 bool si_shader_cache_insert_shader(struct si_screen *sscreen, void *ir_binary,
@@ -600,6 +611,7 @@ void si_shader_selector_key_vs(struct si_context *sctx,
 			       struct si_shader_key *key,
 			       struct si_vs_prolog_bits *prolog_key);
 unsigned si_get_input_prim(const struct si_shader_selector *gs);
+bool si_update_ngg(struct si_context *sctx);
 
 /* si_state_draw.c */
 void si_emit_surface_sync(struct si_context *sctx, struct radeon_cmdbuf *cs,
@@ -636,14 +648,16 @@ static inline unsigned si_get_shaderbuf_slot(unsigned slot)
 
 static inline unsigned si_get_sampler_slot(unsigned slot)
 {
-	/* samplers are in slots [8..39], ascending */
-	return SI_NUM_IMAGES / 2 + slot;
+	/* 32 samplers are in sampler slots [16..47], 16 dw per slot, ascending */
+	/* those are equivalent to image slots [32..95], 8 dw per slot, ascending  */
+	return SI_NUM_IMAGE_SLOTS / 2 + slot;
 }
 
 static inline unsigned si_get_image_slot(unsigned slot)
 {
-	/* images are in slots [15..0] (sampler slots [7..0]), descending */
-	return SI_NUM_IMAGES - 1 - slot;
+	/* image slots are in [31..0] (sampler slots [15..0]), descending */
+	/* images are in slots [31..16], while FMASKs are in slots [15..0] */
+	return SI_NUM_IMAGE_SLOTS - 1 - slot;
 }
 
 #endif

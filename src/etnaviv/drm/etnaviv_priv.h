@@ -44,6 +44,7 @@
 #include "util/macros.h"
 #include "util/u_atomic.h"
 #include "util/u_debug.h"
+#include "util/vma.h"
 
 #include "etnaviv_drmif.h"
 #include "drm-uapi/etnaviv_drm.h"
@@ -76,6 +77,9 @@ struct etna_device {
 
 	struct etna_bo_cache bo_cache;
 
+	int use_softpin;
+	struct util_vma_heap address_space;
+
 	int closefd;        /* call close(fd) upon destruction */
 };
 
@@ -97,14 +101,13 @@ struct etna_bo {
 	uint32_t        flags;
 	uint32_t        name;           /* flink global handle (DRI2 name) */
 	uint64_t        offset;         /* offset to mmap() */
+	uint32_t        va;             /* GPU virtual address */
 	int		refcnt;
 
-	/* in the common case, a bo won't be referenced by more than a single
-	 * command stream.  So to avoid looping over all the bo's in the
-	 * reloc table to find the idx of a bo that might already be in the
-	 * table, we cache the idx in the bo.  But in order to detect the
-	 * slow-path where bo is ref'd in multiple streams, we also must track
-	 * the current_stream for which the idx is valid.  See bo2idx().
+	/*
+	 * To avoid excess hashtable lookups, cache the stream this bo was
+	 * last emitted on (since that will probably also be the next ring
+	 * it is emitted on).
 	 */
 	struct etna_cmd_stream *current_stream;
 	uint32_t idx;
@@ -152,8 +155,10 @@ struct etna_cmd_stream_priv {
 	uint32_t nr_bos, max_bos;
 
 	/* notify callback if buffer reset happened */
-	void (*reset_notify)(struct etna_cmd_stream *stream, void *priv);
-	void *reset_notify_priv;
+	void (*force_flush)(struct etna_cmd_stream *stream, void *priv);
+	void *force_flush_priv;
+
+	void *bo_table;
 };
 
 struct etna_perfmon {
@@ -204,5 +209,57 @@ static inline void get_abs_timeout(struct drm_etnaviv_timespec *tv, uint64_t ns)
 	tv->tv_sec = t.tv_sec + s;
 	tv->tv_nsec = t.tv_nsec + ns - (s * 1000000000);
 }
+
+#if HAVE_VALGRIND
+#  include <valgrind/memcheck.h>
+
+/*
+ * For tracking the backing memory (if valgrind enabled, we force a mmap
+ * for the purposes of tracking)
+ */
+static inline void VG_BO_ALLOC(struct etna_bo *bo)
+{
+	if (bo && RUNNING_ON_VALGRIND) {
+		VALGRIND_MALLOCLIKE_BLOCK(etna_bo_map(bo), bo->size, 0, 1);
+	}
+}
+
+static inline void VG_BO_FREE(struct etna_bo *bo)
+{
+	VALGRIND_FREELIKE_BLOCK(bo->map, 0);
+}
+
+/*
+ * For tracking bo structs that are in the buffer-cache, so that valgrind
+ * doesn't attribute ownership to the first one to allocate the recycled
+ * bo.
+ *
+ * Note that the list_head in etna_bo is used to track the buffers in cache
+ * so disable error reporting on the range while they are in cache so
+ * valgrind doesn't squawk about list traversal.
+ *
+ */
+static inline void VG_BO_RELEASE(struct etna_bo *bo)
+{
+	if (RUNNING_ON_VALGRIND) {
+		VALGRIND_DISABLE_ADDR_ERROR_REPORTING_IN_RANGE(bo, sizeof(*bo));
+		VALGRIND_MAKE_MEM_NOACCESS(bo, sizeof(*bo));
+		VALGRIND_FREELIKE_BLOCK(bo->map, 0);
+	}
+}
+static inline void VG_BO_OBTAIN(struct etna_bo *bo)
+{
+	if (RUNNING_ON_VALGRIND) {
+		VALGRIND_MAKE_MEM_DEFINED(bo, sizeof(*bo));
+		VALGRIND_ENABLE_ADDR_ERROR_REPORTING_IN_RANGE(bo, sizeof(*bo));
+		VALGRIND_MALLOCLIKE_BLOCK(bo->map, bo->size, 0, 1);
+	}
+}
+#else
+static inline void VG_BO_ALLOC(struct etna_bo *bo)   {}
+static inline void VG_BO_FREE(struct etna_bo *bo)    {}
+static inline void VG_BO_RELEASE(struct etna_bo *bo) {}
+static inline void VG_BO_OBTAIN(struct etna_bo *bo)  {}
+#endif
 
 #endif /* ETNAVIV_PRIV_H_ */

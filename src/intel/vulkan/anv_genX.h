@@ -44,11 +44,17 @@ void genX(cmd_buffer_apply_pipe_flushes)(struct anv_cmd_buffer *cmd_buffer);
 
 void genX(cmd_buffer_emit_gen7_depth_flush)(struct anv_cmd_buffer *cmd_buffer);
 
+void genX(cmd_buffer_emit_hashing_mode)(struct anv_cmd_buffer *cmd_buffer,
+                                        unsigned width, unsigned height,
+                                        unsigned scale);
+
 void genX(flush_pipeline_select_3d)(struct anv_cmd_buffer *cmd_buffer);
 void genX(flush_pipeline_select_gpgpu)(struct anv_cmd_buffer *cmd_buffer);
 
 void genX(cmd_buffer_config_l3)(struct anv_cmd_buffer *cmd_buffer,
                                 const struct gen_l3_config *cfg);
+
+void genX(cmd_buffer_aux_map_state)(struct anv_cmd_buffer *cmd_buffer);
 
 void genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer);
 void genX(cmd_buffer_flush_dynamic_state)(struct anv_cmd_buffer *cmd_buffer);

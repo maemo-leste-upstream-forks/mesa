@@ -952,7 +952,7 @@ brw_try_compact_3src_instruction(const struct gen_device_info *devinfo,
 #define compact_a16(field) \
    brw_compact_inst_set_3src_##field(devinfo, dst, brw_inst_3src_a16_##field(devinfo, src))
 
-   compact(opcode);
+   compact(hw_opcode);
 
    if (!set_3src_control_index(devinfo, dst, src))
       return false;
@@ -1124,7 +1124,7 @@ brw_try_compact_instruction(const struct gen_device_info *devinfo,
 #define compact(field) \
    brw_compact_inst_set_##field(devinfo, &temp, brw_inst_##field(devinfo, src))
 
-   compact(opcode);
+   compact(hw_opcode);
    compact(debug_control);
 
    if (!set_control_index(devinfo, &temp, src))
@@ -1301,7 +1301,7 @@ brw_uncompact_3src_instruction(const struct gen_device_info *devinfo,
 #define uncompact_a16(field) \
    brw_inst_set_3src_a16_##field(devinfo, dst, brw_compact_inst_3src_##field(devinfo, src))
 
-   uncompact(opcode);
+   uncompact(hw_opcode);
 
    set_uncompacted_3src_control_index(devinfo, dst, src);
    set_uncompacted_3src_source_index(devinfo, dst, src);
@@ -1331,7 +1331,8 @@ brw_uncompact_instruction(const struct gen_device_info *devinfo, brw_inst *dst,
    memset(dst, 0, sizeof(*dst));
 
    if (devinfo->gen >= 8 &&
-       is_3src(devinfo, brw_compact_inst_3src_opcode(devinfo, src))) {
+       is_3src(devinfo, brw_opcode_decode(
+                  devinfo, brw_compact_inst_3src_hw_opcode(devinfo, src)))) {
       brw_uncompact_3src_instruction(devinfo, dst, src);
       return;
    }
@@ -1339,7 +1340,7 @@ brw_uncompact_instruction(const struct gen_device_info *devinfo, brw_inst *dst,
 #define uncompact(field) \
    brw_inst_set_##field(devinfo, dst, brw_compact_inst_##field(devinfo, src))
 
-   uncompact(opcode);
+   uncompact(hw_opcode);
    uncompact(debug_control);
 
    set_uncompacted_control(devinfo, dst, src);
@@ -1491,6 +1492,12 @@ brw_init_compaction_tables(const struct gen_device_info *devinfo)
    assert(gen11_datatype_table[ARRAY_SIZE(gen11_datatype_table) - 1] != 0);
 
    switch (devinfo->gen) {
+   case 12:
+      control_index_table = NULL;
+      datatype_table = NULL;
+      subreg_table = NULL;
+      src_index_table = NULL;
+      break;
    case 11:
       control_index_table = gen8_control_index_table;
       datatype_table = gen11_datatype_table;
@@ -1533,7 +1540,7 @@ void
 brw_compact_instructions(struct brw_codegen *p, int start_offset,
                          struct disasm_info *disasm)
 {
-   if (unlikely(INTEL_DEBUG & DEBUG_NO_COMPACTION))
+   if (unlikely(INTEL_DEBUG & DEBUG_NO_COMPACTION) || p->devinfo->gen > 11)
       return;
 
    const struct gen_device_info *devinfo = p->devinfo;
@@ -1581,7 +1588,8 @@ brw_compact_instructions(struct brw_codegen *p, int start_offset,
          if ((offset & sizeof(brw_compact_inst)) != 0 && devinfo->is_g4x){
             brw_compact_inst *align = store + offset;
             memset(align, 0, sizeof(*align));
-            brw_compact_inst_set_opcode(devinfo, align, BRW_OPCODE_NENOP);
+            brw_compact_inst_set_hw_opcode(
+               devinfo, align, brw_opcode_encode(devinfo, BRW_OPCODE_NENOP));
             brw_compact_inst_set_cmpt_control(devinfo, align, true);
             offset += sizeof(brw_compact_inst);
             compacted_count--;
@@ -1685,6 +1693,9 @@ brw_compact_instructions(struct brw_codegen *p, int start_offset,
             brw_inst_set_imm_ud(devinfo, insn, jump_compacted << shift);
          }
          break;
+
+      default:
+         break;
       }
    }
 
@@ -1696,7 +1707,8 @@ brw_compact_instructions(struct brw_codegen *p, int start_offset,
    if (p->next_insn_offset & sizeof(brw_compact_inst)) {
       brw_compact_inst *align = store + offset;
       memset(align, 0, sizeof(*align));
-      brw_compact_inst_set_opcode(devinfo, align, BRW_OPCODE_NOP);
+      brw_compact_inst_set_hw_opcode(
+         devinfo, align, brw_opcode_encode(devinfo, BRW_OPCODE_NOP));
       brw_compact_inst_set_cmpt_control(devinfo, align, true);
       p->next_insn_offset += sizeof(brw_compact_inst);
    }

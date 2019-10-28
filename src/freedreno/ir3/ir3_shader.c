@@ -24,6 +24,7 @@
  *    Rob Clark <robclark@freedesktop.org>
  */
 
+#include "util/u_atomic.h"
 #include "util/u_string.h"
 #include "util/u_memory.h"
 #include "util/u_format.h"
@@ -106,6 +107,20 @@ fixup_regfootprint(struct ir3_shader_variant *v, uint32_t gpu_id)
 			v->info.max_reg = MAX2(v->info.max_reg, regid >> 2);
 		}
 	}
+
+	for (i = 0; i < v->num_sampler_prefetch; i++) {
+		unsigned n = util_last_bit(v->sampler_prefetch[i].wrmask) - 1;
+		int32_t regid = v->sampler_prefetch[i].dst + n;
+		if (v->sampler_prefetch[i].half_precision) {
+			if (gpu_id < 500) {
+				v->info.max_half_reg = MAX2(v->info.max_half_reg, regid >> 2);
+			} else {
+				v->info.max_reg = MAX2(v->info.max_reg, regid >> 3);
+			}
+		} else {
+			v->info.max_reg = MAX2(v->info.max_reg, regid >> 2);
+		}
+	}
 }
 
 /* wrapper for ir3_assemble() which does some info fixup based on
@@ -150,24 +165,16 @@ assemble_variant(struct ir3_shader_variant *v)
 	v->bo = fd_bo_new(compiler->dev, sz,
 			DRM_FREEDRENO_GEM_CACHE_WCOMBINE |
 			DRM_FREEDRENO_GEM_TYPE_KMEM,
-			"%s:%s", ir3_shader_stage(v->shader), info->name);
+			"%s:%s", ir3_shader_stage(v), info->name);
 
 	memcpy(fd_bo_map(v->bo), bin, sz);
 
-	if (ir3_shader_debug & IR3_DBG_DISASM) {
-		struct ir3_shader_key key = v->key;
-		printf("disassemble: type=%d, k={bp=%u,cts=%u,hp=%u}\n", v->type,
-			v->binning_pass, key.color_two_side, key.half_precision);
-		ir3_shader_disasm(v, bin, stdout);
-	}
-
 	if (shader_debug_enabled(v->shader->type)) {
-		fprintf(stderr, "Native code for unnamed %s shader %s:\n",
-			_mesa_shader_stage_to_string(v->shader->type),
-			v->shader->nir->info.name);
+		fprintf(stdout, "Native code for unnamed %s shader %s:\n",
+			ir3_shader_stage(v), v->shader->nir->info.name);
 		if (v->shader->type == MESA_SHADER_FRAGMENT)
-			fprintf(stderr, "SIMD0\n");
-		ir3_shader_disasm(v, bin, stderr);
+			fprintf(stdout, "SIMD0\n");
+		ir3_shader_disasm(v, bin, stdout);
 	}
 
 	free(bin);
@@ -177,9 +184,14 @@ assemble_variant(struct ir3_shader_variant *v)
 	v->ir = NULL;
 }
 
+/*
+ * For creating normal shader variants, 'nonbinning' is NULL.  For
+ * creating binning pass shader, it is link to corresponding normal
+ * (non-binning) variant.
+ */
 static struct ir3_shader_variant *
 create_variant(struct ir3_shader *shader, struct ir3_shader_key *key,
-		bool binning_pass)
+		struct ir3_shader_variant *nonbinning)
 {
 	struct ir3_shader_variant *v = CALLOC_STRUCT(ir3_shader_variant);
 	int ret;
@@ -189,7 +201,8 @@ create_variant(struct ir3_shader *shader, struct ir3_shader_key *key,
 
 	v->id = ++shader->variant_count;
 	v->shader = shader;
-	v->binning_pass = binning_pass;
+	v->binning_pass = !!nonbinning;
+	v->nonbinning = nonbinning;
 	v->key = *key;
 	v->type = shader->type;
 
@@ -225,7 +238,7 @@ shader_variant(struct ir3_shader *shader, struct ir3_shader_key *key,
 			return v;
 
 	/* compile new variant if it doesn't exist already: */
-	v = create_variant(shader, key, false);
+	v = create_variant(shader, key, NULL);
 	if (v) {
 		v->next = shader->variants;
 		shader->variants = v;
@@ -239,16 +252,19 @@ struct ir3_shader_variant *
 ir3_shader_get_variant(struct ir3_shader *shader, struct ir3_shader_key *key,
 		bool binning_pass, bool *created)
 {
+	mtx_lock(&shader->variants_lock);
 	struct ir3_shader_variant *v =
 			shader_variant(shader, key, created);
 
 	if (v && binning_pass) {
 		if (!v->binning) {
-			v->binning = create_variant(shader, key, true);
+			v->binning = create_variant(shader, key, v);
 			*created = true;
 		}
+		mtx_unlock(&shader->variants_lock);
 		return v->binning;
 	}
+	mtx_unlock(&shader->variants_lock);
 
 	return v;
 }
@@ -264,6 +280,7 @@ ir3_shader_destroy(struct ir3_shader *shader)
 	}
 	free(shader->const_state.immediates);
 	ralloc_free(shader->nir);
+	mtx_destroy(&shader->variants_lock);
 	free(shader);
 }
 
@@ -272,8 +289,9 @@ ir3_shader_from_nir(struct ir3_compiler *compiler, nir_shader *nir)
 {
 	struct ir3_shader *shader = CALLOC_STRUCT(ir3_shader);
 
+	mtx_init(&shader->variants_lock, mtx_plain);
 	shader->compiler = compiler;
-	shader->id = ++shader->compiler->shader_count;
+	shader->id = p_atomic_inc_return(&shader->compiler->shader_count);
 	shader->type = nir->info.stage;
 
 	NIR_PASS_V(nir, nir_lower_io, nir_var_all, ir3_glsl_type_size,
@@ -290,6 +308,8 @@ ir3_shader_from_nir(struct ir3_compiler *compiler, nir_shader *nir)
 	}
 
 	NIR_PASS_V(nir, nir_lower_io_arrays_to_elements_no_indirects, false);
+
+	NIR_PASS_V(nir, nir_lower_amul, ir3_glsl_type_size);
 
 	/* do first pass optimization, ignoring the key: */
 	ir3_optimize_nir(shader, nir, NULL);
@@ -338,7 +358,14 @@ output_name(struct ir3_shader_variant *so, int i)
 	if (so->type == MESA_SHADER_FRAGMENT) {
 		return gl_frag_result_name(so->outputs[i].slot);
 	} else {
-		return gl_varying_slot_name(so->outputs[i].slot);
+		switch (so->outputs[i].slot) {
+		case VARYING_SLOT_GS_HEADER_IR3:
+			return "GS_HEADER";
+		case VARYING_SLOT_GS_VERTEX_FLAGS_IR3:
+			return "GS_VERTEX_FLAGS";
+		default:
+			return gl_varying_slot_name(so->outputs[i].slot);
+		}
 	}
 }
 
@@ -347,7 +374,7 @@ ir3_shader_disasm(struct ir3_shader_variant *so, uint32_t *bin, FILE *out)
 {
 	struct ir3 *ir = so->ir;
 	struct ir3_register *reg;
-	const char *type = ir3_shader_stage(so->shader);
+	const char *type = ir3_shader_stage(so);
 	uint8_t regid;
 	unsigned i;
 
@@ -361,6 +388,16 @@ ir3_shader_disasm(struct ir3_shader_variant *so, uint32_t *bin, FILE *out)
 		fprintf(out, "@in(%sr%d.%c)\tin%d\n",
 				(reg->flags & IR3_REG_HALF) ? "h" : "",
 				(regid >> 2), "xyzw"[regid & 0x3], i);
+	}
+
+	/* print pre-dispatch texture fetches: */
+	for (i = 0; i < so->num_sampler_prefetch; i++) {
+		const struct ir3_sampler_prefetch *fetch = &so->sampler_prefetch[i];
+		fprintf(out, "@tex(%sr%d.%c)\tsrc=%u, samp=%u, tex=%u, wrmask=%x, cmd=%u\n",
+				fetch->half_precision ? "h" : "",
+				fetch->dst >> 2, "xyzw"[fetch->dst & 0x3],
+				fetch->src, fetch->samp_id, fetch->tex_id,
+				fetch->wrmask, fetch->cmd);
 	}
 
 	for (i = 0; i < ir->noutputs; i++) {

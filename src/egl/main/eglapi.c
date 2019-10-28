@@ -499,6 +499,7 @@ _eglCreateExtensionsString(_EGLDisplay *disp)
    _EGL_CHECK_EXTENSION(EXT_create_context_robustness);
    _EGL_CHECK_EXTENSION(EXT_image_dma_buf_import);
    _EGL_CHECK_EXTENSION(EXT_image_dma_buf_import_modifiers);
+   _EGL_CHECK_EXTENSION(EXT_image_flush_external);
    _EGL_CHECK_EXTENSION(EXT_surface_CTA861_3_metadata);
    _EGL_CHECK_EXTENSION(EXT_surface_SMPTE2086_metadata);
    _EGL_CHECK_EXTENSION(EXT_swap_buffers_with_damage);
@@ -676,6 +677,10 @@ eglTerminate(EGLDisplay dpy)
       /* do not reset disp->Driver */
       disp->ClientAPIsString[0] = 0;
       disp->Initialized = EGL_FALSE;
+
+      /* Reset blob cache funcs on terminate. */
+      disp->BlobCacheSet = NULL;
+      disp->BlobCacheGet = NULL;
    }
 
    RETURN_EGL_SUCCESS(disp, EGL_TRUE);
@@ -1847,9 +1852,10 @@ _eglCreateSync(_EGLDisplay *disp, EGLenum type, const EGLAttrib *attrib_list,
        (type == EGL_SYNC_FENCE_KHR || type == EGL_SYNC_NATIVE_FENCE_ANDROID))
       RETURN_EGL_ERROR(disp, EGL_BAD_MATCH, EGL_NO_SYNC_KHR);
 
-   /* return an error if the client API doesn't support GL_OES_EGL_sync */
+   /* return an error if the client API doesn't support GL_[OES|MESA]_EGL_sync. */
    if (ctx && (ctx->Resource.Display != disp ||
-               ctx->ClientAPI != EGL_OPENGL_ES_API))
+               (ctx->ClientAPI != EGL_OPENGL_ES_API &&
+                ctx->ClientAPI != EGL_OPENGL_API)))
       RETURN_EGL_ERROR(disp, EGL_BAD_MATCH, EGL_NO_SYNC_KHR);
 
    switch (type) {
@@ -2031,8 +2037,10 @@ _eglWaitSyncCommon(_EGLDisplay *disp, _EGLSync *s, EGLint flags)
    _EGL_CHECK_SYNC(disp, s, EGL_FALSE, drv);
    assert(disp->Extensions.KHR_wait_sync);
 
-   /* return an error if the client API doesn't support GL_OES_EGL_sync */
-   if (ctx == EGL_NO_CONTEXT || ctx->ClientAPI != EGL_OPENGL_ES_API)
+   /* return an error if the client API doesn't support GL_[OES|MESA]_EGL_sync. */
+   if (ctx == EGL_NO_CONTEXT ||
+         (ctx->ClientAPI != EGL_OPENGL_ES_API &&
+          ctx->ClientAPI != EGL_OPENGL_API))
       RETURN_EGL_ERROR(disp, EGL_BAD_MATCH, EGL_FALSE);
 
    /* the API doesn't allow any flags yet */
@@ -2108,6 +2116,10 @@ eglGetSyncAttrib(EGLDisplay dpy, EGLSync sync, EGLint attribute, EGLAttrib *valu
    _EGLDisplay *disp = _eglLockDisplay(dpy);
    _EGLSync *s = _eglLookupSync(sync, disp);
    _EGL_FUNC_START(disp, EGL_OBJECT_SYNC_KHR, s, EGL_FALSE);
+
+   if (!value)
+      RETURN_EGL_ERROR(disp, EGL_BAD_PARAMETER, EGL_FALSE);
+
    return _eglGetSyncAttribCommon(disp, s, attribute, value);
 }
 
@@ -2734,6 +2746,55 @@ eglGetDisplayDriverName(EGLDisplay dpy)
 
     ret = drv->API.QueryDriverName(disp);
     RETURN_EGL_EVAL(disp, ret);
+}
+
+static EGLBoolean EGLAPIENTRY
+eglImageFlushExternalEXT(EGLDisplay dpy, EGLImageKHR image,
+                         const EGLAttrib *attrib_list)
+{
+   _EGLDisplay *disp = _eglLockDisplay(dpy);
+   _EGLContext *ctx = _eglGetCurrentContext();
+   _EGLImage *img = _eglLookupImage(image, disp);
+   _EGLDriver *drv;
+
+   _EGL_FUNC_START(disp, EGL_OBJECT_IMAGE_KHR, img, EGL_FALSE);
+   _EGL_CHECK_DISPLAY(disp, EGL_FALSE, drv);
+
+   if (attrib_list && attrib_list[0] != EGL_NONE)
+      RETURN_EGL_ERROR(disp, EGL_BAD_PARAMETER, EGL_FALSE);
+
+   if (!ctx || !disp->Extensions.EXT_image_flush_external)
+      RETURN_EGL_EVAL(disp, EGL_FALSE);
+   if (!img)
+      RETURN_EGL_ERROR(disp, EGL_BAD_PARAMETER, EGL_FALSE);
+
+
+   drv->API.ImageFlushExternal(disp, ctx, img);
+   RETURN_EGL_EVAL(disp, EGL_TRUE);
+}
+
+static EGLBoolean EGLAPIENTRY
+eglImageInvalidateExternalEXT(EGLDisplay dpy, EGLImageKHR image,
+                              const EGLAttrib *attrib_list)
+{
+   _EGLDisplay *disp = _eglLockDisplay(dpy);
+   _EGLContext *ctx = _eglGetCurrentContext();
+   _EGLImage *img = _eglLookupImage(image, disp);
+   _EGLDriver *drv;
+
+   _EGL_FUNC_START(disp, EGL_OBJECT_IMAGE_KHR, img, EGL_FALSE);
+   _EGL_CHECK_DISPLAY(disp, EGL_FALSE, drv);
+
+   if (attrib_list && attrib_list[0] != EGL_NONE)
+      RETURN_EGL_ERROR(disp, EGL_BAD_PARAMETER, EGL_FALSE);
+
+   if (!ctx || !disp->Extensions.EXT_image_flush_external)
+      RETURN_EGL_EVAL(disp, EGL_FALSE);
+   if (!img)
+      RETURN_EGL_ERROR(disp, EGL_BAD_PARAMETER, EGL_FALSE);
+
+   drv->API.ImageInvalidateExternal(disp, ctx, img);
+   RETURN_EGL_EVAL(disp, EGL_TRUE);
 }
 
 __eglMustCastToProperFunctionPointerType EGLAPIENTRY

@@ -28,6 +28,7 @@
 #define ETNAVIV_DRMIF_H_
 
 #include <xf86drm.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 struct etna_bo;
@@ -92,6 +93,7 @@ struct etna_device *etna_device_new_dup(int fd);
 struct etna_device *etna_device_ref(struct etna_device *dev);
 void etna_device_del(struct etna_device *dev);
 int etna_device_fd(struct etna_device *dev);
+bool etnaviv_device_softpin_capable(struct etna_device *dev);
 
 /* gpu functions:
  */
@@ -116,8 +118,6 @@ int etna_pipe_wait_ns(struct etna_pipe *pipe, uint32_t timestamp, uint64_t ns);
 
 struct etna_bo *etna_bo_new(struct etna_device *dev,
 		uint32_t size, uint32_t flags);
-struct etna_bo *etna_bo_from_handle(struct etna_device *dev,
-		uint32_t handle, uint32_t size);
 struct etna_bo *etna_bo_from_name(struct etna_device *dev, uint32_t name);
 struct etna_bo *etna_bo_from_dmabuf(struct etna_device *dev, int fd);
 struct etna_bo *etna_bo_ref(struct etna_bo *bo);
@@ -126,6 +126,7 @@ int etna_bo_get_name(struct etna_bo *bo, uint32_t *name);
 uint32_t etna_bo_handle(struct etna_bo *bo);
 int etna_bo_dmabuf(struct etna_bo *bo);
 uint32_t etna_bo_size(struct etna_bo *bo);
+uint32_t etna_bo_gpu_va(struct etna_bo *bo);
 void * etna_bo_map(struct etna_bo *bo);
 int etna_bo_cpu_prep(struct etna_bo *bo, uint32_t op);
 void etna_bo_cpu_fini(struct etna_bo *bo);
@@ -145,10 +146,9 @@ struct etna_cmd_stream *etna_cmd_stream_new(struct etna_pipe *pipe, uint32_t siz
 		void *priv);
 void etna_cmd_stream_del(struct etna_cmd_stream *stream);
 uint32_t etna_cmd_stream_timestamp(struct etna_cmd_stream *stream);
-void etna_cmd_stream_flush(struct etna_cmd_stream *stream);
-void etna_cmd_stream_flush2(struct etna_cmd_stream *stream, int in_fence_fd,
+void etna_cmd_stream_flush(struct etna_cmd_stream *stream, int in_fence_fd,
 			    int *out_fence_fd);
-void etna_cmd_stream_finish(struct etna_cmd_stream *stream);
+void etna_cmd_stream_force_flush(struct etna_cmd_stream *stream);
 
 static inline uint32_t etna_cmd_stream_avail(struct etna_cmd_stream *stream)
 {
@@ -157,10 +157,12 @@ static inline uint32_t etna_cmd_stream_avail(struct etna_cmd_stream *stream)
 	return stream->size - stream->offset - END_CLEARANCE;
 }
 
+void etna_cmd_stream_realloc(struct etna_cmd_stream *stream, size_t n);
+
 static inline void etna_cmd_stream_reserve(struct etna_cmd_stream *stream, size_t n)
 {
 	if (etna_cmd_stream_avail(stream) < n)
-		etna_cmd_stream_flush(stream);
+		etna_cmd_stream_realloc(stream, n);
 }
 
 static inline void etna_cmd_stream_emit(struct etna_cmd_stream *stream, uint32_t data)
@@ -193,6 +195,8 @@ struct etna_reloc {
 };
 
 void etna_cmd_stream_reloc(struct etna_cmd_stream *stream, const struct etna_reloc *r);
+void etna_cmd_stream_ref_bo(struct etna_cmd_stream *stream,
+		struct etna_bo *bo, uint32_t flags);
 
 /* performance monitoring functions:
  */

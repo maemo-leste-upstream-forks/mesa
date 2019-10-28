@@ -34,6 +34,7 @@
 #include "program.h"
 #include "compiler/nir/nir_control_flow.h"
 #include "compiler/nir/nir_builder.h"
+#include "compiler/nir/nir_builtin_builder.h"
 #include "compiler/nir/nir_deref.h"
 #include "main/errors.h"
 #include "main/imports.h"
@@ -63,6 +64,7 @@ public:
    virtual void visit(ir_loop *);
    virtual void visit(ir_if *);
    virtual void visit(ir_discard *);
+   virtual void visit(ir_demote *);
    virtual void visit(ir_loop_jump *);
    virtual void visit(ir_return *);
    virtual void visit(ir_call *);
@@ -460,13 +462,8 @@ nir_visitor::visit(ir_variable *ir)
       break;
 
    case ir_var_shader_in:
-      if (shader->info.stage == MESA_SHADER_FRAGMENT &&
-          ir->data.location == VARYING_SLOT_FACE) {
-         /* For whatever reason, GLSL IR makes gl_FrontFacing an input */
-         var->data.location = SYSTEM_VALUE_FRONT_FACE;
-         var->data.mode = nir_var_system_value;
-      } else if (shader->info.stage == MESA_SHADER_GEOMETRY &&
-                 ir->data.location == VARYING_SLOT_PRIMITIVE_ID) {
+      if (shader->info.stage == MESA_SHADER_GEOMETRY &&
+          ir->data.location == VARYING_SLOT_PRIMITIVE_ID) {
          /* For whatever reason, GLSL IR makes gl_PrimitiveIDIn an input */
          var->data.location = SYSTEM_VALUE_PRIMITIVE_ID;
          var->data.mode = nir_var_system_value;
@@ -781,6 +778,15 @@ nir_visitor::visit(ir_discard *ir)
 }
 
 void
+nir_visitor::visit(ir_demote *ir)
+{
+   nir_intrinsic_instr *demote =
+      nir_intrinsic_instr_create(this->shader, nir_intrinsic_demote);
+
+   nir_builder_instr_insert(&b, &demote->instr);
+}
+
+void
 nir_visitor::visit(ir_emit_vertex *ir)
 {
    nir_intrinsic_instr *instr =
@@ -975,10 +981,20 @@ nir_visitor::visit(ir_call *ir)
             : nir_intrinsic_image_deref_atomic_fadd;
          break;
       case ir_intrinsic_image_atomic_min:
-         op = nir_intrinsic_image_deref_atomic_min;
+         if (ir->return_deref->type == glsl_type::int_type)
+            op = nir_intrinsic_image_deref_atomic_imin;
+         else if (ir->return_deref->type == glsl_type::uint_type)
+            op = nir_intrinsic_image_deref_atomic_umin;
+         else
+            unreachable("Invalid type");
          break;
       case ir_intrinsic_image_atomic_max:
-         op = nir_intrinsic_image_deref_atomic_max;
+         if (ir->return_deref->type == glsl_type::int_type)
+            op = nir_intrinsic_image_deref_atomic_imax;
+         else if (ir->return_deref->type == glsl_type::uint_type)
+            op = nir_intrinsic_image_deref_atomic_umax;
+         else
+            unreachable("Invalid type");
          break;
       case ir_intrinsic_image_atomic_and:
          op = nir_intrinsic_image_deref_atomic_and;
@@ -994,6 +1010,12 @@ nir_visitor::visit(ir_call *ir)
          break;
       case ir_intrinsic_image_atomic_comp_swap:
          op = nir_intrinsic_image_deref_atomic_comp_swap;
+         break;
+      case ir_intrinsic_image_atomic_inc_wrap:
+         op = nir_intrinsic_image_deref_atomic_inc_wrap;
+         break;
+      case ir_intrinsic_image_atomic_dec_wrap:
+         op = nir_intrinsic_image_deref_atomic_dec_wrap;
          break;
       case ir_intrinsic_memory_barrier:
          op = nir_intrinsic_memory_barrier;
@@ -1145,6 +1167,9 @@ nir_visitor::visit(ir_call *ir)
       case ir_intrinsic_read_first_invocation:
          op = nir_intrinsic_read_first_invocation;
          break;
+      case ir_intrinsic_helper_invocation:
+         op = nir_intrinsic_is_helper_invocation;
+         break;
       default:
          unreachable("not reached");
       }
@@ -1254,8 +1279,10 @@ nir_visitor::visit(ir_call *ir)
       case nir_intrinsic_image_deref_load:
       case nir_intrinsic_image_deref_store:
       case nir_intrinsic_image_deref_atomic_add:
-      case nir_intrinsic_image_deref_atomic_min:
-      case nir_intrinsic_image_deref_atomic_max:
+      case nir_intrinsic_image_deref_atomic_imin:
+      case nir_intrinsic_image_deref_atomic_umin:
+      case nir_intrinsic_image_deref_atomic_imax:
+      case nir_intrinsic_image_deref_atomic_umax:
       case nir_intrinsic_image_deref_atomic_and:
       case nir_intrinsic_image_deref_atomic_or:
       case nir_intrinsic_image_deref_atomic_xor:
@@ -1263,7 +1290,9 @@ nir_visitor::visit(ir_call *ir)
       case nir_intrinsic_image_deref_atomic_comp_swap:
       case nir_intrinsic_image_deref_atomic_fadd:
       case nir_intrinsic_image_deref_samples:
-      case nir_intrinsic_image_deref_size: {
+      case nir_intrinsic_image_deref_size:
+      case nir_intrinsic_image_deref_atomic_inc_wrap:
+      case nir_intrinsic_image_deref_atomic_dec_wrap: {
          nir_ssa_undef_instr *instr_undef =
             nir_ssa_undef_instr_create(shader, 1, 32);
          nir_builder_instr_insert(&b, &instr_undef->instr);
@@ -1613,6 +1642,12 @@ nir_visitor::visit(ir_call *ir)
          ir_rvalue *value = (ir_rvalue *) ir->actual_parameters.get_head();
          instr->src[0] = nir_src_for_ssa(evaluate_rvalue(value));
 
+         nir_builder_instr_insert(&b, &instr->instr);
+         break;
+      }
+      case nir_intrinsic_is_helper_invocation: {
+         nir_ssa_dest_init(&instr->instr, &instr->dest, 1, 1, NULL);
+         instr->num_components = 1;
          nir_builder_instr_insert(&b, &instr->instr);
          break;
       }
@@ -2153,6 +2188,10 @@ nir_visitor::visit(ir_expression *ir)
       return;
    }
 
+   case ir_unop_atan:
+      result = nir_atan(&b, srcs[0]);
+      break;
+
    case ir_binop_add:
       result = type_is_float(out_type) ? nir_fadd(&b, srcs[0], srcs[1])
                                        : nir_iadd(&b, srcs[0], srcs[1]);
@@ -2315,6 +2354,10 @@ nir_visitor::visit(ir_expression *ir)
       }
       break;
    }
+
+   case ir_binop_atan2:
+      result = nir_atan2(&b, srcs[0], srcs[1]);
+      break;
 
    case ir_binop_ldexp: result = nir_ldexp(&b, srcs[0], srcs[1]); break;
    case ir_triop_fma:
@@ -2684,6 +2727,19 @@ glsl_float64_funcs_to_nir(struct gl_context *ctx,
    NIR_PASS_V(nir, nir_lower_returns);
    NIR_PASS_V(nir, nir_inline_functions);
    NIR_PASS_V(nir, nir_opt_deref);
+
+   /* Do some optimizations to clean up the shader now.  By optimizing the
+    * functions in the library, we avoid having to re-do that work every
+    * time we inline a copy of a function.  Reducing basic blocks also helps
+    * with compile times.
+    */
+   NIR_PASS_V(nir, nir_lower_vars_to_ssa);
+   NIR_PASS_V(nir, nir_copy_prop);
+   NIR_PASS_V(nir, nir_opt_dce);
+   NIR_PASS_V(nir, nir_opt_cse);
+   NIR_PASS_V(nir, nir_opt_gcm, true);
+   NIR_PASS_V(nir, nir_opt_peephole_select, 1, false, false);
+   NIR_PASS_V(nir, nir_opt_dce);
 
    return nir;
 }

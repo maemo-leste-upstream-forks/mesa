@@ -60,9 +60,6 @@ struct brw_blorp_blit_vars {
    nir_variable *v_dst_offset;
    nir_variable *v_src_inv_size;
 
-   /* gl_FragCoord */
-   nir_variable *frag_coord;
-
    /* gl_FragColor */
    nir_variable *color_out;
 };
@@ -84,10 +81,6 @@ brw_blorp_blit_vars_init(nir_builder *b, struct brw_blorp_blit_vars *v,
 
 #undef LOAD_INPUT
 
-   v->frag_coord = nir_variable_create(b->shader, nir_var_shader_in,
-                                       glsl_vec4_type(), "gl_FragCoord");
-   v->frag_coord->data.location = VARYING_SLOT_POS;
-
    v->color_out = nir_variable_create(b->shader, nir_var_shader_out,
                                       glsl_vec4_type(), "gl_FragColor");
    v->color_out->data.location = FRAG_RESULT_COLOR;
@@ -98,7 +91,7 @@ blorp_blit_get_frag_coords(nir_builder *b,
                            const struct brw_blorp_blit_prog_key *key,
                            struct brw_blorp_blit_vars *v)
 {
-   nir_ssa_def *coord = nir_f2i32(b, nir_load_var(b, v->frag_coord));
+   nir_ssa_def *coord = nir_f2i32(b, nir_load_frag_coord(b));
 
    /* Account for destination surface intratile offset
     *
@@ -1616,9 +1609,9 @@ blorp_surf_convert_to_single_slice(const struct isl_device *isl_dev,
    info->z_offset = 0;
 }
 
-static void
-surf_fake_interleaved_msaa(const struct isl_device *isl_dev,
-                           struct brw_blorp_surface_info *info)
+void
+blorp_surf_fake_interleaved_msaa(const struct isl_device *isl_dev,
+                                 struct brw_blorp_surface_info *info)
 {
    assert(info->surf.msaa_layout == ISL_MSAA_LAYOUT_INTERLEAVED);
 
@@ -1630,9 +1623,9 @@ surf_fake_interleaved_msaa(const struct isl_device *isl_dev,
    info->surf.msaa_layout = ISL_MSAA_LAYOUT_NONE;
 }
 
-static void
-surf_retile_w_to_y(const struct isl_device *isl_dev,
-                   struct brw_blorp_surface_info *info)
+void
+blorp_surf_retile_w_to_y(const struct isl_device *isl_dev,
+                         struct brw_blorp_surface_info *info)
 {
    assert(info->surf.tiling == ISL_TILING_W);
 
@@ -1646,7 +1639,7 @@ surf_retile_w_to_y(const struct isl_device *isl_dev,
     */
    if (isl_dev->info->gen > 6 &&
        info->surf.msaa_layout == ISL_MSAA_LAYOUT_INTERLEAVED) {
-      surf_fake_interleaved_msaa(isl_dev, info);
+      blorp_surf_fake_interleaved_msaa(isl_dev, info);
    }
 
    if (isl_dev->info->gen == 6) {
@@ -1888,7 +1881,7 @@ try_blorp_blit(struct blorp_batch *batch,
       params->x1 = ALIGN(params->x1, 2) * px_size_sa.width;
       params->y1 = ALIGN(params->y1, 2) * px_size_sa.height;
 
-      surf_fake_interleaved_msaa(batch->blorp->isl_dev, &params->dst);
+      blorp_surf_fake_interleaved_msaa(batch->blorp->isl_dev, &params->dst);
 
       wm_prog_key->use_kill = true;
       wm_prog_key->need_dst_offset = true;
@@ -1949,7 +1942,7 @@ try_blorp_blit(struct blorp_batch *batch,
       params->y1 = ALIGN(params->y1, y_align) / 2;
 
       /* Retile the surface to Y-tiled */
-      surf_retile_w_to_y(batch->blorp->isl_dev, &params->dst);
+      blorp_surf_retile_w_to_y(batch->blorp->isl_dev, &params->dst);
 
       wm_prog_key->dst_tiled_w = true;
       wm_prog_key->use_kill = true;
@@ -1975,7 +1968,7 @@ try_blorp_blit(struct blorp_batch *batch,
        *
        * TODO: what if this makes the texture size too large?
        */
-      surf_retile_w_to_y(batch->blorp->isl_dev, &params->src);
+      blorp_surf_retile_w_to_y(batch->blorp->isl_dev, &params->src);
 
       wm_prog_key->src_tiled_w = true;
       wm_prog_key->need_src_offset = true;
@@ -2492,6 +2485,7 @@ get_ccs_compatible_uint_format(const struct isl_format_layout *fmtl)
    case ISL_FORMAT_B10G10R10A2_UNORM:
    case ISL_FORMAT_B10G10R10A2_UNORM_SRGB:
    case ISL_FORMAT_R10G10B10A2_UNORM:
+   case ISL_FORMAT_R10G10B10_FLOAT_A2_UNORM:
    case ISL_FORMAT_R10G10B10A2_UINT:
       return ISL_FORMAT_R10G10B10A2_UINT;
 

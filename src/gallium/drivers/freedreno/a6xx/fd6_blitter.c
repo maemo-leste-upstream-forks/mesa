@@ -172,21 +172,14 @@ can_do_blit(const struct pipe_blit_info *info)
 }
 
 static void
-emit_setup(struct fd_ringbuffer *ring)
+emit_setup(struct fd_batch *batch)
 {
-	OUT_PKT7(ring, CP_EVENT_WRITE, 1);
-	OUT_RING(ring, PC_CCU_INVALIDATE_COLOR);
+	struct fd_ringbuffer *ring = batch->draw;
 
-	OUT_PKT7(ring, CP_EVENT_WRITE, 1);
-	OUT_RING(ring, LRZ_FLUSH);
-
-	OUT_PKT7(ring, CP_SKIP_IB2_ENABLE_GLOBAL, 1);
-	OUT_RING(ring, 0x0);
-
-	OUT_WFI5(ring);
-
-	OUT_PKT4(ring, REG_A6XX_RB_CCU_CNTL, 1);
-	OUT_RING(ring, 0x10000000);
+	fd6_event_write(batch, ring, 0x1d, true);
+	fd6_event_write(batch, ring, FACENESS_FLUSH, true);
+	fd6_event_write(batch, ring, PC_CCU_INVALIDATE_COLOR, false);
+	fd6_event_write(batch, ring, PC_CCU_INVALIDATE_DEPTH, false);
 }
 
 static uint32_t
@@ -663,7 +656,7 @@ handle_rgba_blit(struct fd_context *ctx, const struct pipe_blit_info *info)
 	if (!can_do_blit(info))
 		return false;
 
-	fd_fence_ref(ctx->base.screen, &ctx->last_fence, NULL);
+	fd_fence_ref(&ctx->last_fence, NULL);
 
 	batch = fd_bc_alloc_batch(&ctx->screen->batch_cache, ctx, true);
 
@@ -677,7 +670,7 @@ handle_rgba_blit(struct fd_context *ctx, const struct pipe_blit_info *info)
 
 	mtx_unlock(&ctx->screen->lock);
 
-	emit_setup(batch->draw);
+	emit_setup(batch);
 
 	if ((info->src.resource->target == PIPE_BUFFER) &&
 			(info->dst.resource->target == PIPE_BUFFER)) {
@@ -694,6 +687,7 @@ handle_rgba_blit(struct fd_context *ctx, const struct pipe_blit_info *info)
 	fd6_event_write(batch, batch->draw, 0x1d, true);
 	fd6_event_write(batch, batch->draw, FACENESS_FLUSH, true);
 	fd6_event_write(batch, batch->draw, CACHE_FLUSH_TS, true);
+	fd6_cache_inv(batch, batch->draw);
 
 	fd_resource(info->dst.resource)->valid = true;
 	batch->needs_flush = true;
@@ -724,6 +718,12 @@ fd6_blitter_init(struct pipe_context *pctx)
 unsigned
 fd6_tile_mode(const struct pipe_resource *tmpl)
 {
+	/* if the mipmap level 0 is still too small to be tiled, then don't
+	 * bother pretending:
+	 */
+	if (fd_resource_level_linear(tmpl, 0))
+		return TILE6_LINEAR;
+
 	/* basically just has to be a format we can blit, so uploads/downloads
 	 * via linear staging buffer works:
 	 */

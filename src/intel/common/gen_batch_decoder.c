@@ -580,7 +580,9 @@ decode_ps_kernels(struct gen_batch_decode_ctx *ctx, const uint32_t *p)
       ctx_disassemble_program(ctx, ksp[1], "SIMD16 fragment shader");
    if (enabled[2])
       ctx_disassemble_program(ctx, ksp[2], "SIMD32 fragment shader");
-   fprintf(ctx->fp, "\n");
+
+   if (enabled[0] || enabled[1] || enabled[2])
+      fprintf(ctx->fp, "\n");
 }
 
 static void
@@ -628,6 +630,20 @@ decode_3dstate_constant(struct gen_batch_decode_ctx *ctx, const uint32_t *p)
          ctx_print_buffer(ctx, buffer, size, 0, -1);
       }
    }
+}
+
+static void
+decode_gen6_3dstate_binding_table_pointers(struct gen_batch_decode_ctx *ctx,
+                                           const uint32_t *p)
+{
+   fprintf(ctx->fp, "VS Binding Table:\n");
+   dump_binding_table(ctx, p[1], -1);
+
+   fprintf(ctx->fp, "GS Binding Table:\n");
+   dump_binding_table(ctx, p[2], -1);
+
+   fprintf(ctx->fp, "PS Binding Table:\n");
+   dump_binding_table(ctx, p[3], -1);
 }
 
 static void
@@ -753,6 +769,13 @@ decode_3dstate_scissor_state_pointers(struct gen_batch_decode_ctx *ctx,
 }
 
 static void
+decode_3dstate_slice_table_state_pointers(struct gen_batch_decode_ctx *ctx,
+                                          const uint32_t *p)
+{
+   decode_dynamic_state_pointers(ctx, "SLICE_HASH_TABLE", p, 1);
+}
+
+static void
 decode_load_register_imm(struct gen_batch_decode_ctx *ctx, const uint32_t *p)
 {
    struct gen_group *reg = gen_spec_find_register(ctx->spec, p[1]);
@@ -777,12 +800,14 @@ struct custom_decoder {
    { "3DSTATE_DS", decode_single_ksp },
    { "3DSTATE_HS", decode_single_ksp },
    { "3DSTATE_PS", decode_ps_kernels },
+   { "3DSTATE_WM", decode_ps_kernels },
    { "3DSTATE_CONSTANT_VS", decode_3dstate_constant },
    { "3DSTATE_CONSTANT_GS", decode_3dstate_constant },
    { "3DSTATE_CONSTANT_PS", decode_3dstate_constant },
    { "3DSTATE_CONSTANT_HS", decode_3dstate_constant },
    { "3DSTATE_CONSTANT_DS", decode_3dstate_constant },
 
+   { "3DSTATE_BINDING_TABLE_POINTERS", decode_gen6_3dstate_binding_table_pointers },
    { "3DSTATE_BINDING_TABLE_POINTERS_VS", decode_3dstate_binding_table_pointers },
    { "3DSTATE_BINDING_TABLE_POINTERS_HS", decode_3dstate_binding_table_pointers },
    { "3DSTATE_BINDING_TABLE_POINTERS_DS", decode_3dstate_binding_table_pointers },
@@ -801,6 +826,7 @@ struct custom_decoder {
    { "3DSTATE_BLEND_STATE_POINTERS", decode_3dstate_blend_state_pointers },
    { "3DSTATE_CC_STATE_POINTERS", decode_3dstate_cc_state_pointers },
    { "3DSTATE_SCISSOR_STATE_POINTERS", decode_3dstate_scissor_state_pointers },
+   { "3DSTATE_SLICE_TABLE_STATE_POINTERS", decode_3dstate_slice_table_state_pointers },
    { "MI_LOAD_REGISTER_IMM", decode_load_register_imm }
 };
 

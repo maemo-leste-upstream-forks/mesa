@@ -109,7 +109,7 @@ brw_codegen_tcs_prog(struct brw_context *brw, struct brw_program *tcp,
    char *error_str;
    const unsigned *program =
       brw_compile_tcs(compiler, brw, mem_ctx, key, &prog_data, nir, st_index,
-                      &error_str);
+                      NULL, &error_str);
    if (program == NULL) {
       if (tep) {
          tep->program.sh.data->LinkStatus = LINKING_FAILURE;
@@ -205,7 +205,7 @@ brw_upload_tcs_prog(struct brw_context *brw)
    /* BRW_NEW_TESS_PROGRAMS */
    struct brw_program *tcp =
       (struct brw_program *) brw->programs[MESA_SHADER_TESS_CTRL];
-   MAYBE_UNUSED struct brw_program *tep =
+   ASSERTED struct brw_program *tep =
       (struct brw_program *) brw->programs[MESA_SHADER_TESS_EVAL];
    assert(tep);
 
@@ -229,7 +229,7 @@ brw_upload_tcs_prog(struct brw_context *brw)
    if (tcp)
       tcp->id = key.base.program_string_id;
 
-   MAYBE_UNUSED bool success = brw_codegen_tcs_prog(brw, tcp, tep, &key);
+   ASSERTED bool success = brw_codegen_tcs_prog(brw, tcp, tep, &key);
    assert(success);
 }
 

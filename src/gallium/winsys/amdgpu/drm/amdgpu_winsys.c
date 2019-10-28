@@ -39,8 +39,8 @@
 #include <stdio.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include "amd/common/ac_llvm_util.h"
-#include "amd/common/sid.h"
+#include "ac_llvm_util.h"
+#include "sid.h"
 
 #ifndef AMDGPU_INFO_NUM_VRAM_CPU_PAGE_FAULTS
 #define AMDGPU_INFO_NUM_VRAM_CPU_PAGE_FAULTS	0x1E
@@ -106,11 +106,14 @@ static bool do_winsys_init(struct amdgpu_winsys *ws,
       goto fail;
    }
 
-   ws->check_vm = strstr(debug_get_option("R600_DEBUG", ""), "check_vm") != NULL;
+   ws->check_vm = strstr(debug_get_option("R600_DEBUG", ""), "check_vm") != NULL ||
+                  strstr(debug_get_option("AMD_DEBUG", ""), "check_vm") != NULL;
    ws->debug_all_bos = debug_get_option_all_bos();
-   ws->reserve_vmid = strstr(debug_get_option("R600_DEBUG", ""), "reserve_vmid") != NULL;
+   ws->reserve_vmid = strstr(debug_get_option("R600_DEBUG", ""), "reserve_vmid") != NULL ||
+                      strstr(debug_get_option("AMD_DEBUG", ""), "reserve_vmid") != NULL;
    ws->zero_all_vram_allocs = strstr(debug_get_option("R600_DEBUG", ""), "zerovram") != NULL ||
-      driQueryOptionb(config->options, "radeonsi_zerovram");
+                              strstr(debug_get_option("AMD_DEBUG", ""), "zerovram") != NULL ||
+                              driQueryOptionb(config->options, "radeonsi_zerovram");
 
    return true;
 

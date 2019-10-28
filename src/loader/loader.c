@@ -36,6 +36,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <sys/param.h>
 #ifdef MAJOR_IN_MKDEV
 #include <sys/mkdev.h>
@@ -54,6 +55,8 @@
 #include "util/xmlpool.h"
 #endif
 #endif
+
+#include "util/macros.h"
 
 #define __IS_LOADER
 #include "pci_id_driver_map.h"
@@ -184,7 +187,7 @@ static char *loader_get_dri_config_driver(int fd)
 
    driParseOptionInfo(&defaultInitOptions, __driConfigOptionsLoader);
    driParseConfigFiles(&userInitOptions, &defaultInitOptions, 0,
-                       "loader", kernel_driver);
+                       "loader", kernel_driver, NULL, 0);
    if (driCheckOption(&userInitOptions, "dri_driver", DRI_STRING)) {
       char *opt = driQueryOptionstr(&userInitOptions, "dri_driver");
       /* not an empty string */
@@ -205,7 +208,8 @@ static char *loader_get_dri_config_device_id(void)
    char *prime = NULL;
 
    driParseOptionInfo(&defaultInitOptions, __driConfigOptionsLoader);
-   driParseConfigFiles(&userInitOptions, &defaultInitOptions, 0, "loader", NULL);
+   driParseConfigFiles(&userInitOptions, &defaultInitOptions, 0,
+                       "loader", NULL, NULL, 0);
    if (driCheckOption(&userInitOptions, "device_id", DRI_STRING))
       prime = strdup(driQueryOptionstr(&userInitOptions, "device_id"));
    driDestroyOptionCache(&userInitOptions);
@@ -384,27 +388,27 @@ int loader_get_user_preferred_fd(int default_fd, bool *different_device)
 
 #if defined(HAVE_LIBDRM)
 
-static int
+static bool
 drm_get_pci_id_for_fd(int fd, int *vendor_id, int *chip_id)
 {
    drmDevicePtr device;
-   int ret;
+   bool ret;
 
    if (drmGetDevice2(fd, 0, &device) == 0) {
       if (device->bustype == DRM_BUS_PCI) {
          *vendor_id = device->deviceinfo.pci->vendor_id;
          *chip_id = device->deviceinfo.pci->device_id;
-         ret = 1;
+         ret = true;
       }
       else {
          log_(_LOADER_DEBUG, "MESA-LOADER: device is not located on the PCI bus\n");
-         ret = 0;
+         ret = false;
       }
       drmFreeDevice(&device);
    }
    else {
       log_(_LOADER_WARNING, "MESA-LOADER: failed to retrieve device information\n");
-      ret = 0;
+      ret = false;
    }
 
    return ret;
@@ -412,14 +416,13 @@ drm_get_pci_id_for_fd(int fd, int *vendor_id, int *chip_id)
 #endif
 
 
-int
+bool
 loader_get_pci_id_for_fd(int fd, int *vendor_id, int *chip_id)
 {
 #if HAVE_LIBDRM
-   if (drm_get_pci_id_for_fd(fd, vendor_id, chip_id))
-      return 1;
+   return drm_get_pci_id_for_fd(fd, vendor_id, chip_id);
 #endif
-   return 0;
+   return false;
 }
 
 char *
@@ -464,7 +467,7 @@ loader_get_driver_for_fd(int fd)
       return driver;
    }
 
-   for (i = 0; driver_map[i].driver; i++) {
+   for (i = 0; i < ARRAY_SIZE(driver_map); i++) {
       if (vendor_id != driver_map[i].vendor_id)
          continue;
 
@@ -552,7 +555,7 @@ loader_open_driver(const char *driver_name,
          next = end;
 
       len = next - p;
-#if GLX_USE_TLS
+#if USE_ELF_TLS
       snprintf(path, sizeof(path), "%.*s/tls/%s_dri.so", len, p, driver_name);
       driver = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
 #endif

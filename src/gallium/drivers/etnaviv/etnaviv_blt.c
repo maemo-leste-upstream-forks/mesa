@@ -324,6 +324,7 @@ etna_clear_blt(struct pipe_context *pctx, unsigned buffers,
            const union pipe_color_union *color, double depth, unsigned stencil)
 {
    struct etna_context *ctx = etna_context(pctx);
+   mtx_lock(&ctx->lock);
 
    etna_set_state(ctx->stream, VIVS_GL_FLUSH_CACHE, 0x00000c23);
    etna_set_state(ctx->stream, VIVS_TS_FLUSH_CACHE, VIVS_TS_FLUSH_CACHE_FLUSH);
@@ -344,8 +345,8 @@ etna_clear_blt(struct pipe_context *pctx, unsigned buffers,
       etna_set_state(ctx->stream, VIVS_GL_FLUSH_CACHE, 0x00000c23);
    else
       etna_set_state(ctx->stream, VIVS_GL_FLUSH_CACHE, 0x00000002);
+   mtx_unlock(&ctx->lock);
 }
-
 
 static bool
 etna_try_blt_blit(struct pipe_context *pctx,
@@ -403,12 +404,6 @@ etna_try_blt_blit(struct pipe_context *pctx,
       return false;
    }
 
-   /* Ensure that the Z coordinate is sane */
-   assert(dst->base.target == PIPE_TEXTURE_CUBE || blit_info->dst.box.z == 0);
-   assert(src->base.target == PIPE_TEXTURE_CUBE || blit_info->src.box.z == 0);
-   assert(blit_info->src.box.z < src->base.array_size);
-   assert(blit_info->dst.box.z < dst->base.array_size);
-
    struct etna_resource_level *src_lev = &src->levels[blit_info->src.level];
    struct etna_resource_level *dst_lev = &dst->levels[blit_info->dst.level];
 
@@ -422,6 +417,7 @@ etna_try_blt_blit(struct pipe_context *pctx,
          return true;
    }
 
+   mtx_lock(&ctx->lock);
    /* Kick off BLT here */
    if (src == dst && src_lev->ts_compress_fmt < 0) {
       /* Resolve-in-place */
@@ -516,6 +512,7 @@ etna_try_blt_blit(struct pipe_context *pctx,
 
    dst->seqno++;
    dst_lev->ts_valid = false;
+   mtx_unlock(&ctx->lock);
 
    return true;
 }

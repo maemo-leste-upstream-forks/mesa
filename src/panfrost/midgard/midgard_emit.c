@@ -41,15 +41,15 @@ component_from_mask(unsigned mask)
 }
 
 static unsigned
-vector_to_scalar_source(unsigned u, bool is_int, bool is_full)
+vector_to_scalar_source(unsigned u, bool is_int, bool is_full,
+                unsigned masked_component)
 {
         midgard_vector_alu_src v;
         memcpy(&v, &u, sizeof(v));
 
         /* TODO: Integers */
 
-        unsigned component = v.swizzle & 3;
-        bool upper = false; /* TODO */
+        unsigned component = (v.swizzle >> (2*masked_component)) & 3;
 
         midgard_scalar_alu_src s = { 0 };
 
@@ -68,8 +68,10 @@ vector_to_scalar_source(unsigned u, bool is_int, bool is_full)
 
         if (s.full)
                 s.component = component << 1;
-        else
+        else {
+                bool upper = false; /* TODO */
                 s.component = component + (upper << 2);
+        }
 
         if (is_int) {
                 /* TODO */
@@ -89,17 +91,19 @@ vector_to_scalar_alu(midgard_vector_alu v, midgard_instruction *ins)
 {
         bool is_int = midgard_is_integer_op(v.op);
         bool is_full = v.reg_mode == midgard_reg_mode_32;
-        bool is_inline_constant = ins->ssa_args.inline_constant;
+        bool is_inline_constant = ins->has_inline_constant;
+
+        unsigned comp = component_from_mask(ins->mask);
 
         /* The output component is from the mask */
         midgard_scalar_alu s = {
                 .op = v.op,
-                .src1 = vector_to_scalar_source(v.src1, is_int, is_full),
-                .src2 = !is_inline_constant ? vector_to_scalar_source(v.src2, is_int, is_full) : 0,
+                .src1 = vector_to_scalar_source(v.src1, is_int, is_full, comp),
+                .src2 = !is_inline_constant ? vector_to_scalar_source(v.src2, is_int, is_full, comp) : 0,
                 .unknown = 0,
                 .outmod = v.outmod,
                 .output_full = is_full,
-                .output_component = component_from_mask(ins->mask),
+                .output_component = comp
         };
 
         /* Full components are physically spaced out */
@@ -111,7 +115,7 @@ vector_to_scalar_alu(midgard_vector_alu v, midgard_instruction *ins)
         /* Inline constant is passed along rather than trying to extract it
          * from v */
 
-        if (ins->ssa_args.inline_constant) {
+        if (ins->has_inline_constant) {
                 uint16_t imm = 0;
                 int lower_11 = ins->inline_constant & ((1 << 12) - 1);
                 imm |= (lower_11 >> 9) & 3;
@@ -255,8 +259,15 @@ emit_binary_bundle(compiler_context *ctx,
 
                 ctx->texture_op_count--;
 
-                if (ins->texture.op == TEXTURE_OP_NORMAL) {
+                if (mir_op_computes_derivatives(ins->texture.op)) {
                         bool continues = ctx->texture_op_count > 0;
+
+                        /* Control flow complicates helper invocation
+                         * lifespans, so for now just keep helper threads
+                         * around indefinitely with loops. TODO: Proper
+                         * analysis */
+                        continues |= ctx->loop_count > 0;
+
                         ins->texture.cont = continues;
                         ins->texture.last = !continues;
                 } else {

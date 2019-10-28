@@ -188,11 +188,14 @@ device_add_configs_for_visuals(_EGLDriver *drv, _EGLDisplay *disp)
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    static const struct {
       const char *format_name;
-      unsigned int rgba_masks[4];
+      int rgba_shifts[4];
+      unsigned int rgba_sizes[4];
    } visuals[] = {
-      { "ARGB8888", { 0xff0000, 0xff00, 0xff, 0xff000000 } },
-      { "RGB888",   { 0xff0000, 0xff00, 0xff, 0x0 } },
-      { "RGB565",   { 0x00f800, 0x07e0, 0x1f, 0x0 } },
+      { "A2RGB10",  { 20, 10, 0, 30 }, { 10, 10, 10, 2 } },
+      { "X2RGB10",  { 20, 10, 0, -1 }, { 10, 10, 10, 0 } },
+      { "ARGB8888", { 16, 8, 0, 24 }, { 8, 8, 8, 8 } },
+      { "RGB888",   { 16, 8, 0, -1 }, { 8, 8, 8, 0 } },
+      { "RGB565",   { 11, 5, 0, -1 }, { 5, 6, 5, 0 } },
    };
    unsigned int format_count[ARRAY_SIZE(visuals)] = { 0 };
    unsigned int config_count = 0;
@@ -203,7 +206,7 @@ device_add_configs_for_visuals(_EGLDriver *drv, _EGLDisplay *disp)
 
          dri2_conf = dri2_add_config(disp, dri2_dpy->driver_configs[i],
                config_count + 1, EGL_PBUFFER_BIT, NULL,
-               visuals[j].rgba_masks);
+               visuals[j].rgba_shifts, visuals[j].rgba_sizes);
 
          if (dri2_conf) {
             if (dri2_conf->base.ConfigID == config_count + 1)
@@ -229,7 +232,6 @@ static const struct dri2_egl_display_vtbl dri2_device_display_vtbl = {
    .destroy_surface = device_destroy_surface,
    .create_image = dri2_create_image_khr,
    .swap_buffers_region = dri2_fallback_swap_buffers_region,
-   .set_damage_region = dri2_fallback_set_damage_region,
    .post_sub_buffer = dri2_fallback_post_sub_buffer,
    .copy_buffers = dri2_fallback_copy_buffers,
    .query_buffer_age = dri2_fallback_query_buffer_age,
@@ -249,29 +251,6 @@ static const __DRIimageLoaderExtension image_loader_extension = {
    .flushFrontBuffer = device_flush_front_buffer,
 };
 
-static void
-device_get_drawable_info(__DRIdrawable * draw,
-                         int *x, int *y, int *w, int *h,
-                         void *loaderPrivate)
-{
-   struct dri2_egl_surface *dri2_surf = loaderPrivate;
-
-   *x = *y = 0;
-   *w = dri2_surf->base.Width;
-   *h = dri2_surf->base.Height;
-}
-
-/* HACK: technically we should have swrast_null, instead of these. We
- * get away since only pbuffers are supported, thus the callbacks are
- * unused.
- */
-static const __DRIswrastLoaderExtension swrast_loader_extension = {
-   .base            = { __DRI_SWRAST_LOADER, 1 },
-   .getDrawableInfo = device_get_drawable_info,
-   .putImage        = NULL,
-   .getImage        = NULL,
-};
-
 static const __DRIextension *image_loader_extensions[] = {
    &image_loader_extension.base,
    &image_lookup_extension.base,
@@ -279,9 +258,8 @@ static const __DRIextension *image_loader_extensions[] = {
    NULL,
 };
 
-/* HACK: second part of the hack above. */
 static const __DRIextension *swrast_loader_extensions[] = {
-   &swrast_loader_extension.base,
+   &swrast_pbuffer_loader_extension.base,
    &image_lookup_extension.base,
    &use_invalidate.base,
    NULL,

@@ -640,7 +640,7 @@ get_tex_memcpy(struct gl_context *ctx,
 
    if (depth > 1) {
       /* only a single slice is supported at this time */
-      memCopy = FALSE;
+      memCopy = GL_FALSE;
    }
 
    if (memCopy) {
@@ -1457,10 +1457,6 @@ _get_texture_image(struct gl_context *ctx,
    /* EXT/ARB direct_state_access variants don't call _get_texture_image
     * with a NULL texObj */
    bool is_dsa = texObj != NULL;
-   if (!legal_getteximage_target(ctx, target, is_dsa)) {
-      _mesa_error(ctx, GL_INVALID_ENUM, "%s", caller);
-      return;
-   }
 
    if (!is_dsa) {
       texObj = _mesa_get_current_tex_object(ctx, target);
@@ -1489,6 +1485,11 @@ _mesa_GetnTexImageARB(GLenum target, GLint level, GLenum format, GLenum type,
    GET_CURRENT_CONTEXT(ctx);
    static const char *caller = "glGetnTexImageARB";
 
+   if (!legal_getteximage_target(ctx, target, false)) {
+      _mesa_error(ctx, GL_INVALID_ENUM, "%s", caller);
+      return;
+   }
+
    _get_texture_image(ctx, NULL, target, level, format, type,
                       bufSize, pixels, caller);
 }
@@ -1500,6 +1501,11 @@ _mesa_GetTexImage(GLenum target, GLint level, GLenum format, GLenum type,
 {
    GET_CURRENT_CONTEXT(ctx);
    static const char *caller = "glGetTexImage";
+
+   if (!legal_getteximage_target(ctx, target, false)) {
+      _mesa_error(ctx, GL_INVALID_ENUM, "%s", caller);
+      return;
+   }
 
    _get_texture_image(ctx, NULL, target, level, format, type,
                       INT_MAX, pixels, caller);
@@ -1516,6 +1522,11 @@ _mesa_GetTextureImage(GLuint texture, GLint level, GLenum format, GLenum type,
       _mesa_lookup_texture_err(ctx, texture, caller);
 
    if (!texObj) {
+      return;
+   }
+
+   if (!legal_getteximage_target(ctx, texObj->Target, true)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", caller);
       return;
    }
 
@@ -1538,8 +1549,51 @@ _mesa_GetTextureImageEXT(GLuint texture, GLenum target, GLint level,
       return;
    }
 
+   if (!legal_getteximage_target(ctx, target, true)) {
+      _mesa_error(ctx, GL_INVALID_ENUM, "%s", caller);
+      return;
+   }
+
    _get_texture_image(ctx, texObj, target, level, format, type,
                       INT_MAX, pixels, caller);
+}
+
+
+void GLAPIENTRY
+_mesa_GetMultiTexImageEXT(GLenum texunit, GLenum target, GLint level,
+                          GLenum format, GLenum type, GLvoid *pixels)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   GLsizei width, height, depth;
+   static const char *caller = "glGetMultiTexImageEXT";
+
+   struct gl_texture_object *texObj =
+      _mesa_get_texobj_by_target_and_texunit(ctx, target,
+                                             texunit - GL_TEXTURE0,
+                                             false,
+                                             caller);
+
+   if (!texObj) {
+      return;
+   }
+
+   if (!legal_getteximage_target(ctx, texObj->Target, true)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s", caller);
+      return;
+   }
+
+   get_texture_image_dims(texObj, texObj->Target, level,
+                          &width, &height, &depth);
+
+   if (getteximage_error_check(ctx, texObj, texObj->Target, level,
+                               width, height, depth,
+                               format, type, INT_MAX, pixels, caller)) {
+      return;
+   }
+
+   get_texture_image(ctx, texObj, texObj->Target, level,
+                     0, 0, 0, width, height, depth,
+                     format, type, pixels, caller);
 }
 
 
@@ -1825,6 +1879,62 @@ _mesa_GetCompressedTexImage(GLenum target, GLint level, GLvoid *pixels)
    }
 
    get_compressed_texture_image(ctx, texObj, target, level,
+                                0, 0, 0, width, height, depth,
+                                pixels, caller);
+}
+
+
+void GLAPIENTRY
+_mesa_GetCompressedTextureImageEXT(GLuint texture, GLenum target, GLint level,
+                                   GLvoid *pixels)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_texture_object*  texObj;
+   GLsizei width, height, depth;
+   static const char *caller = "glGetCompressedTextureImageEXT";
+
+   texObj = _mesa_lookup_or_create_texture(ctx, target, texture,
+                                           false, true, caller);
+
+   get_texture_image_dims(texObj, texObj->Target, level,
+                          &width, &height, &depth);
+
+   if (getcompressedteximage_error_check(ctx, texObj, texObj->Target, level,
+                                         0, 0, 0, width, height, depth,
+                                         INT_MAX, pixels, caller)) {
+      return;
+   }
+
+   get_compressed_texture_image(ctx, texObj, texObj->Target, level,
+                                0, 0, 0, width, height, depth,
+                                pixels, caller);
+}
+
+
+void GLAPIENTRY
+_mesa_GetCompressedMultiTexImageEXT(GLenum texunit, GLenum target, GLint level,
+                                    GLvoid *pixels)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_texture_object*  texObj;
+   GLsizei width, height, depth;
+   static const char *caller = "glGetCompressedMultiTexImageEXT";
+
+   texObj = _mesa_get_texobj_by_target_and_texunit(ctx, target,
+                                                   texunit - GL_TEXTURE0,
+                                                   false,
+                                                   caller);
+
+   get_texture_image_dims(texObj, texObj->Target, level,
+                          &width, &height, &depth);
+
+   if (getcompressedteximage_error_check(ctx, texObj, texObj->Target, level,
+                                         0, 0, 0, width, height, depth,
+                                         INT_MAX, pixels, caller)) {
+      return;
+   }
+
+   get_compressed_texture_image(ctx, texObj, texObj->Target, level,
                                 0, 0, 0, width, height, depth,
                                 pixels, caller);
 }

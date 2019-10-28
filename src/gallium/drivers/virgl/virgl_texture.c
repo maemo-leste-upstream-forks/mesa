@@ -130,7 +130,7 @@ static void *texture_transfer_map_resolve(struct pipe_context *ctx,
       return NULL;
 
    enum pipe_format fmt = resource->format;
-   if (!virgl_has_readback_format(ctx->screen, fmt)) {
+   if (!virgl_has_readback_format(ctx->screen, pipe_to_virgl_format(fmt))) {
       if (util_format_fits_8unorm(util_format_description(fmt)))
          fmt = PIPE_FORMAT_R8G8B8A8_UNORM;
       else if (util_format_is_pure_sint(fmt))
@@ -139,7 +139,7 @@ static void *texture_transfer_map_resolve(struct pipe_context *ctx,
          fmt = PIPE_FORMAT_R32G32B32A32_UINT;
       else
          fmt = PIPE_FORMAT_R32G32B32A32_FLOAT;
-      assert(virgl_has_readback_format(ctx->screen, fmt));
+      assert(virgl_has_readback_format(ctx->screen, pipe_to_virgl_format(fmt)));
    }
 
    struct pipe_box dst_box = *box;
@@ -168,6 +168,9 @@ static void *texture_transfer_map_resolve(struct pipe_context *ctx,
                                            &trans->resolve_transfer);
    if (!ptr)
       goto fail;
+
+   /* trans->resolve_transfer owns resolve_tmp now */
+   pipe_resource_reference(&resolve_tmp, NULL);
 
    *transfer = &trans->base;
    if (fmt == resource->format) {
@@ -222,7 +225,7 @@ static bool needs_resolve(struct pipe_screen *screen,
 
    if (usage & PIPE_TRANSFER_READ)
       return !util_format_is_depth_or_stencil(resource->format) &&
-             !virgl_has_readback_format(screen, resource->format);
+             !virgl_has_readback_format(screen, pipe_to_virgl_format(resource->format));
 
    return false;
 }
@@ -283,7 +286,6 @@ static void virgl_texture_transfer_unmap(struct pipe_context *ctx,
    }
 
    if (trans->resolve_transfer) {
-      pipe_resource_reference(&trans->resolve_transfer->resource, NULL);
       virgl_resource_destroy_transfer(vctx,
                                       virgl_transfer(trans->resolve_transfer));
    }

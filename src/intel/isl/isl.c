@@ -33,6 +33,7 @@
 #include "isl_gen7.h"
 #include "isl_gen8.h"
 #include "isl_gen9.h"
+#include "isl_gen12.h"
 #include "isl_priv.h"
 
 void
@@ -637,7 +638,10 @@ isl_choose_image_alignment_el(const struct isl_device *dev,
       return;
    }
 
-   if (ISL_DEV_GEN(dev) >= 9) {
+   if (ISL_DEV_GEN(dev) >= 12) {
+      isl_gen12_choose_image_alignment_el(dev, info, tiling, dim_layout,
+                                          msaa_layout, image_align_el);
+   } else if (ISL_DEV_GEN(dev) >= 9) {
       isl_gen9_choose_image_alignment_el(dev, info, tiling, dim_layout,
                                          msaa_layout, image_align_el);
    } else if (ISL_DEV_GEN(dev) >= 8) {
@@ -1193,7 +1197,7 @@ isl_calc_phys_total_extent_el_gen9_1d(
       uint32_t *array_pitch_el_rows,
       struct isl_extent2d *phys_total_el)
 {
-   MAYBE_UNUSED const struct isl_format_layout *fmtl = isl_format_get_layout(info->format);
+   const struct isl_format_layout *fmtl = isl_format_get_layout(info->format);
 
    assert(phys_level0_sa->height == 1);
    assert(phys_level0_sa->depth == 1);
@@ -1532,6 +1536,10 @@ isl_surf_init_s(const struct isl_device *dev,
                                    tile_info.phys_extent_B.height;
       assert(isl_is_pow2(info->min_alignment_B) && isl_is_pow2(tile_size_B));
       base_alignment_B = MAX(info->min_alignment_B, tile_size_B);
+   }
+
+   if (ISL_DEV_GEN(dev) >= 12) {
+      base_alignment_B = MAX(base_alignment_B, 64 * 1024);
    }
 
    if (ISL_DEV_GEN(dev) < 9) {
@@ -1899,6 +1907,9 @@ isl_surf_get_ccs_surf(const struct isl_device *dev,
       break;                                       \
    case 11:                                        \
       isl_gen11_##func(__VA_ARGS__);               \
+      break;                                       \
+   case 12:                                        \
+      isl_gen12_##func(__VA_ARGS__);               \
       break;                                       \
    default:                                        \
       assert(!"Unknown hardware generation");      \

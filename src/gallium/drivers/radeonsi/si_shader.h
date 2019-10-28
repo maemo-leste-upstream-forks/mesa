@@ -136,6 +136,7 @@
 #include "tgsi/tgsi_scan.h"
 #include "util/u_inlines.h"
 #include "util/u_queue.h"
+#include "util/simple_mtx.h"
 
 #include "ac_binary.h"
 #include "ac_llvm_build.h"
@@ -256,25 +257,9 @@ enum {
 #define S_VS_STATE_LS_OUT_VERTEX_SIZE(x)	(((unsigned)(x) & 0xFF) << 24)
 #define C_VS_STATE_LS_OUT_VERTEX_SIZE		0x00FFFFFF
 
-/* Driver-specific system values. */
-enum {
-	/* Values from set_tess_state. */
-	TGSI_SEMANTIC_DEFAULT_TESSOUTER_SI = TGSI_SEMANTIC_COUNT,
-	TGSI_SEMANTIC_DEFAULT_TESSINNER_SI,
-
-	/* Up to 4 dwords in user SGPRs for compute shaders. */
-	TGSI_SEMANTIC_CS_USER_DATA,
-};
-
 enum {
 	/* Use a property enum that CS wouldn't use. */
 	TGSI_PROPERTY_CS_LOCAL_SIZE = TGSI_PROPERTY_FS_COORD_ORIGIN,
-
-	/* The number of used user data dwords in the range [1, 4]. */
-	TGSI_PROPERTY_CS_USER_DATA_DWORDS = TGSI_PROPERTY_FS_COORD_PIXEL_CENTER,
-
-	/* Use a property enum that VS wouldn't use. */
-	TGSI_PROPERTY_VS_BLIT_SGPRS = TGSI_PROPERTY_FS_COORD_ORIGIN,
 
 	/* These represent the number of SGPRs the shader uses. */
 	SI_VS_BLIT_SGPRS_POS = 3,
@@ -326,7 +311,7 @@ struct si_shader_selector {
 	struct util_queue_fence ready;
 	struct si_compiler_ctx_state compiler_ctx_state;
 
-	mtx_t		mutex;
+	simple_mtx_t		mutex;
 	struct si_shader	*first_variant; /* immutable after the first variant */
 	struct si_shader	*last_variant; /* mutable */
 
@@ -352,8 +337,6 @@ struct si_shader_selector {
 	bool		vs_needs_prolog;
 	bool		force_correct_derivs_after_kill;
 	bool		prim_discard_cs_allowed;
-	bool		ngg_writes_edgeflag;
-	bool		pos_writes_edgeflag;
 	unsigned	pa_cl_vs_out_cntl;
 	ubyte		clipdist_mask;
 	ubyte		culldist_mask;
@@ -558,9 +541,9 @@ struct si_shader_key {
 			unsigned	vs_export_prim_id:1;
 			struct {
 				unsigned interpolate_at_sample_force_center:1;
-				unsigned fbfetch_msaa;
-				unsigned fbfetch_is_1D;
-				unsigned fbfetch_layered;
+				unsigned fbfetch_msaa:1;
+				unsigned fbfetch_is_1D:1;
+				unsigned fbfetch_layered:1;
 			} ps;
 		} u;
 	} mono;
@@ -696,7 +679,6 @@ struct si_shader {
 			unsigned	vgt_gs_onchip_cntl;
 			unsigned	vgt_gs_instance_cnt;
 			unsigned	vgt_esgs_ring_itemsize;
-			unsigned	vgt_reuse_off;
 			unsigned	spi_vs_out_config;
 			unsigned	spi_shader_idx_format;
 			unsigned	spi_shader_pos_format;
@@ -728,6 +710,7 @@ struct si_shader {
 	/*For save precompute registers value */
 	unsigned vgt_tf_param; /* VGT_TF_PARAM */
 	unsigned vgt_vertex_reuse_block_cntl; /* VGT_VERTEX_REUSE_BLOCK_CNTL */
+	unsigned pa_cl_vs_out_cntl;
 	unsigned ge_cntl;
 };
 
@@ -773,8 +756,8 @@ void si_nir_scan_shader(const struct nir_shader *nir,
 			struct tgsi_shader_info *info);
 void si_nir_scan_tess_ctrl(const struct nir_shader *nir,
 			   struct tgsi_tessctrl_info *out);
-void si_lower_nir(struct si_shader_selector *sel, unsigned wave_size);
-void si_nir_opts(struct nir_shader *nir);
+void si_nir_adjust_driver_locations(struct nir_shader *nir);
+void si_finalize_nir(struct pipe_screen *screen, void *nirptr, bool optimize);
 
 /* si_state_shaders.c */
 void gfx9_get_gs_info(struct si_shader_selector *es,

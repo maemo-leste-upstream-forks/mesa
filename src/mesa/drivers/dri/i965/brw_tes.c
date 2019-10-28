@@ -76,7 +76,7 @@ brw_codegen_tes_prog(struct brw_context *brw,
    char *error_str;
    const unsigned *program =
       brw_compile_tes(compiler, brw, mem_ctx, key, &input_vue_map, &prog_data,
-                      nir, &tep->program, st_index, &error_str);
+                      nir, st_index, NULL, &error_str);
    if (program == NULL) {
       tep->program.sh.data->LinkStatus = LINKING_FAILURE;
       ralloc_strcat(&tep->program.sh.data->InfoLog, error_str);
@@ -177,7 +177,7 @@ brw_upload_tes_prog(struct brw_context *brw)
    tep = (struct brw_program *) brw->programs[MESA_SHADER_TESS_EVAL];
    tep->id = key.base.program_string_id;
 
-   MAYBE_UNUSED bool success = brw_codegen_tes_prog(brw, tep, &key);
+   ASSERTED bool success = brw_codegen_tes_prog(brw, tep, &key);
    assert(success);
 }
 

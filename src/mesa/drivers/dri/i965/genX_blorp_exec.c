@@ -255,7 +255,7 @@ blorp_flush_range(UNUSED struct blorp_batch *batch, UNUSED void *start,
 static void
 blorp_emit_urb_config(struct blorp_batch *batch,
                       unsigned vs_entry_size,
-                      MAYBE_UNUSED unsigned sf_entry_size)
+                      UNUSED unsigned sf_entry_size)
 {
    assert(batch->blorp->driver_ctx == batch->driver_batch);
    struct brw_context *brw = batch->driver_batch;
@@ -342,6 +342,12 @@ retry:
 #if GEN_GEN == 8
    gen8_write_pma_stall_bits(brw, 0);
 #endif
+
+   const unsigned scale = params->fast_clear_op ? UINT_MAX : 1;
+   if (brw->current_hash_scale != scale) {
+      brw_emit_hashing_mode(brw, params->x1 - params->x0,
+                            params->y1 - params->y0, scale);
+   }
 
    blorp_emit(batch, GENX(3DSTATE_DRAWING_RECTANGLE), rect) {
       rect.ClippedDrawingRectangleXMax = MAX2(params->x1, params->x0) - 1;

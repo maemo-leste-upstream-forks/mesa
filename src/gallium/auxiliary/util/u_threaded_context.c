@@ -64,7 +64,7 @@ typedef void (*tc_execute)(struct pipe_context *pipe, union tc_payload *payload)
 static const tc_execute execute_func[TC_NUM_CALLS];
 
 static void
-tc_batch_check(MAYBE_UNUSED struct tc_batch *batch)
+tc_batch_check(UNUSED struct tc_batch *batch)
 {
    tc_assert(batch->sentinel == TC_SENTINEL);
    tc_assert(batch->num_total_call_slots <= TC_CALLS_PER_BATCH);
@@ -116,7 +116,7 @@ tc_batch_flush(struct threaded_context *tc)
    }
 
    util_queue_add_job(&tc->queue, next, &next->fence, tc_batch_execute,
-                      NULL);
+                      NULL, 0);
    tc->last = tc->next;
    tc->next = (tc->next + 1) % TC_MAX_BATCHES;
 }
@@ -180,7 +180,7 @@ tc_is_sync(struct threaded_context *tc)
 }
 
 static void
-_tc_sync(struct threaded_context *tc, MAYBE_UNUSED const char *info, MAYBE_UNUSED const char *func)
+_tc_sync(struct threaded_context *tc, UNUSED const char *info, UNUSED const char *func)
 {
    struct tc_batch *last = &tc->batch_slots[tc->last];
    struct tc_batch *next = &tc->batch_slots[tc->next];
@@ -879,7 +879,8 @@ tc_set_shader_images(struct pipe_context *_pipe,
             struct threaded_resource *tres =
                threaded_resource(images[i].resource);
 
-            util_range_add(&tres->valid_buffer_range, images[i].u.buf.offset,
+            util_range_add(&tres->b, &tres->valid_buffer_range,
+                           images[i].u.buf.offset,
                            images[i].u.buf.offset + images[i].u.buf.size);
          }
       }
@@ -945,7 +946,8 @@ tc_set_shader_buffers(struct pipe_context *_pipe,
          if (src->buffer) {
             struct threaded_resource *tres = threaded_resource(src->buffer);
 
-            util_range_add(&tres->valid_buffer_range, src->buffer_offset,
+            util_range_add(&tres->b, &tres->valid_buffer_range,
+                           src->buffer_offset,
                            src->buffer_offset + src->buffer_size);
          }
       }
@@ -1135,7 +1137,7 @@ tc_create_stream_output_target(struct pipe_context *_pipe,
    struct pipe_stream_output_target *view;
 
    tc_sync(threaded_context(_pipe));
-   util_range_add(&tres->valid_buffer_range, buffer_offset,
+   util_range_add(&tres->b, &tres->valid_buffer_range, buffer_offset,
                   buffer_offset + buffer_size);
 
    view = pipe->create_stream_output_target(pipe, res, buffer_offset,
@@ -1538,7 +1540,8 @@ tc_buffer_do_flush_region(struct threaded_context *tc,
                               ttrans->staging, 0, &src_box);
    }
 
-   util_range_add(tres->base_valid_buffer_range, box->x, box->x + box->width);
+   util_range_add(&tres->b, tres->base_valid_buffer_range,
+                  box->x, box->x + box->width);
 }
 
 static void
@@ -1658,7 +1661,7 @@ tc_buffer_subdata(struct pipe_context *_pipe,
       return;
    }
 
-   util_range_add(&tres->valid_buffer_range, offset, offset + size);
+   util_range_add(&tres->b, &tres->valid_buffer_range, offset, offset + size);
 
    /* The upload is small. Enqueue it. */
    struct tc_buffer_subdata *p =
@@ -2185,7 +2188,8 @@ tc_resource_copy_region(struct pipe_context *_pipe,
    p->src_box = *src_box;
 
    if (dst->target == PIPE_BUFFER)
-      util_range_add(&tdst->valid_buffer_range, dstx, dstx + src_box->width);
+      util_range_add(&tdst->b, &tdst->valid_buffer_range,
+                     dstx, dstx + src_box->width);
 }
 
 static void
@@ -2223,7 +2227,7 @@ static void
 tc_call_generate_mipmap(struct pipe_context *pipe, union tc_payload *payload)
 {
    struct tc_generate_mipmap *p = (struct tc_generate_mipmap *)payload;
-   MAYBE_UNUSED bool result = pipe->generate_mipmap(pipe, p->res, p->format,
+   ASSERTED bool result = pipe->generate_mipmap(pipe, p->res, p->format,
                                                     p->base_level,
                                                     p->last_level,
                                                     p->first_layer,
@@ -2401,7 +2405,7 @@ tc_clear_buffer(struct pipe_context *_pipe, struct pipe_resource *res,
    memcpy(p->clear_value, clear_value, clear_value_size);
    p->clear_value_size = clear_value_size;
 
-   util_range_add(&tres->valid_buffer_range, offset, offset + size);
+   util_range_add(&tres->b, &tres->valid_buffer_range, offset, offset + size);
 }
 
 struct tc_clear_texture {

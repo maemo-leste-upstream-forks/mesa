@@ -24,6 +24,7 @@
 #include "brw_cfg.h"
 #include "brw_eu.h"
 #include "dev/gen_debug.h"
+#include "util/mesa-sha1.h"
 
 using namespace brw;
 
@@ -1207,7 +1208,7 @@ generate_scratch_write(struct brw_codegen *p,
    /* If the instruction is predicated, we'll predicate the send, not
     * the header setup.
     */
-   brw_set_default_predicate_control(p, false);
+   brw_set_default_predicate_control(p, BRW_PREDICATE_NONE);
 
    gen6_resolve_implied_move(p, &header, inst->base_mrf);
 
@@ -1496,7 +1497,8 @@ generate_code(struct brw_codegen *p,
               void *log_data,
               const nir_shader *nir,
               struct brw_vue_prog_data *prog_data,
-              const struct cfg_t *cfg)
+              const struct cfg_t *cfg,
+              struct brw_compile_stats *stats)
 {
    const struct gen_device_info *devinfo = p->devinfo;
    const char *stage_abbrev = _mesa_shader_stage_to_abbrev(nir->info.stage);
@@ -2174,17 +2176,29 @@ generate_code(struct brw_codegen *p,
    int after_size = p->next_insn_offset;
 
    if (unlikely(debug_flag)) {
-      fprintf(stderr, "Native code for %s %s shader %s:\n",
-              nir->info.label ? nir->info.label : "unnamed",
-              _mesa_shader_stage_to_string(nir->info.stage), nir->info.name);
+      unsigned char sha1[21];
+      char sha1buf[41];
+
+      _mesa_sha1_compute(p->store, p->next_insn_offset, sha1);
+      _mesa_sha1_format(sha1buf, sha1);
+
+      fprintf(stderr, "Native code for %s %s shader %s (sha1 %s):\n",
+            nir->info.label ? nir->info.label : "unnamed",
+            _mesa_shader_stage_to_string(nir->info.stage), nir->info.name,
+            sha1buf);
 
       fprintf(stderr, "%s vec4 shader: %d instructions. %d loops. %u cycles. %d:%d "
-                      "spills:fills. Compacted %d to %d bytes (%.0f%%)\n",
-              stage_abbrev, before_size / 16, loop_count, cfg->cycle_count,
-              spill_count, fill_count, before_size, after_size,
-              100.0f * (before_size - after_size) / before_size);
+                     "spills:fills. Compacted %d to %d bytes (%.0f%%)\n",
+            stage_abbrev, before_size / 16, loop_count, cfg->cycle_count,
+            spill_count, fill_count, before_size, after_size,
+            100.0f * (before_size - after_size) / before_size);
 
-      dump_assembly(p->store, disasm_info);
+      /* overriding the shader makes disasm_info invalid */
+      if (!brw_try_override_assembly(p, 0, sha1buf)) {
+         dump_assembly(p->store, disasm_info);
+      } else {
+         fprintf(stderr, "Successfully overrode shader with sha1 %s\n\n", sha1buf);
+      }
    }
    ralloc_free(disasm_info);
    assert(validated);
@@ -2195,7 +2209,14 @@ generate_code(struct brw_codegen *p,
                               stage_abbrev, before_size / 16,
                               loop_count, cfg->cycle_count, spill_count,
                               fill_count, before_size, after_size);
-
+   if (stats) {
+      stats->dispatch_width = 0;
+      stats->instructions = before_size / 16;
+      stats->loops = loop_count;
+      stats->cycles = cfg->cycle_count;
+      stats->spills = spill_count;
+      stats->fills = fill_count;
+   }
 }
 
 extern "C" const unsigned *
@@ -2204,13 +2225,14 @@ brw_vec4_generate_assembly(const struct brw_compiler *compiler,
                            void *mem_ctx,
                            const nir_shader *nir,
                            struct brw_vue_prog_data *prog_data,
-                           const struct cfg_t *cfg)
+                           const struct cfg_t *cfg,
+                           struct brw_compile_stats *stats)
 {
    struct brw_codegen *p = rzalloc(mem_ctx, struct brw_codegen);
    brw_init_codegen(compiler->devinfo, p, mem_ctx);
    brw_set_default_access_mode(p, BRW_ALIGN_16);
 
-   generate_code(p, compiler, log_data, nir, prog_data, cfg);
+   generate_code(p, compiler, log_data, nir, prog_data, cfg, stats);
 
    return brw_get_program(p, &prog_data->base.program_size);
 }

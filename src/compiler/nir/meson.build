@@ -96,6 +96,7 @@ files_libnir = files(
   'nir_control_flow_private.h',
   'nir_deref.c',
   'nir_deref.h',
+  'nir_divergence_analysis.c',
   'nir_dominance.c',
   'nir_format_convert.h',
   'nir_from_ssa.c',
@@ -113,6 +114,7 @@ files_libnir = files(
   'nir_lower_alu.c',
   'nir_lower_alu_to_scalar.c',
   'nir_lower_alpha_test.c',
+  'nir_lower_amul.c',
   'nir_lower_array_deref_of_vec.c',
   'nir_lower_atomics_to_ssbo.c',
   'nir_lower_bitmap.c',
@@ -125,6 +127,7 @@ files_libnir = files(
   'nir_lower_double_ops.c',
   'nir_lower_drawpixels.c',
   'nir_lower_fb_read.c',
+  'nir_lower_flatshade.c',
   'nir_lower_flrp.c',
   'nir_lower_fragcoord_wtrans.c',
   'nir_lower_frexp.c',
@@ -148,11 +151,13 @@ files_libnir = files(
   'nir_lower_passthrough_edgeflags.c',
   'nir_lower_patch_vertices.c',
   'nir_lower_phis_to_scalar.c',
+  'nir_lower_point_size.c',
+  'nir_lower_point_size_mov.c',
   'nir_lower_regs_to_ssa.c',
   'nir_lower_returns.c',
+  'nir_lower_samplers.c',
   'nir_lower_scratch.c',
   'nir_lower_subgroups.c',
-  'nir_lower_sincos.c',
   'nir_lower_system_values.c',
   'nir_lower_tex.c',
   'nir_lower_to_source_mods.c',
@@ -166,9 +171,9 @@ files_libnir = files(
   'nir_lower_bit_size.c',
   'nir_lower_uniforms_to_ubo.c',
   'nir_metadata.c',
-  'nir_move_load_const.c',
   'nir_move_vec_src_uses_to_dest.c',
   'nir_normalize_cubemap_coords.c',
+  'nir_opt_access.c',
   'nir_opt_combine_stores.c',
   'nir_opt_comparison_pre.c',
   'nir_opt_conditional_discard.c',
@@ -186,12 +191,12 @@ files_libnir = files(
   'nir_opt_intrinsics.c',
   'nir_opt_large_constants.c',
   'nir_opt_loop_unroll.c',
-  'nir_opt_move_comparisons.c',
-  'nir_opt_move_load_ubo.c',
+  'nir_opt_move.c',
   'nir_opt_peephole_select.c',
   'nir_opt_rematerialize_compares.c',
   'nir_opt_remove_phis.c',
   'nir_opt_shrink_load.c',
+  'nir_opt_sink.c',
   'nir_opt_trivial_continues.c',
   'nir_opt_undef.c',
   'nir_opt_vectorize.c',
@@ -199,6 +204,8 @@ files_libnir = files(
   'nir_phi_builder.h',
   'nir_print.c',
   'nir_propagate_invariant.c',
+  'nir_range_analysis.c',
+  'nir_range_analysis.h',
   'nir_remove_dead_variables.c',
   'nir_repair_ssa.c',
   'nir_search.c',
@@ -235,7 +242,7 @@ files_libnir = files(
   '../spirv/vtn_variables.c',
 )
 
-libnir = static_library(
+_libnir = static_library(
   'nir',
   [files_libnir, spirv_info_c, nir_opt_algebraic_c, nir_opcodes_c,
    nir_opcodes_h, nir_constant_expressions_c, nir_builder_opcodes_h,
@@ -255,7 +262,7 @@ idep_nir_headers = declare_dependency(
 # Also link with nir
 idep_nir = declare_dependency(
   dependencies : idep_nir_headers,
-  link_with : libnir,
+  link_with : _libnir,
 )
 
 nir_algebraic_py = files('nir_algebraic.py')
@@ -268,9 +275,8 @@ if with_tests
       files('tests/control_flow_tests.cpp'),
       cpp_args : [cpp_vis_args, cpp_msvc_compat_args],
       include_directories : [inc_common],
-      dependencies : [dep_thread, idep_gtest, idep_nir],
-      link_with : libmesa_util,
-    ), 
+      dependencies : [dep_thread, idep_gtest, idep_nir, idep_mesautil],
+    ),
     suite : ['compiler', 'nir'],
   )
 
@@ -281,11 +287,11 @@ if with_tests
       files('tests/vars_tests.cpp'),
       cpp_args : [cpp_vis_args, cpp_msvc_compat_args],
       include_directories : [inc_common],
-      dependencies : [dep_thread, idep_gtest, idep_nir],
-      link_with : libmesa_util,
+      dependencies : [dep_thread, idep_gtest, idep_nir, idep_mesautil],
     ),
     suite : ['compiler', 'nir'],
   )
+
   test(
     'nir_algebraic_parser',
     prog_python,
@@ -302,9 +308,9 @@ if with_tests
       files('tests/negative_equal_tests.cpp'),
       c_args : [c_vis_args, c_msvc_compat_args, no_override_init_args],
       include_directories : [inc_common],
-      dependencies : [dep_thread, idep_gtest, idep_nir],
-      link_with : libmesa_util,
-    )
+      dependencies : [dep_thread, idep_gtest, idep_nir, idep_mesautil],
+    ),
+    suite : ['compiler', 'nir'],
   )
 
   test(
@@ -314,8 +320,8 @@ if with_tests
       files('tests/comparison_pre_tests.cpp'),
       c_args : [c_vis_args, c_msvc_compat_args, no_override_init_args],
       include_directories : [inc_common],
-      dependencies : [dep_thread, idep_gtest, idep_nir],
-      link_with : libmesa_util,
-    )
+      dependencies : [dep_thread, idep_gtest, idep_nir, idep_mesautil],
+    ),
+    suite : ['compiler', 'nir'],
   )
 endif

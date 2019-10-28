@@ -46,22 +46,45 @@ mir_pipeline_ins(
         unsigned pipeline_count)
 {
         midgard_instruction *ins = bundle->instructions[i];
-        unsigned dest = ins->ssa_args.dest;
 
-        /* Check to make sure we're legal */
+        /* We could be pipelining a register, so we need to make sure that all
+         * of the components read in this bundle are written in this bundle,
+         * and that no components are written before this bundle */
 
-        if (ins->compact_branch)
+        unsigned node = ins->dest;
+        unsigned read_mask = 0;
+
+        /* Analyze the bundle for a per-byte read mask */
+
+        for (unsigned i = 0; i < bundle->instruction_count; ++i) {
+                midgard_instruction *q = bundle->instructions[i];
+                read_mask |= mir_bytemask_of_read_components(q, node);
+
+                /* The fragment colour can't be pipelined (well, it is
+                 * pipelined in r0, but this is a delicate dance with
+                 * scheduling and RA, not for us to worry about) */
+
+                if (q->compact_branch && q->writeout && mir_has_arg(q, node))
+                        return false;
+        }
+
+        /* Now analyze for a write mask */
+        for (unsigned i = 0; i < bundle->instruction_count; ++i) {
+                midgard_instruction *q = bundle->instructions[i];
+                if (q->dest != node) continue;
+
+                /* Remove the written mask from the read requirements */
+                read_mask &= ~mir_bytemask(q);
+        }
+
+        /* Check for leftovers */
+        if (read_mask)
                 return false;
 
-        /* Don't allow non-SSA. Pipelining registers is theoretically possible,
-         * but the analysis is much hairier, so don't bother quite yet */
-        if ((dest < 0) || (dest >= ctx->func->impl->ssa_alloc))
-                return false;
+        /* Now, check outside the bundle */
+        midgard_instruction *start = bundle->instructions[0];
 
-        /* Make sure they're not lying to us. Blend shaders lie. TODO: Fix your
-         * bad code Alyssa */
-
-        if (mir_has_multiple_writes(ctx, dest))
+        if (mir_is_written_before(ctx, start, node))
                 return false;
 
         /* We want to know if we live after this bundle, so check if
@@ -70,12 +93,12 @@ mir_pipeline_ins(
         midgard_instruction *end = bundle->instructions[
                                     bundle->instruction_count - 1];
 
-        if (mir_is_live_after(ctx, block, end, ins->ssa_args.dest))
+        if (mir_is_live_after(ctx, block, end, ins->dest))
                 return false;
 
         /* We're only live in this bundle -- pipeline! */
 
-        mir_rewrite_index(ctx, dest, SSA_FIXED_REGISTER(24 + pipeline_count));
+        mir_rewrite_index(ctx, node, SSA_FIXED_REGISTER(24 + pipeline_count));
 
         return true;
 }
@@ -83,6 +106,8 @@ mir_pipeline_ins(
 void
 mir_create_pipeline_registers(compiler_context *ctx)
 {
+        mir_invalidate_liveness(ctx);
+
         mir_foreach_block(ctx, block) {
                 mir_foreach_bundle_in_block(block, bundle) {
                         if (!mir_is_alu_bundle(bundle)) continue;

@@ -504,7 +504,7 @@ static unsigned ngg_nogs_vertex_size(struct si_shader *shader)
 	 * used for padding to reduce LDS bank conflicts. */
 	if (shader->selector->so.num_outputs)
 		lds_vertex_size = 4 * shader->selector->info.num_outputs + 1;
-	if (shader->selector->ngg_writes_edgeflag)
+	if (shader->selector->info.writes_edgeflag)
 		lds_vertex_size = MAX2(lds_vertex_size, 1);
 
 	return lds_vertex_size;
@@ -537,7 +537,6 @@ void gfx10_emit_ngg_epilogue(struct ac_shader_abi *abi,
 	struct tgsi_shader_info *info = &sel->info;
 	struct si_shader_output_values outputs[PIPE_MAX_SHADER_OUTPUTS];
 	LLVMBuilderRef builder = ctx->ac.builder;
-	struct lp_build_if_state if_state;
 	LLVMValueRef tmp, tmp2;
 
 	assert(!ctx->shader->is_gs_copy_shader);
@@ -545,7 +544,7 @@ void gfx10_emit_ngg_epilogue(struct ac_shader_abi *abi,
 
 	LLVMValueRef vertex_ptr = NULL;
 
-	if (sel->so.num_outputs || sel->ngg_writes_edgeflag)
+	if (sel->so.num_outputs || sel->info.writes_edgeflag)
 		vertex_ptr = ngg_nogs_vertex_ptr(ctx, get_thread_id_in_tg(ctx));
 
 	for (unsigned i = 0; i < info->num_outputs; i++) {
@@ -570,7 +569,7 @@ void gfx10_emit_ngg_epilogue(struct ac_shader_abi *abi,
 
 		/* Store the edgeflag at the end (if streamout is enabled) */
 		if (info->output_semantic_name[i] == TGSI_SEMANTIC_EDGEFLAG &&
-		    sel->ngg_writes_edgeflag) {
+		    sel->info.writes_edgeflag) {
 			LLVMValueRef edgeflag = LLVMBuildLoad(builder, addrs[4 * i], "");
 			/* The output is a float, but the hw expects a 1-bit integer. */
 			edgeflag = LLVMBuildFPToUI(ctx->ac.builder, edgeflag, ctx->i32, "");
@@ -582,7 +581,7 @@ void gfx10_emit_ngg_epilogue(struct ac_shader_abi *abi,
 		}
 	}
 
-	lp_build_endif(&ctx->merged_wrap_if_state);
+	ac_build_endif(&ctx->ac, ctx->merged_wrap_if_label);
 
 	LLVMValueRef prims_in_wave = si_unpack_param(ctx, ctx->param_merged_wave_info, 8, 8);
 	LLVMValueRef vtx_in_wave = si_unpack_param(ctx, ctx->param_merged_wave_info, 0, 8);
@@ -601,7 +600,7 @@ void gfx10_emit_ngg_epilogue(struct ac_shader_abi *abi,
 	LLVMValueRef num_vertices_val;
 
 	if (ctx->type == PIPE_SHADER_VERTEX) {
-		if (info->properties[TGSI_PROPERTY_VS_BLIT_SGPRS]) {
+		if (info->properties[TGSI_PROPERTY_VS_BLIT_SGPRS_AMD]) {
 			/* Blits always use axis-aligned rectangles with 3 vertices. */
 			num_vertices = 3;
 			num_vertices_val = LLVMConstInt(ctx->i32, 3, 0);
@@ -642,7 +641,7 @@ void gfx10_emit_ngg_epilogue(struct ac_shader_abi *abi,
 
 	LLVMValueRef user_edgeflags[3] = {};
 
-	if (sel->ngg_writes_edgeflag) {
+	if (sel->info.writes_edgeflag) {
 		/* Streamout already inserted the barrier, so don't insert it again. */
 		if (!sel->so.num_outputs)
 			ac_build_s_barrier(&ctx->ac);
@@ -668,7 +667,7 @@ void gfx10_emit_ngg_epilogue(struct ac_shader_abi *abi,
 	if (ctx->type == PIPE_SHADER_VERTEX &&
 	    ctx->shader->key.mono.u.vs_export_prim_id) {
 		/* Streamout and edge flags use LDS. Make it idle, so that we can reuse it. */
-		if (sel->so.num_outputs || sel->ngg_writes_edgeflag)
+		if (sel->so.num_outputs || sel->info.writes_edgeflag)
 			ac_build_s_barrier(&ctx->ac);
 
 		ac_build_ifcc(&ctx->ac, is_gs_thread, 5400);
@@ -690,7 +689,7 @@ void gfx10_emit_ngg_epilogue(struct ac_shader_abi *abi,
 
 	/* Update query buffer */
 	/* TODO: this won't catch 96-bit clear_buffer via transform feedback. */
-	if (!info->properties[TGSI_PROPERTY_VS_BLIT_SGPRS]) {
+	if (!info->properties[TGSI_PROPERTY_VS_BLIT_SGPRS_AMD]) {
 		tmp = si_unpack_param(ctx, ctx->param_vs_state_bits, 6, 1);
 		tmp = LLVMBuildTrunc(builder, tmp, ctx->i1, "");
 		ac_build_ifcc(&ctx->ac, tmp, 5029); /* if (STREAMOUT_QUERY_ENABLED) */
@@ -739,7 +738,7 @@ void gfx10_emit_ngg_epilogue(struct ac_shader_abi *abi,
 	 * TODO: culling depends on the primitive type, so can have some
 	 * interaction here.
 	 */
-	lp_build_if(&if_state, &ctx->gallivm, is_gs_thread);
+	ac_build_ifcc(&ctx->ac, is_gs_thread, 6001);
 	{
 		struct ngg_prim prim = {};
 
@@ -757,7 +756,7 @@ void gfx10_emit_ngg_epilogue(struct ac_shader_abi *abi,
 					    LLVMConstInt(ctx->ac.i32, 8 + i, false), "");
 			prim.edgeflag[i] = LLVMBuildTrunc(builder, tmp, ctx->ac.i1, "");
 
-			if (sel->ngg_writes_edgeflag) {
+			if (sel->info.writes_edgeflag) {
 				tmp2 = LLVMBuildLoad(builder, user_edgeflags[i], "");
 				prim.edgeflag[i] = LLVMBuildAnd(builder, prim.edgeflag[i],
 								tmp2, "");
@@ -766,10 +765,10 @@ void gfx10_emit_ngg_epilogue(struct ac_shader_abi *abi,
 
 		build_export_prim(ctx, &prim);
 	}
-	lp_build_endif(&if_state);
+	ac_build_endif(&ctx->ac, 6001);
 
 	/* Export per-vertex data (positions and parameters). */
-	lp_build_if(&if_state, &ctx->gallivm, is_es_thread);
+	ac_build_ifcc(&ctx->ac, is_es_thread, 6002);
 	{
 		unsigned i;
 
@@ -810,7 +809,7 @@ void gfx10_emit_ngg_epilogue(struct ac_shader_abi *abi,
 
 		si_llvm_export_vs(ctx, outputs, i);
 	}
-	lp_build_endif(&if_state);
+	ac_build_endif(&ctx->ac, 6002);
 }
 
 static LLVMValueRef
@@ -902,7 +901,6 @@ void gfx10_ngg_gs_emit_vertex(struct si_shader_context *ctx,
 	const struct si_shader_selector *sel = ctx->shader->selector;
 	const struct tgsi_shader_info *info = &sel->info;
 	LLVMBuilderRef builder = ctx->ac.builder;
-	struct lp_build_if_state if_state;
 	LLVMValueRef tmp;
 	const LLVMValueRef vertexidx =
 		LLVMBuildLoad(builder, ctx->gs_next_vertex[stream], "");
@@ -919,7 +917,7 @@ void gfx10_ngg_gs_emit_vertex(struct si_shader_context *ctx,
 	tmp = LLVMBuildSelect(builder, can_emit, tmp, vertexidx, "");
 	LLVMBuildStore(builder, tmp, ctx->gs_next_vertex[stream]);
 
-	lp_build_if(&if_state, &ctx->gallivm, can_emit);
+	ac_build_ifcc(&ctx->ac, can_emit, 9001);
 
 	const LLVMValueRef vertexptr =
 		ngg_gs_emit_vertex_ptr(ctx, get_thread_id_in_tg(ctx), vertexidx);
@@ -969,7 +967,7 @@ void gfx10_ngg_gs_emit_vertex(struct si_shader_context *ctx,
 	tmp = LLVMBuildAdd(builder, tmp, LLVMBuildZExt(builder, iscompleteprim, ctx->ac.i32, ""), "");
 	LLVMBuildStore(builder, tmp, ctx->gs_generated_prims[stream]);
 
-	lp_build_endif(&if_state);
+	ac_build_endif(&ctx->ac, 9001);
 }
 
 void gfx10_ngg_gs_emit_prologue(struct si_shader_context *ctx)
@@ -1060,7 +1058,7 @@ void gfx10_ngg_gs_emit_epilogue(struct si_shader_context *ctx)
 		ac_build_endif(&ctx->ac, 5105);
 	}
 
-	lp_build_endif(&ctx->merged_wrap_if_state);
+	ac_build_endif(&ctx->ac, ctx->merged_wrap_if_label);
 
 	ac_build_s_barrier(&ctx->ac);
 
@@ -1137,7 +1135,7 @@ void gfx10_ngg_gs_emit_epilogue(struct si_shader_context *ctx)
 	/* TODO: culling */
 
 	/* Determine vertex liveness. */
-	LLVMValueRef vertliveptr = lp_build_alloca(&ctx->gallivm, ctx->ac.i1, "vertexlive");
+	LLVMValueRef vertliveptr = ac_build_alloca(&ctx->ac, ctx->ac.i1, "vertexlive");
 
 	tmp = LLVMBuildICmp(builder, LLVMIntULT, tid, num_emit_threads, "");
 	ac_build_ifcc(&ctx->ac, tmp, 5120);

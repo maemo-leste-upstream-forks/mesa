@@ -199,6 +199,7 @@ gather_intrinsic_info(nir_intrinsic_instr *instr, nir_shader *shader,
 {
    switch (instr->intrinsic) {
    case nir_intrinsic_demote:
+   case nir_intrinsic_demote_if:
    case nir_intrinsic_discard:
    case nir_intrinsic_discard_if:
       assert(shader->info.stage == MESA_SHADER_FRAGMENT);
@@ -359,9 +360,19 @@ nir_shader_gather_info(nir_shader *shader, nir_function_impl *entrypoint)
 {
    shader->info.num_textures = 0;
    shader->info.num_images = 0;
+   shader->info.last_msaa_image = -1;
    nir_foreach_variable(var, &shader->uniforms) {
+      /* Bindless textures and images don't use non-bindless slots. */
+      if (var->data.bindless)
+         continue;
+
       shader->info.num_textures += glsl_type_get_sampler_count(var->type);
       shader->info.num_images += glsl_type_get_image_count(var->type);
+
+      /* Assuming image slots don't have holes (e.g. OpenGL) */
+      if (glsl_type_is_image(var->type) &&
+          glsl_get_sampler_dim(var->type) == GLSL_SAMPLER_DIM_MS)
+         shader->info.last_msaa_image = shader->info.num_images - 1;
    }
 
    shader->info.inputs_read = 0;
@@ -376,6 +387,8 @@ nir_shader_gather_info(nir_shader *shader, nir_function_impl *entrypoint)
    }
    if (shader->info.stage == MESA_SHADER_FRAGMENT) {
       shader->info.fs.uses_sample_qualifier = false;
+      shader->info.fs.uses_discard = false;
+      shader->info.fs.needs_helper_invocations = false;
    }
 
    void *dead_ctx = ralloc_context(NULL);

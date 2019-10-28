@@ -48,7 +48,7 @@ struct wsi_swapchain {
 
    VkDevice device;
    VkAllocationCallbacks alloc;
-   VkFence fences[3];
+   VkFence* fences;
    VkPresentModeKHR present_mode;
    uint32_t image_count;
 
@@ -138,7 +138,8 @@ struct wsi_interface {
 };
 
 VkResult wsi_x11_init_wsi(struct wsi_device *wsi_device,
-                          const VkAllocationCallbacks *alloc);
+                          const VkAllocationCallbacks *alloc,
+                          const struct driOptionCache *dri_options);
 void wsi_x11_finish_wsi(struct wsi_device *wsi_device,
                         const VkAllocationCallbacks *alloc);
 VkResult wsi_wl_init_wsi(struct wsi_device *wsi_device,

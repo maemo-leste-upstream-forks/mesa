@@ -25,13 +25,13 @@
 #include <unistd.h>
 #include <limits.h>
 #include <assert.h>
-#include <linux/memfd.h>
 #include <sys/mman.h>
 
 #include "anv_private.h"
 
 #include "util/hash_table.h"
 #include "util/simple_mtx.h"
+#include "util/anon_file.h"
 
 #ifdef HAVE_VALGRIND
 #define VG_NOACCESS_READ(__ptr) ({                       \
@@ -48,6 +48,10 @@
 #else
 #define VG_NOACCESS_READ(__ptr) (*(__ptr))
 #define VG_NOACCESS_WRITE(__ptr, __val) (*(__ptr) = (__val))
+#endif
+
+#ifndef MAP_POPULATE
+#define MAP_POPULATE 0
 #endif
 
 /* Design goals:
@@ -111,14 +115,6 @@ struct anv_mmap_cleanup {
 
 #define ANV_MMAP_CLEANUP_INIT ((struct anv_mmap_cleanup){0})
 
-#ifndef HAVE_MEMFD_CREATE
-static inline int
-memfd_create(const char *name, unsigned int flags)
-{
-   return syscall(SYS_memfd_create, name, flags);
-}
-#endif
-
 static inline uint32_t
 ilog2_round_up(uint32_t value)
 {
@@ -152,15 +148,12 @@ anv_state_table_init(struct anv_state_table *table,
 
    table->device = device;
 
-   table->fd = memfd_create("state table", MFD_CLOEXEC);
-   if (table->fd == -1)
-      return vk_error(VK_ERROR_INITIALIZATION_FAILED);
-
    /* Just make it 2GB up-front.  The Linux kernel won't actually back it
     * with pages until we either map and fault on one of them or we use
     * userptr and send a chunk of it off to the GPU.
     */
-   if (ftruncate(table->fd, BLOCK_POOL_MEMFD_SIZE) == -1) {
+   table->fd = os_create_anonymous_file(BLOCK_POOL_MEMFD_SIZE, "state table");
+   if (table->fd == -1) {
       result = vk_error(VK_ERROR_INITIALIZATION_FAILED);
       goto fail_fd;
    }
@@ -446,18 +439,13 @@ anv_block_pool_init(struct anv_block_pool *pool,
    anv_bo_init(pool->bo, 0, 0);
 
    if (!(pool->bo_flags & EXEC_OBJECT_PINNED)) {
-      pool->fd = memfd_create("block pool", MFD_CLOEXEC);
-      if (pool->fd == -1)
-         return vk_error(VK_ERROR_INITIALIZATION_FAILED);
-
       /* Just make it 2GB up-front.  The Linux kernel won't actually back it
        * with pages until we either map and fault on one of them or we use
        * userptr and send a chunk of it off to the GPU.
        */
-      if (ftruncate(pool->fd, BLOCK_POOL_MEMFD_SIZE) == -1) {
-         result = vk_error(VK_ERROR_INITIALIZATION_FAILED);
-         goto fail_fd;
-      }
+      pool->fd = os_create_anonymous_file(BLOCK_POOL_MEMFD_SIZE, "block pool");
+      if (pool->fd == -1)
+         return vk_error(VK_ERROR_INITIALIZATION_FAILED);
    } else {
       pool->fd = -1;
    }
@@ -1532,7 +1520,19 @@ anv_scratch_pool_alloc(struct anv_device *device, struct anv_scratch_pool *pool,
    const unsigned subslices = MAX2(physical_device->subslice_total, 1);
 
    unsigned scratch_ids_per_subslice;
-   if (devinfo->is_haswell) {
+   if (devinfo->gen >= 11) {
+      /* The MEDIA_VFE_STATE docs say:
+       *
+       *    "Starting with this configuration, the Maximum Number of
+       *     Threads must be set to (#EU * 8) for GPGPU dispatches.
+       *
+       *     Although there are only 7 threads per EU in the configuration,
+       *     the FFTID is calculated as if there are 8 threads per EU,
+       *     which in turn requires a larger amount of Scratch Space to be
+       *     allocated by the driver."
+       */
+      scratch_ids_per_subslice = 8 * 8;
+   } else if (devinfo->is_haswell) {
       /* WaCSScratchSize:hsw
        *
        * Haswell's scratch space address calculation appears to be sparse

@@ -41,7 +41,7 @@ static void cik_sdma_copy_buffer(struct si_context *ctx,
 	/* Mark the buffer range of destination as valid (initialized),
 	 * so that transfer_map knows it should wait for the GPU when mapping
 	 * that range. */
-	util_range_add(&sdst->valid_buffer_range, dst_offset,
+	util_range_add(dst, &sdst->valid_buffer_range, dst_offset,
 		       dst_offset + size);
 
 	dst_offset += sdst->gpu_address;
@@ -500,7 +500,15 @@ static void cik_sdma_copy(struct pipe_context *ctx,
 		return;
 	}
 
-	if ((sctx->chip_class == GFX7 || sctx->chip_class == GFX8) &&
+	/* SDMA causes corruption. See:
+	 *   https://bugs.freedesktop.org/show_bug.cgi?id=110575
+	 *   https://bugs.freedesktop.org/show_bug.cgi?id=110635
+	 *
+	 * Keep SDMA enabled on APUs.
+	 */
+	if ((sctx->screen->debug_flags & DBG(FORCE_DMA) ||
+	     !sctx->screen->info.has_dedicated_vram) &&
+	    (sctx->chip_class == GFX7 || sctx->chip_class == GFX8) &&
 	    cik_sdma_copy_texture(sctx, dst, dst_level, dstx, dsty, dstz,
 				  src, src_level, src_box))
 		return;

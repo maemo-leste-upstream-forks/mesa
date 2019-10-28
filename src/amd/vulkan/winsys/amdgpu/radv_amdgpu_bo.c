@@ -356,6 +356,10 @@ radv_amdgpu_winsys_bo_create(struct radeon_winsys *_ws,
 		request.preferred_heap |= AMDGPU_GEM_DOMAIN_VRAM;
 	if (initial_domain & RADEON_DOMAIN_GTT)
 		request.preferred_heap |= AMDGPU_GEM_DOMAIN_GTT;
+	if (initial_domain & RADEON_DOMAIN_GDS)
+		request.preferred_heap |= AMDGPU_GEM_DOMAIN_GDS;
+	if (initial_domain & RADEON_DOMAIN_OA)
+		request.preferred_heap |= AMDGPU_GEM_DOMAIN_OA;
 
 	if (flags & RADEON_FLAG_CPU_ACCESS) {
 		bo->base.vram_cpu_access = initial_domain & RADEON_DOMAIN_VRAM;
@@ -507,7 +511,7 @@ radv_amdgpu_winsys_bo_from_ptr(struct radeon_winsys *_ws,
 	bo->initial_domain = RADEON_DOMAIN_GTT;
 	bo->priority = priority;
 
-	MAYBE_UNUSED int r = amdgpu_bo_export(buf_handle, amdgpu_bo_handle_type_kms, &bo->bo_handle);
+	ASSERTED int r = amdgpu_bo_export(buf_handle, amdgpu_bo_handle_type_kms, &bo->bo_handle);
 	assert(!r);
 
 	p_atomic_add(&ws->allocated_gtt,
@@ -530,8 +534,7 @@ error:
 static struct radeon_winsys_bo *
 radv_amdgpu_winsys_bo_from_fd(struct radeon_winsys *_ws,
 			      int fd, unsigned priority,
-			      unsigned *stride,
-			      unsigned *offset)
+			      uint64_t *alloc_size)
 {
 	struct radv_amdgpu_winsys *ws = radv_amdgpu_winsys(_ws);
 	struct radv_amdgpu_winsys_bo *bo;
@@ -553,6 +556,10 @@ radv_amdgpu_winsys_bo_from_fd(struct radeon_winsys *_ws,
 	r = amdgpu_bo_query_info(result.buf_handle, &info);
 	if (r)
 		goto error_query;
+
+	if (alloc_size) {
+		*alloc_size = info.alloc_size;
+	}
 
 	r = amdgpu_va_range_alloc(ws->dev, amdgpu_gpu_va_range_general,
 				  result.alloc_size, 1 << 20, 0, &va, &va_handle,

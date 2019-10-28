@@ -664,7 +664,6 @@ match_function_by_name(const char *name,
    }
 
    /* Local shader has no exact candidates; check the built-ins. */
-   _mesa_glsl_initialize_builtin_functions();
    sig = _mesa_glsl_find_builtin_function(state, name, actual_parameters);
 
    /* if _mesa_glsl_find_builtin_function failed, fall back to the result
@@ -748,6 +747,21 @@ generate_array_index(void *mem_ctx, exec_list *instructions,
    }
 }
 
+static bool
+function_exists(_mesa_glsl_parse_state *state,
+                struct glsl_symbol_table *symbols, const char *name)
+{
+   ir_function *f = symbols->get_function(name);
+   if (f != NULL) {
+      foreach_in_list(ir_function_signature, sig, &f->signatures) {
+         if (sig->is_builtin() && !sig->is_builtin_available(state))
+            continue;
+         return true;
+      }
+   }
+   return false;
+}
+
 static void
 print_function_prototypes(_mesa_glsl_parse_state *state, YYLTYPE *loc,
                           ir_function *f)
@@ -778,9 +792,9 @@ no_matching_function_error(const char *name,
 {
    gl_shader *sh = _mesa_glsl_get_builtin_function_shader();
 
-   if (state->symbols->get_function(name) == NULL
+   if (!function_exists(state, state->symbols, name)
        && (!state->uses_builtin_functions
-           || sh->symbols->get_function(name) == NULL)) {
+           || !function_exists(state, sh->symbols, name))) {
       _mesa_glsl_error(loc, state, "no function with name '%s'", name);
    } else {
       char *str = prototype_string(NULL, name, actual_parameters);

@@ -164,6 +164,7 @@ vc4_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
         case PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT:
         case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
+        case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
                 return 1;
 
         case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
@@ -298,8 +299,6 @@ vc4_screen_get_shader_param(struct pipe_screen *pscreen,
         case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
         case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
                 return 0;
-        case PIPE_SHADER_CAP_SCALAR_ISA:
-                return 1;
         default:
                 fprintf(stderr, "unknown shader param %d\n", param);
                 return 0;

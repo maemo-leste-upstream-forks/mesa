@@ -29,11 +29,6 @@
  *
  * Implementation of GLSL-related API functions.
  * The glUniform* functions are in uniforms.c
- *
- *
- * XXX things to do:
- * 1. Check that the right error code is generated for all _mesa_error() calls.
- * 2. Insert FLUSH_VERTICES calls in various places
  */
 
 
@@ -53,6 +48,7 @@
 #include "main/state.h"
 #include "main/transformfeedback.h"
 #include "main/uniforms.h"
+#include "compiler/glsl/builtin_functions.h"
 #include "compiler/glsl/glsl_parser_extras.h"
 #include "compiler/glsl/ir.h"
 #include "compiler/glsl/ir_uniform.h"
@@ -164,6 +160,8 @@ _mesa_free_shader_state(struct gl_context *ctx)
       _mesa_reference_shader_program(ctx,
                                      &ctx->Shader.ReferencedPrograms[i],
                                      NULL);
+      free(ctx->SubroutineIndex[i].IndexPtr);
+      ctx->SubroutineIndex[i].IndexPtr = NULL;
    }
    _mesa_reference_shader_program(ctx, &ctx->Shader.ActiveProgram, NULL);
 
@@ -835,8 +833,10 @@ get_programiv(struct gl_context *ctx, GLuint program, GLenum pname,
       }
       return;
    case GL_GEOMETRY_SHADER_INVOCATIONS:
-      if (!has_gs || !ctx->Extensions.ARB_gpu_shader5)
+      if (!has_gs ||
+          (_mesa_is_desktop_gl(ctx) && !ctx->Extensions.ARB_gpu_shader5)) {
          break;
+      }
       if (check_gs_query(ctx, shProg)) {
          *params = shProg->_LinkedShaders[MESA_SHADER_GEOMETRY]->
             Program->info.gs.invocations;
@@ -1158,6 +1158,14 @@ set_shader_source(struct gl_shader *sh, const GLchar *source)
 #endif
 }
 
+static void
+ensure_builtin_types(struct gl_context *ctx)
+{
+   if (!ctx->shader_builtin_ref) {
+      _mesa_glsl_builtin_functions_init_or_ref();
+      ctx->shader_builtin_ref = true;
+   }
+}
 
 /**
  * Compile a shader.
@@ -1191,6 +1199,8 @@ _mesa_compile_shader(struct gl_context *ctx, struct gl_shader *sh)
                  _mesa_shader_stage_to_string(sh->Stage), sh->Name);
          _mesa_log("%s\n", sh->Source);
       }
+
+      ensure_builtin_types(ctx);
 
       /* this call will set the shader->CompileStatus field to indicate if
        * compilation was successful.
@@ -1268,6 +1278,8 @@ link_program(struct gl_context *ctx, struct gl_shader_program *shProg,
             programs_in_use |= 1 << stage;
          }
    }
+
+   ensure_builtin_types(ctx);
 
    FLUSH_VERTICES(ctx, 0);
    _mesa_glsl_link_shader(ctx, shProg);
@@ -2248,7 +2260,12 @@ _mesa_GetShaderPrecisionFormat(GLenum shadertype, GLenum precisiontype,
 void GLAPIENTRY
 _mesa_ReleaseShaderCompiler(void)
 {
-   _mesa_destroy_shader_compiler_caches();
+   GET_CURRENT_CONTEXT(ctx);
+
+   if (ctx->shader_builtin_ref) {
+      _mesa_glsl_builtin_functions_decref();
+      ctx->shader_builtin_ref = false;
+   }
 }
 
 

@@ -68,19 +68,6 @@ intel_icd = custom_target(
   install : true,
 )
 
-dev_icd = custom_target(
-  'dev_icd',
-  input : 'anv_icd.py',
-  output : 'dev_icd.@0@.json'.format(host_machine.cpu()),
-  command : [
-    prog_python, '@INPUT@', '--lib-path', meson.current_build_dir(),
-    '--out', '@OUTPUT@'
-  ],
-  depend_files : files('anv_extensions.py'),
-  build_by_default : true,
-  install : false,
-)
-
 libanv_gen_libs = []
 anv_gen_files = files(
   'genX_blorp_exec.c',
@@ -92,7 +79,8 @@ anv_gen_files = files(
 )
 foreach g : [['70', ['gen7_cmd_buffer.c']], ['75', ['gen7_cmd_buffer.c']],
              ['80', ['gen8_cmd_buffer.c']], ['90', ['gen8_cmd_buffer.c']],
-             ['100', ['gen8_cmd_buffer.c']], ['110', ['gen8_cmd_buffer.c']]]
+             ['100', ['gen8_cmd_buffer.c']], ['110', ['gen8_cmd_buffer.c']],
+             ['120', ['gen8_cmd_buffer.c']]]
   _gen = g[0]
   libanv_gen_libs += static_library(
     'anv_gen@0@'.format(_gen),
@@ -130,6 +118,7 @@ libanv_files = files(
   'anv_nir_lower_push_constants.c',
   'anv_nir_lower_ycbcr_textures.c',
   'anv_pass.c',
+  'anv_perf.c',
   'anv_pipeline.c',
   'anv_pipeline_cache.c',
   'anv_private.h',
@@ -177,7 +166,6 @@ if with_xlib_lease
 endif
 
 if with_platform_android
-  anv_deps += dep_android
   anv_flags += '-DVK_USE_PLATFORM_ANDROID_KHR'
   libanv_files += files('anv_android.c')
 else
@@ -192,7 +180,7 @@ libanv_common = static_library(
   ],
   include_directories : [
     inc_common, inc_intel, inc_compiler, inc_include,
-    inc_vulkan_wsi,
+    inc_vulkan_wsi, inc_util,
   ],
   c_args : anv_flags,
   dependencies : anv_deps,
@@ -206,16 +194,30 @@ libvulkan_intel = shared_library(
   ],
   link_whole : [libanv_common, libanv_gen_libs],
   link_with : [
-    libintel_compiler, libintel_common, libintel_dev, libisl, libblorp,
-    libvulkan_wsi, libmesa_util,
+    libintel_compiler, libintel_dev, libisl, libblorp, libvulkan_wsi,
+    libintel_perf,
   ],
   dependencies : [
-    dep_thread, dep_dl, dep_m, anv_deps, idep_nir, idep_genxml, idep_vulkan_util
+    dep_thread, dep_dl, dep_m, anv_deps, idep_libintel_common,
+    idep_nir, idep_genxml, idep_vulkan_util, idep_mesautil, idep_xmlconfig,
   ],
   c_args : anv_flags,
   link_args : ['-Wl,--build-id=sha1', ld_args_bsymbolic, ld_args_gc_sections],
   install : true,
 )
+
+if with_tests and prog_nm.found()
+  test(
+    'anv symbols check',
+    symbols_check,
+    args : [
+      '--lib', libvulkan_intel,
+      '--symbols-file', vulkan_icd_symbols,
+      '--nm', prog_nm.path(),
+    ],
+    suite : ['intel'],
+  )
+endif
 
 if with_tests
   libvulkan_intel_test = static_library(
@@ -227,10 +229,11 @@ if with_tests
     link_whole : libanv_common,
     link_with : [
       libanv_gen_libs, libintel_compiler, libintel_common, libintel_dev,
-      libisl, libblorp, libvulkan_wsi, libmesa_util,
+      libisl, libblorp, libvulkan_wsi, libintel_perf,
     ],
     dependencies : [
-      dep_thread, dep_dl, dep_m, anv_deps, idep_nir, idep_vulkan_util
+      dep_thread, dep_dl, dep_m, anv_deps,
+      idep_nir, idep_vulkan_util, idep_mesautil,
     ],
     c_args : anv_flags,
   )

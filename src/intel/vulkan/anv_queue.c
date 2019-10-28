@@ -27,7 +27,6 @@
 
 #include <fcntl.h>
 #include <unistd.h>
-#include <sys/eventfd.h>
 
 #include "anv_private.h"
 #include "vk_util.h"
@@ -637,7 +636,7 @@ anv_wait_for_bo_fences(struct anv_device *device,
                .tv_nsec = abs_timeout_ns % NSEC_PER_SEC,
             };
 
-            MAYBE_UNUSED int ret;
+            ASSERTED int ret;
             ret = pthread_cond_timedwait(&device->queue_submit,
                                          &device->mutex, &abstime);
             assert(ret != EINVAL);

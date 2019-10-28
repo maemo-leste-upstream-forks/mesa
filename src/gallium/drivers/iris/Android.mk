@@ -29,6 +29,7 @@ include $(CLEAR_VARS)
 
 LIBIRIS_SRC_FILES := \
 	iris_blorp.c \
+	iris_query.c \
 	iris_state.c
 
 LIBIRIS_STATIC_LIBS := \
@@ -120,6 +121,25 @@ LOCAL_WHOLE_STATIC_LIBRARIES := libmesa_genxml
 include $(MESA_COMMON_MK)
 include $(BUILD_STATIC_LIBRARY)
 
+#
+# libiris for gen12
+#
+
+include $(CLEAR_VARS)
+LOCAL_MODULE := libmesa_iris_gen12
+LOCAL_MODULE_CLASS := STATIC_LIBRARIES
+
+LOCAL_SRC_FILES := $(LIBIRIS_SRC_FILES)
+LOCAL_CFLAGS := -DGEN_VERSIONx10=120
+
+LOCAL_C_INCLUDES := $(IRIS_COMMON_INCLUDES)
+
+LOCAL_STATIC_LIBRARIES := $(LIBIRIS_STATIC_LIBS)
+
+LOCAL_WHOLE_STATIC_LIBRARIES := libmesa_genxml
+
+include $(MESA_COMMON_MK)
+include $(BUILD_STATIC_LIBRARY)
 
 ###########################################################
 include $(CLEAR_VARS)
@@ -164,10 +184,12 @@ LOCAL_WHOLE_STATIC_LIBRARIES := \
 	libmesa_blorp \
 	libmesa_intel_common \
 	libmesa_intel_compiler \
+	libmesa_intel_perf \
 	libmesa_iris_gen8 \
 	libmesa_iris_gen9 \
 	libmesa_iris_gen10 \
-	libmesa_iris_gen11
+	libmesa_iris_gen11 \
+	libmesa_iris_gen12
 
 include $(GALLIUM_COMMON_MK)
 include $(BUILD_STATIC_LIBRARY)

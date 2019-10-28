@@ -84,13 +84,12 @@ writable images will consume TEX slots, VTX slots too because of linear indexing
 
 */
 
-MAYBE_UNUSED
+#ifdef HAVE_OPENCL
 static void radeon_shader_binary_init(struct r600_shader_binary *b)
 {
 	memset(b, 0, sizeof(*b));
 }
 
-MAYBE_UNUSED
 static void radeon_shader_binary_clean(struct r600_shader_binary *b)
 {
 	if (!b)
@@ -102,6 +101,7 @@ static void radeon_shader_binary_clean(struct r600_shader_binary *b)
 	FREE(b->relocs);
 	FREE(b->disasm_string);
 }
+#endif
 
 struct r600_resource *r600_compute_buffer_alloc_vram(struct r600_screen *screen,
 						     unsigned size)
@@ -429,8 +429,7 @@ static void *evergreen_create_compute_state(struct pipe_context *ctx,
 	struct r600_context *rctx = (struct r600_context *)ctx;
 	struct r600_pipe_compute *shader = CALLOC_STRUCT(r600_pipe_compute);
 #ifdef HAVE_OPENCL
-	const struct pipe_llvm_program_header *header;
-	const char *code;
+	const struct pipe_binary_program_header *header;
 	void *p;
 	boolean use_kill;
 #endif
@@ -449,9 +448,8 @@ static void *evergreen_create_compute_state(struct pipe_context *ctx,
 #ifdef HAVE_OPENCL
 	COMPUTE_DBG(rctx->screen, "*** evergreen_create_compute_state\n");
 	header = cso->prog;
-	code = cso->prog + sizeof(struct pipe_llvm_program_header);
 	radeon_shader_binary_init(&shader->binary);
-	r600_elf_read(code, header->num_bytes, &shader->binary);
+	r600_elf_read(header->blob, header->num_bytes, &shader->binary);
 	r600_create_shader(&shader->bc, &shader->binary, &use_kill);
 
 	/* Upload code + ROdata */

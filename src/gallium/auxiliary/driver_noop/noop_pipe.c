@@ -156,6 +156,31 @@ static bool noop_resource_get_handle(struct pipe_screen *pscreen,
    return result;
 }
 
+static bool noop_resource_get_param(struct pipe_screen *pscreen,
+                                    struct pipe_context *ctx,
+                                    struct pipe_resource *resource,
+                                    unsigned plane,
+                                    unsigned layer,
+                                    enum pipe_resource_param param,
+                                    unsigned handle_usage,
+                                    uint64_t *value)
+{
+   struct noop_pipe_screen *noop_screen = (struct noop_pipe_screen*)pscreen;
+   struct pipe_screen *screen = noop_screen->oscreen;
+   struct pipe_resource *tex;
+   bool result;
+
+   /* resource_get_param mustn't fail. Just create something and return it. */
+   tex = screen->resource_create(screen, resource);
+   if (!tex)
+      return false;
+
+   result = screen->resource_get_param(screen, NULL, tex, 0, 0, param,
+                                       handle_usage, value);
+   pipe_resource_reference(&tex, NULL);
+   return result;
+}
+
 static void noop_resource_destroy(struct pipe_screen *screen,
                                   struct pipe_resource *resource)
 {
@@ -473,6 +498,26 @@ static void noop_query_memory_info(struct pipe_screen *pscreen,
    screen->query_memory_info(screen, info);
 }
 
+static struct disk_cache *noop_get_disk_shader_cache(struct pipe_screen *pscreen)
+{
+   struct pipe_screen *screen = ((struct noop_pipe_screen*)pscreen)->oscreen;
+
+   return screen->get_disk_shader_cache(screen);
+}
+
+static const void *noop_get_compiler_options(struct pipe_screen *pscreen,
+                                             enum pipe_shader_ir ir,
+                                             enum pipe_shader_type shader)
+{
+   struct pipe_screen *screen = ((struct noop_pipe_screen*)pscreen)->oscreen;
+
+   return screen->get_compiler_options(screen, ir, shader);
+}
+
+static void noop_finalize_nir(struct pipe_screen *pscreen, void *nir, bool optimize)
+{
+}
+
 struct pipe_screen *noop_screen_create(struct pipe_screen *oscreen)
 {
    struct noop_pipe_screen *noop_screen;
@@ -502,12 +547,17 @@ struct pipe_screen *noop_screen_create(struct pipe_screen *oscreen)
    screen->resource_create = noop_resource_create;
    screen->resource_from_handle = noop_resource_from_handle;
    screen->resource_get_handle = noop_resource_get_handle;
+   if (oscreen->resource_get_param)
+      screen->resource_get_param = noop_resource_get_param;
    screen->resource_destroy = noop_resource_destroy;
    screen->flush_frontbuffer = noop_flush_frontbuffer;
    screen->get_timestamp = noop_get_timestamp;
    screen->fence_reference = noop_fence_reference;
    screen->fence_finish = noop_fence_finish;
    screen->query_memory_info = noop_query_memory_info;
+   screen->get_disk_shader_cache = noop_get_disk_shader_cache;
+   screen->get_compiler_options = noop_get_compiler_options;
+   screen->finalize_nir = noop_finalize_nir;
 
    return screen;
 }

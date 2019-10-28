@@ -250,6 +250,7 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_PROGRAMMABLE_SAMPLE_LOCATIONS:
    case PIPE_CAP_IMAGE_LOAD_FORMATTED:
    case PIPE_CAP_TGSI_DIV:
+   case PIPE_CAP_TGSI_ATOMINC_WRAP:
       return 0;
 
    case PIPE_CAP_MAX_GS_INVOCATIONS:
@@ -360,7 +361,6 @@ nv30_screen_get_shader_param(struct pipe_screen *pscreen,
       case PIPE_SHADER_CAP_TGSI_SKIP_MERGE_REGISTERS:
       case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
       case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
-      case PIPE_SHADER_CAP_SCALAR_ISA:
          return 0;
       default:
          debug_printf("unknown vertex shader param %d\n", param);
@@ -413,7 +413,6 @@ nv30_screen_get_shader_param(struct pipe_screen *pscreen,
       case PIPE_SHADER_CAP_TGSI_SKIP_MERGE_REGISTERS:
       case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
       case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
-      case PIPE_SHADER_CAP_SCALAR_ISA:
          return 0;
       default:
          debug_printf("unknown fragment shader param %d\n", param);

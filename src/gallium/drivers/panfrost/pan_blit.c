@@ -38,11 +38,11 @@ panfrost_blitter_save(
 
         util_blitter_save_vertex_buffer_slot(blitter, ctx->vertex_buffers);
         util_blitter_save_vertex_elements(blitter, ctx->vertex);
-        util_blitter_save_vertex_shader(blitter, ctx->vs);
+        util_blitter_save_vertex_shader(blitter, ctx->shader[PIPE_SHADER_VERTEX]);
         util_blitter_save_rasterizer(blitter, ctx->rasterizer);
         util_blitter_save_viewport(blitter, &ctx->pipe_viewport);
         util_blitter_save_scissor(blitter, &ctx->scissor);
-        util_blitter_save_fragment_shader(blitter, ctx->fs);
+        util_blitter_save_fragment_shader(blitter, ctx->shader[PIPE_SHADER_FRAGMENT]);
         util_blitter_save_blend(blitter, ctx->blend);
         util_blitter_save_depth_stencil_alpha(blitter, ctx->depth_stencil);
         util_blitter_save_stencil_ref(blitter, &ctx->stencil_ref);
@@ -103,29 +103,30 @@ panfrost_blit(struct pipe_context *pipe,
  */
 
 void
-panfrost_blit_wallpaper(struct panfrost_context *ctx)
+panfrost_blit_wallpaper(struct panfrost_context *ctx, struct pipe_box *box)
 {
+        struct panfrost_batch *batch = ctx->wallpaper_batch;
         struct pipe_blit_info binfo = { };
 
         panfrost_blitter_save(ctx, ctx->blitter_wallpaper);
 
-        struct pipe_surface *surf = ctx->pipe_framebuffer.cbufs[0];
+        struct pipe_surface *surf = batch->key.cbufs[0];
         unsigned level = surf->u.tex.level;
         unsigned layer = surf->u.tex.first_layer;
         assert(surf->u.tex.last_layer == layer);
 
-        binfo.src.resource = binfo.dst.resource = ctx->pipe_framebuffer.cbufs[0]->texture;
+        binfo.src.resource = binfo.dst.resource = batch->key.cbufs[0]->texture;
         binfo.src.level = binfo.dst.level = level;
-        binfo.src.box.x = binfo.dst.box.x = 0;
-        binfo.src.box.y = binfo.dst.box.y = 0;
+        binfo.src.box.x = binfo.dst.box.x = box->x;
+        binfo.src.box.y = binfo.dst.box.y = box->y;
         binfo.src.box.z = binfo.dst.box.z = layer;
-        binfo.src.box.width = binfo.dst.box.width = ctx->pipe_framebuffer.width;
-        binfo.src.box.height = binfo.dst.box.height = ctx->pipe_framebuffer.height;
+        binfo.src.box.width = binfo.dst.box.width = box->width;
+        binfo.src.box.height = binfo.dst.box.height = box->height;
         binfo.src.box.depth = binfo.dst.box.depth = 1;
 
-        binfo.src.format = binfo.dst.format = ctx->pipe_framebuffer.cbufs[0]->format;
+        binfo.src.format = binfo.dst.format = batch->key.cbufs[0]->format;
 
-        assert(ctx->pipe_framebuffer.nr_cbufs == 1);
+        assert(batch->key.nr_cbufs == 1);
         binfo.mask = PIPE_MASK_RGBA;
         binfo.filter = PIPE_TEX_FILTER_LINEAR;
         binfo.scissor_enable = FALSE;

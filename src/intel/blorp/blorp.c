@@ -66,6 +66,7 @@ brw_blorp_surface_info_init(struct blorp_context *blorp,
                             unsigned int level, unsigned int layer,
                             enum isl_format format, bool is_render_target)
 {
+   memset(info, 0, sizeof(*info));
    assert(level < surf->surf->levels);
    assert(layer < MAX2(surf->surf->logical_level0_px.depth >> level,
                        surf->surf->logical_level0_px.array_len));
@@ -205,8 +206,8 @@ blorp_compile_fs(struct blorp_context *blorp, void *mem_ctx,
 
    const unsigned *program =
       brw_compile_fs(compiler, blorp->driver_ctx, mem_ctx, wm_key,
-                     wm_prog_data, nir, NULL, -1, -1, -1, false, use_repclear,
-                     NULL, NULL);
+                     wm_prog_data, nir, -1, -1, -1, false, use_repclear,
+                     NULL, NULL, NULL);
 
    return program;
 }
@@ -235,7 +236,7 @@ blorp_compile_vs(struct blorp_context *blorp, void *mem_ctx,
 
    const unsigned *program =
       brw_compile_vs(compiler, blorp->driver_ctx, mem_ctx,
-                     &vs_key, vs_prog_data, nir, -1, NULL);
+                     &vs_key, vs_prog_data, nir, -1, NULL, NULL);
 
    return program;
 }

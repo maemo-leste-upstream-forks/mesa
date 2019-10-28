@@ -21,6 +21,7 @@
 
 inc_gallium_drivers = include_directories('drivers')
 inc_gallium_winsys = include_directories('winsys')
+inc_gallium_winsys_sw = include_directories('winsys/sw')
 
 subdir('auxiliary')
 subdir('auxiliary/pipe-loader')
@@ -34,6 +35,11 @@ if with_gallium_drisw_kms
   subdir('winsys/sw/kms-dri')
 else
   libswkmsdri = []
+endif
+if with_platform_windows
+  subdir('winsys/sw/gdi')
+else
+  libwsgdi = null_dep
 endif
 subdir('winsys/sw/wrapper')
 if with_platform_haiku
@@ -199,9 +205,15 @@ if with_gallium_st_nine
   subdir('state_trackers/nine')
   subdir('targets/d3dadapter9')
 endif
+if with_platform_windows
+  subdir('state_trackers/wgl')
+  subdir('targets/libgl-gdi')
+endif
 if with_tests
   subdir('targets/graw-null')
-  if with_glx == 'gallium-xlib'
+  if with_platform_windows
+    subdir('targets/graw-gdi')
+  elif with_glx == 'gallium-xlib'
     subdir('targets/graw-xlib')
   endif
   subdir('tests')

@@ -107,8 +107,10 @@ push_block(struct block_queue *bq)
 
    if (!u_vector_init(&bi->instructions,
                       sizeof(nir_alu_instr *),
-                      8 * sizeof(nir_alu_instr *)))
+                      8 * sizeof(nir_alu_instr *))) {
+      free(bi);
       return NULL;
+   }
 
    exec_list_push_tail(&bq->blocks, &bi->node);
 
@@ -323,8 +325,8 @@ comparison_pre_block(nir_block *block, struct block_queue *bq, nir_builder *bld)
           * and neither operand is immediate value 0, add it to the set.
           */
          if (is_used_by_if(alu) &&
-             is_not_const_zero(alu, 0, 1, swizzle) &&
-             is_not_const_zero(alu, 1, 1, swizzle))
+             is_not_const_zero(NULL, alu, 0, 1, swizzle) &&
+             is_not_const_zero(NULL, alu, 1, 1, swizzle))
             add_instruction_for_block(bi, alu);
 
          break;

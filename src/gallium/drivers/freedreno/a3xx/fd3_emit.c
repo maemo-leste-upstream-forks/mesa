@@ -315,7 +315,8 @@ fd3_emit_gmem_restore_tex(struct fd_ringbuffer *ring,
 
 		debug_assert(psurf[i]->u.tex.first_layer == psurf[i]->u.tex.last_layer);
 
-		OUT_RING(ring, A3XX_TEX_CONST_0_FMT(fd3_pipe2tex(format)) |
+		OUT_RING(ring, A3XX_TEX_CONST_0_TILE_MODE(rsc->tile_mode) |
+				 A3XX_TEX_CONST_0_FMT(fd3_pipe2tex(format)) |
 				 A3XX_TEX_CONST_0_TYPE(A3XX_TEX_2D) |
 				 fd3_tex_swiz(format,  PIPE_SWIZZLE_X, PIPE_SWIZZLE_Y,
 							  PIPE_SWIZZLE_Z, PIPE_SWIZZLE_W));
@@ -440,7 +441,7 @@ fd3_emit_vertex_bufs(struct fd_ringbuffer *ring, struct fd3_emit *emit)
 					COND(isint, A3XX_VFD_DECODE_INSTR_INT) |
 					COND(switchnext, A3XX_VFD_DECODE_INSTR_SWITCHNEXT));
 
-			total_in += vp->inputs[i].ncomp;
+			total_in += util_bitcount(vp->inputs[i].compmask);
 			j++;
 		}
 	}
@@ -945,17 +946,16 @@ fd3_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
 	fd_hw_query_enable(batch, ring);
 }
 
-static void
-fd3_emit_ib(struct fd_ringbuffer *ring, struct fd_ringbuffer *target)
+void
+fd3_emit_init_screen(struct pipe_screen *pscreen)
 {
-	__OUT_IB(ring, true, target);
+	struct fd_screen *screen = fd_screen(pscreen);
+	screen->emit_const = fd3_emit_const;
+	screen->emit_const_bo = fd3_emit_const_bo;
+	screen->emit_ib = fd3_emit_ib;
 }
 
 void
 fd3_emit_init(struct pipe_context *pctx)
 {
-	struct fd_context *ctx = fd_context(pctx);
-	ctx->emit_const = fd3_emit_const;
-	ctx->emit_const_bo = fd3_emit_const_bo;
-	ctx->emit_ib = fd3_emit_ib;
 }

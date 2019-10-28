@@ -203,8 +203,26 @@ struct brw_sampler_prog_key_data {
    float scale_factors[32];
 };
 
+/** An enum representing what kind of input gl_SubgroupSize is. */
+enum PACKED brw_subgroup_size_type
+{
+   BRW_SUBGROUP_SIZE_API_CONSTANT,     /**< Default Vulkan behavior */
+   BRW_SUBGROUP_SIZE_UNIFORM,          /**< OpenGL behavior */
+   BRW_SUBGROUP_SIZE_VARYING,          /**< VK_EXT_subgroup_size_control */
+
+   /* These enums are specifically chosen so that the value of the enum is
+    * also the subgroup size.  If any new values are added, they must respect
+    * this invariant.
+    */
+   BRW_SUBGROUP_SIZE_REQUIRE_8   = 8,  /**< VK_EXT_subgroup_size_control */
+   BRW_SUBGROUP_SIZE_REQUIRE_16  = 16, /**< VK_EXT_subgroup_size_control */
+   BRW_SUBGROUP_SIZE_REQUIRE_32  = 32, /**< VK_EXT_subgroup_size_control */
+};
+
 struct brw_base_prog_key {
    unsigned program_string_id;
+
+   enum brw_subgroup_size_type subgroup_size_type;
 
    struct brw_sampler_prog_key_data tex;
 };
@@ -299,12 +317,30 @@ struct brw_tes_prog_key
 
    /** A bitfield of per-vertex inputs read. */
    uint64_t inputs_read;
+
+   /**
+    * How many user clipping planes are being uploaded to the tessellation
+    * evaluation shader as push constants.
+    *
+    * These are used for lowering legacy gl_ClipVertex/gl_Position clipping to
+    * clip distances.
+    */
+   unsigned nr_userclip_plane_consts:4;
 };
 
 /** The program key for Geometry Shaders. */
 struct brw_gs_prog_key
 {
    struct brw_base_prog_key base;
+
+   /**
+    * How many user clipping planes are being uploaded to the geometry shader
+    * as push constants.
+    *
+    * These are used for lowering legacy gl_ClipVertex/gl_Position clipping to
+    * clip distances.
+    */
+   unsigned nr_userclip_plane_consts:4;
 };
 
 enum brw_sf_primitive {
@@ -618,6 +654,9 @@ struct brw_stage_prog_data {
 
    unsigned program_size;
 
+   /** Does this program pull from any UBO or other constant buffers? */
+   bool has_ubo_pull;
+
    /**
     * Register where the thread expects to find input data from the URB
     * (typically uniforms, followed by vertex or fragment attributes).
@@ -843,6 +882,7 @@ struct brw_cs_prog_data {
    unsigned local_size[3];
    unsigned simd_size;
    unsigned threads;
+   unsigned slm_size;
    bool uses_barrier;
    bool uses_num_work_groups;
 
@@ -1204,6 +1244,15 @@ DEFINE_PROG_DATA_DOWNCAST(clip)
 DEFINE_PROG_DATA_DOWNCAST(sf)
 #undef DEFINE_PROG_DATA_DOWNCAST
 
+struct brw_compile_stats {
+   uint32_t dispatch_width; /**< 0 for vec4 */
+   uint32_t instructions;
+   uint32_t loops;
+   uint32_t cycles;
+   uint32_t spills;
+   uint32_t fills;
+};
+
 /** @} */
 
 struct brw_compiler *
@@ -1242,6 +1291,7 @@ brw_compile_vs(const struct brw_compiler *compiler, void *log_data,
                struct brw_vs_prog_data *prog_data,
                struct nir_shader *shader,
                int shader_time_index,
+               struct brw_compile_stats *stats,
                char **error_str);
 
 /**
@@ -1257,6 +1307,7 @@ brw_compile_tcs(const struct brw_compiler *compiler,
                 struct brw_tcs_prog_data *prog_data,
                 struct nir_shader *nir,
                 int shader_time_index,
+                struct brw_compile_stats *stats,
                 char **error_str);
 
 /**
@@ -1271,8 +1322,8 @@ brw_compile_tes(const struct brw_compiler *compiler, void *log_data,
                 const struct brw_vue_map *input_vue_map,
                 struct brw_tes_prog_data *prog_data,
                 struct nir_shader *shader,
-                struct gl_program *prog,
                 int shader_time_index,
+                struct brw_compile_stats *stats,
                 char **error_str);
 
 /**
@@ -1288,6 +1339,7 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
                struct nir_shader *shader,
                struct gl_program *prog,
                int shader_time_index,
+               struct brw_compile_stats *stats,
                char **error_str);
 
 /**
@@ -1333,12 +1385,12 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
                const struct brw_wm_prog_key *key,
                struct brw_wm_prog_data *prog_data,
                struct nir_shader *shader,
-               struct gl_program *prog,
                int shader_time_index8,
                int shader_time_index16,
                int shader_time_index32,
                bool allow_spilling,
                bool use_rep_send, struct brw_vue_map *vue_map,
+               struct brw_compile_stats *stats, /**< Array of three stats */
                char **error_str);
 
 /**
@@ -1353,6 +1405,7 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
                struct brw_cs_prog_data *prog_data,
                const struct nir_shader *shader,
                int shader_time_index,
+               struct brw_compile_stats *stats,
                char **error_str);
 
 void brw_debug_key_recompile(const struct brw_compiler *c, void *log,
@@ -1399,7 +1452,7 @@ encode_slm_size(unsigned gen, uint32_t bytes)
  * '2^n - 1' for some n.
  */
 static inline bool
-brw_stage_has_packed_dispatch(MAYBE_UNUSED const struct gen_device_info *devinfo,
+brw_stage_has_packed_dispatch(ASSERTED const struct gen_device_info *devinfo,
                               gl_shader_stage stage,
                               const struct brw_stage_prog_data *prog_data)
 {
@@ -1408,7 +1461,7 @@ brw_stage_has_packed_dispatch(MAYBE_UNUSED const struct gen_device_info *devinfo
     * to do a full test run with brw_fs_test_dispatch_packing() hooked up to
     * the NIR front-end before changing this assertion.
     */
-   assert(devinfo->gen <= 11);
+   assert(devinfo->gen <= 12);
 
    switch (stage) {
    case MESA_SHADER_FRAGMENT: {

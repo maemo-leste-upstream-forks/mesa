@@ -171,7 +171,8 @@ brw_nir_lower_vs_inputs(nir_shader *nir,
     * loaded as one vec4 or dvec4 per element (or matrix column), depending on
     * whether it is a double-precision type or not.
     */
-   nir_lower_io(nir, nir_var_shader_in, type_size_vec4, 0);
+   nir_lower_io(nir, nir_var_shader_in, type_size_vec4,
+                nir_lower_io_lower_64bit_to_32);
 
    /* This pass needs actual constants */
    nir_opt_constant_folding(nir);
@@ -294,7 +295,8 @@ brw_nir_lower_vue_inputs(nir_shader *nir,
    }
 
    /* Inputs are stored in vec4 slots, so use type_size_vec4(). */
-   nir_lower_io(nir, nir_var_shader_in, type_size_vec4, 0);
+   nir_lower_io(nir, nir_var_shader_in, type_size_vec4,
+                nir_lower_io_lower_64bit_to_32);
 
    /* This pass needs actual constants */
    nir_opt_constant_folding(nir);
@@ -345,7 +347,8 @@ brw_nir_lower_tes_inputs(nir_shader *nir, const struct brw_vue_map *vue_map)
       var->data.driver_location = var->data.location;
    }
 
-   nir_lower_io(nir, nir_var_shader_in, type_size_vec4, 0);
+   nir_lower_io(nir, nir_var_shader_in, type_size_vec4,
+                nir_lower_io_lower_64bit_to_32);
 
    /* This pass needs actual constants */
    nir_opt_constant_folding(nir);
@@ -396,7 +399,7 @@ brw_nir_lower_fs_inputs(nir_shader *nir,
       }
    }
 
-   nir_lower_io_options lower_io_options = 0;
+   nir_lower_io_options lower_io_options = nir_lower_io_lower_64bit_to_32;
    if (key->persample_interp)
       lower_io_options |= nir_lower_io_force_sample_interpolation;
 
@@ -417,7 +420,8 @@ brw_nir_lower_vue_outputs(nir_shader *nir)
       var->data.driver_location = var->data.location;
    }
 
-   nir_lower_io(nir, nir_var_shader_out, type_size_vec4, 0);
+   nir_lower_io(nir, nir_var_shader_out, type_size_vec4,
+                nir_lower_io_lower_64bit_to_32);
 }
 
 void
@@ -428,7 +432,8 @@ brw_nir_lower_tcs_outputs(nir_shader *nir, const struct brw_vue_map *vue_map,
       var->data.driver_location = var->data.location;
    }
 
-   nir_lower_io(nir, nir_var_shader_out, type_size_vec4, 0);
+   nir_lower_io(nir, nir_var_shader_out, type_size_vec4,
+                nir_lower_io_lower_64bit_to_32);
 
    /* This pass needs actual constants */
    nir_opt_constant_folding(nir);
@@ -513,7 +518,7 @@ brw_nir_optimize(nir_shader *nir, const struct brw_compiler *compiler,
       OPT(nir_opt_combine_stores, nir_var_all);
 
       if (is_scalar) {
-         OPT(nir_lower_alu_to_scalar, NULL);
+         OPT(nir_lower_alu_to_scalar, NULL, NULL);
       }
 
       OPT(nir_copy_prop);
@@ -649,7 +654,7 @@ brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
    const bool is_scalar = compiler->scalar_stage[nir->info.stage];
 
    if (is_scalar) {
-      OPT(nir_lower_alu_to_scalar, NULL);
+      OPT(nir_lower_alu_to_scalar, NULL, NULL);
    }
 
    if (nir->info.stage == MESA_SHADER_GEOMETRY)
@@ -685,13 +690,6 @@ brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
    OPT(nir_lower_doubles, softfp64, nir->options->lower_doubles_options);
    OPT(nir_lower_int64, nir->options->lower_int64_options);
 
-   /* This needs to be run after the first optimization pass but before we
-    * lower indirect derefs away
-    */
-   if (compiler->supports_shader_constants) {
-      OPT(nir_opt_large_constants, NULL, 32);
-   }
-
    OPT(nir_lower_bit_size, lower_bit_size_callback, (void *)compiler);
 
    if (is_scalar) {
@@ -701,13 +699,18 @@ brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
    /* Lower a bunch of stuff */
    OPT(nir_lower_var_copies);
 
+   /* This needs to be run after the first optimization pass but before we
+    * lower indirect derefs away
+    */
+   if (compiler->supports_shader_constants) {
+      OPT(nir_opt_large_constants, NULL, 32);
+   }
+
    OPT(nir_lower_system_values);
 
    const nir_lower_subgroups_options subgroups_options = {
-      .subgroup_size = BRW_SUBGROUP_SIZE,
       .ballot_bit_size = 32,
       .lower_to_scalar = true,
-      .lower_subgroup_masks = true,
       .lower_vote_trivial = !is_scalar,
       .lower_shuffle = true,
    };
@@ -868,11 +871,11 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
    OPT(brw_nir_lower_conversions);
 
    if (is_scalar)
-      OPT(nir_lower_alu_to_scalar, NULL);
+      OPT(nir_lower_alu_to_scalar, NULL, NULL);
    OPT(nir_lower_to_source_mods, nir_lower_all_source_mods);
    OPT(nir_copy_prop);
    OPT(nir_opt_dce);
-   OPT(nir_opt_move_comparisons);
+   OPT(nir_opt_move, nir_move_comparisons);
 
    OPT(nir_lower_bool_to_int32);
 
@@ -919,11 +922,10 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
    }
 }
 
-void
+static bool
 brw_nir_apply_sampler_key(nir_shader *nir,
                           const struct brw_compiler *compiler,
-                          const struct brw_sampler_prog_key_data *key_tex,
-                          bool is_scalar)
+                          const struct brw_sampler_prog_key_data *key_tex)
 {
    const struct gen_device_info *devinfo = compiler->devinfo;
    nir_lower_tex_options tex_options = {
@@ -966,9 +968,191 @@ brw_nir_apply_sampler_key(nir_shader *nir,
    memcpy(&tex_options.scale_factors, &key_tex->scale_factors,
           sizeof(tex_options.scale_factors));
 
-   if (nir_lower_tex(nir, &tex_options)) {
-      nir_validate_shader(nir, "after nir_lower_tex");
+   return nir_lower_tex(nir, &tex_options);
+}
+
+static unsigned
+get_subgroup_size(gl_shader_stage stage,
+                  const struct brw_base_prog_key *key,
+                  unsigned max_subgroup_size)
+{
+   switch (key->subgroup_size_type) {
+   case BRW_SUBGROUP_SIZE_API_CONSTANT:
+      /* We have to use the global constant size. */
+      return BRW_SUBGROUP_SIZE;
+
+   case BRW_SUBGROUP_SIZE_UNIFORM:
+      /* It has to be uniform across all invocations but can vary per stage
+       * if we want.  This gives us a bit more freedom.
+       *
+       * For compute, brw_nir_apply_key is called per-dispatch-width so this
+       * is the actual subgroup size and not a maximum.  However, we only
+       * invoke one size of any given compute shader so it's still guaranteed
+       * to be uniform across invocations.
+       */
+      return max_subgroup_size;
+
+   case BRW_SUBGROUP_SIZE_VARYING:
+      /* The subgroup size is allowed to be fully varying.  For geometry
+       * stages, we know it's always 8 which is max_subgroup_size so we can
+       * return that.  For compute, brw_nir_apply_key is called once per
+       * dispatch-width so max_subgroup_size is the real subgroup size.
+       *
+       * For fragment, we return 0 and let it fall through to the back-end
+       * compiler.  This means we can't optimize based on subgroup size but
+       * that's a risk the client took when it asked for a varying subgroup
+       * size.
+       */
+      return stage == MESA_SHADER_FRAGMENT ? 0 : max_subgroup_size;
+
+   case BRW_SUBGROUP_SIZE_REQUIRE_8:
+   case BRW_SUBGROUP_SIZE_REQUIRE_16:
+   case BRW_SUBGROUP_SIZE_REQUIRE_32:
+      assert(stage == MESA_SHADER_COMPUTE);
+      /* These enum values are expressly chosen to be equal to the subgroup
+       * size that they require.
+       */
+      return key->subgroup_size_type;
+   }
+
+   unreachable("Invalid subgroup size type");
+}
+
+void
+brw_nir_apply_key(nir_shader *nir,
+                  const struct brw_compiler *compiler,
+                  const struct brw_base_prog_key *key,
+                  unsigned max_subgroup_size,
+                  bool is_scalar)
+{
+   bool progress = false;
+
+   OPT(brw_nir_apply_sampler_key, compiler, &key->tex);
+
+   const nir_lower_subgroups_options subgroups_options = {
+      .subgroup_size = get_subgroup_size(nir->info.stage, key,
+                                         max_subgroup_size),
+      .ballot_bit_size = 32,
+      .lower_subgroup_masks = true,
+   };
+   OPT(nir_lower_subgroups, &subgroups_options);
+
+   if (progress)
       brw_nir_optimize(nir, compiler, is_scalar, false);
+}
+
+enum brw_conditional_mod
+brw_cmod_for_nir_comparison(nir_op op)
+{
+   switch (op) {
+   case nir_op_flt:
+   case nir_op_flt32:
+   case nir_op_ilt:
+   case nir_op_ilt32:
+   case nir_op_ult:
+   case nir_op_ult32:
+      return BRW_CONDITIONAL_L;
+
+   case nir_op_fge:
+   case nir_op_fge32:
+   case nir_op_ige:
+   case nir_op_ige32:
+   case nir_op_uge:
+   case nir_op_uge32:
+      return BRW_CONDITIONAL_GE;
+
+   case nir_op_feq:
+   case nir_op_feq32:
+   case nir_op_ieq:
+   case nir_op_ieq32:
+   case nir_op_b32all_fequal2:
+   case nir_op_b32all_iequal2:
+   case nir_op_b32all_fequal3:
+   case nir_op_b32all_iequal3:
+   case nir_op_b32all_fequal4:
+   case nir_op_b32all_iequal4:
+      return BRW_CONDITIONAL_Z;
+
+   case nir_op_fne:
+   case nir_op_fne32:
+   case nir_op_ine:
+   case nir_op_ine32:
+   case nir_op_b32any_fnequal2:
+   case nir_op_b32any_inequal2:
+   case nir_op_b32any_fnequal3:
+   case nir_op_b32any_inequal3:
+   case nir_op_b32any_fnequal4:
+   case nir_op_b32any_inequal4:
+      return BRW_CONDITIONAL_NZ;
+
+   default:
+      unreachable("Unsupported NIR comparison op");
+   }
+}
+
+uint32_t
+brw_aop_for_nir_intrinsic(const nir_intrinsic_instr *atomic)
+{
+   switch (atomic->intrinsic) {
+#define AOP_CASE(atom) \
+   case nir_intrinsic_image_atomic_##atom:            \
+   case nir_intrinsic_bindless_image_atomic_##atom:   \
+   case nir_intrinsic_ssbo_atomic_##atom:             \
+   case nir_intrinsic_shared_atomic_##atom:           \
+   case nir_intrinsic_global_atomic_##atom
+
+   AOP_CASE(add): {
+      unsigned src_idx;
+      switch (atomic->intrinsic) {
+      case nir_intrinsic_image_atomic_add:
+      case nir_intrinsic_bindless_image_atomic_add:
+         src_idx = 3;
+         break;
+      case nir_intrinsic_ssbo_atomic_add:
+         src_idx = 2;
+         break;
+      case nir_intrinsic_shared_atomic_add:
+      case nir_intrinsic_global_atomic_add:
+         src_idx = 1;
+         break;
+      default:
+         unreachable("Invalid add atomic opcode");
+      }
+
+      if (nir_src_is_const(atomic->src[src_idx])) {
+         int64_t add_val = nir_src_as_int(atomic->src[src_idx]);
+         if (add_val == 1)
+            return BRW_AOP_INC;
+         else if (add_val == -1)
+            return BRW_AOP_DEC;
+      }
+      return BRW_AOP_ADD;
+   }
+
+   AOP_CASE(imin):         return BRW_AOP_IMIN;
+   AOP_CASE(umin):         return BRW_AOP_UMIN;
+   AOP_CASE(imax):         return BRW_AOP_IMAX;
+   AOP_CASE(umax):         return BRW_AOP_UMAX;
+   AOP_CASE(and):          return BRW_AOP_AND;
+   AOP_CASE(or):           return BRW_AOP_OR;
+   AOP_CASE(xor):          return BRW_AOP_XOR;
+   AOP_CASE(exchange):     return BRW_AOP_MOV;
+   AOP_CASE(comp_swap):    return BRW_AOP_CMPWR;
+
+#undef AOP_CASE
+#define AOP_CASE(atom) \
+   case nir_intrinsic_ssbo_atomic_##atom:          \
+   case nir_intrinsic_shared_atomic_##atom:        \
+   case nir_intrinsic_global_atomic_##atom
+
+   AOP_CASE(fmin):         return BRW_AOP_FMIN;
+   AOP_CASE(fmax):         return BRW_AOP_FMAX;
+   AOP_CASE(fcomp_swap):   return BRW_AOP_FCMPWR;
+
+#undef AOP_CASE
+
+   default:
+      unreachable("Unsupported NIR atomic intrinsic");
    }
 }
 

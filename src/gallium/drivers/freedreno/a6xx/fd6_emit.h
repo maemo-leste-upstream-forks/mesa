@@ -49,10 +49,17 @@ enum fd6_state_id {
 	FD6_GROUP_LRZ,
 	FD6_GROUP_LRZ_BINNING,
 	FD6_GROUP_VBO,
-	FD6_GROUP_VBO_BINNING,
 	FD6_GROUP_VS_CONST,
+	FD6_GROUP_HS_CONST,
+	FD6_GROUP_DS_CONST,
+	FD6_GROUP_GS_CONST,
 	FD6_GROUP_FS_CONST,
+	FD6_GROUP_VS_DRIVER_PARAMS,
+	FD6_GROUP_PRIMITIVE_PARAMS,
 	FD6_GROUP_VS_TEX,
+	FD6_GROUP_HS_TEX,
+	FD6_GROUP_DS_TEX,
+	FD6_GROUP_GS_TEX,
 	FD6_GROUP_FS_TEX,
 	FD6_GROUP_IBO,
 	FD6_GROUP_RASTERIZER,
@@ -92,6 +99,9 @@ struct fd6_emit {
 
 	struct ir3_shader_variant *bs;
 	struct ir3_shader_variant *vs;
+	struct ir3_shader_variant *hs;
+	struct ir3_shader_variant *ds;
+	struct ir3_shader_variant *gs;
 	struct ir3_shader_variant *fs;
 
 	unsigned streamout_mask;
@@ -113,14 +123,21 @@ fd6_emit_get_prog(struct fd6_emit *emit)
 }
 
 static inline void
-fd6_emit_add_group(struct fd6_emit *emit, struct fd_ringbuffer *stateobj,
+fd6_emit_take_group(struct fd6_emit *emit, struct fd_ringbuffer *stateobj,
 		enum fd6_state_id group_id, unsigned enable_mask)
 {
 	debug_assert(emit->num_groups < ARRAY_SIZE(emit->groups));
 	struct fd6_state_group *g = &emit->groups[emit->num_groups++];
-	g->stateobj = fd_ringbuffer_ref(stateobj);
+	g->stateobj = stateobj;
 	g->group_id = group_id;
 	g->enable_mask = enable_mask;
+}
+
+static inline void
+fd6_emit_add_group(struct fd6_emit *emit, struct fd_ringbuffer *stateobj,
+		enum fd6_state_id group_id, unsigned enable_mask)
+{
+	fd6_emit_take_group(emit, fd_ringbuffer_ref(stateobj), group_id, enable_mask);
 }
 
 static inline unsigned
@@ -136,7 +153,7 @@ fd6_event_write(struct fd_batch *batch, struct fd_ringbuffer *ring,
 	if (timestamp) {
 		struct fd6_context *fd6_ctx = fd6_context(batch->ctx);
 		seqno = ++fd6_ctx->seqno;
-		OUT_RELOCW(ring, fd6_ctx->blit_mem, 0, 0, 0);  /* ADDR_LO/HI */
+		OUT_RELOCW(ring, control_ptr(fd6_ctx, seqno));  /* ADDR_LO/HI */
 		OUT_RING(ring, seqno);
 	}
 
@@ -146,7 +163,7 @@ fd6_event_write(struct fd_batch *batch, struct fd_ringbuffer *ring,
 static inline void
 fd6_cache_inv(struct fd_batch *batch, struct fd_ringbuffer *ring)
 {
-	fd6_event_write(batch, ring, 0x31, false);
+	fd6_event_write(batch, ring, CACHE_INVALIDATE, false);
 }
 
 static inline void
@@ -159,7 +176,7 @@ fd6_cache_flush(struct fd_batch *batch, struct fd_ringbuffer *ring)
 
 	OUT_PKT7(ring, CP_WAIT_REG_MEM, 6);
 	OUT_RING(ring, 0x00000013);
-	OUT_RELOC(ring, fd6_ctx->blit_mem, 0, 0, 0);
+	OUT_RELOC(ring, control_ptr(fd6_ctx, seqno));
 	OUT_RING(ring, seqno);
 	OUT_RING(ring, 0xffffffff);
 	OUT_RING(ring, 0x00000010);
@@ -168,7 +185,7 @@ fd6_cache_flush(struct fd_batch *batch, struct fd_ringbuffer *ring)
 
 	OUT_PKT7(ring, CP_UNK_A6XX_14, 4);
 	OUT_RING(ring, 0x00000000);
-	OUT_RELOC(ring, fd6_ctx->blit_mem, 0, 0, 0);
+	OUT_RELOC(ring, control_ptr(fd6_ctx, seqno));
 	OUT_RING(ring, seqno);
 }
 
@@ -211,6 +228,12 @@ fd6_stage2shadersb(gl_shader_stage type)
 	switch (type) {
 	case MESA_SHADER_VERTEX:
 		return SB6_VS_SHADER;
+	case MESA_SHADER_TESS_CTRL:
+		return SB6_HS_SHADER;
+	case MESA_SHADER_TESS_EVAL:
+		return SB6_DS_SHADER;
+	case MESA_SHADER_GEOMETRY:
+		return SB6_GS_SHADER;
 	case MESA_SHADER_FRAGMENT:
 		return SB6_FS_SHADER;
 	case MESA_SHADER_COMPUTE:
@@ -234,6 +257,7 @@ void fd6_emit_cs_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 
 void fd6_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring);
 
+void fd6_emit_init_screen(struct pipe_screen *pscreen);
 void fd6_emit_init(struct pipe_context *pctx);
 
 static inline void

@@ -587,8 +587,14 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
     ws->info.has_2d_tiling = ws->info.chip_class <= GFX6 || ws->info.drm_minor >= 35;
     ws->info.has_read_registers_query = ws->info.drm_minor >= 42;
     ws->info.max_alignment = 1024*1024;
+    ws->info.has_graphics = true;
+    ws->info.cpdma_prefetch_writes_memory = true;
+    ws->info.max_wave64_per_simd = 10;
+    ws->info.num_physical_sgprs_per_simd = 512;
+    ws->info.num_physical_wave64_vgprs_per_simd = 256;
 
-    ws->check_vm = strstr(debug_get_option("R600_DEBUG", ""), "check_vm") != NULL;
+    ws->check_vm = strstr(debug_get_option("R600_DEBUG", ""), "check_vm") != NULL ||
+                   strstr(debug_get_option("AMD_DEBUG", ""), "check_vm") != NULL;
 
     return true;
 }

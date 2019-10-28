@@ -85,7 +85,7 @@ static const struct debug_named_value debug_options[] = {
 		{"noindirect",FD_DBG_NOINDR, "Disable hw indirect draws (emulate on CPU)"},
 		{"noblit",    FD_DBG_NOBLIT, "Disable blitter (fallback to generic blit path)"},
 		{"hiprio",    FD_DBG_HIPRIO, "Force high-priority context"},
-		{"ttile",     FD_DBG_TTILE,  "Enable texture tiling (a5xx)"},
+		{"ttile",     FD_DBG_TTILE,  "Enable texture tiling (a2xx/a3xx/a5xx)"},
 		{"perfcntrs", FD_DBG_PERFC,  "Expose performance counters"},
 		{"noubwc",    FD_DBG_NOUBWC, "Disable UBWC for all internal buffers"},
 		DEBUG_NAMED_VALUE_END
@@ -354,6 +354,14 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 			return 1;
 		return 0;
 
+	/* Geometry shaders.. */
+	case PIPE_CAP_MAX_GEOMETRY_OUTPUT_VERTICES:
+		return 512;
+	case PIPE_CAP_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS:
+		return 2048;
+	case PIPE_CAP_MAX_GS_INVOCATIONS:
+		return 32;
+
 	/* Stream output. */
 	case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
 		if (is_ir3(screen))
@@ -365,6 +373,10 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 		if (is_ir3(screen))
 			return 1;
 		return 0;
+	case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
+		return 1;
+	case PIPE_CAP_TGSI_FS_POINT_IS_SYSVAL:
+		return is_a2xx(screen);
 	case PIPE_CAP_MAX_STREAM_OUTPUT_SEPARATE_COMPONENTS:
 	case PIPE_CAP_MAX_STREAM_OUTPUT_INTERLEAVED_COMPONENTS:
 		if (is_ir3(screen))
@@ -458,12 +470,13 @@ fd_screen_get_shader_param(struct pipe_screen *pscreen,
 	case PIPE_SHADER_FRAGMENT:
 	case PIPE_SHADER_VERTEX:
 		break;
+	case PIPE_SHADER_GEOMETRY:
+		if (is_a6xx(screen))
+			break;
+		return 0;
 	case PIPE_SHADER_COMPUTE:
 		if (has_compute(screen))
 			break;
-		return 0;
-	case PIPE_SHADER_GEOMETRY:
-		/* maye we could emulate.. */
 		return 0;
 	default:
 		DBG("unknown shader type %d", shader);
@@ -536,8 +549,6 @@ fd_screen_get_shader_param(struct pipe_screen *pscreen,
 		return (1 << PIPE_SHADER_IR_NIR) | (1 << PIPE_SHADER_IR_TGSI);
 	case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
 		return 32;
-	case PIPE_SHADER_CAP_SCALAR_ISA:
-		return is_ir3(screen) ? 1 : 0;
 	case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
 	case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
 		if (is_a5xx(screen) || is_a6xx(screen)) {
@@ -748,6 +759,13 @@ fd_screen_bo_from_handle(struct pipe_screen *pscreen,
 	return bo;
 }
 
+static void _fd_fence_ref(struct pipe_screen *pscreen,
+		struct pipe_fence_handle **ptr,
+		struct pipe_fence_handle *pfence)
+{
+	fd_fence_ref(ptr, pfence);
+}
+
 struct pipe_screen *
 fd_screen_create(struct fd_device *dev, struct renderonly *ro)
 {
@@ -881,6 +899,7 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro)
 	case 430:
 		fd4_screen_init(pscreen);
 		break;
+	case 510:
 	case 530:
 	case 540:
 		fd5_screen_init(pscreen);
@@ -934,7 +953,7 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro)
 
 	pscreen->get_timestamp = fd_screen_get_timestamp;
 
-	pscreen->fence_reference = fd_fence_ref;
+	pscreen->fence_reference = _fd_fence_ref;
 	pscreen->fence_finish = fd_fence_finish;
 	pscreen->fence_get_fd = fd_fence_get_fd;
 

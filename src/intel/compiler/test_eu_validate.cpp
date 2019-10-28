@@ -75,7 +75,7 @@ void validation_test::SetUp()
    struct gen_info info = GetParam();
    int devid = gen_device_name_to_pci_device_id(info.name);
 
-   gen_get_device_info(devid, &devinfo);
+   gen_get_device_info_from_pci_id(devid, &devinfo);
 
    brw_init_codegen(&devinfo, p, p);
 }
@@ -178,7 +178,7 @@ TEST_P(validation_test, opcode46)
     *              reserved on Gen 7
     *              "goto" on Gen8+
     */
-   brw_next_insn(p, 46);
+   brw_next_insn(p, brw_opcode_decode(&devinfo, 46));
 
    if (devinfo.gen == 7) {
       EXPECT_FALSE(validate(p));

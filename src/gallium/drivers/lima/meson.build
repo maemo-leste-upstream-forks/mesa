@@ -39,12 +39,14 @@ files_lima = files(
   'ir/pp/scheduler.c',
   'ir/pp/instr.c',
   'ir/pp/regalloc.c',
+  'ir/pp/liveness.c',
   'ir/pp/codegen.h',
   'ir/pp/codegen.c',
   'ir/pp/node_to_instr.c',
   'ir/pp/disasm.c',
 
   'ir/lima_nir_lower_uniform_to_scalar.c',
+  'ir/lima_nir_split_load_input.c',
 
   'ir/lima_ir.h',
 
@@ -68,11 +70,25 @@ files_lima = files(
   'lima_texture.h',
   'lima_fence.c',
   'lima_fence.h',
+  'lima_format.h',
+  'lima_format.c',
+)
+
+lima_nir_algebraic_c = custom_target(
+  'lima_nir_algebraic.c',
+  input : 'ir/lima_nir_algebraic.py',
+  output : 'lima_nir_algebraic.c',
+  command : [
+    prog_python, '@INPUT@',
+    '-p', join_paths(meson.source_root(), 'src/compiler/nir/'),
+  ],
+  capture : true,
+  depend_files : nir_algebraic_py,
 )
 
 liblima = static_library(
   'lima',
-  files_lima,
+  files_lima, lima_nir_algebraic_c,
   include_directories : [
     inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
     inc_panfrost
@@ -97,17 +113,34 @@ lima_compiler = executable(
     inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers, inc_mesa, inc_mapi, inc_compiler,
   ],
   dependencies : [
-    dep_thread,
     idep_nir,
+    idep_mesautil,
   ],
   link_with : [
     liblima,
     libgallium,
     libglsl_standalone,
-    libmesa_util,
     libpanfrost_shared,
   ],
   build_by_default : with_tools.contains('lima'),
   install : with_tools.contains('lima'),
 )
 
+lima_disasm = executable(
+  'lima_disasm',
+  files(
+    'standalone/lima_disasm.c',
+  ),
+  include_directories : [
+    inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers, inc_mesa, inc_mapi, inc_compiler,
+  ],
+  dependencies : [
+    idep_mesautil,
+  ],
+  link_with : [
+    liblima,
+    libpanfrost_shared,
+  ],
+  build_by_default : with_tools.contains('lima'),
+  install : with_tools.contains('lima'),
+)

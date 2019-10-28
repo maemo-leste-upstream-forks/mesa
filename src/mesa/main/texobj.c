@@ -219,6 +219,42 @@ _mesa_get_current_tex_object(struct gl_context *ctx, GLenum target)
 
 
 /**
+ * Get the texture object for given target and texunit
+ * Proxy targets are accepted only allowProxyTarget is true.
+ * Return NULL if any error (and record the error).
+ */
+struct gl_texture_object *
+_mesa_get_texobj_by_target_and_texunit(struct gl_context *ctx, GLenum target,
+                                       GLuint texunit, bool allowProxyTarget,
+                                       const char* caller)
+{
+   struct gl_texture_unit *texUnit;
+   int targetIndex;
+
+   if (_mesa_is_proxy_texture(target) && allowProxyTarget) {
+      return _mesa_get_current_tex_object(ctx, target);
+   }
+
+   if (texunit >= ctx->Const.MaxCombinedTextureImageUnits) {
+      _mesa_error(ctx, GL_INVALID_OPERATION,
+                  "%s(texunit=%d)", caller, texunit);
+      return NULL;
+   }
+
+   texUnit = _mesa_get_tex_unit(ctx, texunit);
+
+   targetIndex = _mesa_tex_target_to_index(ctx, target);
+   if (targetIndex < 0 || targetIndex == TEXTURE_BUFFER_INDEX) {
+      _mesa_error(ctx, GL_INVALID_ENUM, "%s(target)", caller);
+      return NULL;
+   }
+   assert(targetIndex < NUM_TEXTURE_TARGETS);
+
+   return texUnit->CurrentTex[targetIndex];
+}
+
+
+/**
  * Allocate and initialize a new texture object.  But don't put it into the
  * texture object hash table.
  *
@@ -272,8 +308,6 @@ _mesa_initialize_texture_object( struct gl_context *ctx,
           target == GL_TEXTURE_2D_MULTISAMPLE ||
           target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY);
 
-   GLenum filter = GL_LINEAR;
-
    memset(obj, 0, sizeof(*obj));
    /* init the non-zero fields */
    simple_mtx_init(&obj->Mutex, mtx_plain);
@@ -294,30 +328,20 @@ _mesa_initialize_texture_object( struct gl_context *ctx,
    obj->RequiredTextureImageUnits = 1;
 
    /* sampler state */
-   switch (target) {
-      case GL_TEXTURE_2D_MULTISAMPLE:
-      case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
-         filter = GL_NEAREST;
-         /* fallthrough */
-
-      case GL_TEXTURE_RECTANGLE_NV:
-      case GL_TEXTURE_EXTERNAL_OES:
-         obj->Sampler.WrapS = GL_CLAMP_TO_EDGE;
-         obj->Sampler.WrapT = GL_CLAMP_TO_EDGE;
-         obj->Sampler.WrapR = GL_CLAMP_TO_EDGE;
-         obj->Sampler.MinFilter = filter;
-         obj->Sampler.MagFilter = filter;
-         break;
-
-      default:
-         obj->Sampler.WrapS = GL_REPEAT;
-         obj->Sampler.WrapT = GL_REPEAT;
-         obj->Sampler.WrapR = GL_REPEAT;
-         obj->Sampler.MinFilter = GL_NEAREST_MIPMAP_LINEAR;
-         obj->Sampler.MagFilter = GL_LINEAR;
-         break;
+   if (target == GL_TEXTURE_RECTANGLE_NV ||
+       target == GL_TEXTURE_EXTERNAL_OES) {
+      obj->Sampler.WrapS = GL_CLAMP_TO_EDGE;
+      obj->Sampler.WrapT = GL_CLAMP_TO_EDGE;
+      obj->Sampler.WrapR = GL_CLAMP_TO_EDGE;
+      obj->Sampler.MinFilter = GL_LINEAR;
    }
-
+   else {
+      obj->Sampler.WrapS = GL_REPEAT;
+      obj->Sampler.WrapT = GL_REPEAT;
+      obj->Sampler.WrapR = GL_REPEAT;
+      obj->Sampler.MinFilter = GL_NEAREST_MIPMAP_LINEAR;
+   }
+   obj->Sampler.MagFilter = GL_LINEAR;
    obj->Sampler.MinLod = -1000.0;
    obj->Sampler.MaxLod = 1000.0;
    obj->Sampler.LodBias = 0.0;

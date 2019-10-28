@@ -80,7 +80,11 @@ struct virgl_winsys {
                                struct virgl_hw_res *res);
 
    struct virgl_hw_res *(*resource_create_from_handle)(struct virgl_winsys *vws,
-                                                       struct winsys_handle *whandle);
+                                                       struct winsys_handle *whandle,
+                                                       uint32_t *plane,
+                                                       uint32_t *stride,
+                                                       uint32_t *plane_offset,
+                                                       uint64_t *modifier);
    boolean (*resource_get_handle)(struct virgl_winsys *vws,
                                   struct virgl_hw_res *res,
                                   uint32_t stride,
@@ -156,4 +160,7 @@ static inline void virgl_ws_fill_new_caps_defaults(struct virgl_drm_caps *caps)
    caps->caps.v2.max_compute_shared_memory_size = 0;
    caps->caps.v2.host_feature_check_version = 0;
 }
+
+extern enum virgl_formats pipe_to_virgl_format(enum pipe_format format);
+
 #endif

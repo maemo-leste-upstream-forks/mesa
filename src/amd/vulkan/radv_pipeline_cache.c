@@ -59,8 +59,7 @@ radv_pipeline_cache_init(struct radv_pipeline_cache *cache,
 	 * cache. Disable caching when we want to keep shader debug info, since
 	 * we don't get the debug info on cached shaders. */
 	if (cache->hash_table == NULL ||
-	    (device->instance->debug_flags & RADV_DEBUG_NO_CACHE) ||
-	    device->keep_shader_info)
+	    (device->instance->debug_flags & RADV_DEBUG_NO_CACHE))
 		cache->table_size = 0;
 	else
 		memset(cache->hash_table, 0, byte_size);
@@ -241,8 +240,64 @@ radv_is_cache_disabled(struct radv_device *device)
 	/* Pipeline caches can be disabled with RADV_DEBUG=nocache, with
 	 * MESA_GLSL_CACHE_DISABLE=1, and when VK_AMD_shader_info is requested.
 	 */
-	return (device->instance->debug_flags & RADV_DEBUG_NO_CACHE) ||
-	       device->keep_shader_info;
+	return (device->instance->debug_flags & RADV_DEBUG_NO_CACHE);
+}
+
+/*
+ * Secure compiles cannot open files so we get the parent process to load the
+ * cache entry for us.
+ */
+static struct cache_entry *
+radv_sc_read_from_disk_cache(struct radv_device *device, uint8_t *disk_sha1)
+{
+	struct cache_entry *entry;
+	unsigned process = device->sc_state->secure_compile_thread_counter;
+	enum radv_secure_compile_type sc_type = RADV_SC_TYPE_READ_DISK_CACHE;
+
+	write(device->sc_state->secure_compile_processes[process].fd_secure_output,
+	      &sc_type, sizeof(enum radv_secure_compile_type));
+	write(device->sc_state->secure_compile_processes[process].fd_secure_output,
+	      disk_sha1, sizeof(uint8_t) * 20);
+
+	uint8_t found_cache_entry;
+	read(device->sc_state->secure_compile_processes[process].fd_secure_input,
+	     &found_cache_entry, sizeof(uint8_t));
+
+	if (found_cache_entry) {
+		size_t entry_size;
+		read(device->sc_state->secure_compile_processes[process].fd_secure_input,
+		     &entry_size, sizeof(size_t));
+
+		entry = malloc(entry_size);
+		read(device->sc_state->secure_compile_processes[process].fd_secure_input,
+		     entry, entry_size);
+		return entry;
+	}
+
+	return NULL;
+}
+
+/*
+ * Secure compiles cannot open files so we get the parent process to write to
+ * the disk cache for us.
+ */
+static void
+radv_sc_write_to_disk_cache(struct radv_device *device, uint8_t *disk_sha1,
+			    struct cache_entry *entry)
+{
+	unsigned process = device->sc_state->secure_compile_thread_counter;
+	enum radv_secure_compile_type sc_type = RADV_SC_TYPE_WRITE_DISK_CACHE;
+
+	write(device->sc_state->secure_compile_processes[process].fd_secure_output,
+	      &sc_type, sizeof(enum radv_secure_compile_type));
+	write(device->sc_state->secure_compile_processes[process].fd_secure_output,
+	      disk_sha1, sizeof(uint8_t) * 20);
+
+	uint32_t size = entry_size(entry);
+	write(device->sc_state->secure_compile_processes[process].fd_secure_output,
+	      &size, sizeof(uint32_t));
+	write(device->sc_state->secure_compile_processes[process].fd_secure_output,
+	      entry, size);
 }
 
 bool
@@ -277,9 +332,15 @@ radv_create_shader_variants_from_pipeline_cache(struct radv_device *device,
 		uint8_t disk_sha1[20];
 		disk_cache_compute_key(device->physical_device->disk_cache,
 				       sha1, 20, disk_sha1);
-		entry = (struct cache_entry *)
-			disk_cache_get(device->physical_device->disk_cache,
-				       disk_sha1, NULL);
+
+		if (radv_device_use_secure_compile(device->instance)) {
+			entry = radv_sc_read_from_disk_cache(device, disk_sha1);
+		} else {
+			entry = (struct cache_entry *)
+				disk_cache_get(device->physical_device->disk_cache,
+					       disk_sha1, NULL);
+		}
+
 		if (!entry) {
 			pthread_mutex_unlock(&cache->mutex);
 			return false;
@@ -297,7 +358,9 @@ radv_create_shader_variants_from_pipeline_cache(struct radv_device *device,
 			free(entry);
 			entry = new_entry;
 
-			radv_pipeline_cache_add_entry(cache, new_entry);
+			if (!(device->instance->debug_flags & RADV_DEBUG_NO_MEMORY_CACHE) ||
+			    cache != device->mem_cache)
+				radv_pipeline_cache_add_entry(cache, new_entry);
 		}
 	}
 
@@ -308,7 +371,7 @@ radv_create_shader_variants_from_pipeline_cache(struct radv_device *device,
 			memcpy(binary, p, entry->binary_sizes[i]);
 			p += entry->binary_sizes[i];
 
-			entry->variants[i] = radv_shader_variant_create(device, binary);
+			entry->variants[i] = radv_shader_variant_create(device, binary, false);
 			free(binary);
 		} else if (entry->binary_sizes[i]) {
 			p += entry->binary_sizes[i];
@@ -316,11 +379,17 @@ radv_create_shader_variants_from_pipeline_cache(struct radv_device *device,
 
 	}
 
-	for (int i = 0; i < MESA_SHADER_STAGES; ++i)
-		if (entry->variants[i])
-			p_atomic_inc(&entry->variants[i]->ref_count);
-
 	memcpy(variants, entry->variants, sizeof(entry->variants));
+
+	if (device->instance->debug_flags & RADV_DEBUG_NO_MEMORY_CACHE &&
+	    cache == device->mem_cache)
+		vk_free(&cache->alloc, entry);
+	else {
+		for (int i = 0; i < MESA_SHADER_STAGES; ++i)
+			if (entry->variants[i])
+				p_atomic_inc(&entry->variants[i]->ref_count);
+	}
+
 	pthread_mutex_unlock(&cache->mutex);
 	return true;
 }
@@ -396,8 +465,24 @@ radv_pipeline_cache_insert_shaders(struct radv_device *device,
 		uint8_t disk_sha1[20];
 		disk_cache_compute_key(device->physical_device->disk_cache, sha1, 20,
 			       disk_sha1);
-		disk_cache_put(device->physical_device->disk_cache,
-			       disk_sha1, entry, entry_size(entry), NULL);
+
+		/* Write the cache item out to the parent of this forked
+		 * process.
+		 */
+		if (radv_device_use_secure_compile(device->instance)) {
+			radv_sc_write_to_disk_cache(device, disk_sha1, entry);
+		} else {
+			disk_cache_put(device->physical_device->disk_cache,
+				       disk_sha1, entry, entry_size(entry),
+				       NULL);
+		}
+	}
+
+	if (device->instance->debug_flags & RADV_DEBUG_NO_MEMORY_CACHE &&
+	    cache == device->mem_cache) {
+		vk_free2(&cache->alloc, NULL, entry);
+		pthread_mutex_unlock(&cache->mutex);
+		return;
 	}
 
 	/* We delay setting the variant so we have reproducible disk cache

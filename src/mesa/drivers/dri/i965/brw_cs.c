@@ -71,8 +71,6 @@ brw_codegen_cs_prog(struct brw_context *brw,
 
       ralloc_free(mem_ctx);
       return false;
-   } else {
-      prog_data.base.total_shared = cp->program.info.cs.shared_size;
    }
 
    assign_cs_binding_table_offsets(devinfo, &cp->program, &prog_data);
@@ -92,7 +90,7 @@ brw_codegen_cs_prog(struct brw_context *brw,
 
    char *error_str;
    program = brw_compile_cs(brw->screen->compiler, brw, mem_ctx, key,
-                            &prog_data, nir, st_index, &error_str);
+                            &prog_data, nir, st_index, NULL, &error_str);
    if (program == NULL) {
       cp->program.sh.data->LinkStatus = LINKING_FAILURE;
       ralloc_strcat(&cp->program.sh.data->InfoLog, error_str);
@@ -176,7 +174,7 @@ brw_upload_cs_prog(struct brw_context *brw)
    cp = (struct brw_program *) brw->programs[MESA_SHADER_COMPUTE];
    cp->id = key.base.program_string_id;
 
-   MAYBE_UNUSED bool success = brw_codegen_cs_prog(brw, cp, &key);
+   ASSERTED bool success = brw_codegen_cs_prog(brw, cp, &key);
    assert(success);
 }
 

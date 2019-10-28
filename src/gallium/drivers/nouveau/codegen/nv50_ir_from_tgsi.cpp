@@ -606,6 +606,8 @@ nv50_ir::DataType Instruction::inferSrcType() const
    case TGSI_OPCODE_ATOMXOR:
    case TGSI_OPCODE_ATOMUMIN:
    case TGSI_OPCODE_ATOMUMAX:
+   case TGSI_OPCODE_ATOMDEC_WRAP:
+   case TGSI_OPCODE_ATOMINC_WRAP:
    case TGSI_OPCODE_UBFE:
    case TGSI_OPCODE_UMSB:
    case TGSI_OPCODE_UP2H:
@@ -819,6 +821,7 @@ static nv50_ir::operation translateOpcode(uint opcode)
    NV50_IR_OPCODE_CASE(DDY, DFDY);
    NV50_IR_OPCODE_CASE(DDY_FINE, DFDY);
    NV50_IR_OPCODE_CASE(KILL, DISCARD);
+   NV50_IR_OPCODE_CASE(DEMOTE, DISCARD);
 
    NV50_IR_OPCODE_CASE(SEQ, SET);
    NV50_IR_OPCODE_CASE(SGT, SET);
@@ -969,6 +972,8 @@ static nv50_ir::operation translateOpcode(uint opcode)
    NV50_IR_OPCODE_CASE(ATOMIMIN, ATOM);
    NV50_IR_OPCODE_CASE(ATOMIMAX, ATOM);
    NV50_IR_OPCODE_CASE(ATOMFADD, ATOM);
+   NV50_IR_OPCODE_CASE(ATOMDEC_WRAP, ATOM);
+   NV50_IR_OPCODE_CASE(ATOMINC_WRAP, ATOM);
 
    NV50_IR_OPCODE_CASE(TEX2, TEX);
    NV50_IR_OPCODE_CASE(TXB2, TXB);
@@ -1012,6 +1017,8 @@ static uint16_t opcodeToSubOp(uint opcode)
    case TGSI_OPCODE_ATOMUMAX: return NV50_IR_SUBOP_ATOM_MAX;
    case TGSI_OPCODE_ATOMIMAX: return NV50_IR_SUBOP_ATOM_MAX;
    case TGSI_OPCODE_ATOMFADD: return NV50_IR_SUBOP_ATOM_ADD;
+   case TGSI_OPCODE_ATOMDEC_WRAP: return NV50_IR_SUBOP_ATOM_DEC;
+   case TGSI_OPCODE_ATOMINC_WRAP: return NV50_IR_SUBOP_ATOM_INC;
    case TGSI_OPCODE_IMUL_HI:
    case TGSI_OPCODE_UMUL_HI:
       return NV50_IR_SUBOP_MUL_HIGH;
@@ -1575,6 +1582,9 @@ bool Source::scanInstruction(const struct tgsi_full_instruction *inst)
    if (insn.getOpcode() == TGSI_OPCODE_INTERP_SAMPLE)
       info->prop.fp.readsSampleLocations = true;
 
+   if (insn.getOpcode() == TGSI_OPCODE_DEMOTE)
+      info->prop.fp.usesDiscard = true;
+
    if (insn.dstCount()) {
       Instruction::DstRegister dst = insn.getDst(0);
 
@@ -1628,6 +1638,8 @@ bool Source::scanInstruction(const struct tgsi_full_instruction *inst)
       case TGSI_OPCODE_ATOMUMAX:
       case TGSI_OPCODE_ATOMIMAX:
       case TGSI_OPCODE_ATOMFADD:
+      case TGSI_OPCODE_ATOMDEC_WRAP:
+      case TGSI_OPCODE_ATOMINC_WRAP:
       case TGSI_OPCODE_LOAD:
          info->io.globalAccess |= (insn.getOpcode() == TGSI_OPCODE_LOAD) ?
             0x1 : 0x2;
@@ -3455,6 +3467,11 @@ Converter::handleInstruction(const struct tgsi_full_instruction *insn)
       if (!tgsi.getDst(0).isMasked(1))
          mkOp1(OP_RDSV, TYPE_U32, dst0[1], mkSysVal(SV_CLOCK, 0))->fixed = 1;
       break;
+   case TGSI_OPCODE_READ_HELPER:
+      if (!tgsi.getDst(0).isMasked(0))
+         mkOp1(OP_RDSV, TYPE_U32, dst0[0], mkSysVal(SV_THREAD_KILL, 0))
+            ->fixed = 1;
+      break;
    case TGSI_OPCODE_KILL_IF:
       val0 = new_LValue(func, FILE_PREDICATE);
       mask = 0;
@@ -3468,6 +3485,9 @@ Converter::handleInstruction(const struct tgsi_full_instruction *insn)
       }
       break;
    case TGSI_OPCODE_KILL:
+   case TGSI_OPCODE_DEMOTE:
+      // TODO: Should we make KILL exit that invocation? Some old shaders
+      // don't like that.
       mkOp(OP_DISCARD, TYPE_NONE, NULL);
       break;
    case TGSI_OPCODE_TEX:
@@ -3779,6 +3799,8 @@ Converter::handleInstruction(const struct tgsi_full_instruction *insn)
    case TGSI_OPCODE_ATOMUMAX:
    case TGSI_OPCODE_ATOMIMAX:
    case TGSI_OPCODE_ATOMFADD:
+   case TGSI_OPCODE_ATOMDEC_WRAP:
+   case TGSI_OPCODE_ATOMINC_WRAP:
       handleATOM(dst0, dstTy, tgsi::opcodeToSubOp(tgsi.getOpcode()));
       break;
    case TGSI_OPCODE_RESQ:
@@ -4298,7 +4320,7 @@ Converter::BindArgumentsPass::visit(Function *f)
       }
    }
 
-   if (func == prog->main && prog->getType() != Program::TYPE_COMPUTE)
+   if (func == prog->main /* && prog->getType() != Program::TYPE_COMPUTE */)
       return true;
    updatePrototype(&BasicBlock::get(f->cfg.getRoot())->liveSet,
                    &Function::buildLiveSets, &Function::ins);

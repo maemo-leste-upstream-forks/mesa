@@ -32,7 +32,6 @@ files_libnouveau = files(
   'nouveau_mm.h',
   'nouveau_screen.c',
   'nouveau_screen.h',
-  'nouveau_statebuf.h',
   'nouveau_video.c',
   'nouveau_video.h',
   'nouveau_vp3_video_bsp.c',
@@ -211,26 +210,27 @@ files_libnouveau = files(
 
 libnouveau = static_library(
   'nouveau',
-  [files_libnouveau, nir_opcodes_h],
+  files_libnouveau,
   include_directories : [
     inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_common,
   ],
   c_args : [c_vis_args],
   cpp_args : [cpp_vis_args],
-  dependencies : [dep_libdrm, dep_libdrm_nouveau],
+  dependencies : [dep_libdrm, dep_libdrm_nouveau, idep_nir_headers],
 )
 
 nouveau_compiler = executable(
   'nouveau_compiler',
   'nouveau_compiler.c',
   include_directories : [inc_src, inc_include, inc_gallium, inc_gallium_aux],
-  dependencies : [dep_libdrm, dep_libdrm_nouveau],
-  link_with : [libnouveau, libgallium, libmesa_util, libnir],
+  dependencies : [dep_libdrm, dep_libdrm_nouveau, idep_mesautil, idep_nir],
+  link_with : [libnouveau, libgallium],
   build_by_default : with_tools.contains('nouveau'),
   install : with_tools.contains('nouveau'),
 )
 
 driver_nouveau = declare_dependency(
   compile_args : '-DGALLIUM_NOUVEAU',
-  link_with : [libnouveauwinsys, libnouveau, libnir],
+  dependencies : idep_nir,
+  link_with : [libnouveauwinsys, libnouveau],
 )

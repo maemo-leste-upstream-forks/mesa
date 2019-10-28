@@ -114,7 +114,7 @@ static void r100_emit_query_finish(radeonContextPtr radeon)
 
    BEGIN_BATCH(4);
    OUT_BATCH(CP_PACKET0(RADEON_RB3D_ZPASS_ADDR, 0));
-   OUT_BATCH_RELOC(0, query->bo, query->curr_offset, 0, RADEON_GEM_DOMAIN_GTT, 0);
+   OUT_BATCH_RELOC(query->bo, query->curr_offset, 0, RADEON_GEM_DOMAIN_GTT, 0);
    END_BATCH();
    query->curr_offset += sizeof(uint32_t);
    assert(query->curr_offset < RADEON_QUERY_PAGE_SIZE);
@@ -177,13 +177,13 @@ r100CreateContext( gl_api api,
 
    /* init exp fog table data */
    radeonInitStaticFogData();
-   
+
    /* Parse configuration files.
     * Do this here so that initialMaxAnisotropy is set before we create
     * the default textures.
     */
    driParseConfigFiles (&rmesa->radeon.optionCache, &screen->optionCache,
-			screen->driScreen->myNum, "radeon", NULL);
+			screen->driScreen->myNum, "radeon", NULL, NULL, 0);
    rmesa->radeon.initialMaxAnisotropy = driQueryOptionf(&rmesa->radeon.optionCache,
                                                  "def_max_anisotropy");
 

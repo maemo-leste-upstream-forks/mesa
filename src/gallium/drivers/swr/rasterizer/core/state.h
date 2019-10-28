@@ -31,6 +31,7 @@
 
 #include "common/formats.h"
 #include "common/intrin.h"
+#include "common/rdtsc_buckets.h"
 #include <functional>
 #include <algorithm>
 
@@ -168,8 +169,8 @@ enum SWR_INNER_TESSFACTOR_ID
 enum SWR_OUTER_TESSFACTOR_ID
 {
     SWR_QUAD_U_EQ0_TRI_U_LINE_DETAIL,
-    SWR_QUAD_V_EQ0_TRI_V_LINE_DENSITY,
-    SWR_QUAD_U_EQ1_TRI_W,
+    SWR_QUAD_U_EQ1_TRI_V_LINE_DENSITY,
+    SWR_QUAD_V_EQ0_TRI_W,
     SWR_QUAD_V_EQ1,
 
     SWR_NUM_OUTER_TESS_FACTORS,
@@ -212,6 +213,11 @@ struct SIMDVERTEX_T
     typename SIMD_T::Vec4 attrib[SWR_VTX_NUM_SLOTS];
 };
 
+struct SWR_WORKER_DATA
+{
+    HANDLE hArContext;  // handle to the archrast context
+};
+
 //////////////////////////////////////////////////////////////////////////
 /// SWR_SHADER_STATS
 /// @brief Structure passed to shader for stats collection.
@@ -231,6 +237,7 @@ struct SWR_SHADER_STATS
     uint32_t numGather4CPOCExecuted;
     uint32_t numLodExecuted;
 };
+
 
 //////////////////////////////////////////////////////////////////////////
 /// SWR_VS_CONTEXT
@@ -280,7 +287,10 @@ struct SWR_TESSELLATION_FACTORS
 {
     float OuterTessFactors[SWR_NUM_OUTER_TESS_FACTORS];
     float InnerTessFactors[SWR_NUM_INNER_TESS_FACTORS];
+    float pad[2];
 };
+
+SWR_STATIC_ASSERT(sizeof(SWR_TESSELLATION_FACTORS) == 32);
 
 #define MAX_NUM_VERTS_PER_PRIM 32 // support up to 32 control point patches
 struct ScalarPatch
@@ -299,6 +309,7 @@ struct SWR_HS_CONTEXT
     simdvertex       vert[MAX_NUM_VERTS_PER_PRIM]; // IN: (SIMD) input primitive data
     simdscalari      PrimitiveID;                  // IN: (SIMD) primitive ID generated from the draw call
     simdscalari      mask;                         // IN: Active mask for shader
+    uint32_t         outputSize;                   // IN: Size of HS output (per lane)
     ScalarPatch*     pCPout;                       // OUT: Output control point patch SIMD-sized-array of SCALAR patches
     SWR_SHADER_STATS stats;                        // OUT: shader statistics used for archrast.
 };
@@ -376,11 +387,14 @@ struct SWR_PS_CONTEXT
     uint32_t frontFace;              // IN: front- 1, back- 0
     uint32_t sampleIndex;            // IN: sampleIndex
     uint32_t renderTargetArrayIndex; // IN: render target array index from GS
+    uint32_t viewportIndex;          // IN: viewport index from GS
     uint32_t rasterizerSampleCount;  // IN: sample count used by the rasterizer
 
     uint8_t* pColorBuffer[SWR_NUM_RENDERTARGETS]; // IN: Pointers to render target hottiles
 
     SWR_SHADER_STATS stats; // OUT: shader statistics used for archrast.
+
+    BucketManager *pBucketManager; // @llvm_struct - IN: performance buckets.
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -733,12 +747,10 @@ struct SWR_GS_STATE
     // Total amount of memory to allocate for one instance of the shader output in bytes
     uint32_t allocationSize;
 
-    // Offset to the start of the attributes of the input vertices, in simdvector units, as read by
-    // the GS
+    // Offset to start reading data per input vertex in simdvector units. This can be used to
+    // skip over any vertex data output from the previous stage that is unused in the GS, removing
+    // unnecessary vertex processing.
     uint32_t vertexAttribOffset;
-
-    // Offset to the attributes as stored by the preceding shader stage.
-    uint32_t srcVertexAttribOffset;
 
     // Size of the control data section which contains cut or streamID data, in simdscalar units.
     // Should be sized to handle the maximum number of verts output by the GS. Can be 0 if there are
@@ -758,10 +770,7 @@ struct SWR_GS_STATE
     // shader is expected to store the final vertex count in the first dword of the gs output
     // stream.
     uint32_t staticVertexCount;
-
-    uint32_t pad;
 };
-static_assert(sizeof(SWR_GS_STATE) == 64, "Adjust padding to keep size (or remove this assert)");
 
 //////////////////////////////////////////////////////////////////////////
 /// SWR_TS_OUTPUT_TOPOLOGY - Defines data output by the tessellator / DS
@@ -815,11 +824,16 @@ struct SWR_TS_STATE
 
     uint32_t numHsInputAttribs;
     uint32_t numHsOutputAttribs;
+    uint32_t hsAllocationSize; // Size of HS output in bytes, per lane
+
     uint32_t numDsOutputAttribs;
     uint32_t dsAllocationSize;
     uint32_t dsOutVtxAttribOffset;
 
     // Offset to the start of the attributes of the input vertices, in simdvector units
+    uint32_t srcVertexAttribOffset;
+
+    // Offset to the start of the attributes expected by the hull shader
     uint32_t vertexAttribOffset;
 };
 
@@ -893,7 +907,7 @@ typedef void(__cdecl *PFN_HS_FUNC)(HANDLE hPrivateData, HANDLE hWorkerPrivateDat
 typedef void(__cdecl *PFN_DS_FUNC)(HANDLE hPrivateData, HANDLE hWorkerPrivateData, SWR_DS_CONTEXT* pDsContext);
 typedef void(__cdecl *PFN_GS_FUNC)(HANDLE hPrivateData, HANDLE hWorkerPrivateData, SWR_GS_CONTEXT* pGsContext);
 typedef void(__cdecl *PFN_CS_FUNC)(HANDLE hPrivateData, HANDLE hWorkerPrivateData, SWR_CS_CONTEXT* pCsContext);
-typedef void(__cdecl *PFN_SO_FUNC)(HANDLE hPrivateData, SWR_STREAMOUT_CONTEXT& soContext);
+typedef void(__cdecl *PFN_SO_FUNC)(HANDLE hPrivateData, HANDLE hWorkerPrivateData, SWR_STREAMOUT_CONTEXT& soContext);
 typedef void(__cdecl *PFN_PIXEL_KERNEL)(HANDLE hPrivateData, HANDLE hWorkerPrivateData, SWR_PS_CONTEXT* pContext);
 typedef void(__cdecl *PFN_CPIXEL_KERNEL)(HANDLE hPrivateData, HANDLE hWorkerPrivateData, SWR_PS_CONTEXT* pContext);
 typedef void(__cdecl *PFN_BLEND_JIT_FUNC)(SWR_BLEND_CONTEXT*);

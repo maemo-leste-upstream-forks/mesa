@@ -58,7 +58,7 @@ nir_deref_path_init(nir_deref_path *path,
 #ifndef NDEBUG
    /* Just in case someone uses short_path by accident */
    for (unsigned i = 0; i < ARRAY_SIZE(path->_short_path); i++)
-      path->_short_path[i] = (void *)0xdeadbeef;
+      path->_short_path[i] = (void *)(uintptr_t)0xdeadbeef;
 #endif
 
    path->path = ralloc_array(mem_ctx, nir_deref_instr *, count + 1);
@@ -116,6 +116,20 @@ nir_deref_instr_has_indirect(nir_deref_instr *instr)
          return true;
 
       instr = nir_deref_instr_parent(instr);
+   }
+
+   return false;
+}
+
+bool
+nir_deref_instr_is_known_out_of_bounds(nir_deref_instr *instr)
+{
+   for (; instr; instr = nir_deref_instr_parent(instr)) {
+      if (instr->deref_type == nir_deref_type_array &&
+          nir_src_is_const(instr->arr.index) &&
+           nir_src_as_uint(instr->arr.index) >=
+           glsl_get_length(nir_deref_instr_parent(instr)->type))
+         return true;
    }
 
    return false;
@@ -202,17 +216,15 @@ nir_deref_instr_has_complex_use(nir_deref_instr *deref)
 unsigned
 nir_deref_instr_ptr_as_array_stride(nir_deref_instr *deref)
 {
-   assert(deref->deref_type == nir_deref_type_ptr_as_array);
-   nir_deref_instr *parent = nir_deref_instr_parent(deref);
-   switch (parent->deref_type) {
+   switch (deref->deref_type) {
    case nir_deref_type_array:
-      return glsl_get_explicit_stride(nir_deref_instr_parent(parent)->type);
+      return glsl_get_explicit_stride(nir_deref_instr_parent(deref)->type);
    case nir_deref_type_ptr_as_array:
-      return nir_deref_instr_ptr_as_array_stride(parent);
+      return nir_deref_instr_ptr_as_array_stride(nir_deref_instr_parent(deref));
    case nir_deref_type_cast:
-      return parent->cast.ptr_stride;
+      return deref->cast.ptr_stride;
    default:
-      unreachable("Invalid parent for ptr_as_array deref");
+      return 0;
    }
 }
 
@@ -285,7 +297,7 @@ nir_build_deref_offset(nir_builder *b, nir_deref_instr *deref,
       if ((*p)->deref_type == nir_deref_type_array) {
          nir_ssa_def *index = nir_ssa_for_src(b, (*p)->arr.index, 1);
          int stride = type_get_array_stride((*p)->type, size_align);
-         offset = nir_iadd(b, offset, nir_imul_imm(b, index, stride));
+         offset = nir_iadd(b, offset, nir_amul_imm(b, index, stride));
       } else if ((*p)->deref_type == nir_deref_type_struct) {
          /* p starts at path[1], so this is safe */
          nir_deref_instr *parent = *(p - 1);

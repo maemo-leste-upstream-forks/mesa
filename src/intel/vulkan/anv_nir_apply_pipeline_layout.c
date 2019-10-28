@@ -114,8 +114,10 @@ get_used_bindings_block(nir_block *block,
          case nir_intrinsic_image_deref_load:
          case nir_intrinsic_image_deref_store:
          case nir_intrinsic_image_deref_atomic_add:
-         case nir_intrinsic_image_deref_atomic_min:
-         case nir_intrinsic_image_deref_atomic_max:
+         case nir_intrinsic_image_deref_atomic_imin:
+         case nir_intrinsic_image_deref_atomic_umin:
+         case nir_intrinsic_image_deref_atomic_imax:
+         case nir_intrinsic_image_deref_atomic_umax:
          case nir_intrinsic_image_deref_atomic_and:
          case nir_intrinsic_image_deref_atomic_or:
          case nir_intrinsic_image_deref_atomic_xor:
@@ -732,7 +734,7 @@ lower_image_intrinsic(nir_intrinsic_instr *intrin,
    nir_builder *b = &state->builder;
    b->cursor = nir_before_instr(&intrin->instr);
 
-   const bool use_bindless = state->pdevice->has_bindless_images;
+   ASSERTED const bool use_bindless = state->pdevice->has_bindless_images;
 
    if (intrin->intrinsic == nir_intrinsic_image_deref_load_param_intel) {
       b->cursor = nir_instr_remove(&intrin->instr);
@@ -1043,8 +1045,10 @@ apply_pipeline_layout_block(nir_block *block,
          case nir_intrinsic_image_deref_load:
          case nir_intrinsic_image_deref_store:
          case nir_intrinsic_image_deref_atomic_add:
-         case nir_intrinsic_image_deref_atomic_min:
-         case nir_intrinsic_image_deref_atomic_max:
+         case nir_intrinsic_image_deref_atomic_imin:
+         case nir_intrinsic_image_deref_atomic_umin:
+         case nir_intrinsic_image_deref_atomic_imax:
+         case nir_intrinsic_image_deref_atomic_umax:
          case nir_intrinsic_image_deref_atomic_and:
          case nir_intrinsic_image_deref_atomic_or:
          case nir_intrinsic_image_deref_atomic_xor:

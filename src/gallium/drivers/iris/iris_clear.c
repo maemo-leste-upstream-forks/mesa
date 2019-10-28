@@ -75,13 +75,16 @@ can_fast_clear_color(struct iris_context *ice,
 {
    struct iris_resource *res = (void *) p_res;
 
+   if (INTEL_DEBUG & DEBUG_NO_FAST_CLEAR)
+      return false;
+
    if (res->aux.usage == ISL_AUX_USAGE_NONE)
       return false;
 
    /* Check for partial clear */
    if (box->x > 0 || box->y > 0 ||
-       box->width < p_res->width0 ||
-       box->height < p_res->height0) {
+       box->width < minify(p_res->width0, level) ||
+       box->height < minify(p_res->height0, level)) {
       return false;
    }
 
@@ -216,7 +219,7 @@ fast_clear_color(struct iris_context *ice,
        * is not something that should happen often, we stall on the CPU here
        * to resolve the predication, and then proceed.
        */
-      iris_resolve_conditional_render(ice);
+      ice->vtbl.resolve_conditional_render(ice);
       if (ice->state.predicate == IRIS_PREDICATE_STATE_DONT_RENDER)
          return;
 
@@ -351,7 +354,7 @@ clear_color(struct iris_context *ice,
    }
 
    if (p_res->target == PIPE_BUFFER)
-      util_range_add(&res->valid_buffer_range, box->x, box->x + box->width);
+      util_range_add(&res->base, &res->valid_buffer_range, box->x, box->x + box->width);
 
    iris_batch_maybe_flush(batch, 1500);
 
@@ -404,6 +407,9 @@ can_fast_clear_depth(struct iris_context *ice,
                      float depth)
 {
    struct pipe_resource *p_res = (void *) res;
+
+   if (INTEL_DEBUG & DEBUG_NO_FAST_CLEAR)
+      return false;
 
    /* Check for partial clears */
    if (box->x > 0 || box->y > 0 ||
@@ -462,7 +468,7 @@ fast_clear_depth(struct iris_context *ice,
        * even more complex, so the easiest thing to do when the fast clear
        * depth is changing is to stall on the CPU and resolve the predication.
        */
-      iris_resolve_conditional_render(ice);
+      ice->vtbl.resolve_conditional_render(ice);
       if (ice->state.predicate == IRIS_PREDICATE_STATE_DONT_RENDER)
          return;
 

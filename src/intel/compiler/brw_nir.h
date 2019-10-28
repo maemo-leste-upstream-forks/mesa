@@ -102,6 +102,10 @@ brw_nir_link_shaders(const struct brw_compiler *compiler,
 
 bool brw_nir_lower_cs_intrinsics(nir_shader *nir,
                                  unsigned dispatch_width);
+void brw_nir_lower_alpha_to_coverage(nir_shader *shader);
+void brw_nir_lower_legacy_clipping(nir_shader *nir,
+                                   int nr_userclip_plane_consts,
+                                   struct brw_stage_prog_data *prog_data);
 void brw_nir_lower_vs_inputs(nir_shader *nir,
                              const uint8_t *vs_attrib_wa_flags);
 void brw_nir_lower_vue_inputs(nir_shader *nir,
@@ -137,11 +141,14 @@ bool brw_nir_apply_trig_workarounds(nir_shader *nir);
 
 void brw_nir_apply_tcs_quads_workaround(nir_shader *nir);
 
-void brw_nir_apply_sampler_key(nir_shader *nir,
-                               const struct brw_compiler *compiler,
-                               const struct brw_sampler_prog_key_data *key,
-                               bool is_scalar);
+void brw_nir_apply_key(nir_shader *nir,
+                       const struct brw_compiler *compiler,
+                       const struct brw_base_prog_key *key,
+                       unsigned max_subgroup_size,
+                       bool is_scalar);
 
+enum brw_conditional_mod brw_cmod_for_nir_comparison(nir_op op);
+uint32_t brw_aop_for_nir_intrinsic(const nir_intrinsic_instr *atomic);
 enum brw_reg_type brw_type_for_nir_type(const struct gen_device_info *devinfo,
                                         nir_alu_type type);
 

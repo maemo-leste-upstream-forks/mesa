@@ -79,27 +79,27 @@ iris_lost_context_state(struct iris_batch *batch)
     * batch is one of our context's, so hackily claw our way back.
     */
    struct iris_context *ice = NULL;
-   struct iris_screen *screen;
 
    if (batch->name == IRIS_BATCH_RENDER) {
       ice = container_of(batch, ice, batches[IRIS_BATCH_RENDER]);
       assert(&ice->batches[IRIS_BATCH_RENDER] == batch);
-      screen = (void *) ice->ctx.screen;
 
-      ice->vtbl.init_render_context(screen, batch, &ice->vtbl, &ice->dbg);
+      ice->vtbl.init_render_context(batch);
    } else if (batch->name == IRIS_BATCH_COMPUTE) {
       ice = container_of(batch, ice, batches[IRIS_BATCH_COMPUTE]);
       assert(&ice->batches[IRIS_BATCH_COMPUTE] == batch);
-      screen = (void *) ice->ctx.screen;
 
-      ice->vtbl.init_compute_context(screen, batch, &ice->vtbl, &ice->dbg);
+      ice->vtbl.init_compute_context(batch);
    } else {
       unreachable("unhandled batch reset");
    }
 
    ice->state.dirty = ~0ull;
+   ice->state.current_hash_scale = 0;
    memset(ice->state.last_grid, 0, sizeof(ice->state.last_grid));
    batch->last_surface_base_address = ~0ull;
+   batch->last_aux_map_state = 0;
+   ice->vtbl.lost_genx_state(ice, batch);
 }
 
 static enum pipe_reset_status
@@ -212,6 +212,9 @@ iris_destroy_context(struct pipe_context *ctx)
 
 #define genX_call(devinfo, func, ...)             \
    switch (devinfo->gen) {                        \
+   case 12:                                       \
+      gen12_##func(__VA_ARGS__);                  \
+      break;                                      \
    case 11:                                       \
       gen11_##func(__VA_ARGS__);                  \
       break;                                      \
@@ -268,7 +271,6 @@ iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
    iris_init_clear_functions(ctx);
    iris_init_program_functions(ctx);
    iris_init_resource_functions(ctx);
-   iris_init_query_functions(ctx);
    iris_init_flush_functions(ctx);
 
    iris_init_program_cache(ice);
@@ -290,6 +292,7 @@ iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
 
    genX_call(devinfo, init_state, ice);
    genX_call(devinfo, init_blorp, ice);
+   genX_call(devinfo, init_query, ice);
 
    int priority = 0;
    if (flags & PIPE_CONTEXT_HIGH_PRIORITY)
@@ -307,10 +310,8 @@ iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
                       I915_EXEC_RENDER, priority);
    }
 
-   ice->vtbl.init_render_context(screen, &ice->batches[IRIS_BATCH_RENDER],
-                                 &ice->vtbl, &ice->dbg);
-   ice->vtbl.init_compute_context(screen, &ice->batches[IRIS_BATCH_COMPUTE],
-                                  &ice->vtbl, &ice->dbg);
+   ice->vtbl.init_render_context(&ice->batches[IRIS_BATCH_RENDER]);
+   ice->vtbl.init_compute_context(&ice->batches[IRIS_BATCH_COMPUTE]);
 
    return ctx;
 }

@@ -330,9 +330,8 @@ struct ir3_ra_instr_data {
 
 /* register-assign context, per-shader */
 struct ir3_ra_ctx {
+	struct ir3_shader_variant *v;
 	struct ir3 *ir;
-	gl_shader_stage type;
-	bool frag_face;
 
 	struct ir3_ra_reg_set *set;
 	struct ra_graph *g;
@@ -1091,8 +1090,45 @@ ra_block_alloc(struct ir3_ra_ctx *ctx, struct ir3_block *block)
 }
 
 static int
-ra_alloc(struct ir3_ra_ctx *ctx)
+ra_alloc(struct ir3_ra_ctx *ctx, struct ir3_instruction **precolor, unsigned nprecolor)
 {
+	unsigned num_precolor = 0;
+	for (unsigned i = 0; i < nprecolor; i++) {
+		if (precolor[i] && !(precolor[i]->flags & IR3_INSTR_UNUSED)) {
+			struct ir3_instruction *instr = precolor[i];
+			struct ir3_ra_instr_data *id = &ctx->instrd[instr->ip];
+
+			debug_assert(!(instr->regs[0]->flags & (IR3_REG_HALF | IR3_REG_HIGH)));
+
+			/* only consider the first component: */
+			if (id->off > 0)
+				continue;
+
+			/* 'base' is in scalar (class 0) but we need to map that
+			 * the conflicting register of the appropriate class (ie.
+			 * input could be vec2/vec3/etc)
+			 *
+			 * Note that the higher class (larger than scalar) regs
+			 * are setup to conflict with others in the same class,
+			 * so for example, R1 (scalar) is also the first component
+			 * of D1 (vec2/double):
+			 *
+			 *    Single (base) |  Double
+			 *    --------------+---------------
+			 *       R0         |  D0
+			 *       R1         |  D0 D1
+			 *       R2         |     D1 D2
+			 *       R3         |        D2
+			 *           .. and so on..
+			 */
+			unsigned regid = instr->regs[0]->num;
+			unsigned reg = ctx->set->gpr_to_ra_reg[id->cls][regid];
+			unsigned name = ra_name(ctx, id);
+			ra_set_node_reg(ctx->g, name, reg);
+			num_precolor = MAX2(regid, num_precolor);
+		}
+	}
+
 	/* pre-assign array elements:
 	 */
 	list_for_each_entry (struct ir3_array, arr, &ctx->ir->array_list, node) {
@@ -1120,6 +1156,34 @@ retry:
 			}
 		}
 
+		/* also need to not conflict with any pre-assigned inputs: */
+		for (unsigned i = 0; i < nprecolor; i++) {
+			struct ir3_instruction *instr = precolor[i];
+
+			if (!instr)
+				continue;
+
+			struct ir3_ra_instr_data *id = &ctx->instrd[instr->ip];
+
+			/* only consider the first component: */
+			if (id->off > 0)
+				continue;
+
+			unsigned name = ra_name(ctx, id);
+			unsigned regid = instr->regs[0]->num;
+
+			/* Check if array intersects with liverange AND register
+			 * range of the input:
+			 */
+			if (intersects(arr->start_ip, arr->end_ip,
+							ctx->def[name], ctx->use[name]) &&
+					intersects(base, base + arr->length,
+							regid, regid + class_sizes[id->cls])) {
+				base = MAX2(base, regid + class_sizes[id->cls]);
+				goto retry;
+			}
+		}
+
 		arr->reg = base;
 
 		for (unsigned i = 0; i < arr->length; i++) {
@@ -1142,20 +1206,18 @@ retry:
 	return 0;
 }
 
-int ir3_ra(struct ir3 *ir, gl_shader_stage type,
-		bool frag_coord, bool frag_face)
+int ir3_ra(struct ir3_shader_variant *v, struct ir3_instruction **precolor, unsigned nprecolor)
 {
 	struct ir3_ra_ctx ctx = {
-			.ir = ir,
-			.type = type,
-			.frag_face = frag_face,
-			.set = ir->compiler->set,
+			.v = v,
+			.ir = v->ir,
+			.set = v->ir->compiler->set,
 	};
 	int ret;
 
 	ra_init(&ctx);
 	ra_add_interference(&ctx);
-	ret = ra_alloc(&ctx);
+	ret = ra_alloc(&ctx, precolor, nprecolor);
 	ra_destroy(&ctx);
 
 	return ret;

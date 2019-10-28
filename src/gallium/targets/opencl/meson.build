@@ -39,9 +39,10 @@ libopencl = shared_library(
   link_args : [ld_args_gc_sections, opencl_link_args],
   link_depends : opencl_link_deps,
   link_whole : libclover,
-  link_with : [libpipe_loader_dynamic, libgallium, libmesa_util],
+  link_with : [libpipe_loader_dynamic, libgallium],
   dependencies : [
-    dep_thread, dep_clock, dep_dl, dep_unwind, dep_elf, dep_expat,
+    idep_mesautil,
+    dep_clock, dep_dl, dep_unwind, dep_elf,
     cpp.find_library('clangCodeGen', dirs : llvm_libdir),
     cpp.find_library('clangFrontendTool', dirs : llvm_libdir),
     cpp.find_library('clangFrontend', dirs : llvm_libdir),

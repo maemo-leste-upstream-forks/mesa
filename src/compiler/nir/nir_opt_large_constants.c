@@ -107,6 +107,7 @@ build_constant_load(nir_builder *b, nir_deref_instr *deref,
 static void
 handle_constant_store(void *mem_ctx, struct var_info *info,
                       nir_deref_instr *deref, nir_const_value *val,
+                      unsigned writemask,
                       glsl_type_size_align_func size_align)
 {
    assert(!nir_deref_instr_has_indirect(deref));
@@ -123,35 +124,35 @@ handle_constant_store(void *mem_ctx, struct var_info *info,
    char *dst = (char *)info->constant_data +
                nir_deref_instr_get_const_offset(deref, size_align);
 
-   switch (bit_size) {
-   case 1:
-      /* Booleans are special-cased to be 32-bit */
-      for (unsigned i = 0; i < num_components; i++)
+   for (unsigned i = 0; i < num_components; i++) {
+      if (!(writemask & (1 << i)))
+         continue;
+
+      switch (bit_size) {
+      case 1:
+         /* Booleans are special-cased to be 32-bit */
          ((int32_t *)dst)[i] = -(int)val[i].b;
-      break;
+         break;
 
-   case 8:
-      for (unsigned i = 0; i < num_components; i++)
+      case 8:
          ((uint8_t *)dst)[i] = val[i].u8;
-      break;
+         break;
 
-   case 16:
-      for (unsigned i = 0; i < num_components; i++)
+      case 16:
          ((uint16_t *)dst)[i] = val[i].u16;
-      break;
+         break;
 
-   case 32:
-      for (unsigned i = 0; i < num_components; i++)
+      case 32:
          ((uint32_t *)dst)[i] = val[i].u32;
-      break;
+         break;
 
-   case 64:
-      for (unsigned i = 0; i < num_components; i++)
+      case 64:
          ((uint64_t *)dst)[i] = val[i].u64;
-      break;
+         break;
 
-   default:
-      unreachable("Invalid bit size");
+      default:
+         unreachable("Invalid bit size");
+      }
    }
 }
 
@@ -211,10 +212,12 @@ nir_opt_large_constants(nir_shader *shader,
 
          bool src_is_const = false;
          nir_deref_instr *src_deref = NULL, *dst_deref = NULL;
+         unsigned writemask = 0;
          switch (intrin->intrinsic) {
          case nir_intrinsic_store_deref:
             dst_deref = nir_src_as_deref(intrin->src[0]);
             src_is_const = nir_src_is_const(intrin->src[1]);
+            writemask = nir_intrinsic_write_mask(intrin);
             break;
 
          case nir_intrinsic_load_deref:
@@ -222,13 +225,7 @@ nir_opt_large_constants(nir_shader *shader,
             break;
 
          case nir_intrinsic_copy_deref:
-            /* We always assume the src and therefore the dst are not
-             * constants here. Copy and constant propagation passes should
-             * have taken care of this in most cases anyway.
-             */
-            dst_deref = nir_src_as_deref(intrin->src[0]);
-            src_deref = nir_src_as_deref(intrin->src[1]);
-            src_is_const = false;
+            assert(!"Lowering of copy_deref with large constants is prohibited");
             break;
 
          default:
@@ -255,7 +252,8 @@ nir_opt_large_constants(nir_shader *shader,
                info->is_constant = false;
             } else {
                nir_const_value *val = nir_src_as_const_value(intrin->src[1]);
-               handle_constant_store(var_infos, info, dst_deref, val, size_align);
+               handle_constant_store(var_infos, info, dst_deref, val, writemask,
+                                     size_align);
             }
          }
 
@@ -318,7 +316,7 @@ nir_opt_large_constants(nir_shader *shader,
    shader->constant_data = rzalloc_size(shader, shader->constant_data_size);
    for (int i = 0; i < num_locals; i++) {
       struct var_info *info = &var_infos[i];
-      if (!info->duplicate) {
+      if (!info->duplicate && info->is_constant) {
          memcpy((char *)shader->constant_data + info->var->data.location,
                 info->constant_data, info->constant_data_size);
       }
@@ -366,24 +364,7 @@ nir_opt_large_constants(nir_shader *shader,
             }
             break;
          }
-
-         case nir_intrinsic_copy_deref: {
-            nir_deref_instr *deref = nir_src_as_deref(intrin->src[1]);
-            if (deref->mode != nir_var_function_temp)
-               continue;
-
-            nir_variable *var = nir_deref_instr_get_variable(deref);
-            struct var_info *info = &var_infos[var->data.index];
-            if (info->is_constant) {
-               b.cursor = nir_after_instr(&intrin->instr);
-               nir_ssa_def *val = build_constant_load(&b, deref, size_align);
-               nir_store_deref(&b, nir_src_as_deref(intrin->src[0]), val, ~0);
-               nir_instr_remove(&intrin->instr);
-               nir_deref_instr_remove_if_unused(deref);
-            }
-            break;
-         }
-
+         case nir_intrinsic_copy_deref:
          default:
             continue;
          }

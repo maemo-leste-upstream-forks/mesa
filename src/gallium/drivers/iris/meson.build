@@ -35,11 +35,13 @@ files_libiris = files(
   'iris_fence.c',
   'iris_fence.h',
   'iris_formats.c',
+  'iris_genx_macros.h',
+  'iris_genx_protos.h',
+  'iris_monitor.c',
   'iris_pipe.h',
   'iris_pipe_control.c',
   'iris_program.c',
   'iris_program_cache.c',
-  'iris_query.c',
   'iris_resolve.c',
   'iris_resource.c',
   'iris_resource.h',
@@ -60,35 +62,34 @@ iris_driinfo_h = custom_target(
 )
 
 iris_gen_libs = []
-foreach v : ['80', '90', '100', '110']
+foreach v : ['80', '90', '100', '110', '120']
   iris_gen_libs += static_library(
     'libiris_gen@0@'.format(v),
-    ['iris_blorp.c', 'iris_state.c', gen_xml_pack],
-    include_directories : [inc_common, inc_intel, inc_nir],
+    ['iris_blorp.c', 'iris_query.c', 'iris_state.c', gen_xml_pack],
+    include_directories : [inc_common, inc_intel],
     c_args : [
       c_vis_args, no_override_init_args, c_sse2_args,
       '-DGEN_VERSIONx10=@0@'.format(v),
     ],
-    dependencies : [dep_libdrm, dep_valgrind],
+    dependencies : [dep_libdrm, dep_valgrind, idep_nir_headers],
   )
 endforeach
 
 libiris = static_library(
   'iris',
-  [files_libiris, gen_xml_pack, nir_opcodes_h, nir_builder_opcodes_h,
-   iris_driinfo_h],
+  [files_libiris, gen_xml_pack, iris_driinfo_h],
   include_directories : [
-    inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_intel, inc_nir,
+    inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_intel,
     inc_gallium_drivers,
     # these should not be necessary, but main/macros.h...
     inc_mesa, inc_mapi
   ],
   c_args : [c_vis_args, c_sse2_args],
   cpp_args : [cpp_vis_args, c_sse2_args],
-  dependencies : [dep_libdrm, dep_valgrind, idep_genxml],
+  dependencies : [dep_libdrm, dep_valgrind, idep_genxml, idep_libintel_common, idep_nir_headers],
   link_with : [
-    iris_gen_libs, libintel_common, libintel_compiler, libintel_dev, libisl,
-    libblorp
+    iris_gen_libs, libintel_compiler, libintel_dev, libisl,
+    libblorp, libintel_perf
   ],
 )
 

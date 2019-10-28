@@ -70,7 +70,7 @@ int main(int argc, char **argv)
 
       pf = st_mesa_format_to_pipe_format(st, i);
       if (pf != PIPE_FORMAT_NONE) {
-         mesa_format MAYBE_UNUSED mf = st_pipe_format_to_mesa_format(pf);
+         mesa_format mf = st_pipe_format_to_mesa_format(pf);
          if (mf != i) {
             fprintf(stderr, "Round-tripping %s -> %s -> %s failed\n",
                     _mesa_get_format_name(i), util_format_short_name(pf),
@@ -87,12 +87,35 @@ int main(int argc, char **argv)
          continue;
 
       if (mf != MESA_FORMAT_NONE) {
-         enum pipe_format MAYBE_UNUSED pf =
+         const struct util_format_description *desc = util_format_description(i);
+
+         /* Make sure that gallium and Mesa agree on whether the format is an
+          * array format.
+          */
+         if (desc->nr_channels > 1) {
+            bool mesa_array = (_mesa_get_format_layout(mf) ==
+                               MESA_FORMAT_LAYOUT_ARRAY);
+            bool gallium_array = desc->is_array && !desc->is_bitmask;
+            /* We should probably be checking equality here, but we have some
+             * UINT and SINT types that are array formats in Mesa but not in
+             * gallium.
+             */
+            if (gallium_array && !mesa_array) {
+               fprintf(stderr, "%s is %sarray, %s is %sarray\n",
+                       util_format_short_name(i),
+                       gallium_array ? "" : "not ",
+                       _mesa_get_format_name(mf),
+                       mesa_array ? "" : "not ");
+               return 1;
+            }
+         }
+
+         enum pipe_format pf =
             st_mesa_format_to_pipe_format(st, mf);
          if (pf != i) {
             fprintf(stderr, "Round-tripping %s -> %s -> %s failed\n",
                     util_format_short_name(i),
-                    _mesa_get_format_name(pf),
+                    _mesa_get_format_name(mf),
                     util_format_short_name(pf));
             return 1;
          }

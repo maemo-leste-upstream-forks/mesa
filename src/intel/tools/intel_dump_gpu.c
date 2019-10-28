@@ -172,21 +172,6 @@ gem_mmap(int fd, uint32_t handle, uint64_t offset, uint64_t size)
    return (void *)(uintptr_t) mmap.addr_ptr;
 }
 
-static int
-gem_get_param(int fd, uint32_t param)
-{
-   int value;
-   drm_i915_getparam_t gp = {
-      .param = param,
-      .value = &value
-   };
-
-   if (gem_ioctl(fd, DRM_IOCTL_I915_GETPARAM, &gp) == -1)
-      return 0;
-
-   return value;
-}
-
 static enum drm_i915_gem_engine_class
 engine_class_from_ring_flag(uint32_t ring_flag)
 {
@@ -219,13 +204,15 @@ dump_execbuffer2(int fd, struct drm_i915_gem_execbuffer2 *execbuffer2)
 
    /* We can't do this at open time as we're not yet authenticated. */
    if (device == 0) {
-      device = gem_get_param(fd, I915_PARAM_CHIPSET_ID);
-      fail_if(device == 0 || devinfo.gen == 0, "failed to identify chipset\n");
+      fail_if(!gen_get_device_info_from_fd(fd, &devinfo),
+              "failed to identify chipset.\n");
+      device = devinfo.chipset_id;
+   } else if (devinfo.gen == 0) {
+      fail_if(!gen_get_device_info_from_pci_id(device, &devinfo),
+              "failed to identify chipset.\n");
    }
-   if (devinfo.gen == 0) {
-      fail_if(!gen_get_device_info(device, &devinfo),
-              "failed to identify chipset=0x%x\n", device);
 
+   if (!aub_file.file) {
       aub_file_init(&aub_file, output_file,
                     verbose == 2 ? stdout : NULL,
                     device, program_invocation_short_name);
@@ -304,7 +291,9 @@ dump_execbuffer2(int fd, struct drm_i915_gem_execbuffer2 *execbuffer2)
          free(data);
    }
 
-   aub_write_exec(&aub_file,
+   uint32_t ctx_id = execbuffer2->rsvd1;
+
+   aub_write_exec(&aub_file, ctx_id,
                   batch_bo->offset + execbuffer2->batch_start_offset,
                   offset, engine_class_from_ring_flag(ring_flag));
 
@@ -347,6 +336,23 @@ remove_bo(int fd, int handle)
       munmap(bo->map, bo->size);
    bo->size = 0;
    bo->map = NULL;
+}
+
+static uint32_t
+dump_create_context(int fd, uint32_t *ctx_id)
+{
+   if (!aub_file.file) {
+      aub_file_init(&aub_file, output_file,
+                    verbose == 2 ? stdout : NULL,
+                    device, program_invocation_short_name);
+      aub_write_default_setup(&aub_file);
+
+      if (verbose)
+         printf("[running, output file %s, chipset id 0x%04x, gen %d]\n",
+                output_filename, device, devinfo.gen);
+   }
+
+   return aub_write_context_create(&aub_file, ctx_id);
 }
 
 __attribute__ ((visibility ("default"))) int
@@ -469,6 +475,21 @@ ioctl(int fd, unsigned long request, ...)
             return 0;
 
          return libc_ioctl(fd, request, argp);
+      }
+
+      case DRM_IOCTL_I915_GEM_CONTEXT_CREATE: {
+         uint32_t *ctx_id = NULL;
+         struct drm_i915_gem_context_create *create = argp;
+         ret = 0;
+         if (!device_override) {
+            ret = libc_ioctl(fd, request, argp);
+            ctx_id = &create->ctx_id;
+         }
+
+         if (ret == 0)
+            create->ctx_id = dump_create_context(fd, ctx_id);
+
+         return ret;
       }
 
       case DRM_IOCTL_I915_GEM_CREATE: {

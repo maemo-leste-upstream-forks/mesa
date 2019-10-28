@@ -476,4 +476,50 @@ translate_samples_to_xyscale(int num_samples, int *xscale_out, int *yscale_out,
    return true;
 }
 
+static inline uint32_t
+translate_texture_target(unsigned target)
+{
+   switch (target) {
+   case PIPE_TEXTURE_1D:
+      return TEXTURE_TYPE_1D;
+   case PIPE_TEXTURE_2D:
+   case PIPE_TEXTURE_RECT:
+   case PIPE_TEXTURE_1D_ARRAY:
+      return TEXTURE_TYPE_2D;
+   case PIPE_TEXTURE_CUBE:
+      return TEXTURE_TYPE_CUBE_MAP;
+   case PIPE_TEXTURE_3D:
+   case PIPE_TEXTURE_2D_ARRAY:
+      return TEXTURE_TYPE_3D;
+   default:
+      DBG("Unhandled texture target: %i", target);
+      return ETNA_NO_MATCH;
+   }
+}
+
+static inline uint32_t
+translate_texture_compare(enum pipe_compare_func compare_func)
+{
+   switch (compare_func) {
+   case PIPE_FUNC_NEVER:
+      return TEXTURE_COMPARE_FUNC_NEVER;
+   case PIPE_FUNC_LESS:
+      return TEXTURE_COMPARE_FUNC_LESS;
+   case PIPE_FUNC_EQUAL:
+      return TEXTURE_COMPARE_FUNC_EQUAL;
+   case PIPE_FUNC_LEQUAL:
+      return TEXTURE_COMPARE_FUNC_LEQUAL;
+   case PIPE_FUNC_GREATER:
+      return TEXTURE_COMPARE_FUNC_GREATER;
+   case PIPE_FUNC_NOTEQUAL:
+      return TEXTURE_COMPARE_FUNC_NOTEQUAL;
+   case PIPE_FUNC_GEQUAL:
+      return TEXTURE_COMPARE_FUNC_GEQUAL;
+   case PIPE_FUNC_ALWAYS:
+      return TEXTURE_COMPARE_FUNC_ALWAYS;
+   default:
+      unreachable("Invalid compare func");
+   }
+}
+
 #endif

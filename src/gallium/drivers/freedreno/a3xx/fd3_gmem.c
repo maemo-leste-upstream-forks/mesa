@@ -49,12 +49,6 @@ emit_mrt(struct fd_ringbuffer *ring, unsigned nr_bufs,
 	enum a3xx_tile_mode tile_mode;
 	unsigned i;
 
-	if (bin_w) {
-		tile_mode = TILE_32X32;
-	} else {
-		tile_mode = LINEAR;
-	}
-
 	for (i = 0; i < A3XX_MAX_RENDER_TARGETS; i++) {
 		enum pipe_format pformat = 0;
 		enum a3xx_color_fmt format = 0;
@@ -65,6 +59,12 @@ emit_mrt(struct fd_ringbuffer *ring, unsigned nr_bufs,
 		uint32_t stride = 0;
 		uint32_t base = 0;
 		uint32_t offset = 0;
+
+		if (bin_w) {
+			tile_mode = TILE_32X32;
+		} else {
+			tile_mode = LINEAR;
+		}
 
 		if ((i < nr_bufs) && bufs[i]) {
 			struct pipe_surface *psurf = bufs[i];
@@ -82,7 +82,6 @@ emit_mrt(struct fd_ringbuffer *ring, unsigned nr_bufs,
 			}
 			slice = fd_resource_slice(rsc, psurf->u.tex.level);
 			format = fd3_pipe2color(pformat);
-			swap = fd3_pipe2swap(pformat);
 			if (decode_srgb)
 				srgb = util_format_is_srgb(pformat);
 			else
@@ -92,6 +91,7 @@ emit_mrt(struct fd_ringbuffer *ring, unsigned nr_bufs,
 
 			offset = fd_resource_offset(rsc, psurf->u.tex.level,
 					psurf->u.tex.first_layer);
+			swap = rsc->tile_mode ? WZYX : fd3_pipe2swap(pformat);
 
 			if (bin_w) {
 				stride = bin_w * rsc->cpp;
@@ -101,6 +101,7 @@ emit_mrt(struct fd_ringbuffer *ring, unsigned nr_bufs,
 				}
 			} else {
 				stride = slice->pitch * rsc->cpp;
+				tile_mode = rsc->tile_mode;
 			}
 		} else if (i < nr_bufs && bases) {
 			base = bases[i];
@@ -345,7 +346,7 @@ emit_gmem2mem_surf(struct fd_batch *batch,
 
 	OUT_RELOCW(ring, rsc->bo, offset, 0, -1);    /* RB_COPY_DEST_BASE */
 	OUT_RING(ring, A3XX_RB_COPY_DEST_PITCH_PITCH(slice->pitch * rsc->cpp));
-	OUT_RING(ring, A3XX_RB_COPY_DEST_INFO_TILE(LINEAR) |
+	OUT_RING(ring, A3XX_RB_COPY_DEST_INFO_TILE(rsc->tile_mode) |
 			A3XX_RB_COPY_DEST_INFO_FORMAT(fd3_pipe2color(format)) |
 			A3XX_RB_COPY_DEST_INFO_COMPONENT_ENABLE(0xf) |
 			A3XX_RB_COPY_DEST_INFO_ENDIAN(ENDIAN_NONE) |
@@ -666,7 +667,7 @@ fd3_emit_tile_mem2gmem(struct fd_batch *batch, struct fd_tile *tile)
 
 	if (fd_gmem_needs_restore(batch, tile, FD_BUFFER_COLOR)) {
 		emit.prog = &ctx->blit_prog[pfb->nr_cbufs - 1];
-		emit.fp = NULL;      /* frag shader changed so clear cache */
+		emit.fs = NULL;      /* frag shader changed so clear cache */
 		fd3_program_emit(ring, &emit, pfb->nr_cbufs, pfb->cbufs);
 		emit_mem2gmem_surf(batch, gmem->cbuf_base, pfb->cbufs, pfb->nr_cbufs, bin_w);
 	}
@@ -687,7 +688,7 @@ fd3_emit_tile_mem2gmem(struct fd_batch *batch, struct fd_tile *tile)
 				emit.prog = &ctx->blit_zs;
 			emit.key.half_precision = false;
 		}
-		emit.fp = NULL;      /* frag shader changed so clear cache */
+		emit.fs = NULL;      /* frag shader changed so clear cache */
 		fd3_program_emit(ring, &emit, 1, &pfb->zsbuf);
 		emit_mem2gmem_surf(batch, gmem->zsbuf_base, &pfb->zsbuf, 1, bin_w);
 	}
@@ -867,7 +868,7 @@ emit_binning_pass(struct fd_batch *batch)
 			A3XX_PC_VSTREAM_CONTROL_N(0));
 
 	/* emit IB to binning drawcmds: */
-	ctx->emit_ib(ring, batch->binning);
+	fd3_emit_ib(ring, batch->binning);
 	fd_reset_wfi(batch);
 
 	fd_wfi(batch, ring);

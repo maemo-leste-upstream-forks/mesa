@@ -41,8 +41,11 @@ struct midgard_screen {
 
         struct ra_regs *regs[9];
 
-        /* Work register classes corresponds to the above register sets */
-        unsigned reg_classes[9][4];
+        /* Work register classes corresponds to the above register sets. 20 per
+         * set for 5 classes per work/ldst/ldst27/texr/texw/fragc. TODO: Unify with
+         * compiler.h */
+
+        unsigned reg_classes[9][5 * 5];
 };
 
 /* Define the general compiler entry point */
@@ -63,6 +66,8 @@ enum {
         PAN_SYSVAL_VIEWPORT_SCALE = 1,
         PAN_SYSVAL_VIEWPORT_OFFSET = 2,
         PAN_SYSVAL_TEXTURE_SIZE = 3,
+        PAN_SYSVAL_SSBO = 4,
+        PAN_SYSVAL_NUM_WORK_GROUPS = 5,
 } pan_sysval;
 
 #define PAN_TXS_SYSVAL_ID(texidx, dim, is_array)          \
@@ -77,9 +82,6 @@ typedef struct {
         int uniform_count;
         int uniform_cutoff;
 
-        int attribute_count;
-        int varying_count;
-
         /* Prepended before uniforms, mapping to SYSVAL_ names for the
          * sysval */
 
@@ -89,7 +91,6 @@ typedef struct {
         unsigned varyings[32];
 
         /* Boolean properties of the program */
-        bool can_discard;
         bool writes_point_size;
 
         int first_tag;
@@ -129,6 +130,7 @@ static const nir_shader_compiler_options midgard_nir_options = {
         .lower_isign = true,
         .lower_fpow = true,
         .lower_find_lsb = true,
+        .lower_fdph = true,
 
         .lower_wpos_pntc = true,
 

@@ -58,6 +58,7 @@ const gpir_op_info gpir_op_infos[] = {
       .name = "complex2",
       .slots = (int []) { GPIR_INSTR_SLOT_MUL0, GPIR_INSTR_SLOT_END },
       .spillless = true,
+      .schedule_first = true,
    },
    [gpir_op_add] = {
       .name = "add",
@@ -140,25 +141,37 @@ const gpir_op_info gpir_op_infos[] = {
    },
    [gpir_op_preexp2] = {
       .name = "preexp2",
+      .slots = (int []) { GPIR_INSTR_SLOT_PASS, GPIR_INSTR_SLOT_END },
+      .spillless = true,
+      .schedule_first = true,
    },
    [gpir_op_postlog2] = {
       .name = "postlog2",
+      .slots = (int []) { GPIR_INSTR_SLOT_PASS, GPIR_INSTR_SLOT_END },
    },
    [gpir_op_exp2_impl] = {
       .name = "exp2_impl",
+      .slots = (int []) { GPIR_INSTR_SLOT_COMPLEX, GPIR_INSTR_SLOT_END },
+      .spillless = true,
+      .schedule_first = true,
    },
    [gpir_op_log2_impl] = {
       .name = "log2_impl",
+      .slots = (int []) { GPIR_INSTR_SLOT_COMPLEX, GPIR_INSTR_SLOT_END },
+      .spillless = true,
+      .schedule_first = true,
    },
    [gpir_op_rcp_impl] = {
       .name = "rcp_impl",
       .slots = (int []) { GPIR_INSTR_SLOT_COMPLEX, GPIR_INSTR_SLOT_END },
       .spillless = true,
+      .schedule_first = true,
    },
    [gpir_op_rsqrt_impl] = {
       .name = "rsqrt_impl",
       .slots = (int []) { GPIR_INSTR_SLOT_COMPLEX, GPIR_INSTR_SLOT_END },
       .spillless = true,
+      .schedule_first = true,
    },
    [gpir_op_load_uniform] = {
       .name = "ld_uni",
@@ -233,6 +246,8 @@ const gpir_op_info gpir_op_infos[] = {
    [gpir_op_branch_cond] = {
       .name = "branch_cond",
       .type = gpir_node_type_branch,
+      .schedule_first = true,
+      .slots = (int []) { GPIR_INSTR_SLOT_PASS, GPIR_INSTR_SLOT_END },
    },
    [gpir_op_const] = {
       .name = "const",
@@ -367,6 +382,10 @@ void gpir_node_replace_child(gpir_node *parent, gpir_node *old_child,
       gpir_store_node *store = gpir_node_to_store(parent);
       if (store->child == old_child)
          store->child = new_child;
+   } else if (parent->type == gpir_node_type_branch) {
+      gpir_branch_node *branch = gpir_node_to_branch(parent);
+      if (branch->cond == old_child)
+         branch->cond = new_child;
    }
 }
 
@@ -412,17 +431,6 @@ void gpir_node_delete(gpir_node *node)
       list_del(&dep->succ_link);
       list_del(&dep->pred_link);
       ralloc_free(dep);
-   }
-
-   if (node->type == gpir_node_type_store) {
-      gpir_store_node *store = gpir_node_to_store(node);
-      if (store->reg)
-         list_del(&store->reg_link);
-   }
-   else if (node->type == gpir_node_type_load) {
-      gpir_load_node *load = gpir_node_to_load(node);
-      if (load->reg)
-         list_del(&load->reg_link);
    }
 
    list_del(&node->list);

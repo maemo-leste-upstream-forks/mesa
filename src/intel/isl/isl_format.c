@@ -163,6 +163,7 @@ static const struct surface_format_info format_info[] = {
    SF(  Y,   Y,   x,   x,   Y,   Y,  75,   x,  60,  70,   x, 100,   B10G10R10A2_UNORM)
    SF(  Y,   Y,   x,   x,   Y,   Y,   x,   x,  60,   x,   x, 100,   B10G10R10A2_UNORM_SRGB)
    SF(  Y,   Y,   x,   x,   Y,   Y,   Y,   x,   x,  70,   x, 100,   R11G11B10_FLOAT)
+   SF(120, 120,   x,   x, 120, 120,   x,   x,   x,   x,   x, 120,   R10G10B10_FLOAT_A2_UNORM)
    SF(  Y,   x,   x,   x,   Y,   x,   Y,   Y,   x,  70,  70,  90,   R32_SINT)
    SF(  Y,   x,   x,   x,   Y,   x,   Y,   Y,   x,  70,  70,  90,   R32_UINT)
    SF(  Y,  50,   Y,   x,   Y,   Y,   Y,   Y,   x,  70,  70,  90,   R32_FLOAT)
@@ -294,7 +295,11 @@ static const struct surface_format_info format_info[] = {
    SF( 70,  70,   x,   x,   x,   x,   x,   x,   x,   x,   x,   x,   BC7_UNORM_SRGB)
    SF( 70,  70,   x,   x,   x,   x,   x,   x,   x,   x,   x,   x,   BC6H_UF16)
    SF(  x,   x,   x,   x,   x,   x,   x,   x,   x,   x,   x,   x,   PLANAR_420_8)
-   SF( 75,  75,   x,   x,   x,   x,   x,   x,   x,   x,   x,   x,   R8G8B8_UNORM_SRGB)
+   /* The format enum for R8G8B8_UNORM_SRGB first shows up in the HSW PRM but
+    * empirical testing indicates that it doesn't actually sRGB decode and
+    * acts identical to R8G8B8_UNORM.  It does work on gen8+.
+    */
+   SF( 80,  80,   x,   x,   x,   x,   x,   x,   x,   x,   x,   x,   R8G8B8_UNORM_SRGB)
    SF( 80,  80,   x,   x,   x,   x,   x,   x,   x,   x,   x,   x,   ETC1_RGB8)
    SF( 80,  80,   x,   x,   x,   x,   x,   x,   x,   x,   x,   x,   ETC2_RGB8)
    SF( 80,  80,   x,   x,   x,   x,   x,   x,   x,   x,   x,   x,   EAC_R11)

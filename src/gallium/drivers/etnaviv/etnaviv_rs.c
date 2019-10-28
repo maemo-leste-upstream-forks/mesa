@@ -262,15 +262,13 @@ etna_rs_gen_clear_surface(struct etna_context *ctx, struct etna_surface *surf,
    case 32:
       format = RS_FORMAT_A8R8G8B8;
       break;
-   default:
-      format = ETNA_NO_MATCH;
+   case 64:
+      assert(ctx->specs.halti >= 2);
+      format = RS_FORMAT_64BPP_CLEAR;
       break;
-   }
-
-   if (format == ETNA_NO_MATCH) {
-      BUG("etna_rs_gen_clear_surface: Unhandled clear fmt %s", util_format_name(surf->base.format));
-      format = RS_FORMAT_A8R8G8B8;
-      assert(0);
+   default:
+      unreachable("bpp not supported for clear by RS");
+      break;
    }
 
    /* use tiled clear if width is multiple of 16 */
@@ -394,6 +392,7 @@ etna_clear_rs(struct pipe_context *pctx, unsigned buffers,
            const union pipe_color_union *color, double depth, unsigned stencil)
 {
    struct etna_context *ctx = etna_context(pctx);
+   mtx_lock(&ctx->lock);
 
    /* Flush color and depth cache before clearing anything.
     * This is especially important when coming from another surface, as
@@ -439,6 +438,7 @@ etna_clear_rs(struct pipe_context *pctx, unsigned buffers,
       etna_blit_clear_zs_rs(pctx, ctx->framebuffer_s.zsbuf, buffers, depth, stencil);
 
    etna_stall(ctx->stream, SYNC_RECIPIENT_RA, SYNC_RECIPIENT_PE);
+   mtx_unlock(&ctx->lock);
 }
 
 static bool
@@ -598,15 +598,6 @@ etna_try_rs_blit(struct pipe_context *pctx,
    if ((blit_info->dst.box.x & w_mask) || (blit_info->dst.box.y & h_mask))
       return false;
 
-   /* Ensure that the Z coordinate is sane */
-   if (dst->base.target != PIPE_TEXTURE_CUBE)
-      assert(blit_info->dst.box.z == 0);
-   if (src->base.target != PIPE_TEXTURE_CUBE)
-      assert(blit_info->src.box.z == 0);
-
-   assert(blit_info->src.box.z < src->base.array_size);
-   assert(blit_info->dst.box.z < dst->base.array_size);
-
    struct etna_resource_level *src_lev = &src->levels[blit_info->src.level];
    struct etna_resource_level *dst_lev = &dst->levels[blit_info->dst.level];
 
@@ -657,6 +648,8 @@ etna_try_rs_blit(struct pipe_context *pctx,
        height > dst_lev->padded_height * msaa_yscale ||
        width & (w_align - 1) || height & (h_align - 1))
       goto manual;
+
+   mtx_lock(&ctx->lock);
 
    /* Always flush color and depth cache together before resolving. This works
     * around artifacts that appear in some cases when scanning out a texture
@@ -747,6 +740,7 @@ etna_try_rs_blit(struct pipe_context *pctx,
    dst->seqno++;
    dst_lev->ts_valid = false;
    ctx->dirty |= ETNA_DIRTY_DERIVE_TS;
+   mtx_unlock(&ctx->lock);
 
    return true;
 

@@ -223,6 +223,10 @@ genX(blorp_exec)(struct blorp_batch *batch,
       genX(cmd_buffer_config_l3)(cmd_buffer, cfg);
    }
 
+   const unsigned scale = params->fast_clear_op ? UINT_MAX : 1;
+   genX(cmd_buffer_emit_hashing_mode)(cmd_buffer, params->x1 - params->x0,
+                                      params->y1 - params->y0, scale);
+
 #if GEN_GEN >= 11
    /* The PIPE_CONTROL command description says:
     *
@@ -250,6 +254,10 @@ genX(blorp_exec)(struct blorp_batch *batch,
    genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
 
    genX(flush_pipeline_select_3d)(cmd_buffer);
+
+#if GEN_GEN >= 12
+   genX(cmd_buffer_aux_map_state)(cmd_buffer);
+#endif
 
    genX(cmd_buffer_emit_gen7_depth_flush)(cmd_buffer);
 

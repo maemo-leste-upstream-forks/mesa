@@ -3,6 +3,7 @@
  * Copyright (C) 2014 Broadcom
  * Copyright (C) 2018 Alyssa Rosenzweig
  * Copyright (C) 2019 Collabora, Ltd.
+ * Copyright (C) 2012 Rob Clark <robclark@freedesktop.org>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -32,15 +33,17 @@
 #include "util/u_video.h"
 #include "util/u_screen.h"
 #include "util/os_time.h"
+#include "util/u_process.h"
 #include "pipe/p_defines.h"
 #include "pipe/p_screen.h"
 #include "draw/draw_context.h"
-#include <xf86drm.h>
 
 #include <fcntl.h>
 
 #include "drm-uapi/drm_fourcc.h"
+#include "drm-uapi/panfrost_drm.h"
 
+#include "pan_bo.h"
 #include "pan_screen.h"
 #include "pan_resource.h"
 #include "pan_public.h"
@@ -98,6 +101,9 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_MAX_RENDER_TARGETS:
                 return is_deqp ? 4 : 1;
 
+        /* Throttling frames breaks pipelining */
+        case PIPE_CAP_THROTTLE:
+                return 0;
 
         case PIPE_CAP_OCCLUSION_QUERY:
                 return 1;
@@ -107,7 +113,6 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_QUERY_SO_OVERFLOW:
                 return 0;
 
-        case PIPE_CAP_TEXTURE_MIRROR_CLAMP:
         case PIPE_CAP_TEXTURE_SWIZZLE:
                 return 1;
 
@@ -120,6 +125,8 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_MAX_STREAM_OUTPUT_SEPARATE_COMPONENTS:
         case PIPE_CAP_MAX_STREAM_OUTPUT_INTERLEAVED_COMPONENTS:
                 return is_deqp ? 64 : 0;
+        case PIPE_CAP_STREAM_OUTPUT_INTERLEAVE_BUFFERS:
+                return 1;
 
         case PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS:
                 return is_deqp ? 256 : 0; /* for GL3 */
@@ -141,6 +148,10 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_MAX_COMBINED_HW_ATOMIC_COUNTERS:
         case PIPE_CAP_MAX_COMBINED_HW_ATOMIC_COUNTER_BUFFERS:
         case PIPE_CAP_IMAGE_LOAD_FORMATTED:
+                return is_deqp;
+
+        /* For faking compute shaders */
+        case PIPE_CAP_COMPUTE:
                 return is_deqp;
 
         /* TODO: Where does this req come from in practice? */
@@ -166,6 +177,16 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
         case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER:
         case PIPE_CAP_GENERATE_MIPMAP:
+                return 1;
+
+        /* We would prefer varyings */
+        case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
+        case PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL:
+                return 0;
+
+        /* I really don't want to set this CAP but let's not swim against the
+         * tide.. */
+        case PIPE_CAP_TGSI_TEXCOORD:
                 return 1;
 
         case PIPE_CAP_SEAMLESS_CUBE_MAP:
@@ -223,6 +244,9 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_MAX_VARYINGS:
                 return 16;
 
+        case PIPE_CAP_ALPHA_TEST:
+                return 0;
+
         default:
                 return u_pipe_screen_get_param_defaults(screen, param);
         }
@@ -233,20 +257,16 @@ panfrost_get_shader_param(struct pipe_screen *screen,
                           enum pipe_shader_type shader,
                           enum pipe_shader_cap param)
 {
-        if (shader != PIPE_SHADER_VERTEX &&
-            shader != PIPE_SHADER_FRAGMENT) {
-                return 0;
-        }
-
         bool is_deqp = pan_debug & PAN_DBG_DEQP;
+
+        if (shader != PIPE_SHADER_VERTEX &&
+            shader != PIPE_SHADER_FRAGMENT &&
+            !(shader == PIPE_SHADER_COMPUTE && is_deqp))
+                return 0;
 
         /* this is probably not totally correct.. but it's a start: */
         switch (param) {
-        case PIPE_SHADER_CAP_SCALAR_ISA:
-                return 0;
-
         case PIPE_SHADER_CAP_MAX_INSTRUCTIONS:
-                return 0;
         case PIPE_SHADER_CAP_MAX_ALU_INSTRUCTIONS:
         case PIPE_SHADER_CAP_MAX_TEX_INSTRUCTIONS:
         case PIPE_SHADER_CAP_MAX_TEX_INDIRECTIONS:
@@ -310,16 +330,17 @@ panfrost_get_shader_param(struct pipe_screen *screen,
                 return PIPE_SHADER_IR_NIR;
 
         case PIPE_SHADER_CAP_SUPPORTED_IRS:
-                return 0;
+                return (1 << PIPE_SHADER_IR_NIR) | (1 << PIPE_SHADER_IR_NIR_SERIALIZED);
 
         case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
                 return 32;
 
         case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
         case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
+                return is_deqp ? 4 : 0;
         case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
         case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
-                return is_deqp;
+                return 0;
 
         case PIPE_SHADER_CAP_TGSI_SKIP_MERGE_REGISTERS:
         case PIPE_SHADER_CAP_LOWER_IF_THRESHOLD:
@@ -452,12 +473,83 @@ panfrost_is_format_supported( struct pipe_screen *screen,
         return true;
 }
 
+static int
+panfrost_get_compute_param(struct pipe_screen *pscreen, enum pipe_shader_ir ir_type,
+                enum pipe_compute_cap param, void *ret)
+{
+	const char * const ir = "panfrost";
+
+	if (!(pan_debug & PAN_DBG_DEQP))
+		return 0;
+
+#define RET(x) do {                  \
+   if (ret)                          \
+      memcpy(ret, x, sizeof(x));     \
+   return sizeof(x);                 \
+} while (0)
+
+	switch (param) {
+	case PIPE_COMPUTE_CAP_ADDRESS_BITS:
+                /* TODO: We'll want 64-bit pointers soon */
+		RET((uint32_t []){ 32 });
+
+	case PIPE_COMPUTE_CAP_IR_TARGET:
+		if (ret)
+			sprintf(ret, "%s", ir);
+		return strlen(ir) * sizeof(char);
+
+	case PIPE_COMPUTE_CAP_GRID_DIMENSION:
+		RET((uint64_t []) { 3 });
+
+	case PIPE_COMPUTE_CAP_MAX_GRID_SIZE:
+		RET(((uint64_t []) { 65535, 65535, 65535 }));
+
+	case PIPE_COMPUTE_CAP_MAX_BLOCK_SIZE:
+		RET(((uint64_t []) { 1024, 1024, 64 }));
+
+	case PIPE_COMPUTE_CAP_MAX_THREADS_PER_BLOCK:
+		RET((uint64_t []) { 1024 });
+
+	case PIPE_COMPUTE_CAP_MAX_GLOBAL_SIZE:
+		RET((uint64_t []) { 1024*1024*512 /* Maybe get memory */ });
+
+	case PIPE_COMPUTE_CAP_MAX_LOCAL_SIZE:
+		RET((uint64_t []) { 32768 });
+
+	case PIPE_COMPUTE_CAP_MAX_PRIVATE_SIZE:
+	case PIPE_COMPUTE_CAP_MAX_INPUT_SIZE:
+		RET((uint64_t []) { 4096 });
+
+	case PIPE_COMPUTE_CAP_MAX_MEM_ALLOC_SIZE:
+		RET((uint64_t []) { 1024*1024*512 /* Maybe get memory */ });
+
+	case PIPE_COMPUTE_CAP_MAX_CLOCK_FREQUENCY:
+		RET((uint32_t []) { 800 /* MHz -- TODO */ });
+
+	case PIPE_COMPUTE_CAP_MAX_COMPUTE_UNITS:
+		RET((uint32_t []) { 9999 });  // TODO
+
+	case PIPE_COMPUTE_CAP_IMAGES_SUPPORTED:
+		RET((uint32_t []) { 1 }); // TODO
+
+	case PIPE_COMPUTE_CAP_SUBGROUP_SIZE:
+		RET((uint32_t []) { 32 });  // TODO
+
+	case PIPE_COMPUTE_CAP_MAX_VARIABLE_THREADS_PER_BLOCK:
+		RET((uint64_t []) { 1024 }); // TODO
+	}
+
+	return 0;
+}
 
 static void
 panfrost_destroy_screen(struct pipe_screen *pscreen)
 {
         struct panfrost_screen *screen = pan_screen(pscreen);
         panfrost_bo_cache_evict_all(screen);
+        pthread_mutex_destroy(&screen->bo_cache_lock);
+        pthread_mutex_destroy(&screen->active_bos_lock);
+        drmFreeVersion(screen->kernel_version);
         ralloc_free(screen);
 }
 
@@ -482,7 +574,17 @@ panfrost_fence_reference(struct pipe_screen *pscreen,
                          struct pipe_fence_handle **ptr,
                          struct pipe_fence_handle *fence)
 {
-        panfrost_drm_fence_reference(pscreen, ptr, fence);
+        struct panfrost_fence **p = (struct panfrost_fence **)ptr;
+        struct panfrost_fence *f = (struct panfrost_fence *)fence;
+        struct panfrost_fence *old = *p;
+
+        if (pipe_reference(&(*p)->reference, &f->reference)) {
+                util_dynarray_foreach(&old->syncfds, int, fd)
+                        close(*fd);
+                util_dynarray_fini(&old->syncfds);
+                free(old);
+        }
+        *p = f;
 }
 
 static bool
@@ -491,7 +593,72 @@ panfrost_fence_finish(struct pipe_screen *pscreen,
                       struct pipe_fence_handle *fence,
                       uint64_t timeout)
 {
-        return panfrost_drm_fence_finish(pscreen, ctx, fence, timeout);
+        struct panfrost_screen *screen = pan_screen(pscreen);
+        struct panfrost_fence *f = (struct panfrost_fence *)fence;
+        struct util_dynarray syncobjs;
+        int ret;
+
+        /* All fences were already signaled */
+        if (!util_dynarray_num_elements(&f->syncfds, int))
+                return true;
+
+        util_dynarray_init(&syncobjs, NULL);
+        util_dynarray_foreach(&f->syncfds, int, fd) {
+                uint32_t syncobj;
+
+                ret = drmSyncobjCreate(screen->fd, 0, &syncobj);
+                assert(!ret);
+
+                ret = drmSyncobjImportSyncFile(screen->fd, syncobj, *fd);
+                assert(!ret);
+                util_dynarray_append(&syncobjs, uint32_t, syncobj);
+        }
+
+        uint64_t abs_timeout = os_time_get_absolute_timeout(timeout);
+        if (abs_timeout == OS_TIMEOUT_INFINITE)
+                abs_timeout = INT64_MAX;
+
+        ret = drmSyncobjWait(screen->fd, util_dynarray_begin(&syncobjs),
+                             util_dynarray_num_elements(&syncobjs, uint32_t),
+                             abs_timeout, DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL,
+                             NULL);
+
+        util_dynarray_foreach(&syncobjs, uint32_t, syncobj)
+                drmSyncobjDestroy(screen->fd, *syncobj);
+
+        return ret >= 0;
+}
+
+struct panfrost_fence *
+panfrost_fence_create(struct panfrost_context *ctx,
+                      struct util_dynarray *fences)
+{
+        struct panfrost_screen *screen = pan_screen(ctx->base.screen);
+        struct panfrost_fence *f = calloc(1, sizeof(*f));
+        if (!f)
+                return NULL;
+
+        util_dynarray_init(&f->syncfds, NULL);
+
+        /* Export fences from all pending batches. */
+        util_dynarray_foreach(fences, struct panfrost_batch_fence *, fence) {
+                int fd = -1;
+
+                /* The fence is already signaled, no need to export it. */
+                if ((*fence)->signaled)
+                        continue;
+
+                drmSyncobjExportSyncFile(screen->fd, (*fence)->syncobj, &fd);
+                if (fd == -1)
+                        fprintf(stderr, "export failed: %m\n");
+
+                assert(fd != -1);
+                util_dynarray_append(&f->syncfds, int, fd);
+        }
+
+        pipe_reference_init(&f->reference, 1);
+
+        return f;
 }
 
 static const void *
@@ -502,12 +669,54 @@ panfrost_screen_get_compiler_options(struct pipe_screen *pscreen,
         return &midgard_nir_options;
 }
 
+static unsigned
+panfrost_query_gpu_version(struct panfrost_screen *screen)
+{
+        struct drm_panfrost_get_param get_param = {0,};
+        ASSERTED int ret;
+
+        get_param.param = DRM_PANFROST_PARAM_GPU_PROD_ID;
+        ret = drmIoctl(screen->fd, DRM_IOCTL_PANFROST_GET_PARAM, &get_param);
+        assert(!ret);
+
+        return get_param.value;
+}
+
+static uint32_t
+panfrost_active_bos_hash(const void *key)
+{
+        const struct panfrost_bo *bo = key;
+
+        return _mesa_hash_data(&bo->gem_handle, sizeof(bo->gem_handle));
+}
+
+static bool
+panfrost_active_bos_cmp(const void *keya, const void *keyb)
+{
+        const struct panfrost_bo *a = keya, *b = keyb;
+
+        return a->gem_handle == b->gem_handle;
+}
+
 struct pipe_screen *
 panfrost_create_screen(int fd, struct renderonly *ro)
 {
-        struct panfrost_screen *screen = rzalloc(NULL, struct panfrost_screen);
-
         pan_debug = debug_get_option_pan_debug();
+
+        /* Blacklist apps known to be buggy under Panfrost */
+        const char *proc = util_get_process_name();
+        const char *blacklist[] = {
+                "chromium",
+                "chrome",
+        };
+
+        for (unsigned i = 0; i < ARRAY_SIZE(blacklist); ++i) {
+                if ((strcmp(blacklist[i], proc) == 0))
+                        return NULL;
+        }
+
+        /* Create the screen */
+        struct panfrost_screen *screen = rzalloc(NULL, struct panfrost_screen);
 
         if (!screen)
                 return NULL;
@@ -523,7 +732,9 @@ panfrost_create_screen(int fd, struct renderonly *ro)
 
         screen->fd = fd;
 
-        screen->gpu_id = panfrost_drm_query_gpu_version(screen);
+        screen->gpu_id = panfrost_query_gpu_version(screen);
+        screen->require_sfbd = screen->gpu_id < 0x0750; /* T760 is the first to support MFBD */
+        screen->kernel_version = drmGetVersion(fd);
 
         /* Check if we're loading against a supported GPU model. */
 
@@ -539,8 +750,11 @@ panfrost_create_screen(int fd, struct renderonly *ro)
                 return NULL;
         }
 
-        util_dynarray_init(&screen->transient_bo, screen);
+        pthread_mutex_init(&screen->active_bos_lock, NULL);
+        screen->active_bos = _mesa_set_create(screen, panfrost_active_bos_hash,
+                                              panfrost_active_bos_cmp);
 
+        pthread_mutex_init(&screen->bo_cache_lock, NULL);
         for (unsigned i = 0; i < ARRAY_SIZE(screen->bo_cache); ++i)
                 list_inithead(&screen->bo_cache[i]);
 
@@ -554,6 +768,7 @@ panfrost_create_screen(int fd, struct renderonly *ro)
         screen->base.get_device_vendor = panfrost_get_device_vendor;
         screen->base.get_param = panfrost_get_param;
         screen->base.get_shader_param = panfrost_get_shader_param;
+        screen->base.get_compute_param = panfrost_get_compute_param;
         screen->base.get_paramf = panfrost_get_paramf;
         screen->base.get_timestamp = panfrost_get_timestamp;
         screen->base.is_format_supported = panfrost_is_format_supported;
@@ -562,9 +777,7 @@ panfrost_create_screen(int fd, struct renderonly *ro)
         screen->base.get_compiler_options = panfrost_screen_get_compiler_options;
         screen->base.fence_reference = panfrost_fence_reference;
         screen->base.fence_finish = panfrost_fence_finish;
-
-        screen->last_fragment_flushed = true;
-        screen->last_job = NULL;
+        screen->base.set_damage_region = panfrost_resource_set_damage_region;
 
         panfrost_resource_screen_init(screen);
 

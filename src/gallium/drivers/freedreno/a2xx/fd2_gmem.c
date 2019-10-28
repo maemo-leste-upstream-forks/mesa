@@ -52,7 +52,6 @@ static uint32_t fmt2swap(enum pipe_format format)
 	case PIPE_FORMAT_B5G5R5X1_UNORM:
 	case PIPE_FORMAT_B4G4R4A4_UNORM:
 	case PIPE_FORMAT_B4G4R4X4_UNORM:
-	/* TODO probably some more.. */
 		return 1;
 	default:
 		return 0;
@@ -89,11 +88,11 @@ emit_gmem2mem_surf(struct fd_batch *batch, uint32_t base,
 {
 	struct fd_ringbuffer *ring = batch->tile_fini;
 	struct fd_resource *rsc = fd_resource(psurf->texture);
-	uint32_t swap = fmt2swap(psurf->format);
 	struct fd_resource_slice *slice =
 		fd_resource_slice(rsc, psurf->u.tex.level);
 	uint32_t offset =
 		fd_resource_offset(rsc, psurf->u.tex.level, psurf->u.tex.first_layer);
+	enum pipe_format format = fd_gmem_restore_format(psurf->format);
 
 	assert((slice->pitch & 31) == 0);
 	assert((offset & 0xfff) == 0);
@@ -103,9 +102,8 @@ emit_gmem2mem_surf(struct fd_batch *batch, uint32_t base,
 
 	OUT_PKT3(ring, CP_SET_CONSTANT, 2);
 	OUT_RING(ring, CP_REG(REG_A2XX_RB_COLOR_INFO));
-	OUT_RING(ring, A2XX_RB_COLOR_INFO_SWAP(swap) |
-			A2XX_RB_COLOR_INFO_BASE(base) |
-			A2XX_RB_COLOR_INFO_FORMAT(fd2_pipe2color(psurf->format)));
+	OUT_RING(ring, A2XX_RB_COLOR_INFO_BASE(base) |
+			A2XX_RB_COLOR_INFO_FORMAT(fd2_pipe2color(format)));
 
 	OUT_PKT3(ring, CP_SET_CONSTANT, 5);
 	OUT_RING(ring, CP_REG(REG_A2XX_RB_COPY_CONTROL));
@@ -113,9 +111,8 @@ emit_gmem2mem_surf(struct fd_batch *batch, uint32_t base,
 	OUT_RELOCW(ring, rsc->bo, offset, 0, 0);     /* RB_COPY_DEST_BASE */
 	OUT_RING(ring, slice->pitch >> 5); /* RB_COPY_DEST_PITCH */
 	OUT_RING(ring,                          /* RB_COPY_DEST_INFO */
-			A2XX_RB_COPY_DEST_INFO_FORMAT(fd2_pipe2color(psurf->format)) |
-			A2XX_RB_COPY_DEST_INFO_LINEAR |
-			A2XX_RB_COPY_DEST_INFO_SWAP(swap) |
+			A2XX_RB_COPY_DEST_INFO_FORMAT(fd2_pipe2color(format)) |
+			COND(!rsc->tile_mode, A2XX_RB_COPY_DEST_INFO_LINEAR) |
 			A2XX_RB_COPY_DEST_INFO_WRITE_RED |
 			A2XX_RB_COPY_DEST_INFO_WRITE_GREEN |
 			A2XX_RB_COPY_DEST_INFO_WRITE_BLUE |
@@ -221,7 +218,7 @@ prepare_tile_fini_ib(struct fd_batch *batch)
 static void
 fd2_emit_tile_gmem2mem(struct fd_batch *batch, struct fd_tile *tile)
 {
-	batch->ctx->emit_ib(batch->gmem, batch->tile_fini);
+	fd2_emit_ib(batch->gmem, batch->tile_fini);
 }
 
 /* transfer from system memory to gmem */
@@ -236,16 +233,12 @@ emit_mem2gmem_surf(struct fd_batch *batch, uint32_t base,
 		fd_resource_slice(rsc, psurf->u.tex.level);
 	uint32_t offset =
 		fd_resource_offset(rsc, psurf->u.tex.level, psurf->u.tex.first_layer);
-	uint32_t swiz;
+	enum pipe_format format = fd_gmem_restore_format(psurf->format);
 
 	OUT_PKT3(ring, CP_SET_CONSTANT, 2);
 	OUT_RING(ring, CP_REG(REG_A2XX_RB_COLOR_INFO));
-	OUT_RING(ring, A2XX_RB_COLOR_INFO_SWAP(fmt2swap(psurf->format)) |
-			A2XX_RB_COLOR_INFO_BASE(base) |
-			A2XX_RB_COLOR_INFO_FORMAT(fd2_pipe2color(psurf->format)));
-
-	swiz = fd2_tex_swiz(psurf->format, PIPE_SWIZZLE_X, PIPE_SWIZZLE_Y,
-			PIPE_SWIZZLE_Z, PIPE_SWIZZLE_W);
+	OUT_RING(ring, A2XX_RB_COLOR_INFO_BASE(base) |
+			A2XX_RB_COLOR_INFO_FORMAT(fd2_pipe2color(format)));
 
 	/* emit fb as a texture: */
 	OUT_PKT3(ring, CP_SET_CONSTANT, 7);
@@ -255,12 +248,15 @@ emit_mem2gmem_surf(struct fd_batch *batch, uint32_t base,
 			A2XX_SQ_TEX_0_CLAMP_Z(SQ_TEX_WRAP) |
 			A2XX_SQ_TEX_0_PITCH(slice->pitch));
 	OUT_RELOC(ring, rsc->bo, offset,
-			fd2_pipe2surface(psurf->format) |
+			fd2_pipe2surface(format) |
 			A2XX_SQ_TEX_1_CLAMP_POLICY(SQ_TEX_CLAMP_POLICY_OGL), 0);
 	OUT_RING(ring, A2XX_SQ_TEX_2_WIDTH(psurf->width - 1) |
 			A2XX_SQ_TEX_2_HEIGHT(psurf->height - 1));
 	OUT_RING(ring, A2XX_SQ_TEX_3_MIP_FILTER(SQ_TEX_FILTER_BASEMAP) |
-			swiz |
+			A2XX_SQ_TEX_3_SWIZ_X(0) |
+			A2XX_SQ_TEX_3_SWIZ_Y(1) |
+			A2XX_SQ_TEX_3_SWIZ_Z(2) |
+			A2XX_SQ_TEX_3_SWIZ_W(3) |
 			A2XX_SQ_TEX_3_XY_MAG_FILTER(SQ_TEX_FILTER_POINT) |
 			A2XX_SQ_TEX_3_XY_MIN_FILTER(SQ_TEX_FILTER_POINT));
 	OUT_RING(ring, 0x00000000);
@@ -456,7 +452,8 @@ fd2_emit_sysmem_prep(struct fd_batch *batch)
 
 	OUT_PKT3(ring, CP_SET_CONSTANT, 2);
 	OUT_RING(ring, CP_REG(REG_A2XX_RB_COLOR_INFO));
-	OUT_RELOCW(ring, rsc->bo, offset, A2XX_RB_COLOR_INFO_LINEAR |
+	OUT_RELOCW(ring, rsc->bo, offset,
+		COND(!rsc->tile_mode, A2XX_RB_COLOR_INFO_LINEAR) |
 		A2XX_RB_COLOR_INFO_SWAP(fmt2swap(psurf->format)) |
 		A2XX_RB_COLOR_INFO_FORMAT(fd2_pipe2color(psurf->format)), 0);
 
@@ -590,14 +587,14 @@ fd2_emit_tile_init(struct fd_batch *batch)
 		for (int i = 0; i < gmem->num_vsc_pipes; i++) {
 			struct fd_vsc_pipe *pipe = &ctx->vsc_pipe[i];
 
-			/* XXX we know how large this needs to be..
-			 * should do some sort of realloc
-			 * it should be ctx->batch->num_vertices bytes large
-			 * with this size it will break with more than 256k vertices..
-			 */
-			if (!pipe->bo) {
-				pipe->bo = fd_bo_new(ctx->dev, 0x40000,
+			/* allocate in 64k increments to avoid reallocs */
+			uint32_t bo_size = align(batch->num_vertices, 0x10000);
+			if (!pipe->bo || fd_bo_size(pipe->bo) < bo_size) {
+				if (pipe->bo)
+					fd_bo_del(pipe->bo);
+				pipe->bo = fd_bo_new(ctx->dev, bo_size,
 						DRM_FREEDRENO_GEM_TYPE_KMEM, "vsc_pipe[%u]", i);
+				assert(pipe->bo);
 			}
 
 			/* memory export address (export32):
@@ -609,7 +606,7 @@ fd2_emit_tile_init(struct fd_batch *batch)
 			OUT_RELOCW(ring, pipe->bo, 0, 0x40000000, -2);
 			OUT_RING(ring, 0x00000000);
 			OUT_RING(ring, 0x4B00D000);
-			OUT_RING(ring, 0x4B000000 | 0x40000);
+			OUT_RING(ring, 0x4B000000 | bo_size);
 		}
 
 		OUT_PKT3(ring, CP_SET_CONSTANT, 1 + gmem->num_vsc_pipes * 8);
@@ -647,7 +644,7 @@ fd2_emit_tile_init(struct fd_batch *batch)
 		OUT_RING(ring, CP_REG(REG_A2XX_VGT_VERTEX_REUSE_BLOCK_CNTL));
 		OUT_RING(ring, 0);
 
-		ctx->emit_ib(ring, batch->binning);
+		fd2_emit_ib(ring, batch->binning);
 
 		OUT_PKT3(ring, CP_SET_CONSTANT, 2);
 		OUT_RING(ring, CP_REG(REG_A2XX_VGT_VERTEX_REUSE_BLOCK_CNTL));

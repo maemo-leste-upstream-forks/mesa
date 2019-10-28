@@ -92,7 +92,8 @@ if with_dri2
     'drivers/dri2/egl_dri2.h',
     'drivers/dri2/egl_dri2_fallbacks.h',
   )
-  link_for_egl += [libloader, libxmlconfig]
+  deps_for_egl += idep_xmlconfig
+  link_for_egl += libloader
   incs_for_egl += inc_loader
 
   files_egl += files('drivers/dri2/platform_device.c')
@@ -165,19 +166,28 @@ libegl = shared_library(
     '-D_EGL_NATIVE_PLATFORM=_EGL_PLATFORM_@0@'.format(egl_native_platform.to_upper()),
   ],
   include_directories : incs_for_egl,
-  link_with : [link_for_egl, libglapi, libmesa_util],
+  link_with : [link_for_egl, libglapi],
   link_args : [ld_args_bsymbolic, ld_args_gc_sections],
-  dependencies : [deps_for_egl, dep_dl, dep_libdrm, dep_clock, dep_thread],
+  dependencies : [deps_for_egl, dep_dl, dep_libdrm, dep_clock, dep_thread, idep_mesautil],
   install : true,
   version : egl_lib_version,
 )
 
-if not with_glvnd
+# If using glvnd the pkg-config header should not point to EGL_mesa, it should
+# point to EGL. glvnd is only available on unix like platforms so adding -l
+# should be safe here
+if not with_glvnd or not glvnd_has_headers_and_pc_files
+  if not glvnd_has_headers_and_pc_files
+    _egl = '-L${libdir} -lEGL'
+  else
+    _egl = libegl
+  endif
+
   pkg.generate(
     name : 'egl',
     description : 'Mesa EGL Library',
     version : meson.project_version(),
-    libraries : libegl,
+    libraries : _egl,
     libraries_private: gl_priv_libs,
     requires_private : gl_priv_reqs,
     extra_cflags : gl_pkgconfig_c_flags,

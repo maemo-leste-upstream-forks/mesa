@@ -34,6 +34,7 @@
 #include "util/hash_table.h"
 #include "util/set.h"
 #include "iris_context.h"
+#include "compiler/nir/nir.h"
 
 /**
  * Disable auxiliary buffers if a renderbuffer is also bound as a texture
@@ -126,15 +127,24 @@ resolve_image_views(struct iris_context *ice,
 
    while (views) {
       const int i = u_bit_scan(&views);
-      struct iris_resource *res = (void *) shs->image[i].base.resource;
+      struct pipe_image_view *pview = &shs->image[i].base;
+      struct iris_resource *res = (void *) pview->resource;
 
       if (res->base.target != PIPE_BUFFER) {
          if (consider_framebuffer) {
             disable_rb_aux_buffer(ice, draw_aux_buffer_disabled,
-                                  res, 0, ~0, "as a shader image");
+                                  res, pview->u.tex.level, 1,
+                                  "as a shader image");
          }
 
-         iris_resource_prepare_image(ice, batch, res);
+         unsigned num_layers =
+            pview->u.tex.last_layer - pview->u.tex.first_layer + 1;
+
+         /* The data port doesn't understand any compression */
+         iris_resource_prepare_access(ice, batch, res,
+                                      pview->u.tex.level, 1,
+                                      pview->u.tex.first_layer, num_layers,
+                                      ISL_AUX_USAGE_NONE, false);
       }
 
       iris_cache_flush_for_read(batch, res->bo);
@@ -177,6 +187,11 @@ iris_predraw_resolve_framebuffer(struct iris_context *ice,
                                  bool *draw_aux_buffer_disabled)
 {
    struct pipe_framebuffer_state *cso_fb = &ice->state.framebuffer;
+   struct iris_screen *screen = (void *) ice->ctx.screen;
+   struct gen_device_info *devinfo = &screen->devinfo;
+   struct iris_uncompiled_shader *ish =
+      ice->shaders.uncompiled[MESA_SHADER_FRAGMENT];
+   const nir_shader *nir = ish->nir;
 
    if (ice->state.dirty & IRIS_DIRTY_DEPTH_BUFFER) {
       struct pipe_surface *zs_surf = cso_fb->zsbuf;
@@ -197,6 +212,21 @@ iris_predraw_resolve_framebuffer(struct iris_context *ice,
 
          if (s_res) {
             iris_cache_flush_for_depth(batch, s_res->bo);
+         }
+      }
+   }
+
+   if (devinfo->gen == 8 && nir->info.outputs_read != 0) {
+      for (unsigned i = 0; i < cso_fb->nr_cbufs; i++) {
+         if (cso_fb->cbufs[i]) {
+            struct iris_surface *surf = (void *) cso_fb->cbufs[i];
+            struct iris_resource *res = (void *) cso_fb->cbufs[i]->texture;
+
+            iris_resource_prepare_texture(ice, batch, res, surf->view.format,
+                                          surf->view.base_level, 1,
+                                          surf->view.base_array_layer,
+                                          surf->view.array_len,
+                                          0);
          }
       }
    }
@@ -1375,17 +1405,6 @@ iris_resource_prepare_texture(struct iris_context *ice,
    iris_resource_prepare_access(ice, batch, res, start_level, num_levels,
                                 start_layer, num_layers,
                                 aux_usage, clear_supported);
-}
-
-void
-iris_resource_prepare_image(struct iris_context *ice,
-                            struct iris_batch *batch,
-                            struct iris_resource *res)
-{
-   /* The data port doesn't understand any compression */
-   iris_resource_prepare_access(ice, batch, res, 0, INTEL_REMAINING_LEVELS,
-                                0, INTEL_REMAINING_LAYERS,
-                                ISL_AUX_USAGE_NONE, false);
 }
 
 enum isl_aux_usage

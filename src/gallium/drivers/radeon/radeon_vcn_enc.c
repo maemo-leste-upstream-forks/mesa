@@ -105,7 +105,8 @@ static void radeon_vcn_enc_get_param(struct radeon_encoder *enc, struct pipe_pic
       enc->enc_pic.general_tier_flag = pic->seq.general_tier_flag;
       enc->enc_pic.general_profile_idc = pic->seq.general_profile_idc;
       enc->enc_pic.general_level_idc = pic->seq.general_level_idc;
-      enc->enc_pic.max_poc = pic->seq.intra_period;
+      enc->enc_pic.max_poc =
+         MAX2(16, util_next_power_of_two(pic->seq.intra_period));
       enc->enc_pic.log2_max_poc = 0;
       for (int i = enc->enc_pic.max_poc; i != 0; enc->enc_pic.log2_max_poc++)
          i = (i >> 1);
@@ -410,7 +411,7 @@ struct pipe_video_codec *radeon_create_encoder(struct pipe_context *context,
 		goto error;
 	}
 
-	if (sscreen->info.family <= CHIP_RAVEN)
+	if (sscreen->info.family <= CHIP_RAVEN2)
 		radeon_enc_1_2_init(enc);
 	else
 		radeon_enc_2_0_init(enc);

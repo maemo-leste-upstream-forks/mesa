@@ -1100,20 +1100,6 @@ t7              opcode: CP_WAIT_FOR_IDLE (26) (1 dwords)
 }
 
 static void
-fd5_emit_ib(struct fd_ringbuffer *ring, struct fd_ringbuffer *target)
-{
-	/* for debug after a lock up, write a unique counter value
-	 * to scratch6 for each IB, to make it easier to match up
-	 * register dumps to cmdstream.  The combination of IB and
-	 * DRAW (scratch7) is enough to "triangulate" the particular
-	 * draw that caused lockup.
-	 */
-	emit_marker5(ring, 6);
-	__OUT_IB5(ring, target);
-	emit_marker5(ring, 6);
-}
-
-static void
 fd5_mem_to_mem(struct fd_ringbuffer *ring, struct pipe_resource *dst,
 		unsigned dst_off, struct pipe_resource *src, unsigned src_off,
 		unsigned sizedwords)
@@ -1134,11 +1120,16 @@ fd5_mem_to_mem(struct fd_ringbuffer *ring, struct pipe_resource *dst,
 }
 
 void
+fd5_emit_init_screen(struct pipe_screen *pscreen)
+{
+	struct fd_screen *screen = fd_screen(pscreen);
+	screen->emit_const = fd5_emit_const;
+	screen->emit_const_bo = fd5_emit_const_bo;
+	screen->emit_ib = fd5_emit_ib;
+	screen->mem_to_mem = fd5_mem_to_mem;
+}
+
+void
 fd5_emit_init(struct pipe_context *pctx)
 {
-	struct fd_context *ctx = fd_context(pctx);
-	ctx->emit_const = fd5_emit_const;
-	ctx->emit_const_bo = fd5_emit_const_bo;
-	ctx->emit_ib = fd5_emit_ib;
-	ctx->mem_to_mem = fd5_mem_to_mem;
 }

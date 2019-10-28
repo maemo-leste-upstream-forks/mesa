@@ -458,6 +458,16 @@ static inline nir_ssa_def *
 nir_mov_alu(nir_builder *build, nir_alu_src src, unsigned num_components)
 {
    assert(!src.abs && !src.negate);
+   if (src.src.is_ssa && src.src.ssa->num_components == num_components) {
+      bool any_swizzles = false;
+      for (unsigned i = 0; i < num_components; i++) {
+         if (src.swizzle[i] != i)
+            any_swizzles = true;
+      }
+      if (!any_swizzles)
+         return src.src.ssa;
+   }
+
    nir_alu_instr *mov = nir_alu_instr_create(build->shader, nir_op_mov);
    nir_ssa_dest_init(&mov->instr, &mov->dest.dest, num_components,
                      nir_src_bit_size(src.src), NULL);
@@ -636,7 +646,7 @@ nir_iadd_imm(nir_builder *build, nir_ssa_def *x, uint64_t y)
 }
 
 static inline nir_ssa_def *
-nir_imul_imm(nir_builder *build, nir_ssa_def *x, uint64_t y)
+_nir_mul_imm(nir_builder *build, nir_ssa_def *x, uint64_t y, bool amul)
 {
    assert(x->bit_size <= 64);
    if (x->bit_size < 64)
@@ -648,9 +658,23 @@ nir_imul_imm(nir_builder *build, nir_ssa_def *x, uint64_t y)
       return x;
    } else if (util_is_power_of_two_or_zero64(y)) {
       return nir_ishl(build, x, nir_imm_int(build, ffsll(y) - 1));
+   } else if (amul) {
+      return nir_amul(build, x, nir_imm_intN_t(build, y, x->bit_size));
    } else {
       return nir_imul(build, x, nir_imm_intN_t(build, y, x->bit_size));
    }
+}
+
+static inline nir_ssa_def *
+nir_imul_imm(nir_builder *build, nir_ssa_def *x, uint64_t y)
+{
+   return _nir_mul_imm(build, x, y, false);
+}
+
+static inline nir_ssa_def *
+nir_amul_imm(nir_builder *build, nir_ssa_def *x, uint64_t y)
+{
+   return _nir_mul_imm(build, x, y, true);
 }
 
 static inline nir_ssa_def *
@@ -807,9 +831,9 @@ nir_ssa_for_src(nir_builder *build, nir_src src, int num_components)
 static inline nir_ssa_def *
 nir_ssa_for_alu_src(nir_builder *build, nir_alu_instr *instr, unsigned srcn)
 {
-   static uint8_t trivial_swizzle[NIR_MAX_VEC_COMPONENTS];
-   for (int i = 0; i < NIR_MAX_VEC_COMPONENTS; ++i)
-      trivial_swizzle[i] = i;
+   static uint8_t trivial_swizzle[] = { 0, 1, 2, 3 };
+   STATIC_ASSERT(ARRAY_SIZE(trivial_swizzle) == NIR_MAX_VEC_COMPONENTS);
+
    nir_alu_src *src = &instr->src[srcn];
    unsigned num_components = nir_ssa_alu_instr_src_components(instr, srcn);
 
@@ -1166,6 +1190,18 @@ nir_b2f(nir_builder *build, nir_ssa_def *b, uint32_t bit_size)
    };
 }
 
+static inline nir_ssa_def *
+nir_b2i(nir_builder *build, nir_ssa_def *b, uint32_t bit_size)
+{
+   switch (bit_size) {
+   case 64: return nir_b2i64(build, b);
+   case 32: return nir_b2i32(build, b);
+   case 16: return nir_b2i16(build, b);
+   case 8:  return nir_b2i8(build, b);
+   default:
+      unreachable("Invalid bit-size");
+   };
+}
 static inline nir_ssa_def *
 nir_load_barycentric(nir_builder *build, nir_intrinsic_op op,
                      unsigned interp_mode)
