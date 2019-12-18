@@ -1,22 +1,22 @@
 diff --git a/meson.build b/meson.build
-index 0e8aa25d336..83365a46c8e 100644
+index 5b488313309..19ef542333b 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -1130,7 +1130,7 @@ dep_libdrm_nouveau = null_dep
- dep_libdrm_etnaviv = null_dep
+@@ -1300,7 +1300,7 @@ dep_libdrm_radeon = null_dep
+ dep_libdrm_nouveau = null_dep
  dep_libdrm_intel = null_dep
-
--_drm_amdgpu_ver = '2.4.97'
+ 
+-_drm_amdgpu_ver = '2.4.100'
 +_drm_amdgpu_ver = '2.4.95'
  _drm_radeon_ver = '2.4.71'
  _drm_nouveau_ver = '2.4.66'
- _drm_etnaviv_ver = '2.4.89'
-@@ -1205,7 +1205,7 @@ if with_gallium_opencl
+ _drm_intel_ver = '2.4.75'
+@@ -1377,7 +1377,7 @@ if with_gallium_opencl
  endif
-
+ 
  if with_amd_vk or with_gallium_radeonsi
--  _llvm_version = '>= 7.0.0'
+-  _llvm_version = '>= 8.0.0'
 +  _llvm_version = '>= 6.0.0'
  elif with_gallium_swr
    _llvm_version = '>= 6.0.0'
- elif with_gallium_opencl or with_gallium_r600
+ else
