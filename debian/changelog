@@ -1,3 +1,9 @@
+mesa (19.2.0-5) unstable; urgency=medium
+
+  * Merge latest upstream mesa
+
+ -- Ivan J. <parazyd@dyne.org>  Wed, 18 Dec 2019 10:56:57 +0100
+
 mesa (19.2.0-4) unstable; urgency=medium
 
   * Merge latest upstream mesa
