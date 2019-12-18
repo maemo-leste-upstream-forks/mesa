@@ -44,7 +44,7 @@ Build-Depends:
  libclc-dev (>= 0.2.0+git20180517-1~) [amd64 arm64 armel armhf i386 kfreebsd-amd64 kfreebsd-i386 mips mips64el mipsel powerpc ppc64 ppc64el s390x sparc64],
  wayland-protocols (>= 1.9),
  zlib1g-dev,
- libglvnd-core-dev,
+ libglvnd-dev,
 Vcs-Git: https://salsa.debian.org/xorg-team/lib/mesa.git
 Vcs-Browser: https://salsa.debian.org/xorg-team/lib/mesa
 Homepage: https://mesa3d.org/
