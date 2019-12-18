@@ -33,16 +33,12 @@ confflags_DRI3 = -Ddri3=false
 
 # hurd doesn't do direct rendering
 ifeq ($(DEB_HOST_ARCH_OS), hurd)
-	EGL_PLATFORMS = x11,
-
 	confflags_DIRECT_RENDERING = -Dglx-direct=false
 	confflags_GBM = -Dgbm=false
 	confflags_OSMESA = -Dosmesa=classic
 	DRI_DRIVERS = swrast,
 	with_libva = 
 else
-	EGL_PLATFORMS = x11,surfaceless,
-
   ifeq ($(DEB_HOST_ARCH_OS), linux)
 	confflags_DRI3 = -Ddri3=true
 	DRI_DRIVERS += nouveau,
@@ -66,12 +62,7 @@ else
 		VULKAN_DRIVERS += intel,
 	endif
 
-	# Non-Linux ports also lack *_CLOEXEC and epoll, so wayland isn't ready yet:
-	EGL_PLATFORMS += wayland,
-
   endif
-
-	EGL_PLATFORMS += drm,
 
   # Build intel drivers on archs where libdrm-intel is installed
   ifneq (,$(filter $(DEB_HOST_ARCH),amd64 i386 kfreebsd-amd64 kfreebsd-i386 x32))
@@ -114,7 +105,6 @@ ifneq (,$(filter $(DEB_HOST_ARCH), x32))
 	confflags += -Dasm=false
 endif
 
-confflags_EGL = -Dplatforms="$(EGL_PLATFORMS)"
 confflags_GLES = -Dgles1=false -Dgles2=true
 confflags_GALLIUM += -Dgallium-drivers="$(GALLIUM_DRIVERS)"
 
@@ -131,7 +121,6 @@ confflags += \
 	$(confflags_DIRECT_RENDERING) \
 	$(confflags_GBM) \
 	$(confflags_DRI3) \
-	$(confflags_EGL) \
 	$(confflags_GALLIUM) \
 	$(confflags_GLES) \
 	$(confflags_OSMESA)
