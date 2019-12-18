@@ -118,6 +118,7 @@ confflags += \
 	-Dgallium-xvmc=false \
 	-Dgallium-omx=disabled \
 	-Db_ndebug=true \
+	-Dplatforms=x11,surfaceless,drm \
 	$(confflags_DIRECT_RENDERING) \
 	$(confflags_GBM) \
 	$(confflags_DRI3) \
