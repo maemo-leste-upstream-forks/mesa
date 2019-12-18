@@ -164,13 +164,6 @@ genX(emit_slice_hashing_state)(struct anv_device *device,
 VkResult
 genX(init_device_state)(struct anv_device *device)
 {
-   device->default_mocs = GENX(MOCS);
-#if GEN_GEN >= 8
-   device->external_mocs = GENX(EXTERNAL_MOCS);
-#else
-   device->external_mocs = device->default_mocs;
-#endif
-
    struct anv_batch batch;
 
    uint32_t cmds[64];
@@ -273,6 +266,18 @@ genX(init_device_state)(struct anv_device *device)
       lri.DataDWord      = half_slice_chicken7;
    }
 
+   uint32_t tccntlreg;
+   anv_pack_struct(&tccntlreg, GENX(TCCNTLREG),
+                   .L3DataPartialWriteMergingEnable = true,
+                   .ColorZPartialWriteMergingEnable = true,
+                   .URBPartialWriteMergingEnable = true,
+                   .TCDisable = true);
+
+   anv_batch_emit(&batch, GENX(MI_LOAD_REGISTER_IMM), lri) {
+      lri.RegisterOffset = GENX(TCCNTLREG_num);
+      lri.DataDWord      = tccntlreg;
+   }
+
 #endif
    genX(emit_slice_hashing_state)(device, &batch);
 
@@ -325,7 +330,7 @@ genX(init_device_state)(struct anv_device *device)
 
    assert(batch.next <= batch.end);
 
-   return anv_device_submit_simple_batch(device, &batch);
+   return anv_queue_submit_simple_batch(&device->queue, &batch);
 }
 
 static uint32_t

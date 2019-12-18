@@ -247,4 +247,39 @@ panfrost_find_format(const struct util_format_description *desc) {
         return (enum mali_format) format;
 }
 
+void
+panfrost_invert_swizzle(const unsigned char *in, unsigned char *out)
+{
+        /* First, default to all zeroes to prevent uninitialized junk */
 
+        for (unsigned c = 0; c < 4; ++c)
+                out[c] = PIPE_SWIZZLE_0;
+
+        /* Now "do" what the swizzle says */
+
+        for (unsigned c = 0; c < 4; ++c) {
+                unsigned char i = in[c];
+
+                /* Who cares? */
+                assert(PIPE_SWIZZLE_X == 0);
+                if (i > PIPE_SWIZZLE_W)
+                        continue;
+
+                /* Invert */
+                unsigned idx = i - PIPE_SWIZZLE_X;
+                out[idx] = PIPE_SWIZZLE_X + c;
+        }
+}
+
+/* Is a format encoded like Z24S8 and therefore compatible for render? */
+bool
+panfrost_is_z24s8_variant(enum pipe_format fmt)
+{
+        switch (fmt) {
+                case PIPE_FORMAT_Z24_UNORM_S8_UINT:
+                case PIPE_FORMAT_Z24X8_UNORM:
+                        return true;
+                default:
+                        return false;
+        }
+}

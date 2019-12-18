@@ -30,13 +30,6 @@
                 op == midgard_op_ld_vary_32 \
         )
 
-#define OP_IS_STORE_VARY(op) (\
-		op == midgard_op_st_vary_16 || \
-		op == midgard_op_st_vary_32 || \
-                op == midgard_op_st_vary_32u || \
-		op == midgard_op_st_vary_32i \
-	)
-
 #define OP_IS_PROJECTION(op) ( \
                 op == midgard_op_ldst_perspective_division_z || \
                 op == midgard_op_ldst_perspective_division_w \
@@ -174,41 +167,21 @@ quadword_size(int tag)
 #define SSA_REG_FROM_FIXED(reg) ((((reg) & ~1) >> SSA_FIXED_SHIFT) - 1)
 #define SSA_FIXED_MINIMUM SSA_FIXED_REGISTER(0)
 
-/* Swizzle support */
-
-#define SWIZZLE(A, B, C, D) (((D) << 6) | ((C) << 4) | ((B) << 2) | ((A) << 0))
-#define SWIZZLE_FROM_ARRAY(r) SWIZZLE(r[0], r[1], r[2], r[3])
 #define COMPONENT_X 0x0
 #define COMPONENT_Y 0x1
 #define COMPONENT_Z 0x2
 #define COMPONENT_W 0x3
 
-#define SWIZZLE_XXXX SWIZZLE(COMPONENT_X, COMPONENT_X, COMPONENT_X, COMPONENT_X)
-#define SWIZZLE_XYXX SWIZZLE(COMPONENT_X, COMPONENT_Y, COMPONENT_X, COMPONENT_X)
-#define SWIZZLE_XYZX SWIZZLE(COMPONENT_X, COMPONENT_Y, COMPONENT_Z, COMPONENT_X)
-#define SWIZZLE_XYZW SWIZZLE(COMPONENT_X, COMPONENT_Y, COMPONENT_Z, COMPONENT_W)
-#define SWIZZLE_XYXZ SWIZZLE(COMPONENT_X, COMPONENT_Y, COMPONENT_X, COMPONENT_Z)
-#define SWIZZLE_XYZZ SWIZZLE(COMPONENT_X, COMPONENT_Y, COMPONENT_Z, COMPONENT_Z)
-#define SWIZZLE_XXXY SWIZZLE(COMPONENT_X, COMPONENT_X, COMPONENT_X, COMPONENT_Y)
-#define SWIZZLE_ZZZW SWIZZLE(COMPONENT_Z, COMPONENT_Z, COMPONENT_Z, COMPONENT_W)
-#define SWIZZLE_ZWWW SWIZZLE(COMPONENT_Z, COMPONENT_W, COMPONENT_W, COMPONENT_W)
-#define SWIZZLE_WWWW SWIZZLE(COMPONENT_W, COMPONENT_W, COMPONENT_W, COMPONENT_W)
+#define SWIZZLE_IDENTITY { \
+        { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }, \
+        { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }, \
+        { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 } \
+}
 
-static inline unsigned
-swizzle_of(unsigned comp)
-{
-        switch (comp) {
-        case 1:
-                return SWIZZLE_XXXX;
-        case 2:
-                return SWIZZLE_XYXX;
-        case 3:
-                return SWIZZLE_XYZX;
-        case 4:
-                return SWIZZLE_XYZW;
-        default:
-                unreachable("Invalid component count");
-        }
+#define SWIZZLE_IDENTITY_4 { \
+        { 0, 1, 2, 3, 0, 0, 0, 0, 0, 0,  0,  0,  0,  0,  0,  0 }, \
+        { 0, 1, 2, 3, 0, 0, 0, 0, 0, 0,  0,  0,  0,  0,  0,  0 }, \
+        { 0, 1, 2, 3, 0, 0, 0, 0, 0, 0,  0,  0,  0,  0,  0,  0 }, \
 }
 
 static inline unsigned
@@ -216,7 +189,6 @@ mask_of(unsigned nr_comp)
 {
         return (1 << nr_comp) - 1;
 }
-
 
 /* See ISA notes */
 
@@ -272,17 +244,19 @@ struct mir_ldst_op_props {
 /* This file is common, so don't define the tables themselves. #include
  * midgard_op.h if you need that, or edit midgard_ops.c directly */
 
-/* Duplicate bits to convert a 4-bit writemask to duplicated 8-bit format,
- * which is used for 32-bit vector units */
+/* Duplicate bits to convert a per-component to duplicated 8-bit format,
+ * which is used for vector units */
 
 static inline unsigned
-expand_writemask_32(unsigned mask)
+expand_writemask(unsigned mask, unsigned channels)
 {
         unsigned o = 0;
+        unsigned factor = 8 / channels;
+        unsigned expanded = (1 << factor) - 1;
 
-        for (int i = 0; i < 4; ++i)
+        for (unsigned i = 0; i < channels; ++i)
                 if (mask & (1 << i))
-                        o |= (3 << (2 * i));
+                        o |= (expanded << (factor * i));
 
         return o;
 }
@@ -305,44 +279,26 @@ vector_alu_from_unsigned(unsigned u)
         return s;
 }
 
-/* Composes two swizzles */
-static inline unsigned
-pan_compose_swizzle(unsigned left, unsigned right)
+static inline void
+mir_compose_swizzle(unsigned *left, unsigned *right, unsigned *final_out)
 {
-        unsigned out = 0;
+        unsigned out[16];
 
-        for (unsigned c = 0; c < 4; ++c) {
-                unsigned s = (left >> (2*c)) & 0x3;
-                unsigned q = (right >> (2*s)) & 0x3;
+        for (unsigned c = 0; c < 16; ++c)
+                out[c] = right[left[c]];
 
-                out |= (q << (2*c));
-        }
-
-        return out;
-}
-
-/* Applies a swizzle to an ALU source */
-
-static inline unsigned
-vector_alu_apply_swizzle(unsigned src, unsigned swizzle)
-{
-        midgard_vector_alu_src s =
-                vector_alu_from_unsigned(src);
-
-        s.swizzle = pan_compose_swizzle(s.swizzle, swizzle);
-
-        return vector_alu_srco_unsigned(s);
+        memcpy(final_out, out, sizeof(out));
 }
 
 /* Checks for an xyzw.. swizzle, given a mask */
 
 static inline bool
-mir_is_simple_swizzle(unsigned swizzle, unsigned mask)
+mir_is_simple_swizzle(unsigned *swizzle, unsigned mask)
 {
         for (unsigned i = 0; i < 16; ++i) {
                 if (!(mask & (1 << i))) continue;
 
-                if (((swizzle >> (2 * i)) & 0x3) != i)
+                if (swizzle[i] != i)
                         return false;
         }
 
@@ -365,54 +321,6 @@ midgard_ldst_reg(unsigned reg, unsigned component)
         memcpy(&packed, &sel, sizeof(packed));
 
         return packed;
-}
-
-/* Unpacks a load/store argument */
-
-static inline midgard_ldst_register_select
-midgard_ldst_select(uint8_t u)
-{
-        midgard_ldst_register_select sel;
-        memcpy(&sel, &u, sizeof(u));
-        return sel;
-}
-
-static inline uint8_t
-midgard_ldst_pack(midgard_ldst_register_select sel)
-{
-        uint8_t packed;
-        memcpy(&packed, &sel, sizeof(packed));
-        return packed;
-}
-
-/* Gets a swizzle like yyyy and returns y */
-
-static inline unsigned
-swizzle_to_component(unsigned swizzle)
-{
-        unsigned c = swizzle & 3;
-        assert(((swizzle >> 2) & 3) == c);
-        assert(((swizzle >> 4) & 3) == c);
-        assert(((swizzle >> 6) & 3) == c);
-        return  c;
-}
-
-
-static inline unsigned
-component_to_swizzle(unsigned c, unsigned count)
-{
-        switch (count) {
-        case 1:
-                return SWIZZLE(c, c, c, c);
-        case 2:
-                return SWIZZLE(c, c + 1, c + 1, c + 1);
-        case 3:
-                return SWIZZLE(c, c + 1, c + 2, c + 2);
-        case 4:
-                return SWIZZLE(c, c + 1, c + 2, c + 3);
-        default:
-                unreachable("Invalid component count");
-        }
 }
 
 #endif

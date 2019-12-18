@@ -31,10 +31,10 @@
 #include "pipe/p_screen.h"
 #include "pipe/p_defines.h"
 #include "util/u_memory.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "util/u_inlines.h"
 #include "util/u_cpu_detect.h"
-#include "util/u_format_s3tc.h"
+#include "util/format/u_format_s3tc.h"
 #include "util/u_string.h"
 #include "util/u_screen.h"
 
@@ -141,8 +141,9 @@ swr_is_format_supported(struct pipe_screen *_screen,
          return false;
    }
 
-   if (format_desc->layout == UTIL_FORMAT_LAYOUT_BPTC ||
-       format_desc->layout == UTIL_FORMAT_LAYOUT_ASTC) {
+   if (format_desc->layout == UTIL_FORMAT_LAYOUT_ASTC ||
+       format_desc->layout == UTIL_FORMAT_LAYOUT_FXT1)
+   {
       return false;
    }
 
@@ -191,7 +192,7 @@ swr_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS:
       return 1024;
    case PIPE_CAP_MAX_VERTEX_STREAMS:
-      return 1;
+      return 4;
    case PIPE_CAP_MAX_VERTEX_ATTRIB_STRIDE:
       return 2048;
    case PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS:
@@ -274,6 +275,9 @@ swr_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_DOUBLES:
    case PIPE_CAP_TEXTURE_QUERY_LOD:
    case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
+   case PIPE_CAP_TGSI_TG4_COMPONENT_IN_SWIZZLE:
+   case PIPE_CAP_QUERY_SO_OVERFLOW:
+   case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
       return 1;
 
    /* MSAA support
@@ -344,7 +348,6 @@ swr_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_VIEWPORT_SUBPIXEL_BITS:
    case PIPE_CAP_TGSI_ARRAY_COMPONENTS:
    case PIPE_CAP_TGSI_CAN_READ_OUTPUTS:
-   case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
    case PIPE_CAP_NATIVE_FENCE_FD:
    case PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY:
    case PIPE_CAP_FBFETCH:
@@ -362,7 +365,6 @@ swr_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_POST_DEPTH_COVERAGE:
    case PIPE_CAP_BINDLESS_TEXTURE:
    case PIPE_CAP_NIR_SAMPLERS_AS_DEREF:
-   case PIPE_CAP_QUERY_SO_OVERFLOW:
    case PIPE_CAP_MEMOBJ:
    case PIPE_CAP_LOAD_CONSTBUF:
    case PIPE_CAP_TGSI_ANY_REG_AS_ADDRESS:

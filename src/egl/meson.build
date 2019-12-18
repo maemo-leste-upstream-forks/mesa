@@ -1,4 +1,4 @@
-# Copyright Â© 2017 Intel Corporation
+# Copyright © 2017-2019 Intel Corporation
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -149,6 +149,7 @@ if not with_glvnd
 else
   egl_lib_name = 'EGL_mesa'
   egl_lib_version = '0.0.0'
+  deps_for_egl += dep_glvnd
   files_egl += [g_egldispatchstubs_h, g_egldispatchstubs_c]
   files_egl += files('main/eglglvnd.c', 'main/egldispatchstubs.c')
   install_data(
@@ -173,28 +174,19 @@ libegl = shared_library(
   version : egl_lib_version,
 )
 
-# If using glvnd the pkg-config header should not point to EGL_mesa, it should
-# point to EGL. glvnd is only available on unix like platforms so adding -l
-# should be safe here
-if not with_glvnd or not glvnd_has_headers_and_pc_files
-  if not glvnd_has_headers_and_pc_files
-    _egl = '-L${libdir} -lEGL'
-  else
-    _egl = libegl
-  endif
-
+if not with_glvnd
   pkg.generate(
     name : 'egl',
     description : 'Mesa EGL Library',
     version : meson.project_version(),
-    libraries : _egl,
+    libraries : libegl,
     libraries_private: gl_priv_libs,
     requires_private : gl_priv_reqs,
     extra_cflags : gl_pkgconfig_c_flags,
   )
 endif
 
-if with_tests and prog_nm.found()
+if with_symbols_check
   if with_glvnd
     egl_symbols = files('egl-glvnd-symbols.txt')
   else
@@ -205,7 +197,7 @@ if with_tests and prog_nm.found()
     args : [
       '--lib', libegl,
       '--symbols-file', egl_symbols,
-      '--nm', prog_nm.path(),
+      symbols_check_args,
     ],
     suite : ['egl'],
   )

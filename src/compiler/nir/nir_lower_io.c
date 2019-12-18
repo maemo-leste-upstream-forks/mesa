@@ -1191,8 +1191,8 @@ lower_explicit_io_deref(nir_builder *b, nir_deref_instr *deref,
     * one deref which could break our list walking since we walk the list
     * backwards.
     */
-   assert(list_empty(&deref->dest.ssa.if_uses));
-   if (list_empty(&deref->dest.ssa.uses)) {
+   assert(list_is_empty(&deref->dest.ssa.if_uses));
+   if (list_is_empty(&deref->dest.ssa.uses)) {
       nir_instr_remove(&deref->instr);
       return;
    }
@@ -1432,7 +1432,8 @@ nir_lower_vars_to_explicit_types(nir_shader *shader,
     * - compact shader inputs/outputs
     * - interface types
     */
-   nir_variable_mode supported = nir_var_mem_shared | nir_var_shader_temp | nir_var_function_temp;
+   ASSERTED nir_variable_mode supported = nir_var_mem_shared |
+      nir_var_shader_temp | nir_var_function_temp;
    assert(!(modes & ~supported) && "unsupported");
 
    bool progress = false;

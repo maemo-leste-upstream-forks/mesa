@@ -105,9 +105,6 @@ struct panfrost_context {
         /* Gallium context */
         struct pipe_context base;
 
-        /* Compiler context */
-        struct midgard_screen compiler;
-
         /* Bound job batch and map of panfrost_batch_key to job batches */
         struct panfrost_batch *batch;
         struct hash_table *batches;
@@ -188,9 +185,6 @@ struct panfrost_context {
         struct pipe_blend_color blend_color;
         struct pipe_depth_stencil_alpha_state *depth_stencil;
         struct pipe_stencil_ref stencil_ref;
-
-        /* True for t6XX, false for t8xx. */
-        bool is_t6xx;
 };
 
 /* Corresponds to the CSO */
@@ -220,6 +214,7 @@ struct panfrost_shader_state {
         bool reads_point_coord;
         bool reads_face;
         bool reads_frag_coord;
+        unsigned stack_size;
 
         struct mali_attr_meta varyings[PIPE_MAX_ATTRIBS];
         gl_varying_slot varyings_loc[PIPE_MAX_ATTRIBS];
@@ -310,14 +305,18 @@ panfrost_flush(
 mali_ptr panfrost_sfbd_fragment(struct panfrost_batch *batch, bool has_draws);
 mali_ptr panfrost_mfbd_fragment(struct panfrost_batch *batch, bool has_draws);
 
-struct bifrost_framebuffer
-panfrost_emit_mfbd(struct panfrost_batch *batch, unsigned vertex_count);
+void
+panfrost_attach_mfbd(struct panfrost_batch *batch, unsigned vertex_count);
 
-struct mali_single_framebuffer
-panfrost_emit_sfbd(struct panfrost_batch *batch, unsigned vertex_count);
+void
+panfrost_attach_sfbd(struct panfrost_batch *batch, unsigned vertex_count);
+
+struct midgard_tiler_descriptor
+panfrost_emit_midg_tiler(struct panfrost_batch *batch, unsigned vertex_count);
 
 mali_ptr
-panfrost_fragment_job(struct panfrost_batch *batch, bool has_draws);
+panfrost_fragment_job(struct panfrost_batch *batch, bool has_draws,
+                      struct mali_job_descriptor_header **header_cpu);
 
 void
 panfrost_shader_compile(

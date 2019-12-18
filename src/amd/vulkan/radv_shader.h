@@ -104,12 +104,17 @@ struct radv_fs_variant_key {
 	uint32_t is_int10;
 };
 
+struct radv_cs_variant_key {
+	uint8_t subgroup_size;
+};
+
 struct radv_shader_variant_key {
 	union {
 		struct radv_vs_variant_key vs;
 		struct radv_fs_variant_key fs;
 		struct radv_tes_variant_key tes;
 		struct radv_tcs_variant_key tcs;
+		struct radv_cs_variant_key cs;
 
 		/* A common prefix of the vs and tes keys. */
 		struct radv_vs_out_key vs_common_out;
@@ -120,8 +125,7 @@ struct radv_shader_variant_key {
 struct radv_nir_compiler_options {
 	struct radv_pipeline_layout *layout;
 	struct radv_shader_variant_key key;
-	bool unsafe_math;
-	bool supports_spill;
+	bool explicit_scratch_args;
 	bool clamp_shadow_reference;
 	bool robust_buffer_access;
 	bool dump_shader;
@@ -134,7 +138,6 @@ struct radv_nir_compiler_options {
 	enum chip_class chip_class;
 	uint32_t tess_offchip_block_dw_size;
 	uint32_t address32_hi;
-	uint8_t wave_size;
 };
 
 enum radv_ud_index {
@@ -366,7 +369,7 @@ struct radv_shader_variant {
 
 	/* debug only */
 	bool aco_used;
-	uint32_t *spirv;
+	char *spirv;
 	uint32_t spirv_size;
 	char *nir_string;
 	char *disasm_string;

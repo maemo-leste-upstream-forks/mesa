@@ -109,6 +109,11 @@ isl_genX(emit_depth_stencil_hiz_s)(const struct isl_device *dev, void *batch,
       db.SurfaceQPitch =
          isl_surf_get_array_pitch_el_rows(info->depth_surf) >> 2;
 #endif
+
+#if GEN_GEN >= 12
+      db.ControlSurfaceEnable = db.DepthBufferCompressionEnable =
+         info->hiz_usage == ISL_AUX_USAGE_HIZ_CCS;
+#endif
    }
 
 #if GEN_GEN == 5 || GEN_GEN == 6
@@ -141,6 +146,9 @@ isl_genX(emit_depth_stencil_hiz_s)(const struct isl_device *dev, void *batch,
       sb.Depth = sb.RenderTargetViewExtent = info->view->array_len - 1;
       sb.SurfLOD = info->view->base_level;
       sb.MinimumArrayElement = info->view->base_array_layer;
+      sb.StencilCompressionEnable =
+         info->stencil_aux_usage == ISL_AUX_USAGE_CCS_E;
+      sb.ControlSurfaceEnable = sb.StencilCompressionEnable;
 #elif GEN_GEN >= 8 || GEN_IS_HASWELL
       sb.StencilBufferEnable = true;
 #endif
@@ -177,13 +185,22 @@ isl_genX(emit_depth_stencil_hiz_s)(const struct isl_device *dev, void *batch,
    };
 
    assert(info->hiz_usage == ISL_AUX_USAGE_NONE ||
-          info->hiz_usage == ISL_AUX_USAGE_HIZ);
-   if (info->hiz_usage == ISL_AUX_USAGE_HIZ) {
+          info->hiz_usage == ISL_AUX_USAGE_HIZ ||
+          info->hiz_usage == ISL_AUX_USAGE_HIZ_CCS);
+   if (info->hiz_usage == ISL_AUX_USAGE_HIZ ||
+       info->hiz_usage == ISL_AUX_USAGE_HIZ_CCS) {
+      assert(GEN_GEN >= 12 || info->hiz_usage == ISL_AUX_USAGE_HIZ);
       db.HierarchicalDepthBufferEnable = true;
 
       hiz.SurfaceBaseAddress = info->hiz_address;
       hiz.MOCS = info->mocs;
       hiz.SurfacePitch = info->hiz_surf->row_pitch_B - 1;
+#if GEN_GEN >= 12
+      hiz.HierarchicalDepthBufferWriteThruEnable =
+         isl_surf_supports_hiz_ccs_wt(dev->info, info->depth_surf,
+                                      info->hiz_usage);
+#endif
+
 #if GEN_GEN >= 8
       /* From the SKL PRM Vol2a:
        *

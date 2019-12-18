@@ -28,7 +28,7 @@
 #include "dd_pipe.h"
 
 #include "util/u_dump.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "util/u_framebuffer.h"
 #include "util/u_helpers.h"
 #include "util/u_inlines.h"
@@ -1103,7 +1103,7 @@ dd_thread_main(void *input)
       if (dctx->api_stalled)
          cnd_signal(&dctx->cond);
 
-      if (list_empty(&records)) {
+      if (list_is_empty(&records)) {
          if (dctx->kill_thread)
             break;
 
@@ -1184,7 +1184,7 @@ dd_add_record(struct dd_context *dctx, struct dd_draw_record *record)
       dctx->api_stalled = false;
    }
 
-   if (list_empty(&dctx->records))
+   if (list_is_empty(&dctx->records))
       cnd_signal(&dctx->cond);
 
    list_addtail(&record->list, &dctx->records);

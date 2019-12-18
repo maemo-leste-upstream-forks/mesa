@@ -121,6 +121,10 @@ enum radv_mem_type {
 	RADV_MEM_TYPE_GTT_WRITE_COMBINE,
 	RADV_MEM_TYPE_VRAM_CPU_ACCESS,
 	RADV_MEM_TYPE_GTT_CACHED,
+	RADV_MEM_TYPE_VRAM_UNCACHED,
+	RADV_MEM_TYPE_GTT_WRITE_COMBINE_VRAM_UNCACHED,
+	RADV_MEM_TYPE_VRAM_CPU_ACCESS_UNCACHED,
+	RADV_MEM_TYPE_GTT_CACHED_VRAM_UNCACHED,
 	RADV_MEM_TYPE_COUNT
 };
 
@@ -131,6 +135,7 @@ enum radv_secure_compile_type {
 	RADV_SC_TYPE_COMPILE_PIPELINE_FINISHED,
 	RADV_SC_TYPE_READ_DISK_CACHE,
 	RADV_SC_TYPE_WRITE_DISK_CACHE,
+	RADV_SC_TYPE_FORK_DEVICE,
 	RADV_SC_TYPE_DESTROY_DEVICE,
 	RADV_SC_TYPE_COUNT
 };
@@ -411,6 +416,11 @@ struct radv_pipeline_key {
 	uint32_t has_multiview_view_index : 1;
 	uint32_t optimisations_disabled : 1;
 	uint8_t topology;
+
+	/* Non-zero if a required subgroup size is specified via
+	 * VK_EXT_subgroup_size_control.
+	 */
+	uint8_t compute_subgroup_size;
 };
 
 struct radv_shader_binary;
@@ -643,7 +653,7 @@ struct radv_meta_state {
 
 	struct {
 		VkPipelineLayout                          p_layout;
-		VkPipeline                                decompress_pipeline;
+		VkPipeline                                decompress_pipeline[NUM_DEPTH_DECOMPRESS_PIPELINES];
 		VkPipeline                                resummarize_pipeline;
 		VkRenderPass                              pass;
 	} depth_decomp[MAX_SAMPLES_LOG2];
@@ -703,8 +713,10 @@ struct radv_queue {
 	int queue_idx;
 	VkDeviceQueueCreateFlags flags;
 
-	uint32_t scratch_size;
-	uint32_t compute_scratch_size;
+	uint32_t scratch_size_per_wave;
+	uint32_t scratch_waves;
+	uint32_t compute_scratch_size_per_wave;
+	uint32_t compute_scratch_waves;
 	uint32_t esgs_ring_size;
 	uint32_t gsvs_ring_size;
 	bool has_tess_rings;
@@ -722,6 +734,9 @@ struct radv_queue {
 	struct radeon_cmdbuf *initial_preamble_cs;
 	struct radeon_cmdbuf *initial_full_flush_preamble_cs;
 	struct radeon_cmdbuf *continue_preamble_cs;
+
+	struct list_head pending_submissions;
+	pthread_mutex_t pending_mutex;
 };
 
 struct radv_bo_list {
@@ -731,9 +746,18 @@ struct radv_bo_list {
 };
 
 struct radv_secure_compile_process {
-	/* Secure process file descriptors */
+	/* Secure process file descriptors. Used to communicate between the
+	 * user facing device and the idle forked device used to fork a clean
+	 * process for each new pipeline compile.
+	 */
 	int fd_secure_input;
 	int fd_secure_output;
+
+	/* FIFO file descriptors used to communicate between the user facing
+	 * device and the secure process that does the actual secure compile.
+	 */
+	int fd_server;
+	int fd_client;
 
 	/* Secure compile process id */
 	pid_t sc_pid;
@@ -746,6 +770,9 @@ struct radv_secure_compile_state {
 	struct radv_secure_compile_process *secure_compile_processes;
 	uint32_t secure_compile_thread_counter;
 	mtx_t secure_compile_mutex;
+
+	/* Unique process ID used to build name for FIFO file descriptor */
+	char *uid;
 };
 
 struct radv_device {
@@ -820,6 +847,10 @@ struct radv_device {
 	int force_aniso;
 
 	struct radv_secure_compile_state *sc_state;
+
+	/* Condition variable for legacy timelines, to notify waiters when a
+	 * new point gets submitted. */
+	pthread_cond_t timeline_cond;
 };
 
 struct radv_device_memory {
@@ -1151,6 +1182,9 @@ radv_initialise_ds_surface(struct radv_device *device,
 			   struct radv_ds_buffer_info *ds,
 			   struct radv_image_view *iview);
 
+bool
+radv_sc_read(int fd, void *buf, size_t size, bool timeout);
+
 /**
  * Attachment state when recording a renderpass instance.
  *
@@ -1161,6 +1195,7 @@ struct radv_attachment_state {
 	uint32_t                                     cleared_views;
 	VkClearValue                                 clear_value;
 	VkImageLayout                                current_layout;
+	VkImageLayout                                current_stencil_layout;
 	bool                                         current_in_render_loop;
 	struct radv_sample_locations_state	     sample_location;
 
@@ -1290,8 +1325,10 @@ struct radv_cmd_buffer {
 
 	struct radv_cmd_buffer_upload upload;
 
-	uint32_t scratch_size_needed;
-	uint32_t compute_scratch_size_needed;
+	uint32_t scratch_size_per_wave_needed;
+	uint32_t scratch_waves_wanted;
+	uint32_t compute_scratch_size_per_wave_needed;
+	uint32_t compute_scratch_waves_wanted;
 	uint32_t esgs_ring_size_needed;
 	uint32_t gsvs_ring_size_needed;
 	bool tess_rings_needed;
@@ -1485,12 +1522,11 @@ struct radv_shader_module;
 
 #define RADV_HASH_SHADER_IS_GEOM_COPY_SHADER (1 << 0)
 #define RADV_HASH_SHADER_SISCHED             (1 << 1)
-#define RADV_HASH_SHADER_UNSAFE_MATH         (1 << 2)
-#define RADV_HASH_SHADER_NO_NGG              (1 << 3)
-#define RADV_HASH_SHADER_CS_WAVE32           (1 << 4)
-#define RADV_HASH_SHADER_PS_WAVE32           (1 << 5)
-#define RADV_HASH_SHADER_GE_WAVE32           (1 << 6)
-#define RADV_HASH_SHADER_ACO                 (1 << 7)
+#define RADV_HASH_SHADER_NO_NGG              (1 << 2)
+#define RADV_HASH_SHADER_CS_WAVE32           (1 << 3)
+#define RADV_HASH_SHADER_PS_WAVE32           (1 << 4)
+#define RADV_HASH_SHADER_GE_WAVE32           (1 << 5)
+#define RADV_HASH_SHADER_ACO                 (1 << 6)
 
 void
 radv_hash_shaders(unsigned char *hash,
@@ -2093,6 +2129,7 @@ void radv_subpass_barrier(struct radv_cmd_buffer *cmd_buffer,
 struct radv_subpass_attachment {
 	uint32_t         attachment;
 	VkImageLayout    layout;
+	VkImageLayout    stencil_layout;
 	bool             in_render_loop;
 };
 
@@ -2132,6 +2169,8 @@ struct radv_render_pass_attachment {
 	VkAttachmentLoadOp                           stencil_load_op;
 	VkImageLayout                                initial_layout;
 	VkImageLayout                                final_layout;
+	VkImageLayout                                stencil_initial_layout;
+	VkImageLayout                                stencil_final_layout;
 
 	/* The subpass id in which the attachment will be used first/last. */
 	uint32_t				     first_subpass_idx;
@@ -2160,11 +2199,62 @@ struct radv_query_pool {
 	uint32_t pipeline_stats_mask;
 };
 
-struct radv_semaphore {
-	/* use a winsys sem for non-exportable */
-	struct radeon_winsys_sem *sem;
+typedef enum {
+	RADV_SEMAPHORE_NONE,
+	RADV_SEMAPHORE_WINSYS,
+	RADV_SEMAPHORE_SYNCOBJ,
+	RADV_SEMAPHORE_TIMELINE,
+} radv_semaphore_kind;
+
+struct radv_deferred_queue_submission;
+
+struct radv_timeline_waiter {
+	struct list_head list;
+	struct radv_deferred_queue_submission *submission;
+	uint64_t value;
+};
+
+struct radv_timeline_point {
+	struct list_head list;
+
+	uint64_t value;
 	uint32_t syncobj;
-	uint32_t temp_syncobj;
+
+	/* Separate from the list to accomodate CPU wait being async, as well
+	 * as prevent point deletion during submission. */
+	unsigned wait_count;
+};
+
+struct radv_timeline {
+	/* Using a pthread mutex to be compatible with condition variables. */
+	pthread_mutex_t mutex;
+
+	uint64_t highest_signaled;
+	uint64_t highest_submitted;
+
+	struct list_head points;
+
+	/* Keep free points on hand so we do not have to recreate syncobjs all
+	 * the time. */
+	struct list_head free_points;
+
+	/* Submissions that are deferred waiting for a specific value to be
+	 * submitted. */
+	struct list_head waiters;
+};
+
+struct radv_semaphore_part {
+	radv_semaphore_kind kind;
+	union {
+		uint32_t syncobj;
+		struct radeon_winsys_sem *ws_sem;
+		struct radv_timeline timeline;
+	};
+};
+
+struct radv_semaphore {
+	struct radv_semaphore_part permanent;
+	struct radv_semaphore_part temporary;
 };
 
 void radv_set_descriptor_set(struct radv_cmd_buffer *cmd_buffer,
@@ -2212,21 +2302,18 @@ struct radv_fence {
 };
 
 /* radv_nir_to_llvm.c */
-struct radv_shader_info;
-struct radv_nir_compiler_options;
+struct radv_shader_args;
 
 void radv_compile_gs_copy_shader(struct ac_llvm_compiler *ac_llvm,
 				 struct nir_shader *geom_shader,
 				 struct radv_shader_binary **rbinary,
-				 struct radv_shader_info *info,
-				 const struct radv_nir_compiler_options *option);
+				 const struct radv_shader_args *args);
 
 void radv_compile_nir_shader(struct ac_llvm_compiler *ac_llvm,
 			     struct radv_shader_binary **rbinary,
-			     struct radv_shader_info *info,
+			     const struct radv_shader_args *args,
 			     struct nir_shader *const *nir,
-			     int nir_count,
-			     const struct radv_nir_compiler_options *options);
+			     int nir_count);
 
 unsigned radv_nir_get_max_workgroup_size(enum chip_class chip_class,
 					 gl_shader_stage stage,

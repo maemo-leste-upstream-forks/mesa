@@ -62,8 +62,8 @@ do_winsys_init(struct radv_amdgpu_winsys *ws, int fd)
 		return false;
 	}
 
-	ws->info.num_sdma_rings = MIN2(ws->info.num_sdma_rings, MAX_RINGS_PER_TYPE);
-	ws->info.num_compute_rings = MIN2(ws->info.num_compute_rings, MAX_RINGS_PER_TYPE);
+	ws->info.num_rings[RING_DMA] = MIN2(ws->info.num_rings[RING_DMA], MAX_RINGS_PER_TYPE);
+	ws->info.num_rings[RING_COMPUTE] = MIN2(ws->info.num_rings[RING_COMPUTE], MAX_RINGS_PER_TYPE);
 
 	ws->use_ib_bos = ws->info.chip_class >= GFX7;
 	return true;
@@ -190,7 +190,7 @@ radv_amdgpu_winsys_create(int fd, uint64_t debug_flags, uint64_t perftest_flags)
 	ws->use_local_bos = perftest_flags & RADV_PERFTEST_LOCAL_BOS;
 	ws->zero_all_vram_allocs = debug_flags & RADV_DEBUG_ZERO_VRAM;
 	ws->batchchain = !(perftest_flags & RADV_PERFTEST_NO_BATCHCHAIN);
-	LIST_INITHEAD(&ws->global_bo_list);
+	list_inithead(&ws->global_bo_list);
 	pthread_mutex_init(&ws->global_bo_list_lock, NULL);
 	ws->base.query_info = radv_amdgpu_winsys_query_info;
 	ws->base.query_value = radv_amdgpu_winsys_query_value;

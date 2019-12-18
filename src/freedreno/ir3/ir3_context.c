@@ -209,7 +209,7 @@ ir3_put_dst(struct ir3_context *ctx, nir_dest *dst)
 		for (unsigned i = 0; i < ctx->last_dst_n; i++) {
 			struct ir3_instruction *dst = ctx->last_dst[i];
 			dst->regs[0]->flags |= IR3_REG_HALF;
-			if (ctx->last_dst[i]->opc == OPC_META_FO)
+			if (ctx->last_dst[i]->opc == OPC_META_SPLIT)
 				dst->regs[1]->instr->regs[0]->flags |= IR3_REG_HALF;
 		}
 	}
@@ -257,8 +257,8 @@ ir3_create_collect(struct ir3_context *ctx, struct ir3_instruction *const *arr,
 
 	unsigned flags = dest_flags(arr[0]);
 
-	collect = ir3_instr_create2(block, OPC_META_FI, 1 + arrsz);
-	ir3_reg_create(collect, 0, flags);     /* dst */
+	collect = ir3_instr_create2(block, OPC_META_COLLECT, 1 + arrsz);
+	__ssa_dst(collect)->flags |= flags;
 	for (unsigned i = 0; i < arrsz; i++) {
 		struct ir3_instruction *elem = arr[i];
 
@@ -292,7 +292,7 @@ ir3_create_collect(struct ir3_context *ctx, struct ir3_instruction *const *arr,
 		}
 
 		compile_assert(ctx, dest_flags(elem) == flags);
-		ir3_reg_create(collect, 0, IR3_REG_SSA | flags)->instr = elem;
+		__ssa_src(collect, elem, flags);
 	}
 
 	collect->regs[0]->wrmask = MASK(arrsz);
@@ -301,7 +301,7 @@ ir3_create_collect(struct ir3_context *ctx, struct ir3_instruction *const *arr,
 }
 
 /* helper for instructions that produce multiple consecutive scalar
- * outputs which need to have a split/fanout meta instruction inserted
+ * outputs which need to have a split meta instruction inserted
  */
 void
 ir3_split_dest(struct ir3_block *block, struct ir3_instruction **dst,
@@ -317,10 +317,11 @@ ir3_split_dest(struct ir3_block *block, struct ir3_instruction **dst,
 	unsigned flags = dest_flags(src);
 
 	for (int i = 0, j = 0; i < n; i++) {
-		struct ir3_instruction *split = ir3_instr_create(block, OPC_META_FO);
-		ir3_reg_create(split, 0, IR3_REG_SSA | flags);
-		ir3_reg_create(split, 0, IR3_REG_SSA | flags)->instr = src;
-		split->fo.off = i + base;
+		struct ir3_instruction *split =
+				ir3_instr_create(block, OPC_META_SPLIT);
+		__ssa_dst(split)->flags |= flags;
+		__ssa_src(split, src, flags);
+		split->split.off = i + base;
 
 		if (prev) {
 			split->cp.left = prev;
@@ -406,6 +407,7 @@ create_addr(struct ir3_block *block, struct ir3_instruction *src, int align)
 
 	instr = ir3_MOV(block, instr, TYPE_S16);
 	instr->regs[0]->num = regid(REG_A0, 0);
+	instr->regs[0]->flags &= ~IR3_REG_SSA;
 	instr->regs[0]->flags |= IR3_REG_HALF;
 	instr->regs[1]->flags |= IR3_REG_HALF;
 
@@ -451,6 +453,7 @@ ir3_get_predicate(struct ir3_context *ctx, struct ir3_instruction *src)
 
 	/* condition always goes in predicate register: */
 	cond->regs[0]->num = regid(REG_P0, 0);
+	cond->regs[0]->flags &= ~IR3_REG_SSA;
 
 	return cond;
 }
@@ -480,7 +483,7 @@ ir3_declare_array(struct ir3_context *ctx, nir_register *reg)
 struct ir3_array *
 ir3_get_array(struct ir3_context *ctx, nir_register *reg)
 {
-	list_for_each_entry (struct ir3_array, arr, &ctx->ir->array_list, node) {
+	foreach_array (arr, &ctx->ir->array_list) {
 		if (arr->r == reg)
 			return arr;
 	}
@@ -510,7 +513,7 @@ ir3_create_array_load(struct ir3_context *ctx, struct ir3_array *arr, int n,
 
 	mov->barrier_class = IR3_BARRIER_ARRAY_R;
 	mov->barrier_conflict = IR3_BARRIER_ARRAY_W;
-	ir3_reg_create(mov, 0, flags);
+	__ssa_dst(mov)->flags |= flags;
 	src = ir3_reg_create(mov, 0, IR3_REG_ARRAY |
 			COND(address, IR3_REG_RELATIV) | flags);
 	src->instr = arr->last_write;

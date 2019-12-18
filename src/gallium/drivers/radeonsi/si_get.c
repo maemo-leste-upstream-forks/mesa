@@ -193,9 +193,9 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
 	case PIPE_CAP_GLSL_FEATURE_LEVEL:
 	case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
-		if (sscreen->info.has_indirect_compute_dispatch)
-				return 450;
-		return 420;
+		if (!sscreen->info.has_indirect_compute_dispatch)
+			return 420;
+		return sscreen->options.enable_nir ? 460 : 450;
 
 	case PIPE_CAP_MAX_TEXTURE_UPLOAD_MEMORY_BUDGET:
 		/* Optimal number for good TexSubImage performance on Polaris10. */
@@ -216,9 +216,8 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
 	case PIPE_CAP_PACKED_UNIFORMS:
 	case PIPE_CAP_SHADER_SAMPLES_IDENTICAL:
-		if (sscreen->options.enable_nir)
-			return 1;
-		return 0;
+	case PIPE_CAP_GL_SPIRV:
+		return sscreen->options.enable_nir;
 
 	case PIPE_CAP_PREFER_IMM_ARRAYS_AS_CONSTBUF:
 		if (sscreen->options.enable_nir)
@@ -511,7 +510,7 @@ static const struct nir_shader_compiler_options nir_options = {
 	.lower_bitfield_insert_to_bitfield_select = true,
 	.lower_bitfield_extract = true,
 	.lower_sub = true,
-	.lower_ffma = true,
+	.fuse_ffma = true,
 	.lower_fmod = true,
 	.lower_pack_snorm_4x8 = true,
 	.lower_pack_unorm_4x8 = true,
@@ -667,9 +666,25 @@ static int si_get_video_param(struct pipe_screen *screen,
 	case PIPE_VIDEO_CAP_NPOT_TEXTURES:
 		return 1;
 	case PIPE_VIDEO_CAP_MAX_WIDTH:
-		return (sscreen->info.family < CHIP_TONGA) ? 2048 : 4096;
+		switch (codec) {
+		case PIPE_VIDEO_FORMAT_HEVC:
+		case PIPE_VIDEO_FORMAT_VP9:
+			return (sscreen->info.family < CHIP_RENOIR) ?
+			       ((sscreen->info.family < CHIP_TONGA) ? 2048 : 4096) :
+			       8192;
+		default:
+			return (sscreen->info.family < CHIP_TONGA) ? 2048 : 4096;
+		}
 	case PIPE_VIDEO_CAP_MAX_HEIGHT:
-		return (sscreen->info.family < CHIP_TONGA) ? 1152 : 4096;
+		switch (codec) {
+		case PIPE_VIDEO_FORMAT_HEVC:
+		case PIPE_VIDEO_FORMAT_VP9:
+			return (sscreen->info.family < CHIP_RENOIR) ?
+			       ((sscreen->info.family < CHIP_TONGA) ? 1152 : 4096) :
+			       4352;
+		default:
+			return (sscreen->info.family < CHIP_TONGA) ? 1152 : 4096;
+		}
 	case PIPE_VIDEO_CAP_PREFERED_FORMAT:
 		if (profile == PIPE_VIDEO_PROFILE_HEVC_MAIN_10 ||
 		    profile == PIPE_VIDEO_PROFILE_VP9_PROFILE2)

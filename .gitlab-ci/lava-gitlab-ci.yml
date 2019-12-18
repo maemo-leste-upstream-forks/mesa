@@ -1,22 +1,8 @@
-variables:
-    LAVA_DEBIAN_VERSION: testing-slim
-    LAVA_IMAGE_TAG: "lava-2019-10-23-1"
-
 include:
   - project: 'wayland/ci-templates'
-    ref: 1f7f57c64ff4ebbf7292e3b7a13600518b8cb24c
+    # Must be the same as in .gitlab-ci.yml
+    ref: 0a9bdd33a98f05af6761ab118b5074952242aab0
     file: '/templates/debian.yml'
-
-# When to automatically run the CI
-.ci-run-policy:
-  only:
-    - branches@mesa/mesa
-    - merge_requests
-    - /^ci([-/].*)?$/
-  retry:
-    max: 2
-    when:
-      - runner_system_failure
 
 # Build Docker image with deqp, the rootfs and the build deps for Mesa
 .lava-container:
@@ -24,7 +10,8 @@ include:
     - .debian@container-ifnot-exists
     - .container
   variables:
-    DEBIAN_TAG: '${DEBIAN_ARCH}-${LAVA_IMAGE_TAG}'
+    REPO_SUFFIX: ${CI_JOB_NAME}
+    DEBIAN_TAG:  &debian_tag '2019-12-05-1'
     DEBIAN_EXEC: 'DEBIAN_ARCH=${DEBIAN_ARCH}
                   GCC_ARCH=${GCC_ARCH}
                   KERNEL_ARCH=${KERNEL_ARCH}
@@ -32,10 +19,10 @@ include:
                   DEFCONFIG=${DEFCONFIG}
                   DEVICE_TREES="${DEVICE_TREES}"
                   KERNEL_IMAGE_NAME=${KERNEL_IMAGE_NAME}
-                  bash .gitlab-ci/lava-debian-install.sh'
-    DEBIAN_VERSION: ${LAVA_DEBIAN_VERSION}
+                  bash .gitlab-ci/container/lava_arm.sh'
+    DEBIAN_VERSION: testing-slim
 
-lava-container:armhf:
+lava_armhf:
   extends: .lava-container
   variables:
     DEBIAN_ARCH: "armhf"
@@ -46,7 +33,7 @@ lava-container:armhf:
     DEVICE_TREES: "arch/arm/boot/dts/rk3288-veyron-jaq.dtb arch/arm/boot/dts/sun8i-h3-libretech-all-h3-cc.dtb"
     KERNEL_IMAGE_NAME: "zImage"
 
-lava-container:arm64:
+lava_arm64:
   extends: .lava-container
   variables:
     DEBIAN_ARCH: "arm64"
@@ -54,25 +41,20 @@ lava-container:arm64:
     KERNEL_ARCH: "arm64"
     VOLT_ARCH: "aarch64"
     DEFCONFIG: "arch/arm64/configs/defconfig"
-    DEVICE_TREES: "arch/arm64/boot/dts/rockchip/rk3399-gru-kevin.dtb arch/arm64/boot/dts/amlogic/meson-gxl-s905x-libretech-cc.dtb"
+    DEVICE_TREES: "arch/arm64/boot/dts/rockchip/rk3399-gru-kevin.dtb arch/arm64/boot/dts/amlogic/meson-gxl-s905x-libretech-cc.dtb arch/arm64/boot/dts/allwinner/sun50i-h6-pine-h64.dtb arch/arm64/boot/dts/amlogic/meson-gxm-khadas-vim2.dtb"
     KERNEL_IMAGE_NAME: "Image"
 
 .lava-build:
-  image: $CI_REGISTRY_IMAGE/debian/$LAVA_DEBIAN_VERSION:$DEBIAN_ARCH-$LAVA_IMAGE_TAG
+  variables:
+    TAG: *debian_tag
+  image: $CI_REGISTRY_IMAGE/debian/lava_${DEBIAN_ARCH}:$TAG
   extends:
     - .build-linux
-  # Use ccache transparently, and print stats before/after
-  before_script:
-    - mkdir -p results mesa-build
-    - mkdir -p ccache
-    - export PATH="/usr/lib/ccache:$PATH"
-    - export CCACHE_BASEDIR="$PWD"
-    - export CCACHE_DIR="$PWD/ccache"
-    - ccache --max-size=1500M
-    - ccache --zero-stats || true
-    - ccache --show-stats || true
+    - .ci-run-policy
   script:
     # Build Mesa
+    - mkdir -p results mesa-build
+    - mkdir -p ccache
     - /usr/share/meson/debcrossgen --arch ${DEBIAN_ARCH} -o /tmp/cross_file.txt
     - meson . mesa-build
         --cross-file /tmp/cross_file.txt
@@ -120,9 +102,6 @@ lava-container:arm64:
         --base-artifacts-url $CI_PROJECT_URL/-/jobs/$CI_JOB_ID/artifacts/raw/results
         --device-types ${DEVICE_TYPES}
         --kernel-image-name ${KERNEL_IMAGE_NAME}
-  after_script:
-    - export CCACHE_DIR="$PWD/ccache"
-    - ccache --show-stats
   artifacts:
     when: always
     paths:
@@ -130,7 +109,7 @@ lava-container:arm64:
 
 lava-build:armhf:
   extends: .lava-build
-  needs: ["lava-container:armhf"]
+  needs: ["lava_armhf"]
   variables:
     DEBIAN_ARCH: "armhf"
     GCC_ARCH: "arm-linux-gnueabihf"
@@ -139,16 +118,21 @@ lava-build:armhf:
 
 lava-build:arm64:
   extends: .lava-build
-  needs: ["lava-container:arm64"]
+  needs: ["lava_arm64"]
   variables:
     DEBIAN_ARCH: "arm64"
     GCC_ARCH: "aarch64-linux-gnu"
-    DEVICE_TYPES: "rk3399-gru-kevin meson-gxl-s905x-libretech-cc"
+    DEVICE_TYPES: "rk3399-gru-kevin meson-gxl-s905x-libretech-cc sun50i-h6-pine-h64 meson-gxm-khadas-vim2"
     KERNEL_IMAGE_NAME: "Image"
 
 .lava-test:
   extends:
-    - .test
+    - .ci-run-policy
+  stage: test
+  variables:
+    GIT_STRATEGY: none # testing doesn't build anything from source
+    TAG: *debian_tag
+  image: $CI_REGISTRY_IMAGE/debian/lava_${DEBIAN_ARCH}:$TAG
   script:
     - lava_job_id=`lavacli jobs submit $CI_PROJECT_DIR/results/lava-deqp-$DEVICE_TYPE.yml`
     - echo $lava_job_id
@@ -163,22 +147,31 @@ lava-build:arm64:
       - results/
 
 .lava-test:armhf:
-  image: $CI_REGISTRY_IMAGE/debian/$LAVA_DEBIAN_VERSION:armhf-$LAVA_IMAGE_TAG
+  variables:
+    DEBIAN_ARCH: armhf
   extends: .lava-test
   needs:
-    - lava-container:armhf
+    - lava_armhf
     - lava-build:armhf
   dependencies:
     - lava-build:armhf
 
 .lava-test:arm64:
-  image: $CI_REGISTRY_IMAGE/debian/$LAVA_DEBIAN_VERSION:arm64-$LAVA_IMAGE_TAG
+  variables:
+    DEBIAN_ARCH: arm64
   extends: .lava-test
   needs:
-    - lava-container:arm64
+    - lava_arm64
     - lava-build:arm64
   dependencies:
     - lava-build:arm64
+
+panfrost-t720-test:arm64:
+  extends: .lava-test:arm64
+  variables:
+    DEVICE_TYPE: sun50i-h6-pine-h64
+  tags:
+    - lava-sun50i-h6-pine-h64
 
 panfrost-t760-test:armhf:
   extends: .lava-test:armhf
@@ -194,14 +187,21 @@ panfrost-t860-test:arm64:
   tags:
     - lava-rk3399-gru-kevin
 
-lima-test:armhf:
+.panfrost-t820-test:arm64:
+  extends: .lava-test:arm64
+  variables:
+    DEVICE_TYPE: meson-gxm-khadas-vim2
+  tags:
+    - lava-meson-gxm-khadas-vim2
+
+.lima-test:armhf:
   extends: .lava-test:armhf
   variables:
     DEVICE_TYPE: sun8i-h3-libretech-all-h3-cc
   tags:
     - lava-sun8i-h3-libretech-all-h3-cc
 
-lima-test:arm64:
+.lima-test:arm64:
   extends: .lava-test:arm64
   variables:
     DEVICE_TYPE: meson-gxl-s905x-libretech-cc

@@ -668,7 +668,8 @@ PhysReg get_reg(ra_ctx& ctx,
 
    /* try using more registers */
    uint16_t max_addressible_sgpr = ctx.program->sgpr_limit;
-   if (rc.type() == RegType::vgpr && ctx.program->max_reg_demand.vgpr < 256) {
+   uint16_t max_addressible_vgpr = ctx.program->vgpr_limit;
+   if (rc.type() == RegType::vgpr && ctx.program->max_reg_demand.vgpr < max_addressible_vgpr) {
       update_vgpr_sgpr_demand(ctx.program, RegisterDemand(ctx.program->max_reg_demand.vgpr + 1, ctx.program->max_reg_demand.sgpr));
       return get_reg(ctx, reg_file, rc, parallelcopies, instr);
    } else if (rc.type() == RegType::sgpr && ctx.program->max_reg_demand.sgpr < max_addressible_sgpr) {
@@ -758,11 +759,18 @@ PhysReg get_reg_create_vector(ra_ctx& ctx,
 
       /* count variables to be moved and check war_hint */
       bool war_hint = false;
-      for (unsigned j = reg_lo; j <= reg_hi; j++) {
-         if (reg_file[j] != 0)
+      bool linear_vgpr = false;
+      for (unsigned j = reg_lo; j <= reg_hi && !linear_vgpr; j++) {
+         if (reg_file[j] != 0) {
             k++;
+            /* we cannot split live ranges of linear vgprs */
+            if (ctx.assignments[reg_file[j]].second & (1 << 6))
+               linear_vgpr = true;
+         }
          war_hint |= ctx.war_hint[j];
       }
+      if (linear_vgpr || (war_hint && !best_war_hint))
+         continue;
 
       /* count operands in wrong positions */
       for (unsigned j = 0, offset = 0; j < instr->operands.size(); offset += instr->operands[j].size(), j++) {
@@ -774,7 +782,7 @@ PhysReg get_reg_create_vector(ra_ctx& ctx,
             k += instr->operands[j].size();
       }
       bool aligned = rc == RegClass::v4 && reg_lo % 4 == 0;
-      if (k > num_moves || (!aligned && k == num_moves) || (war_hint && !best_war_hint))
+      if (k > num_moves || (!aligned && k == num_moves))
          continue;
 
       best_pos = reg_lo;
@@ -880,7 +888,15 @@ void handle_pseudo(ra_ctx& ctx,
          break;
       }
    }
-   if (!writes_sgpr)
+   /* if all operands are constant, no need to care either */
+   bool reads_sgpr = false;
+   for (Operand& op : instr->operands) {
+      if (op.isTemp() && op.getTemp().type() == RegType::sgpr) {
+         reads_sgpr = true;
+         break;
+      }
+   }
+   if (!(writes_sgpr && reads_sgpr))
       return;
 
    Pseudo_instruction *pi = (Pseudo_instruction *)instr;
@@ -952,7 +968,7 @@ void register_allocation(Program *program, std::vector<std::set<Temp>> live_out_
 
    handle_live_in = [&](Temp val, Block *block) -> Temp {
       std::vector<unsigned>& preds = val.is_linear() ? block->linear_preds : block->logical_preds;
-      if (preds.size() == 0 && block->index != 0) {
+      if (preds.size() == 0 || val.regClass() == val.regClass().as_linear()) {
          renames[block->index][val.id()] = val;
          return val;
       }
@@ -1271,6 +1287,29 @@ void register_allocation(Program *program, std::vector<std::set<Temp>> live_out_
 
             /* process parallelcopy */
             for (std::pair<Operand, Definition> pc : parallelcopy) {
+               /* see if it's a copy from a different phi */
+               //TODO: prefer moving some previous phis over live-ins
+               //TODO: somehow prevent phis fixed before the RA from being updated (shouldn't be a problem in practice since they can only be fixed to exec)
+               Instruction *prev_phi = NULL;
+               std::vector<aco_ptr<Instruction>>::iterator phi_it;
+               for (phi_it = instructions.begin(); phi_it != instructions.end(); ++phi_it) {
+                  if ((*phi_it)->definitions[0].tempId() == pc.first.tempId())
+                     prev_phi = phi_it->get();
+               }
+               phi_it = it;
+               while (!prev_phi && is_phi(*++phi_it)) {
+                  if ((*phi_it)->definitions[0].tempId() == pc.first.tempId())
+                     prev_phi = phi_it->get();
+               }
+               if (prev_phi) {
+                  /* if so, just update that phi's register */
+                  prev_phi->definitions[0].setFixed(pc.second.physReg());
+                  ctx.assignments[prev_phi->definitions[0].tempId()] = {pc.second.physReg(), pc.second.regClass()};
+                  for (unsigned reg = pc.second.physReg(); reg < pc.second.physReg() + pc.second.size(); reg++)
+                     register_file[reg] = prev_phi->definitions[0].tempId();
+                  continue;
+               }
+
                /* rename */
                std::map<unsigned, Temp>::iterator orig_it = ctx.orig_names.find(pc.first.tempId());
                Temp orig = pc.first.getTemp();
@@ -1280,20 +1319,6 @@ void register_allocation(Program *program, std::vector<std::set<Temp>> live_out_
                   ctx.orig_names[pc.second.tempId()] = orig;
                renames[block.index][orig.id()] = pc.second.getTemp();
                renames[block.index][pc.second.tempId()] = pc.second.getTemp();
-
-               /* see if it's a copy from a previous phi */
-               //TODO: prefer moving some previous phis over live-ins
-               //TODO: somehow prevent phis fixed before the RA from being updated (shouldn't be a problem in practice since they can only be fixed to exec)
-               Instruction *prev_phi = NULL;
-               for (auto it2 = instructions.begin(); it2 != instructions.end(); ++it2) {
-                  if ((*it2)->definitions[0].tempId() == pc.first.tempId())
-                     prev_phi = it2->get();
-               }
-               if (prev_phi) {
-                  /* if so, just update that phi */
-                  prev_phi->definitions[0] = pc.second;
-                  continue;
-               }
 
                /* otherwise, this is a live-in and we need to create a new phi
                 * to move it in this block's predecessors */
@@ -1404,7 +1429,7 @@ void register_allocation(Program *program, std::vector<std::set<Temp>> live_out_
                      for (unsigned j = 0; j < i; j++) {
                         Operand& op = instr->operands[j];
                         if (op.isTemp() && op.tempId() == blocking_id) {
-                           op = Operand(pc_def.getTemp());
+                           op.setTemp(pc_def.getTemp());
                            op.setFixed(reg);
                         }
                      }
@@ -1484,7 +1509,8 @@ void register_allocation(Program *program, std::vector<std::set<Temp>> live_out_
          /* handle definitions which must have the same register as an operand */
          if (instr->opcode == aco_opcode::v_interp_p2_f32 ||
              instr->opcode == aco_opcode::v_mac_f32 ||
-             instr->opcode == aco_opcode::v_writelane_b32) {
+             instr->opcode == aco_opcode::v_writelane_b32 ||
+             instr->opcode == aco_opcode::v_writelane_b32_e64) {
             instr->definitions[0].setFixed(instr->operands[2].physReg());
          } else if (instr->opcode == aco_opcode::s_addk_i32 ||
                     instr->opcode == aco_opcode::s_mulk_i32) {
@@ -1694,6 +1720,7 @@ void register_allocation(Program *program, std::vector<std::set<Temp>> live_out_
 
                pc->operands[i] = parallelcopy[i].first;
                pc->definitions[i] = parallelcopy[i].second;
+               assert(pc->operands[i].size() == pc->definitions[i].size());
 
                /* it might happen that the operand is already renamed. we have to restore the original name. */
                std::map<unsigned, Temp>::iterator it = ctx.orig_names.find(pc->operands[i].tempId());

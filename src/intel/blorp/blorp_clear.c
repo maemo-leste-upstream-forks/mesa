@@ -34,13 +34,14 @@
 
 #define FILE_DEBUG_FLAG DEBUG_BLORP
 
+#pragma pack(push, 1)
 struct brw_blorp_const_color_prog_key
 {
    enum blorp_shader_type shader_type; /* Must be BLORP_SHADER_TYPE_CLEAR */
    bool use_simd16_replicated_data;
    bool clear_rgb_as_red;
-   bool pad[3];
 };
+#pragma pack(pop)
 
 static bool
 blorp_params_get_clear_kernel(struct blorp_batch *batch,
@@ -108,10 +109,12 @@ blorp_params_get_clear_kernel(struct blorp_batch *batch,
    return result;
 }
 
+#pragma pack(push, 1)
 struct layer_offset_vs_key {
    enum blorp_shader_type shader_type;
    unsigned num_inputs;
 };
+#pragma pack(pop)
 
 /* In the case of doing attachment clears, we are using a surface state that
  * is handed to us so we can't set (and don't even know) the base array layer.
@@ -232,10 +235,12 @@ get_fast_clear_rect(const struct isl_device *dev,
 
       x_align *= 16;
 
-      /* SKL+ line alignment requirement for Y-tiled are half those of the prior
-       * generations.
+      /* The line alignment requirement for Y-tiled is halved at SKL and again
+       * at TGL.
        */
-      if (dev->info->gen >= 9)
+      if (dev->info->gen >= 12)
+         y_align *= 8;
+      else if (dev->info->gen >= 9)
          y_align *= 16;
       else
          y_align *= 32;
@@ -331,11 +336,6 @@ blorp_fast_clear(struct blorp_batch *batch,
                  uint32_t level, uint32_t start_layer, uint32_t num_layers,
                  uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1)
 {
-   /* Ensure that all layers undergoing the clear have an auxiliary buffer. */
-   assert(start_layer + num_layers <=
-          MAX2(surf->aux_surf->logical_level0_px.depth >> level,
-               surf->aux_surf->logical_level0_px.array_len));
-
    struct blorp_params params;
    blorp_params_init(&params);
    params.num_layers = num_layers;
@@ -714,7 +714,7 @@ blorp_clear_depth_stencil(struct blorp_batch *batch,
          params.dst.surf.samples = params.stencil.surf.samples;
          params.dst.surf.logical_level0_px =
             params.stencil.surf.logical_level0_px;
-         params.dst.view = params.depth.view;
+         params.dst.view = params.stencil.view;
 
          params.num_samples = params.stencil.surf.samples;
 
@@ -757,14 +757,16 @@ blorp_clear_depth_stencil(struct blorp_batch *batch,
 }
 
 bool
-blorp_can_hiz_clear_depth(uint8_t gen, enum isl_format format,
-                          uint32_t num_samples,
+blorp_can_hiz_clear_depth(const struct gen_device_info *devinfo,
+                          const struct isl_surf *surf,
+                          enum isl_aux_usage aux_usage,
+                          uint32_t level, uint32_t layer,
                           uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1)
 {
    /* This function currently doesn't support any gen prior to gen8 */
-   assert(gen >= 8);
+   assert(devinfo->gen >= 8);
 
-   if (gen == 8 && format == ISL_FORMAT_R16_UNORM) {
+   if (devinfo->gen == 8 && surf->format == ISL_FORMAT_R16_UNORM) {
       /* Apply the D16 alignment restrictions. On BDW, HiZ has an 8x4 sample
        * block with the following property: as the number of samples increases,
        * the number of pixels representable by this block decreases by a factor
@@ -783,7 +785,7 @@ blorp_can_hiz_clear_depth(uint8_t gen, enum isl_format format,
        * Table: Pixel Dimensions in a HiZ Sample Block Pre-SKL
        */
       const struct isl_extent2d sa_block_dim =
-         isl_get_interleaved_msaa_px_size_sa(num_samples);
+         isl_get_interleaved_msaa_px_size_sa(surf->samples);
       const uint8_t align_px_w = 8 / sa_block_dim.w;
       const uint8_t align_px_h = 4 / sa_block_dim.h;
 
@@ -803,8 +805,56 @@ blorp_can_hiz_clear_depth(uint8_t gen, enum isl_format format,
       if (x0 % align_px_w || y0 % align_px_h ||
           x1 % align_px_w || y1 % align_px_h)
          return false;
+   } else if (isl_surf_supports_hiz_ccs_wt(devinfo, surf, aux_usage)) {
+      /* We have to set the WM_HZ_OP::FullSurfaceDepthandStencilClear bit
+       * whenever we clear an uninitialized HIZ buffer (as some drivers
+       * currently do). However, this bit seems liable to clear 16x8 pixels in
+       * the ZCS on Gen12 - greater than the slice alignments for depth
+       * buffers.
+       */
+      assert(surf->image_alignment_el.w % 16 != 0 ||
+             surf->image_alignment_el.h % 8 != 0);
+
+      /* This is the hypothesis behind some corruption that was seen with the
+       * amd_vertex_shader_layer-layered-depth-texture-render piglit test.
+       *
+       * From the Compressed Depth Buffers section of the Bspec, under the
+       * Gen12 texture performant and ZCS columns:
+       *
+       *    Update with clear at either 16x8 or 8x4 granularity, based on
+       *    fs_clr or otherwise.
+       *
+       * There are a number of ways to avoid full surface CCS clears that
+       * overlap other slices, but for now we choose to disable fast-clears
+       * when an initializing clear could hit another miplevel.
+       *
+       * NOTE: Because the CCS compresses the depth buffer and not a version
+       * of it that has been rearranged with different alignments (like Gen8+
+       * HIZ), we have to make sure that the x0 and y0 are at least 16x8
+       * aligned in the context of the entire surface.
+       */
+      uint32_t slice_x0, slice_y0;
+      isl_surf_get_image_offset_el(surf, level,
+                                   surf->dim == ISL_SURF_DIM_3D ? 0 : layer,
+                                   surf->dim == ISL_SURF_DIM_3D ? layer: 0,
+                                   &slice_x0, &slice_y0);
+      const bool max_x1_y1 =
+         x1 == minify(surf->logical_level0_px.width, level) && 
+         y1 == minify(surf->logical_level0_px.height, level);
+      const uint32_t haligned_x1 = ALIGN(x1, surf->image_alignment_el.w);
+      const uint32_t valigned_y1 = ALIGN(y1, surf->image_alignment_el.h);
+      const bool unaligned = (slice_x0 + x0) % 16 || (slice_y0 + y0) % 8 ||
+                             max_x1_y1 ? haligned_x1 % 16 || valigned_y1 % 8 :
+                             x1 % 16 || y1 % 8;
+      const bool alignment_used = surf->levels > 1 ||
+                                  surf->logical_level0_px.depth > 1 ||
+                                  surf->logical_level0_px.array_len > 1;
+
+      if (unaligned && alignment_used)
+         return false;
    }
-   return true;
+
+   return isl_aux_usage_has_hiz(aux_usage);
 }
 
 void
@@ -990,7 +1040,10 @@ blorp_ccs_resolve(struct blorp_batch *batch,
    assert(aux_fmtl->txc == ISL_TXC_CCS);
 
    unsigned x_scaledown, y_scaledown;
-   if (ISL_DEV_GEN(batch->blorp->isl_dev) >= 9) {
+   if (ISL_DEV_GEN(batch->blorp->isl_dev) >= 12) {
+      x_scaledown = aux_fmtl->bw * 8;
+      y_scaledown = aux_fmtl->bh * 4;
+   } else if (ISL_DEV_GEN(batch->blorp->isl_dev) >= 9) {
       x_scaledown = aux_fmtl->bw * 8;
       y_scaledown = aux_fmtl->bh * 8;
    } else if (ISL_DEV_GEN(batch->blorp->isl_dev) >= 8) {
@@ -1001,8 +1054,8 @@ blorp_ccs_resolve(struct blorp_batch *batch,
       y_scaledown = aux_fmtl->bh / 2;
    }
    params.x0 = params.y0 = 0;
-   params.x1 = minify(params.dst.aux_surf.logical_level0_px.width, level);
-   params.y1 = minify(params.dst.aux_surf.logical_level0_px.height, level);
+   params.x1 = minify(params.dst.surf.logical_level0_px.width, level);
+   params.y1 = minify(params.dst.surf.logical_level0_px.height, level);
    params.x1 = ALIGN(params.x1, x_scaledown) / x_scaledown;
    params.y1 = ALIGN(params.y1, y_scaledown) / y_scaledown;
 
@@ -1039,6 +1092,7 @@ blorp_nir_bit(nir_builder *b, nir_ssa_def *src, unsigned bit)
                       nir_imm_int(b, 1));
 }
 
+#pragma pack(push, 1)
 struct blorp_mcs_partial_resolve_key
 {
    enum blorp_shader_type shader_type;
@@ -1046,6 +1100,7 @@ struct blorp_mcs_partial_resolve_key
    bool int_format;
    uint32_t num_samples;
 };
+#pragma pack(pop)
 
 static bool
 blorp_params_get_mcs_partial_resolve_kernel(struct blorp_batch *batch,

@@ -27,14 +27,6 @@
 #include "ac_llvm_util.h"
 #include "util/u_memory.h"
 
-enum si_llvm_calling_convention {
-	RADEON_LLVM_AMDGPU_VS = 87,
-	RADEON_LLVM_AMDGPU_GS = 88,
-	RADEON_LLVM_AMDGPU_PS = 89,
-	RADEON_LLVM_AMDGPU_CS = 90,
-	RADEON_LLVM_AMDGPU_HS = 93,
-};
-
 struct si_llvm_diagnostics {
 	struct pipe_debug_callback *debug;
 	unsigned retval;
@@ -44,7 +36,6 @@ static void si_diagnostic_handler(LLVMDiagnosticInfoRef di, void *context)
 {
 	struct si_llvm_diagnostics *diag = (struct si_llvm_diagnostics *)context;
 	LLVMDiagnosticSeverity severity = LLVMGetDiagInfoSeverity(di);
-	char *description = LLVMGetDiagInfoDescription(di);
 	const char *severity_str = NULL;
 
 	switch (severity) {
@@ -55,14 +46,12 @@ static void si_diagnostic_handler(LLVMDiagnosticInfoRef di, void *context)
 		severity_str = "warning";
 		break;
 	case LLVMDSRemark:
-		severity_str = "remark";
-		break;
 	case LLVMDSNote:
-		severity_str = "note";
-		break;
 	default:
-		severity_str = "unknown";
+		return;
 	}
+
+	char *description = LLVMGetDiagInfoDescription(di);
 
 	pipe_debug_message(diag->debug, SHADER_INFO,
 			   "LLVM diagnostic (%s): %s", severity_str, description);
@@ -1032,7 +1021,8 @@ void si_llvm_context_init(struct si_shader_context *ctx,
 /* Set the context to a certain TGSI shader. Can be called repeatedly
  * to change the shader. */
 void si_llvm_context_set_ir(struct si_shader_context *ctx,
-			    struct si_shader *shader)
+			    struct si_shader *shader,
+			    struct nir_shader *nir)
 {
 	struct si_shader_selector *sel = shader->selector;
 	const struct tgsi_shader_info *info = &sel->info;
@@ -1061,7 +1051,7 @@ void si_llvm_context_set_ir(struct si_shader_context *ctx,
 	ctx->num_samplers = util_last_bit(info->samplers_declared);
 	ctx->num_images = util_last_bit(info->images_declared);
 
-	if (sel->nir)
+	if (nir)
 		return;
 
 	if (info->array_max[TGSI_FILE_TEMPORARY] > 0) {
@@ -1081,6 +1071,8 @@ void si_llvm_context_set_ir(struct si_shader_context *ctx,
 	/* Re-set these to start with a clean slate. */
 	ctx->bld_base.num_instructions = 0;
 	ctx->bld_base.pc = 0;
+	memset(ctx->input_decls, 0, sizeof(ctx->input_decls));
+	memset(ctx->inputs, 0, sizeof(ctx->inputs));
 	memset(ctx->outputs, 0, sizeof(ctx->outputs));
 
 	ctx->bld_base.emit_store = si_llvm_emit_store;
@@ -1093,12 +1085,10 @@ void si_llvm_context_set_ir(struct si_shader_context *ctx,
 
 void si_llvm_create_func(struct si_shader_context *ctx,
 			 const char *name,
-			 LLVMTypeRef *return_types, unsigned num_return_elems,
-			 LLVMTypeRef *ParamTypes, unsigned ParamCount)
+			 LLVMTypeRef *return_types, unsigned num_return_elems)
 {
-	LLVMTypeRef main_fn_type, ret_type;
-	LLVMBasicBlockRef main_fn_body;
-	enum si_llvm_calling_convention call_conv;
+	LLVMTypeRef ret_type;
+	enum ac_llvm_calling_convention call_conv;
 	enum pipe_shader_type real_shader_type;
 
 	if (num_return_elems)
@@ -1107,14 +1097,6 @@ void si_llvm_create_func(struct si_shader_context *ctx,
 						   num_return_elems, true);
 	else
 		ret_type = ctx->voidt;
-
-	/* Setup the function */
-	ctx->return_type = ret_type;
-	main_fn_type = LLVMFunctionType(ret_type, ParamTypes, ParamCount, 0);
-	ctx->main_fn = LLVMAddFunction(ctx->gallivm.module, name, main_fn_type);
-	main_fn_body = LLVMAppendBasicBlockInContext(ctx->ac.context,
-			ctx->main_fn, "main_body");
-	LLVMPositionBuilderAtEnd(ctx->ac.builder, main_fn_body);
 
 	real_shader_type = ctx->type;
 
@@ -1129,25 +1111,28 @@ void si_llvm_create_func(struct si_shader_context *ctx,
 	switch (real_shader_type) {
 	case PIPE_SHADER_VERTEX:
 	case PIPE_SHADER_TESS_EVAL:
-		call_conv = RADEON_LLVM_AMDGPU_VS;
+		call_conv = AC_LLVM_AMDGPU_VS;
 		break;
 	case PIPE_SHADER_TESS_CTRL:
-		call_conv = RADEON_LLVM_AMDGPU_HS;
+		call_conv = AC_LLVM_AMDGPU_HS;
 		break;
 	case PIPE_SHADER_GEOMETRY:
-		call_conv = RADEON_LLVM_AMDGPU_GS;
+		call_conv = AC_LLVM_AMDGPU_GS;
 		break;
 	case PIPE_SHADER_FRAGMENT:
-		call_conv = RADEON_LLVM_AMDGPU_PS;
+		call_conv = AC_LLVM_AMDGPU_PS;
 		break;
 	case PIPE_SHADER_COMPUTE:
-		call_conv = RADEON_LLVM_AMDGPU_CS;
+		call_conv = AC_LLVM_AMDGPU_CS;
 		break;
 	default:
 		unreachable("Unhandle shader type");
 	}
 
-	LLVMSetFunctionCallConv(ctx->main_fn, call_conv);
+	/* Setup the function */
+	ctx->return_type = ret_type;
+	ctx->main_fn = ac_build_main(&ctx->args, &ctx->ac, call_conv, name,
+				     ret_type, ctx->gallivm.module);
 }
 
 void si_llvm_optimize_module(struct si_shader_context *ctx)

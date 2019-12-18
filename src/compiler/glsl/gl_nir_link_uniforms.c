@@ -163,7 +163,7 @@ find_and_update_previous_uniform_storage(struct gl_shader_program *prog,
    if (nir_variable_is_in_block(var)) {
       struct gl_uniform_storage *uniform = NULL;
 
-      unsigned num_blks = nir_variable_is_in_ubo(var) ?
+      ASSERTED unsigned num_blks = nir_variable_is_in_ubo(var) ?
          prog->data->NumUniformBlocks :
          prog->data->NumShaderStorageBlocks;
 
@@ -643,7 +643,7 @@ nir_link_uniform(struct gl_context *ctx,
 
          /* Set image access qualifiers */
          enum gl_access_qualifier image_access =
-            state->current_var->data.image.access;
+            state->current_var->data.access;
          const GLenum access =
             (image_access & ACCESS_NON_WRITEABLE) ?
             ((image_access & ACCESS_NON_READABLE) ? GL_NONE :

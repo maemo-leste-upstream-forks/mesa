@@ -34,7 +34,7 @@
 #include "drm-uapi/drm_fourcc.h"
 
 #include "state_tracker/winsys_handle.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "util/u_memory.h"
 #include "util/u_surface.h"
 #include "util/u_transfer.h"
@@ -48,7 +48,7 @@
 #include "pan_util.h"
 #include "pan_tiling.h"
 
-static void
+void
 panfrost_resource_reset_damage(struct panfrost_resource *pres)
 {
         /* We set the damage extent to the full resource size but keep the
@@ -393,10 +393,9 @@ panfrost_resource_create_bo(struct panfrost_screen *screen, struct panfrost_reso
         bool is_texture = (res->bind & PIPE_BIND_SAMPLER_VIEW);
         bool is_2d = res->depth0 == 1 && res->array_size == 1;
         bool is_streaming = (res->usage != PIPE_USAGE_STREAM);
+        bool is_global = res->bind & PIPE_BIND_GLOBAL;
 
-        /* TODO: Reenable tiling on SFBD systems when we support rendering to
-         * tiled formats with SFBD */
-        bool should_tile = is_streaming && is_texture && is_2d && !screen->require_sfbd;
+        bool should_tile = is_streaming && is_texture && is_2d && !is_global;
 
         /* Depth/stencil can't be tiled, only linear or AFBC */
         should_tile &= !(res->bind & PIPE_BIND_DEPTH_STENCIL);

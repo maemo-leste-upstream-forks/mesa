@@ -53,6 +53,7 @@ with_glx_read_only_text = get_option('glx-read-only-text')
 with_glx_direct = get_option('glx-direct')
 with_osmesa = get_option('osmesa')
 with_swr_arches = get_option('swr-arches')
+with_vulkan_overlay_layer = get_option('vulkan-overlay-layer')
 with_tools = get_option('tools')
 if with_tools.contains('all')
   with_tools = [
@@ -68,6 +69,9 @@ if with_tools.contains('all')
     'xvmc',
   ]
 endif
+
+with_intel_tools = with_tools.contains('intel') or with_tools.contains('intel-ui')
+with_imgui = with_intel_tools or with_vulkan_overlay_layer
 
 dri_drivers_path = get_option('dri-drivers-path')
 if dri_drivers_path == ''
@@ -162,7 +166,8 @@ if gallium_drivers.contains('auto')
     # TODO: PPC, Sparc
     if ['x86', 'x86_64'].contains(host_machine.cpu_family())
       gallium_drivers = [
-        'r300', 'r600', 'radeonsi', 'nouveau', 'virgl', 'svga', 'swrast'
+        'r300', 'r600', 'radeonsi', 'nouveau', 'virgl', 'svga', 'swrast',
+        'iris'
       ]
     elif ['arm', 'aarch64'].contains(host_machine.cpu_family())
       gallium_drivers = [
@@ -198,6 +203,7 @@ with_gallium_svga = gallium_drivers.contains('svga')
 with_gallium_virgl = gallium_drivers.contains('virgl')
 with_gallium_swr = gallium_drivers.contains('swr')
 with_gallium_lima = gallium_drivers.contains('lima')
+with_gallium_zink = gallium_drivers.contains('zink')
 
 if cc.get_id().startswith('intel') and meson.version().version_compare('< 0.49.1')
   error('Meson does not have sufficient support of ICC before 0.49.1 to compile mesa')
@@ -489,6 +495,10 @@ endif
 vdpau_drivers_path = get_option('vdpau-libs-path')
 if vdpau_drivers_path == ''
   vdpau_drivers_path = join_paths(get_option('libdir'), 'vdpau')
+endif
+
+if with_gallium_zink
+  dep_vulkan = dependency('vulkan')
 endif
 
 _xvmc = get_option('gallium-xvmc')
@@ -879,7 +889,7 @@ if cc.compiles('__uint128_t foo(void) { return 0; }',
 endif
 
 # TODO: this is very incomplete
-if ['linux', 'cygwin', 'gnu', 'gnu/kfreebsd'].contains(host_machine.system())
+if ['linux', 'cygwin', 'gnu', 'freebsd', 'gnu/kfreebsd'].contains(host_machine.system())
   pre_args += '-D_GNU_SOURCE'
 elif host_machine.system() == 'sunos'
   pre_args += '-D__EXTENSIONS__'
@@ -987,10 +997,10 @@ else
     c_vis_args += '-fvisibility=hidden'
   endif
 
-  # Check for C and C++ arguments for MSVC2013 compatibility. These are only
-  # used in parts of the mesa code base that need to compile with old versions
-  # of MSVC, mainly common code
-  foreach a : ['-Werror=pointer-arith', '-Werror=vla']
+  # Check for C and C++ arguments for MSVC compatibility. These are only used
+  # in parts of the mesa code base that need to compile with MSVC, mainly
+  # common code
+  foreach a : ['-Werror=pointer-arith', '-Werror=vla', '-Werror=gnu-empty-initializer']
     if cc.has_argument(a)
       c_msvc_compat_args += a
     endif
@@ -1144,7 +1154,7 @@ foreach h : ['xlocale.h', 'sys/sysctl.h', 'linux/futex.h', 'endian.h', 'dlfcn.h'
   endif
 endforeach
 
-foreach f : ['strtof', 'mkostemp', 'timespec_get', 'memfd_create', 'random_r', 'flock']
+foreach f : ['strtof', 'mkostemp', 'timespec_get', 'memfd_create', 'random_r', 'flock', 'strtok_r']
   if cc.has_function(f)
     pre_args += '-DHAVE_@0@'.format(f.to_upper())
   endif
@@ -1218,14 +1228,12 @@ ld_args_build_id = cc.get_supported_link_arguments('-Wl,--build-id=sha1')
 
 # check for dl support
 dep_dl = null_dep
-if host_machine.system() != 'windows'
-  if not cc.has_function('dlopen')
-    dep_dl = cc.find_library('dl')
-  endif
-  if cc.has_function('dladdr', dependencies : dep_dl)
-    # This is really only required for megadrivers
-    pre_args += '-DHAVE_DLADDR'
-  endif
+if not cc.has_function('dlopen')
+  dep_dl = cc.find_library('dl', required : host_machine.system() != 'windows')
+endif
+if cc.has_function('dladdr', dependencies : dep_dl)
+  # This is really only required for megadrivers
+  pre_args += '-DHAVE_DLADDR'
 endif
 
 if cc.has_function('dl_iterate_phdr')
@@ -1246,6 +1254,17 @@ endif
 # TODO: some of these may be conditional
 dep_zlib = dependency('zlib', version : '>= 1.2.3', fallback : ['zlib', 'zlib_dep'])
 pre_args += '-DHAVE_ZLIB'
+
+_zstd = get_option('zstd')
+if _zstd != 'false'
+  dep_zstd = dependency('libzstd', required : _zstd == 'true')
+  if dep_zstd.found()
+    pre_args += '-DHAVE_ZSTD'
+  endif
+else
+  dep_zstd = null_dep
+endif
+
 dep_thread = dependency('threads')
 if dep_thread.found() and host_machine.system() != 'windows'
   pre_args += '-DHAVE_PTHREAD'
@@ -1281,7 +1300,7 @@ dep_libdrm_radeon = null_dep
 dep_libdrm_nouveau = null_dep
 dep_libdrm_intel = null_dep
 
-_drm_amdgpu_ver = '2.4.99'
+_drm_amdgpu_ver = '2.4.100'
 _drm_radeon_ver = '2.4.71'
 _drm_nouveau_ver = '2.4.66'
 _drm_intel_ver = '2.4.75'
@@ -1342,7 +1361,7 @@ if dep_libdrm.found()
   endif
 endif
 
-llvm_modules = ['bitwriter', 'engine', 'mcdisassembler', 'mcjit']
+llvm_modules = ['bitwriter', 'engine', 'mcdisassembler', 'mcjit', 'core', 'executionengine', 'scalaropts', 'transformutils', 'instcombine']
 llvm_optional_modules = ['coroutines']
 if with_amd_vk or with_gallium_radeonsi or with_gallium_r600
   llvm_modules += ['amdgpu', 'native', 'bitreader', 'ipo']
@@ -1442,12 +1461,8 @@ else
 endif
 
 dep_glvnd = null_dep
-glvnd_has_headers_and_pc_files = false
 if with_glvnd
-  dep_glvnd = dependency('libglvnd', version : '>= 0.2.0')
-  # GLVND before 1.2 was missing its pkg-config and header files, forcing every
-  # vendor to provide them and the distro maintainers to resolve the conflict.
-  glvnd_has_headers_and_pc_files = dep_glvnd.version().version_compare('>= 1.2.0')
+  dep_glvnd = dependency('libglvnd', version : '>= 1.2.0')
   pre_args += '-DUSE_LIBGLVND=1'
 endif
 
@@ -1679,7 +1694,15 @@ endif
 
 pkg = import('pkgconfig')
 
-prog_nm = find_program('nm', required : false)
+if host_machine.system() == 'windows'
+  prog_dumpbin = find_program('dumpbin', required : false)
+  with_symbols_check = prog_dumpbin.found() and with_tests
+  symbols_check_args = ['--dumpbin', prog_dumpbin.path()]
+else
+  prog_nm = find_program('nm')
+  with_symbols_check = with_tests
+  symbols_check_args = ['--nm', prog_nm.path()]
+endif
 
 # This quirk needs to be applied to sources with functions defined in assembly
 # as GCC LTO drops them. See: https://bugs.freedesktop.org/show_bug.cgi?id=109391

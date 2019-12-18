@@ -28,7 +28,7 @@
 #include "util/u_string.h"
 #include "util/u_memory.h"
 #include "util/u_helpers.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "util/u_viewport.h"
 
 #include "freedreno_resource.h"
@@ -365,7 +365,7 @@ emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
 			enum a5xx_tile_mode tile_mode = TILE5_LINEAR;
 
 			if (view->base.texture)
-				tile_mode = fd_resource(view->base.texture)->tile_mode;
+				tile_mode = fd_resource(view->base.texture)->layout.tile_mode;
 
 			OUT_RING(ring, view->texconst0 |
 					A5XX_TEX_CONST_0_TILE_MODE(tile_mode));

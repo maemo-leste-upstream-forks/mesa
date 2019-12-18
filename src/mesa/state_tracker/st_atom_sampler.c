@@ -50,7 +50,7 @@
 
 #include "cso_cache/cso_context.h"
 
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 
 
 /**
@@ -344,7 +344,9 @@ st_update_vertex_samplers(struct st_context *st)
 
    update_shader_samplers(st,
                           PIPE_SHADER_VERTEX,
-                          ctx->VertexProgram._Current, NULL, NULL);
+                          ctx->VertexProgram._Current,
+                          st->state.vert_samplers,
+                          &st->state.num_vert_samplers);
 }
 
 

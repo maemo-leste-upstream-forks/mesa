@@ -295,7 +295,7 @@ static void radeon_bomgr_free_va(const struct radeon_info *info,
     if ((va + size) == heap->start) {
         heap->start = va;
         /* Delete uppermost hole if it reaches the new top */
-        if (!LIST_IS_EMPTY(&heap->holes)) {
+        if (!list_is_empty(&heap->holes)) {
             hole = container_of(heap->holes.next, hole, list);
             if ((hole->offset + hole->size) == va) {
                 heap->start = hole->offset;
@@ -796,7 +796,7 @@ struct pb_slab *radeon_bo_slab_alloc(void *priv, unsigned heap,
     if (!slab->entries)
         goto fail_buffer;
 
-    LIST_INITHEAD(&slab->base.free);
+    list_inithead(&slab->base.free);
 
     base_hash = __sync_fetch_and_add(&ws->next_bo_hash, slab->base.num_entries);
 
@@ -815,7 +815,7 @@ struct pb_slab *radeon_bo_slab_alloc(void *priv, unsigned heap,
         bo->u.slab.entry.group_index = group_index;
         bo->u.slab.real = slab->buffer;
 
-        LIST_ADDTAIL(&bo->u.slab.entry.head, &slab->base.free);
+        list_addtail(&bo->u.slab.entry.head, &slab->base.free);
     }
 
     return &slab->base;

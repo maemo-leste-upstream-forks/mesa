@@ -328,6 +328,9 @@ struct si_shader_selector {
 
 	struct tgsi_token       *tokens;
 	struct nir_shader       *nir;
+	void			*nir_binary;
+	unsigned		nir_size;
+
 	struct pipe_stream_output_info  so;
 	struct tgsi_shader_info		info;
 	struct tgsi_tessctrl_info	tcs_info;
@@ -460,7 +463,7 @@ union si_shader_part_key {
 		unsigned	num_input_sgprs:6;
 		/* For merged stages such as LS-HS, HS input VGPRs are first. */
 		unsigned	num_merged_next_stage_vgprs:3;
-		unsigned	last_input:4;
+		unsigned	num_inputs:5;
 		unsigned	as_ls:1;
 		unsigned	as_es:1;
 		unsigned	as_ngg:1;

@@ -26,6 +26,7 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <assert.h>
 #include <inttypes.h>
 #include <ctype.h>
@@ -33,6 +34,7 @@
 #include "midgard.h"
 #include "midgard-parse.h"
 #include "midgard_ops.h"
+#include "midgard_quirks.h"
 #include "disassemble.h"
 #include "helpers.h"
 #include "util/half_float.h"
@@ -40,6 +42,7 @@
 
 #define DEFINE_CASE(define, str) case define: { printf(str); break; }
 
+static unsigned *midg_tags;
 static bool is_instruction_int = false;
 
 /* Stats */
@@ -352,9 +355,21 @@ print_vector_src(unsigned src_binary,
         print_reg(reg, bits);
 
         //swizzle
-        if (bits == 16)
-                print_swizzle_vec8(src->swizzle, src->rep_high, src->rep_low);
-        else if (bits == 8)
+        if (bits == 16) {
+                /* When the mode of the instruction is itself 16-bit,
+                 * rep_low/high work more or less as expected. But if the mode
+                 * is 32-bit and we're stepping down, you only have vec4 and
+                 * the meaning shifts to rep_low as higher-half and rep_high is
+                 * never seen. TODO: are other modes similar? */
+
+                if (mode == midgard_reg_mode_32) {
+                        printf(".");
+                        print_swizzle_helper(src->swizzle, src->rep_low);
+                        assert(!src->rep_high);
+                } else {
+                        print_swizzle_vec8(src->swizzle, src->rep_high, src->rep_low);
+                }
+        } else if (bits == 8)
                 print_swizzle_vec16(src->swizzle, src->rep_high, src->rep_low, override);
         else if (bits == 32)
                 print_swizzle_vec4(src->swizzle, src->rep_high, src->rep_low);
@@ -472,10 +487,8 @@ print_mask(uint8_t mask, unsigned bits, midgard_dest_override override)
 
         const char *alphabet = components;
 
-        if (override == midgard_dest_override_upper) {
-                unsigned components = 128 / bits;
-                alphabet += components;
-        }
+        if (override == midgard_dest_override_upper)
+                alphabet += (128 / bits);
 
         for (unsigned i = 0; i < 8; i += skip) {
                 bool a = (mask & (1 << i)) != 0;
@@ -500,19 +513,25 @@ print_mask(uint8_t mask, unsigned bits, midgard_dest_override override)
 }
 
 /* Prints the 4-bit masks found in texture and load/store ops, as opposed to
- * the 8-bit masks found in (vector) ALU ops */
+ * the 8-bit masks found in (vector) ALU ops. Supports texture-style 16-bit
+ * mode as well, but not load/store-style 16-bit mode. */
 
 static void
-print_mask_4(unsigned mask)
+print_mask_4(unsigned mask, bool upper)
 {
-        if (mask == 0xF) return;
+        if (mask == 0xF) {
+                if (upper)
+                        printf("'");
+
+                return;
+        }
 
         printf(".");
 
         for (unsigned i = 0; i < 4; ++i) {
                 bool a = (mask & (1 << i)) != 0;
                 if (a)
-                        printf("%c", components[i]);
+                        printf("%c", components[i + (upper ? 4 : 0)]);
         }
 }
 
@@ -770,7 +789,7 @@ print_compact_branch_writeout_field(uint16_t word)
 }
 
 static void
-print_extended_branch_writeout_field(uint8_t *words)
+print_extended_branch_writeout_field(uint8_t *words, unsigned next)
 {
         midgard_branch_extended br;
         memcpy((char *) &br, (char *) words, sizeof(br));
@@ -803,6 +822,18 @@ print_extended_branch_writeout_field(uint8_t *words)
         printf("%d -> ", br.offset);
         print_tag_short(br.dest_tag);
         printf("\n");
+
+        unsigned I = next + br.offset * 4;
+
+        if (midg_tags[I] && midg_tags[I] != br.dest_tag) {
+                printf("\t/* XXX TAG ERROR: jumping to ");
+                print_tag_short(br.dest_tag);
+                printf(" but tagged ");
+                print_tag_short(midg_tags[I]);
+                printf(" */\n");
+        }
+
+        midg_tags[I] = br.dest_tag;
 
         midg_stats.instruction_count++;
 }
@@ -844,7 +875,7 @@ float_bitcast(uint32_t integer)
 
 static void
 print_alu_word(uint32_t *words, unsigned num_quad_words,
-               unsigned tabs)
+               unsigned tabs, unsigned next)
 {
         uint32_t control_word = words[0];
         uint16_t *beginning_ptr = (uint16_t *)(words + 1);
@@ -908,7 +939,7 @@ print_alu_word(uint32_t *words, unsigned num_quad_words,
         }
 
         if ((control_word >> 27) & 1) {
-                print_extended_branch_writeout_field((uint8_t *) word_ptr);
+                print_extended_branch_writeout_field((uint8_t *) word_ptr, next);
                 word_ptr += 3;
                 num_words += 3;
         }
@@ -1087,7 +1118,7 @@ print_load_store_instr(uint64_t data,
         }
 
         printf(" r%u", word->reg);
-        print_mask_4(word->mask);
+        print_mask_4(word->mask, false);
 
         if (!OP_IS_STORE(word->op))
                 update_dest(word->reg);
@@ -1138,30 +1169,7 @@ print_load_store_word(uint32_t *word, unsigned tabs)
 }
 
 static void
-print_texture_reg(bool full, bool select, bool upper)
-{
-        if (full)
-                printf("r%d", REG_TEX_BASE + select);
-        else
-                printf("hr%d", (REG_TEX_BASE + select) * 2 + upper);
-
-        if (full && upper)
-                printf("// error: out full / upper mutually exclusive\n");
-
-}
-
-static void
-print_texture_reg_triple(unsigned triple)
-{
-        bool full = triple & 1;
-        bool select = triple & 2;
-        bool upper = triple & 4;
-
-        print_texture_reg(full, select, upper);
-}
-
-static void
-print_texture_reg_select(uint8_t u)
+print_texture_reg_select(uint8_t u, unsigned base)
 {
         midgard_tex_register_select sel;
         memcpy(&sel, &u, sizeof(u));
@@ -1169,7 +1177,7 @@ print_texture_reg_select(uint8_t u)
         if (!sel.full)
                 printf("h");
 
-        printf("r%u", REG_TEX_BASE + sel.select);
+        printf("r%u", base + sel.select);
 
         unsigned component = sel.component;
 
@@ -1273,7 +1281,7 @@ sampler_type_name(enum mali_sampler_type t)
 #undef DEFINE_CASE
 
 static void
-print_texture_word(uint32_t *word, unsigned tabs)
+print_texture_word(uint32_t *word, unsigned tabs, unsigned in_reg_base, unsigned out_reg_base)
 {
         midgard_texture_word *texture = (midgard_texture_word *) word;
 
@@ -1300,10 +1308,10 @@ print_texture_word(uint32_t *word, unsigned tabs)
         /* Output modifiers are always interpreted floatly */
         print_outmod(texture->outmod, false);
 
-        printf(" ");
-
-        print_texture_reg(texture->out_full, texture->out_reg_select, texture->out_upper);
-        print_mask_4(texture->mask);
+        printf(" %sr%u", texture->out_full ? "" : "h",
+                        out_reg_base + texture->out_reg_select);
+        print_mask_4(texture->mask, texture->out_upper);
+        assert(!(texture->out_full && texture->out_upper));
         printf(", ");
 
         /* Depending on whether we read from textures directly or indirectly,
@@ -1311,7 +1319,7 @@ print_texture_word(uint32_t *word, unsigned tabs)
 
         if (texture->texture_register) {
                 printf("texture[");
-                print_texture_reg_select(texture->texture_handle);
+                print_texture_reg_select(texture->texture_handle, in_reg_base);
                 printf("], ");
 
                 /* Indirect, tut tut */
@@ -1326,7 +1334,7 @@ print_texture_word(uint32_t *word, unsigned tabs)
 
         if (texture->sampler_register) {
                 printf("[");
-                print_texture_reg_select(texture->sampler_handle);
+                print_texture_reg_select(texture->sampler_handle, in_reg_base);
                 printf("]");
 
                 midg_stats.sampler_count = -16;
@@ -1336,9 +1344,13 @@ print_texture_word(uint32_t *word, unsigned tabs)
         }
 
         print_swizzle_vec4(texture->swizzle, false, false);
-        printf(", ");
+        printf(", %sr%u", texture->in_reg_full ? "" : "h", in_reg_base + texture->in_reg_select);
+        assert(!(texture->in_reg_full && texture->in_reg_upper));
 
-        print_texture_reg(texture->in_reg_full, texture->in_reg_select, texture->in_reg_upper);
+        /* TODO: integrate with swizzle */
+        if (texture->in_reg_upper)
+                printf("'");
+
         print_swizzle_vec4(texture->in_reg_swizzle, false, false);
 
         /* There is *always* an offset attached. Of
@@ -1353,7 +1365,17 @@ print_texture_word(uint32_t *word, unsigned tabs)
 
         if (texture->offset_register) {
                 printf(" + ");
-                print_texture_reg_triple(texture->offset_x);
+
+                bool full = texture->offset_x & 1;
+                bool select = texture->offset_x & 2;
+                bool upper = texture->offset_x & 4;
+
+                printf("%sr%u", full ? "" : "h", in_reg_base + select);
+                assert(!(texture->out_full && texture->out_upper));
+
+                /* TODO: integrate with swizzle */
+                if (upper)
+                        printf("'");
 
                 /* The less questions you ask, the better. */
 
@@ -1398,7 +1420,7 @@ print_texture_word(uint32_t *word, unsigned tabs)
 
         if (texture->lod_register) {
                 printf("lod %c ", lod_operand);
-                print_texture_reg_select(texture->bias);
+                print_texture_reg_select(texture->bias, in_reg_base);
                 printf(", ");
 
                 if (texture->bias_int)
@@ -1441,7 +1463,7 @@ print_texture_word(uint32_t *word, unsigned tabs)
 }
 
 struct midgard_disasm_stats
-disassemble_midgard(uint8_t *code, size_t size)
+disassemble_midgard(uint8_t *code, size_t size, unsigned gpu_id, gl_shader_stage stage)
 {
         uint32_t *words = (uint32_t *) code;
         unsigned num_words = size / 4;
@@ -1453,6 +1475,8 @@ disassemble_midgard(uint8_t *code, size_t size)
 
         unsigned i = 0;
 
+        midg_tags = calloc(sizeof(midg_tags[0]), num_words);
+
         /* Stats for shader-db */
         memset(&midg_stats, 0, sizeof(midg_stats));
         midg_ever_written = 0;
@@ -1462,14 +1486,24 @@ disassemble_midgard(uint8_t *code, size_t size)
                 unsigned next_tag = (words[i] >> 4) & 0xF;
                 unsigned num_quad_words = midgard_word_size[tag];
 
+                if (midg_tags[i] && midg_tags[i] != tag) {
+                        printf("\t/* XXX: TAG ERROR branch, got ");
+                        print_tag_short(tag);
+                        printf(" expected ");
+                        print_tag_short(midg_tags[i]);
+                        printf(" */\n");
+                }
+
+                midg_tags[i] = tag;
+
                 /* Check the tag */
                 if (last_next_tag > 1) {
                         if (last_next_tag != tag) {
-                                printf("/* TAG ERROR got ");
+                                printf("\t/* XXX: TAG ERROR sequence, got ");
                                 print_tag_short(tag);
                                 printf(" expected ");
                                 print_tag_short(last_next_tag);
-                                printf(" */ ");
+                                printf(" */\n");
                         }
                 } else {
                         /* TODO: Check ALU case */
@@ -1478,16 +1512,22 @@ disassemble_midgard(uint8_t *code, size_t size)
                 last_next_tag = next_tag;
 
                 switch (midgard_word_types[tag]) {
-                case midgard_word_type_texture:
-                        print_texture_word(&words[i], tabs);
+                case midgard_word_type_texture: {
+                        bool interpipe_aliasing =
+                                midgard_get_quirks(gpu_id) & MIDGARD_INTERPIPE_REG_ALIASING;
+
+                        print_texture_word(&words[i], tabs,
+                                        interpipe_aliasing ? 0 : REG_TEX_BASE,
+                                        interpipe_aliasing ? REGISTER_LDST_BASE : REG_TEX_BASE);
                         break;
+                }
 
                 case midgard_word_type_load_store:
                         print_load_store_word(&words[i], tabs);
                         break;
 
                 case midgard_word_type_alu:
-                        print_alu_word(&words[i], num_quad_words, tabs);
+                        print_alu_word(&words[i], num_quad_words, tabs, i + 4*num_quad_words);
 
                         /* Reset word static analysis state */
                         is_embedded_constant_half = false;

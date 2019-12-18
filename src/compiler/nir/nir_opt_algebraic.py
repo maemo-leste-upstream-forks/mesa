@@ -29,6 +29,7 @@ from collections import OrderedDict
 import nir_algebraic
 from nir_opcodes import type_sizes
 import itertools
+import struct
 from math import pi
 
 # Convenience variables
@@ -69,6 +70,9 @@ e = 'e'
 # expression this indicates that the constructed value should have that
 # bit-size.
 #
+# If the opcode in a replacement expression is prefixed by a '!' character,
+# this indicated that the new expression will be marked exact.
+#
 # A special condition "many-comm-expr" can be used with expressions to note
 # that the expression and its subexpressions have more commutative expressions
 # than nir_replace_instr can handle.  If this special condition is needed with
@@ -80,6 +84,9 @@ def lowered_sincos(c):
     x = ('fsub', ('fmul', 2.0, ('ffract', ('fadd', ('fmul', 0.5 / pi, a), c))), 1.0)
     x = ('fmul', ('fsub', x, ('fmul', x, ('fabs', x))), 4.0)
     return ('ffma', ('ffma', x, ('fabs', x), ('fneg', x)), 0.225, x)
+
+def intBitsToFloat(i):
+    return struct.unpack('!f', struct.pack('!I', i))[0]
 
 optimizations = [
 
@@ -1110,6 +1117,18 @@ optimizations.extend([
                                            127.0))),
      'options->lower_unpack_snorm_4x8'),
 
+   (('pack_half_2x16_split', 'a@32', 'b@32'),
+    ('ior', ('ishl', ('u2u32', ('f2f16', b)), 16), ('u2u32', ('f2f16', a))),
+    'options->lower_pack_half_2x16_split'),
+
+   (('unpack_half_2x16_split_x', 'a@32'),
+    ('f2f32', ('u2u16', a)),
+    'options->lower_unpack_half_2x16_split'),
+
+   (('unpack_half_2x16_split_y', 'a@32'),
+    ('f2f32', ('u2u16', ('ushr', a, 16))),
+    'options->lower_unpack_half_2x16_split'),
+
    (('isign', a), ('imin', ('imax', a, -1), 1), 'options->lower_isign'),
    (('fsign', a), ('fsub', ('b2f', ('flt', 0.0, a)), ('b2f', ('flt', a, 0.0))), 'options->lower_fsign'),
 
@@ -1351,8 +1370,8 @@ optimizations += [(bitfield_reverse('x@32'), ('bitfield_reverse', 'x'), '!option
 # and, if a is a NaN then the second comparison will fail anyway.
 for op in ['flt', 'fge', 'feq']:
    optimizations += [
-      (('iand', ('feq', a, a), (op, a, b)), (op, a, b)),
-      (('iand', ('feq', a, a), (op, b, a)), (op, b, a)),
+      (('iand', ('feq', a, a), (op, a, b)), ('!' + op, a, b)),
+      (('iand', ('feq', a, a), (op, b, a)), ('!' + op, b, a)),
    ]
 
 # Add optimizations to handle the case where the result of a ternary is
@@ -1411,6 +1430,44 @@ optimizations += [
    (('imadsh_mix16', '#a@32(is_lower_half_zero)', 'b@32', 'c@32'), ('c')),
    (('imadsh_mix16', 'a@32', '#b@32(is_upper_half_zero)', 'c@32'), ('c')),
 ]
+
+# These kinds of sequences can occur after nir_opt_peephole_select.
+#
+# NOTE: fadd is not handled here because that gets in the way of ffma
+# generation in the i965 driver.  Instead, fadd and ffma are handled in
+# late_optimizations.
+
+for op in ['flrp']:
+    optimizations += [
+        (('bcsel', a, (op + '(is_used_once)', b, c, d), (op, b, c, e)), (op, b, c, ('bcsel', a, d, e))),
+        (('bcsel', a, (op, b, c, d), (op + '(is_used_once)', b, c, e)), (op, b, c, ('bcsel', a, d, e))),
+        (('bcsel', a, (op + '(is_used_once)', b, c, d), (op, b, e, d)), (op, b, ('bcsel', a, c, e), d)),
+        (('bcsel', a, (op, b, c, d), (op + '(is_used_once)', b, e, d)), (op, b, ('bcsel', a, c, e), d)),
+        (('bcsel', a, (op + '(is_used_once)', b, c, d), (op, e, c, d)), (op, ('bcsel', a, b, e), c, d)),
+        (('bcsel', a, (op, b, c, d), (op + '(is_used_once)', e, c, d)), (op, ('bcsel', a, b, e), c, d)),
+    ]
+
+for op in ['fmul', 'iadd', 'imul', 'iand', 'ior', 'ixor', 'fmin', 'fmax', 'imin', 'imax', 'umin', 'umax']:
+    optimizations += [
+        (('bcsel', a, (op + '(is_used_once)', b, c), (op, b, 'd(is_not_const)')), (op, b, ('bcsel', a, c, d))),
+        (('bcsel', a, (op + '(is_used_once)', b, 'c(is_not_const)'), (op, b, d)), (op, b, ('bcsel', a, c, d))),
+        (('bcsel', a, (op, b, 'c(is_not_const)'), (op + '(is_used_once)', b, d)), (op, b, ('bcsel', a, c, d))),
+        (('bcsel', a, (op, b, c), (op + '(is_used_once)', b, 'd(is_not_const)')), (op, b, ('bcsel', a, c, d))),
+    ]
+
+for op in ['fpow']:
+    optimizations += [
+        (('bcsel', a, (op + '(is_used_once)', b, c), (op, b, d)), (op, b, ('bcsel', a, c, d))),
+        (('bcsel', a, (op, b, c), (op + '(is_used_once)', b, d)), (op, b, ('bcsel', a, c, d))),
+        (('bcsel', a, (op + '(is_used_once)', b, c), (op, d, c)), (op, ('bcsel', a, b, d), c)),
+        (('bcsel', a, (op, b, c), (op + '(is_used_once)', d, c)), (op, ('bcsel', a, b, d), c)),
+    ]
+
+for op in ['frcp', 'frsq', 'fsqrt', 'fexp2', 'flog2', 'fsign', 'fsin', 'fcos']:
+    optimizations += [
+        (('bcsel', a, (op + '(is_used_once)', b), (op, c)), (op, ('bcsel', a, b, c))),
+        (('bcsel', a, (op, b), (op + '(is_used_once)', c)), (op, ('bcsel', a, b, c))),
+    ]
 
 # This section contains "late" optimizations that should be run before
 # creating ffmas and calling regular optimizations for the final time.
@@ -1547,6 +1604,11 @@ late_optimizations = [
 
    (('bcsel', a, 0, ('b2f32', ('inot', 'b@bool'))), ('b2f32', ('inot', ('ior', a, b)))),
 
+   # Putting this in 'optimizations' interferes with the bcsel(a, op(b, c),
+   # op(b, d)) => op(b, bcsel(a, c, d)) transformations.  I do not know why.
+   (('bcsel', ('feq', ('fsqrt', 'a(is_not_negative)'), 0.0), intBitsToFloat(0x7f7fffff), ('frsq', a)),
+    ('fmin', ('frsq', a), intBitsToFloat(0x7f7fffff))),
+
    # Things that look like DPH in the source shader may get expanded to
    # something that looks like dot(v1.xyz, v2.xyz) + v1.w by the time it gets
    # to NIR.  After FFMA is generated, this can look like:
@@ -1568,6 +1630,21 @@ late_optimizations = [
    (('~fadd', ('ffma(is_used_once)', a, b, ('fmul', 'c(is_not_const_and_not_fsign)', 'd(is_not_const_and_not_fsign)') ), 'e(is_not_const)'),
     ('ffma', a, b, ('ffma', c, d, e)), '(info->stage != MESA_SHADER_VERTEX && info->stage != MESA_SHADER_GEOMETRY) && !options->intel_vec4'),
 ]
+
+for op in ['fadd']:
+    late_optimizations += [
+        (('bcsel', a, (op + '(is_used_once)', b, c), (op, b, d)), (op, b, ('bcsel', a, c, d))),
+        (('bcsel', a, (op, b, c), (op + '(is_used_once)', b, d)), (op, b, ('bcsel', a, c, d))),
+    ]
+
+for op in ['ffma']:
+    late_optimizations += [
+        (('bcsel', a, (op + '(is_used_once)', b, c, d), (op, b, c, e)), (op, b, c, ('bcsel', a, d, e))),
+        (('bcsel', a, (op, b, c, d), (op + '(is_used_once)', b, c, e)), (op, b, c, ('bcsel', a, d, e))),
+
+        (('bcsel', a, (op + '(is_used_once)', b, c, d), (op, b, e, d)), (op, b, ('bcsel', a, c, e), d)),
+        (('bcsel', a, (op, b, c, d), (op + '(is_used_once)', b, e, d)), (op, b, ('bcsel', a, c, e), d)),
+    ]
 
 print(nir_algebraic.AlgebraicPass("nir_opt_algebraic", optimizations).render())
 print(nir_algebraic.AlgebraicPass("nir_opt_algebraic_before_ffma",

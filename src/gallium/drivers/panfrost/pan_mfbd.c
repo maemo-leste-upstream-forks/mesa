@@ -27,31 +27,7 @@
 #include "pan_util.h"
 #include "pan_format.h"
 
-#include "util/u_format.h"
-
-static void
-panfrost_invert_swizzle(const unsigned char *in, unsigned char *out)
-{
-        /* First, default to all zeroes to prevent uninitialized junk */
-
-        for (unsigned c = 0; c < 4; ++c)
-                out[c] = PIPE_SWIZZLE_0;
-
-        /* Now "do" what the swizzle says */
-
-        for (unsigned c = 0; c < 4; ++c) {
-                unsigned char i = in[c];
-
-                /* Who cares? */
-                assert(PIPE_SWIZZLE_X == 0);
-                if (i > PIPE_SWIZZLE_W)
-                        continue;
-
-                /* Invert */
-                unsigned idx = i - PIPE_SWIZZLE_X;
-                out[idx] = PIPE_SWIZZLE_X + c;
-        }
-}
+#include "util/format/u_format.h"
 
 static struct mali_rt_format
 panfrost_mfbd_format(struct pipe_surface *surf)
@@ -224,15 +200,15 @@ panfrost_mfbd_set_cbuf(
         /* Now, we set the layout specific pieces */
 
         if (rsrc->layout == PAN_LINEAR) {
-                rt->format.block = MALI_MFBD_BLOCK_LINEAR;
+                rt->format.block = MALI_BLOCK_LINEAR;
                 rt->framebuffer = base;
                 rt->framebuffer_stride = stride / 16;
         } else if (rsrc->layout == PAN_TILED) {
-                rt->format.block = MALI_MFBD_BLOCK_TILED;
+                rt->format.block = MALI_BLOCK_TILED;
                 rt->framebuffer = base;
                 rt->framebuffer_stride = stride;
         } else if (rsrc->layout == PAN_AFBC) {
-                rt->format.block = MALI_MFBD_BLOCK_AFBC;
+                rt->format.block = MALI_BLOCK_AFBC;
 
                 unsigned header_size = rsrc->slices[level].header_size;
 
@@ -247,20 +223,6 @@ panfrost_mfbd_set_cbuf(
         } else {
                 fprintf(stderr, "Invalid render layout (cbuf)");
                 assert(0);
-        }
-}
-
-/* Is a format encoded like Z24S8 and therefore compatible for render? */
-
-static bool
-panfrost_is_z24s8_variant(enum pipe_format fmt)
-{
-        switch (fmt) {
-                case PIPE_FORMAT_Z24_UNORM_S8_UINT:
-                case PIPE_FORMAT_Z24X8_UNORM:
-                        return true;
-                default:
-                        return false;
         }
 }
 
@@ -389,14 +351,57 @@ panfrost_mfbd_upload(struct panfrost_batch *batch,
 
 #undef UPLOAD
 
+static struct bifrost_framebuffer
+panfrost_emit_mfbd(struct panfrost_batch *batch, unsigned vertex_count)
+{
+        struct panfrost_context *ctx = batch->ctx;
+        struct pipe_context *gallium = (struct pipe_context *) ctx;
+        struct panfrost_screen *screen = pan_screen(gallium->screen);
+
+        unsigned width = batch->key.width;
+        unsigned height = batch->key.height;
+
+        unsigned shift = panfrost_get_stack_shift(batch->stack_size);
+
+        struct bifrost_framebuffer framebuffer = {
+                .width1 = MALI_POSITIVE(width),
+                .height1 = MALI_POSITIVE(height),
+                .width2 = MALI_POSITIVE(width),
+                .height2 = MALI_POSITIVE(height),
+
+                .unk1 = 0x1080,
+
+                .rt_count_1 = MALI_POSITIVE(batch->key.nr_cbufs),
+                .rt_count_2 = 4,
+
+                .unknown2 = 0x1f,
+                .tiler = panfrost_emit_midg_tiler(batch, vertex_count),
+                
+                .stack_shift = shift,
+                .unk0 = 0x1e,
+                .scratchpad = panfrost_batch_get_scratchpad(batch, shift, screen->thread_tls_alloc, screen->core_count)->gpu
+        };
+
+        return framebuffer;
+}
+
+void
+panfrost_attach_mfbd(struct panfrost_batch *batch, unsigned vertex_count)
+{
+        struct bifrost_framebuffer mfbd =
+                panfrost_emit_mfbd(batch, vertex_count);
+
+        memcpy(batch->framebuffer.cpu, &mfbd, sizeof(mfbd));
+}
+
 /* Creates an MFBD for the FRAGMENT section of the bound framebuffer */
 
 mali_ptr
 panfrost_mfbd_fragment(struct panfrost_batch *batch, bool has_draws)
 {
         struct bifrost_framebuffer fb = panfrost_emit_mfbd(batch, has_draws);
-        struct bifrost_fb_extra fbx = {};
-        struct bifrost_render_target rts[4] = {};
+        struct bifrost_fb_extra fbx = {0};
+        struct bifrost_render_target rts[4] = {0};
 
         /* We always upload at least one dummy GL_NONE render target */
 

@@ -88,7 +88,7 @@
 #include "util/u_vbuf.h"
 
 #include "util/u_dump.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
 #include "util/u_upload_mgr.h"
@@ -1030,12 +1030,17 @@ u_vbuf_get_minmax_index_mapped(const struct pipe_draw_info *info,
                                const void *indices, unsigned *out_min_index,
                                unsigned *out_max_index)
 {
-   unsigned max = 0;
-   unsigned min = ~0u;
+   if (!info->count) {
+      *out_min_index = 0;
+      *out_max_index = 0;
+      return;
+   }
 
    switch (info->index_size) {
    case 4: {
       const unsigned *ui_indices = (const unsigned*)indices;
+      unsigned max = 0;
+      unsigned min = ~0u;
       if (info->primitive_restart) {
          for (unsigned i = 0; i < info->count; i++) {
             if (ui_indices[i] != info->restart_index) {
@@ -1050,10 +1055,14 @@ u_vbuf_get_minmax_index_mapped(const struct pipe_draw_info *info,
             if (ui_indices[i] < min) min = ui_indices[i];
          }
       }
+      *out_min_index = min;
+      *out_max_index = max;
       break;
    }
    case 2: {
       const unsigned short *us_indices = (const unsigned short*)indices;
+      unsigned short max = 0;
+      unsigned short min = ~((unsigned short)0);
       if (info->primitive_restart) {
          for (unsigned i = 0; i < info->count; i++) {
             if (us_indices[i] != info->restart_index) {
@@ -1068,10 +1077,14 @@ u_vbuf_get_minmax_index_mapped(const struct pipe_draw_info *info,
             if (us_indices[i] < min) min = us_indices[i];
          }
       }
+      *out_min_index = min;
+      *out_max_index = max;
       break;
    }
    case 1: {
       const unsigned char *ub_indices = (const unsigned char*)indices;
+      unsigned char max = 0;
+      unsigned char min = ~((unsigned char)0);
       if (info->primitive_restart) {
          for (unsigned i = 0; i < info->count; i++) {
             if (ub_indices[i] != info->restart_index) {
@@ -1086,14 +1099,13 @@ u_vbuf_get_minmax_index_mapped(const struct pipe_draw_info *info,
             if (ub_indices[i] < min) min = ub_indices[i];
          }
       }
+      *out_min_index = min;
+      *out_max_index = max;
       break;
    }
    default:
       assert(0);
    }
-
-   *out_min_index = min;
-   *out_max_index = max;
 }
 
 void u_vbuf_get_minmax_index(struct pipe_context *pipe,

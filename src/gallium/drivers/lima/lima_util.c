@@ -28,6 +28,7 @@
 #include <pipe/p_defines.h>
 
 #include "lima_util.h"
+#include "lima_parser.h"
 
 FILE *lima_dump_command_stream = NULL;
 
@@ -51,18 +52,50 @@ bool lima_get_absolute_timeout(uint64_t *timeout)
 
 void lima_dump_blob(FILE *fp, void *data, int size, bool is_float)
 {
+   fprintf(fp, "{\n");
    for (int i = 0; i * 4 < size; i++) {
-      if (i % 4 == 0) {
-         if (i) fprintf(fp, "\n");
-         fprintf(fp, "%04x:", i * 4);
-      }
+      if (i % 4 == 0)
+         fprintf(fp, "\t");
 
       if (is_float)
-         fprintf(fp, " %f", ((float *)data)[i]);
+         fprintf(fp, "%f, ", ((float *)data)[i]);
       else
-         fprintf(fp, " 0x%08x", ((uint32_t *)data)[i]);
+         fprintf(fp, "0x%08x, ", ((uint32_t *)data)[i]);
+
+      if ((i % 4 == 3) || (i == size / 4 - 1)) {
+         fprintf(fp, "/* 0x%08x */", MAX2((i - 3) * 4, 0));
+         if (i) fprintf(fp, "\n");
+      }
    }
-   fprintf(fp, "\n");
+   fprintf(fp, "}\n");
+}
+
+void
+lima_dump_vs_command_stream_print(void *data, int size, uint32_t start)
+{
+   if (lima_dump_command_stream)
+      lima_parse_vs(lima_dump_command_stream, (uint32_t *)data, size, start);
+}
+
+void
+lima_dump_plbu_command_stream_print(void *data, int size, uint32_t start)
+{
+   if (lima_dump_command_stream)
+      lima_parse_plbu(lima_dump_command_stream, (uint32_t *)data, size, start);
+}
+
+void
+lima_dump_rsw_command_stream_print(void *data, int size, uint32_t start)
+{
+   if (lima_dump_command_stream)
+      lima_parse_render_state(lima_dump_command_stream, (uint32_t *)data, size, start);
+}
+
+void
+lima_dump_texture_descriptor(void *data, int size, uint32_t start, uint32_t offset)
+{
+   if (lima_dump_command_stream)
+      lima_parse_texture_descriptor(lima_dump_command_stream, (uint32_t *)data, size, start, offset);
 }
 
 void

@@ -40,6 +40,48 @@ anv_wsi_image_get_modifier(VkImage _image)
    return image->drm_format_mod;
 }
 
+static void
+anv_wsi_signal_semaphore_for_memory(VkDevice _device,
+                                    VkSemaphore _semaphore,
+                                    VkDeviceMemory _memory)
+{
+   ANV_FROM_HANDLE(anv_device, device, _device);
+   ANV_FROM_HANDLE(anv_semaphore, semaphore, _semaphore);
+   ANV_FROM_HANDLE(anv_device_memory, memory, _memory);
+
+   /* Put a BO semaphore with the image BO in the temporary.  For BO binary
+    * semaphores, we always set EXEC_OBJECT_WRITE so this creates a WaR
+    * hazard with the display engine's read to ensure that no one writes to
+    * the image before the read is complete.
+    */
+   anv_semaphore_reset_temporary(device, semaphore);
+
+   struct anv_semaphore_impl *impl = &semaphore->temporary;
+   impl->type = ANV_SEMAPHORE_TYPE_WSI_BO;
+   impl->bo = anv_bo_ref(memory->bo);
+}
+
+static void
+anv_wsi_signal_fence_for_memory(VkDevice _device,
+                                VkFence _fence,
+                                VkDeviceMemory _memory)
+{
+   ANV_FROM_HANDLE(anv_device, device, _device);
+   ANV_FROM_HANDLE(anv_fence, fence, _fence);
+   ANV_FROM_HANDLE(anv_device_memory, memory, _memory);
+
+   /* Put a BO fence with the image BO in the temporary.  For BO fences, we
+    * always just wait until the BO isn't busy and reads from the BO should
+    * count as busy.
+    */
+   anv_fence_reset_temporary(device, fence);
+
+   struct anv_fence_impl *impl = &fence->temporary;
+   impl->type = ANV_FENCE_TYPE_WSI_BO;
+   impl->bo.bo = anv_bo_ref(memory->bo);
+   impl->bo.state = ANV_BO_FENCE_STATE_SUBMITTED;
+}
+
 VkResult
 anv_init_wsi(struct anv_physical_device *physical_device)
 {
@@ -56,6 +98,10 @@ anv_init_wsi(struct anv_physical_device *physical_device)
 
    physical_device->wsi_device.supports_modifiers = true;
    physical_device->wsi_device.image_get_modifier = anv_wsi_image_get_modifier;
+   physical_device->wsi_device.signal_semaphore_for_memory =
+      anv_wsi_signal_semaphore_for_memory;
+   physical_device->wsi_device.signal_fence_for_memory =
+      anv_wsi_signal_fence_for_memory;
 
    return VK_SUCCESS;
 }
@@ -242,20 +288,8 @@ VkResult anv_AcquireNextImage2KHR(
    ANV_FROM_HANDLE(anv_device, device, _device);
    struct anv_physical_device *pdevice = &device->instance->physicalDevice;
 
-   VkResult result = wsi_common_acquire_next_image2(&pdevice->wsi_device,
-                                                    _device,
-                                                    pAcquireInfo,
-                                                    pImageIndex);
-
-   /* Thanks to implicit sync, the image is ready immediately.  However, we
-    * should wait for the current GPU state to finish.
-    */
-   if (pAcquireInfo->fence != VK_NULL_HANDLE) {
-      anv_QueueSubmit(anv_queue_to_handle(&device->queue), 0, NULL,
-                      pAcquireInfo->fence);
-   }
-
-   return result;
+   return wsi_common_acquire_next_image2(&pdevice->wsi_device, _device,
+                                         pAcquireInfo, pImageIndex);
 }
 
 VkResult anv_QueuePresentKHR(

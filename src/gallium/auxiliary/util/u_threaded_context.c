@@ -26,7 +26,7 @@
 
 #include "util/u_threaded_context.h"
 #include "util/u_cpu_detect.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
 #include "util/u_upload_mgr.h"
@@ -352,7 +352,7 @@ tc_call_destroy_query(struct pipe_context *pipe, union tc_payload *payload)
    struct threaded_query *tq = threaded_query(payload->query);
 
    if (tq->head_unflushed.next)
-      LIST_DEL(&tq->head_unflushed);
+      list_del(&tq->head_unflushed);
 
    pipe->destroy_query(pipe, payload->query);
 }
@@ -393,7 +393,7 @@ tc_call_end_query(struct pipe_context *pipe, union tc_payload *payload)
    struct threaded_query *tq = threaded_query(p->query);
 
    if (!tq->head_unflushed.next)
-      LIST_ADD(&tq->head_unflushed, &p->tc->unflushed_queries);
+      list_add(&tq->head_unflushed, &p->tc->unflushed_queries);
 
    pipe->end_query(pipe, p->query);
 }
@@ -432,7 +432,7 @@ tc_get_query_result(struct pipe_context *_pipe,
       tq->flushed = true;
       if (tq->head_unflushed.next) {
          /* This is safe because it can only happen after we sync'd. */
-         LIST_DEL(&tq->head_unflushed);
+         list_del(&tq->head_unflushed);
       }
    }
    return success;
@@ -1965,7 +1965,7 @@ tc_flush_queries(struct threaded_context *tc)
 {
    struct threaded_query *tq, *tmp;
    LIST_FOR_EACH_ENTRY_SAFE(tq, tmp, &tc->unflushed_queries, head_unflushed) {
-      LIST_DEL(&tq->head_unflushed);
+      list_del(&tq->head_unflushed);
 
       /* Memory release semantics: due to a possible race with
        * tc_get_query_result, we must ensure that the linked list changes
@@ -2627,7 +2627,7 @@ threaded_context_create(struct pipe_context *pipe,
       util_queue_fence_init(&tc->batch_slots[i].fence);
    }
 
-   LIST_INITHEAD(&tc->unflushed_queries);
+   list_inithead(&tc->unflushed_queries);
 
    slab_create_child(&tc->pool_transfers, parent_transfer_pool);
 

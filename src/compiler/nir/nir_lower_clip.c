@@ -243,6 +243,7 @@ lower_clip_outputs(nir_builder *b, nir_variable *position,
          exec_node_remove(&clipvertex->node);
          clipvertex->data.mode = nir_var_shader_temp;
          exec_list_push_tail(&b->shader->globals, &clipvertex->node);
+         nir_fixup_deref_modes(b->shader);
       }
    } else {
       if (clipvertex)
@@ -315,6 +316,17 @@ nir_lower_clip_vs(nir_shader *shader, unsigned ucp_enables, bool use_vars,
 
    if (!ucp_enables)
       return false;
+
+   /* find clipvertex/position outputs: */
+   nir_foreach_variable(var, &shader->outputs) {
+      int loc = var->data.driver_location;
+
+      /* keep track of last used driver-location.. we'll be
+       * appending CLIP_DIST0/CLIP_DIST1 after last existing
+       * output:
+       */
+      maxloc = MAX2(maxloc, loc);
+   }
 
    nir_builder_init(&b, impl);
 

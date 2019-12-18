@@ -1294,7 +1294,8 @@ iris_bo_get_tiling(struct iris_bo *bo, uint32_t *tiling_mode,
 }
 
 struct iris_bo *
-iris_bo_import_dmabuf(struct iris_bufmgr *bufmgr, int prime_fd)
+iris_bo_import_dmabuf(struct iris_bufmgr *bufmgr, int prime_fd,
+                      uint32_t tiling, uint32_t stride)
 {
    uint32_t handle;
    struct iris_bo *bo;
@@ -1345,9 +1346,15 @@ iris_bo_import_dmabuf(struct iris_bufmgr *bufmgr, int prime_fd)
    if (gen_ioctl(bufmgr->fd, DRM_IOCTL_I915_GEM_GET_TILING, &get_tiling))
       goto err;
 
-   bo->tiling_mode = get_tiling.tiling_mode;
-   bo->swizzle_mode = get_tiling.swizzle_mode;
-   /* XXX stride is unknown */
+   if (get_tiling.tiling_mode == tiling || tiling > I915_TILING_LAST) {
+      bo->tiling_mode = get_tiling.tiling_mode;
+      bo->swizzle_mode = get_tiling.swizzle_mode;
+       /* XXX stride is unknown */
+   } else {
+      if (bo_set_tiling_internal(bo, tiling, stride)) {
+         goto err;
+      }
+   }
 
 out:
    mtx_unlock(&bufmgr->lock);
@@ -1660,6 +1667,7 @@ iris_bufmgr_init(struct gen_device_info *devinfo, int fd, bool bo_reuse)
 
    STATIC_ASSERT(IRIS_MEMZONE_SHADER_START == 0ull);
    const uint64_t _4GB = 1ull << 32;
+   const uint64_t _2GB = 1ul << 31;
 
    /* The STATE_BASE_ADDRESS size field can only hold 1 page shy of 4GB */
    const uint64_t _4GB_minus_1 = _4GB - PAGE_SIZE;
@@ -1669,9 +1677,16 @@ iris_bufmgr_init(struct gen_device_info *devinfo, int fd, bool bo_reuse)
    util_vma_heap_init(&bufmgr->vma_allocator[IRIS_MEMZONE_SURFACE],
                       IRIS_MEMZONE_SURFACE_START,
                       _4GB_minus_1 - IRIS_MAX_BINDERS * IRIS_BINDER_SIZE);
+   /* TODO: Why does limiting to 2GB help some state items on gen12?
+    *  - CC Viewport Pointer
+    *  - Blend State Pointer
+    *  - Color Calc State Pointer
+    */
+   const uint64_t dynamic_pool_size =
+      (devinfo->gen >= 12 ? _2GB : _4GB_minus_1) - IRIS_BORDER_COLOR_POOL_SIZE;
    util_vma_heap_init(&bufmgr->vma_allocator[IRIS_MEMZONE_DYNAMIC],
                       IRIS_MEMZONE_DYNAMIC_START + IRIS_BORDER_COLOR_POOL_SIZE,
-                      _4GB_minus_1 - IRIS_BORDER_COLOR_POOL_SIZE);
+                      dynamic_pool_size);
 
    /* Leave the last 4GB out of the high vma range, so that no state
     * base address + size can overflow 48 bits.

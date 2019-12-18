@@ -29,6 +29,8 @@
 #define _NIR_SEARCH_
 
 #include "nir.h"
+#include "nir_worklist.h"
+#include "util/u_dynarray.h"
 
 #define NIR_SEARCH_MAX_VARIABLES 16
 
@@ -138,6 +140,9 @@ typedef struct {
     */
    bool inexact;
 
+   /** In a replacement, requests that the instruction be marked exact. */
+   bool exact;
+
    /* Commutative expression index.  This is assigned by opt_algebraic.py when
     * search structures are constructed and is a unique (to this structure)
     * index within the commutative operation bitfield used for searching for
@@ -195,8 +200,11 @@ NIR_DEFINE_CAST(nir_search_value_as_expression, nir_search_value,
 nir_ssa_def *
 nir_replace_instr(struct nir_builder *b, nir_alu_instr *instr,
                   struct hash_table *range_ht,
+                  struct util_dynarray *states,
+                  const struct per_op_table *pass_op_table,
                   const nir_search_expression *search,
-                  const nir_search_value *replace);
+                  const nir_search_value *replace,
+                  nir_instr_worklist *algebraic_worklist);
 bool
 nir_algebraic_impl(nir_function_impl *impl,
                    const bool *condition_flags,

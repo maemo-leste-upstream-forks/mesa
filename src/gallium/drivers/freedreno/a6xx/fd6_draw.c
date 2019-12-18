@@ -129,8 +129,6 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 		.info = info,
 		.key = {
 			.vs = ctx->prog.vs,
-			.hs = ctx->prog.hs,
-			.ds = ctx->prog.ds,
 			.gs = ctx->prog.gs,
 			.fs = ctx->prog.fs,
 			.key = {
@@ -156,6 +154,26 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 		.sprite_coord_enable = ctx->rasterizer->sprite_coord_enable,
 		.sprite_coord_mode = ctx->rasterizer->sprite_coord_mode,
 	};
+
+	if (info->mode == PIPE_PRIM_PATCHES) {
+		emit.key.hs = ctx->prog.hs;
+		emit.key.ds = ctx->prog.ds;
+
+		shader_info *ds_info = &emit.key.ds->nir->info;
+		switch (ds_info->tess.primitive_mode) {
+		case GL_ISOLINES:
+			emit.key.key.tessellation = IR3_TESS_ISOLINES;
+			break;
+		case GL_TRIANGLES:
+			emit.key.key.tessellation = IR3_TESS_TRIANGLES;
+			break;
+		case GL_QUADS:
+			emit.key.key.tessellation = IR3_TESS_QUADS;
+			break;
+		default:
+			unreachable("bad tessmode");
+		}
+	}
 
 	if (emit.key.gs)
 		emit.key.key.has_gs = true;
@@ -194,6 +212,53 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 	struct fd_ringbuffer *ring = ctx->batch->draw;
 	enum pc_di_primtype primtype = ctx->primtypes[info->mode];
 
+	uint32_t tess_draw0 = 0;
+	if (info->mode == PIPE_PRIM_PATCHES) {
+		shader_info *ds_info = &emit.ds->shader->nir->info;
+		uint32_t factor_stride;
+		uint32_t patch_type;
+
+		switch (ds_info->tess.primitive_mode) {
+		case GL_ISOLINES:
+			patch_type = TESS_ISOLINES;
+			factor_stride = 12;
+			break;
+		case GL_TRIANGLES:
+			patch_type = TESS_TRIANGLES;
+			factor_stride = 20;
+			break;
+		case GL_QUADS:
+			patch_type = TESS_QUADS;
+			factor_stride = 28;
+			break;
+		default:
+			unreachable("bad tessmode");
+		}
+
+		primtype = DI_PT_PATCHES0 + info->vertices_per_patch;
+		tess_draw0 |= CP_DRAW_INDX_OFFSET_0_PATCH_TYPE(patch_type) |
+			CP_DRAW_INDX_OFFSET_0_TESS_ENABLE;
+
+		ctx->batch->tessellation = true;
+		ctx->batch->tessparam_size = MAX2(ctx->batch->tessparam_size,
+				emit.hs->shader->output_size * 4 * info->count);
+		ctx->batch->tessfactor_size = MAX2(ctx->batch->tessfactor_size,
+				factor_stride * info->count);
+
+		if (!ctx->batch->tess_addrs_constobj) {
+			/* Reserve space for the bo address - we'll write them later in
+			 * setup_tess_buffers().  We need 2 bo address, but indirect
+			 * constant upload needs at least 4 vec4s.
+			 */
+			unsigned size = 4 * 16;
+
+			ctx->batch->tess_addrs_constobj = fd_submit_new_ringbuffer(
+				ctx->batch->submit, size, FD_RINGBUFFER_STREAMING);
+
+			ctx->batch->tess_addrs_constobj->cur += size;
+		}
+	}
+
 	fd6_emit_state(ring, &emit);
 
 	OUT_PKT4(ring, REG_A6XX_VFD_INDEX_OFFSET, 2);
@@ -213,11 +278,10 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 	emit_marker6(ring, 7);
 
 	uint32_t draw0 =
+		CP_DRAW_INDX_OFFSET_0_VIS_CULL(USE_VISIBILITY) |
 		CP_DRAW_INDX_OFFSET_0_PRIM_TYPE(primtype) |
-		CP_DRAW_INDX_OFFSET_0_VIS_CULL(USE_VISIBILITY);
-
-	if (emit.key.gs)
-		draw0 |= CP_DRAW_INDX_OFFSET_0_GS_ENABLE;
+		tess_draw0 |
+		COND(emit.key.gs, CP_DRAW_INDX_OFFSET_0_GS_ENABLE);
 
 	if (info->index_size) {
 		draw0 |=
@@ -256,6 +320,7 @@ static void
 fd6_clear_lrz(struct fd_batch *batch, struct fd_resource *zsbuf, double depth)
 {
 	struct fd_ringbuffer *ring;
+	struct fd6_context *fd6_ctx = fd6_context(batch->ctx);
 
 	// TODO mid-frame clears (ie. app doing crazy stuff)??  Maybe worth
 	// splitting both clear and lrz clear out into their own rb's.  And
@@ -277,7 +342,7 @@ fd6_clear_lrz(struct fd_batch *batch, struct fd_resource *zsbuf, double depth)
 	OUT_WFI5(ring);
 
 	OUT_PKT4(ring, REG_A6XX_RB_CCU_CNTL, 1);
-	OUT_RING(ring, 0x10000000);
+	OUT_RING(ring, fd6_ctx->magic.RB_CCU_CNTL_bypass);
 
 	OUT_PKT4(ring, REG_A6XX_HLSQ_UPDATE_CNTL, 1);
 	OUT_RING(ring, 0x7ffff);
@@ -354,7 +419,7 @@ fd6_clear_lrz(struct fd_batch *batch, struct fd_resource *zsbuf, double depth)
 	OUT_WFI5(ring);
 
 	OUT_PKT4(ring, REG_A6XX_RB_UNKNOWN_8E04, 1);
-	OUT_RING(ring, 0x1000000);
+	OUT_RING(ring, fd6_ctx->magic.RB_UNKNOWN_8E04_blit);
 
 	OUT_PKT7(ring, CP_BLIT, 1);
 	OUT_RING(ring, CP_BLIT_0_OP(BLIT_OP_SCALE));
@@ -362,7 +427,7 @@ fd6_clear_lrz(struct fd_batch *batch, struct fd_resource *zsbuf, double depth)
 	OUT_WFI5(ring);
 
 	OUT_PKT4(ring, REG_A6XX_RB_UNKNOWN_8E04, 1);
-	OUT_RING(ring, 0x0);
+	OUT_RING(ring, 0x0);               /* RB_UNKNOWN_8E04 */
 
 	fd6_event_write(batch, ring, UNK_1D, true);
 	fd6_event_write(batch, ring, FACENESS_FLUSH, true);

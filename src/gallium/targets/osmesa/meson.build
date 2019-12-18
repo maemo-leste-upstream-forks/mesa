@@ -58,6 +58,7 @@ libosmesa = shared_library(
     dep_ws2_32, dep_selinux, dep_thread, dep_clock, dep_unwind,
     driver_swrast, driver_swr,
   ],
+  name_prefix : host_machine.system() == 'windows' ? '' : 'lib',  # otherwise mingw will create libosmesa.dll
   soversion : host_machine.system() == 'windows' ? '' : '8',
   version : '8.0.0',
   install : true,
@@ -73,9 +74,13 @@ pkg.generate(
 
 if with_tests
   test('osmesa-render',
-       executable('osmesa-render',
-                  'test-render.c',
-                  include_directories : inc_common,
-                  link_with: libosmesa),
-       suite: 'gallium')
+    executable(
+      'osmesa-render',
+      'test-render.cpp',
+      include_directories : inc_common,
+      link_with: libosmesa,
+      dependencies : [idep_gtest],
+    ),
+    suite: 'gallium'
+  )
 endif

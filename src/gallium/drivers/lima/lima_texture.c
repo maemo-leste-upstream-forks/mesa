@@ -89,7 +89,7 @@ lima_texture_desc_set_res(struct lima_context *ctx, lima_tex_desc *desc,
    else {
       /* for padded linear texture */
       if (lima_res->levels[first_level].width != width) {
-         desc->stride = lima_res->levels[first_level].width;
+         desc->stride = lima_res->levels[first_level].stride;
          desc->has_stride = 1;
       }
       layout = 0;
@@ -124,8 +124,17 @@ lima_update_tex_desc(struct lima_context *ctx, struct lima_sampler_state *sample
 
    memset(desc, 0, desc_size);
 
-   /* 2D texture */
-   desc->texture_2d = 1;
+   switch (texture->base.target) {
+   case PIPE_TEXTURE_2D:
+   case PIPE_TEXTURE_RECT:
+      desc->texture_type = LIMA_TEXTURE_TYPE_2D;
+      break;
+   case PIPE_TEXTURE_CUBE:
+      desc->texture_type = LIMA_TEXTURE_TYPE_CUBE;
+      break;
+   default:
+      break;
+   }
 
    if (!sampler->base.normalized_coords)
       desc->unnorm_coords = 1;
@@ -263,4 +272,9 @@ lima_update_textures(struct lima_context *ctx)
    lima_dump_command_stream_print(
       descs, size, false, "add textures_desc at va %x\n",
       lima_ctx_buff_va(ctx, lima_ctx_buff_pp_tex_desc, 0));
+
+   lima_dump_texture_descriptor(
+      descs, size,
+      lima_ctx_buff_va(ctx, lima_ctx_buff_pp_tex_desc, 0) + lima_tex_list_size,
+      lima_tex_list_size);
 }

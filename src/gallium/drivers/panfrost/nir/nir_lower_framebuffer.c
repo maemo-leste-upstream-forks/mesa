@@ -41,7 +41,25 @@
 #include "compiler/nir/nir_builder.h"
 #include "compiler/nir/nir_format_convert.h"
 #include "nir_lower_blend.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
+
+/* Determines the best NIR intrinsic to load a tile buffer of a given type,
+ * using native format conversion where possible. RGBA8 UNORM has a fast path
+ * (on some chips). Otherwise, we default to raw reads. */
+
+static nir_intrinsic_op
+nir_best_load_for_format(
+      const struct util_format_description *desc,
+      unsigned *special_bitsize,
+      unsigned gpu_id)
+{
+   if (util_format_is_unorm8(desc) && gpu_id != 0x750) {
+      *special_bitsize = 16;
+      return nir_intrinsic_load_output_u8_as_fp16_pan;
+   } else
+      return nir_intrinsic_load_raw_output_pan;
+}
+
 
 /* Converters for UNORM8 formats, e.g. R8G8B8A8_UNORM */
 
@@ -49,14 +67,14 @@ static nir_ssa_def *
 nir_float_to_unorm8(nir_builder *b, nir_ssa_def *c_float)
 {
    /* First, we degrade quality to fp16; we don't need the extra bits */
-   nir_ssa_def *degraded = nir_f2f16(b, c_float);
+   nir_ssa_def *degraded = /*nir_f2f16(b, c_float)*/c_float;
 
    /* Scale from [0, 1] to [0, 255.0] */
    nir_ssa_def *scaled = nir_fmul_imm(b, nir_fsat(b, degraded), 255.0);
 
    /* Next, we type convert */
    nir_ssa_def *converted = nir_u2u8(b, nir_f2u16(b,
-                                     nir_fround_even(b, scaled)));
+                                     nir_fround_even(b, nir_f2f16(b, scaled))));
 
    return converted;
 }
@@ -65,7 +83,7 @@ static nir_ssa_def *
 nir_unorm8_to_float(nir_builder *b, nir_ssa_def *c_native)
 {
    /* First, we convert up from u8 to f16 */
-   nir_ssa_def *converted = nir_u2f16(b, nir_u2u16(b, c_native));
+   nir_ssa_def *converted = nir_f2f32(b, nir_u2f16(b, nir_u2u16(b, c_native)));
 
    /* Next, we scale down from [0, 255.0] to [0, 1] */
    nir_ssa_def *scaled = nir_fsat(b, nir_fmul_imm(b, converted, 1.0/255.0));
@@ -204,6 +222,7 @@ nir_shader_to_native(nir_builder *b,
 static nir_ssa_def *
 nir_native_to_shader(nir_builder *b,
                      nir_ssa_def *c_native,
+                     nir_intrinsic_op op,
                      const struct util_format_description *desc,
                      unsigned bits,
                      bool homogenous_bits)
@@ -211,6 +230,15 @@ nir_native_to_shader(nir_builder *b,
    bool float_or_pure_int =
       util_format_is_float(desc->format) ||
       util_format_is_pure_integer(desc->format);
+
+   /* Handle preconverted formats */
+   if (op == nir_intrinsic_load_output_u8_as_fp16_pan) {
+      assert(util_format_is_unorm8(desc));
+      return nir_f2f32(b, c_native);
+   }
+
+   /* Otherwise, we're raw */
+   assert(op == nir_intrinsic_load_raw_output_pan);
 
    if (util_format_is_unorm8(desc))
       return nir_unorm8_to_float(b, c_native);
@@ -223,7 +251,8 @@ nir_native_to_shader(nir_builder *b,
 }
 
 void
-nir_lower_framebuffer(nir_shader *shader, enum pipe_format format)
+nir_lower_framebuffer(nir_shader *shader, enum pipe_format format,
+                      unsigned gpu_id)
 {
    /* Blend shaders are represented as special fragment shaders */
    assert(shader->info.stage == MESA_SHADER_FRAGMENT);
@@ -314,20 +343,22 @@ nir_lower_framebuffer(nir_shader *shader, enum pipe_format format)
                /* For loads, add conversion after */
                b.cursor = nir_after_instr(instr);
 
+               /* Determine the best op for the format/hardware */
+               unsigned bitsize = raw_bitsize_in;
+               nir_intrinsic_op op = nir_best_load_for_format(format_desc,
+                                                              &bitsize,
+                                                              gpu_id);
+
                /* Rewrite to use a native load by creating a new intrinsic */
-
-               nir_intrinsic_instr *new =
-                  nir_intrinsic_instr_create(shader, nir_intrinsic_load_raw_output_pan);
-
+               nir_intrinsic_instr *new = nir_intrinsic_instr_create(shader, op);
                new->num_components = 4;
 
-               unsigned bitsize = raw_bitsize_in;
                nir_ssa_dest_init(&new->instr, &new->dest, 4, bitsize, NULL);
                nir_builder_instr_insert(&b, &new->instr);
 
                /* Convert the raw value */
                nir_ssa_def *raw = &new->dest.ssa;
-               nir_ssa_def *converted = nir_native_to_shader(&b, raw, format_desc, bits, homogenous_bits);
+               nir_ssa_def *converted = nir_native_to_shader(&b, raw, op, format_desc, bits, homogenous_bits);
 
                /* Rewrite to use the converted value */
                nir_src rewritten = nir_src_for_ssa(converted);

@@ -190,7 +190,6 @@ public:
                    fs_reg result, fs_reg *op, unsigned fsign_src);
    void emit_shader_float_controls_execution_mode();
    bool opt_peephole_sel();
-   bool opt_peephole_csel();
    bool opt_peephole_predicated_break();
    bool opt_saturate_propagation();
    bool opt_cmod_propagation();
@@ -228,6 +227,9 @@ public:
                                         nir_intrinsic_instr *instr);
    fs_reg get_nir_ssbo_intrinsic_index(const brw::fs_builder &bld,
                                        nir_intrinsic_instr *instr);
+   fs_reg swizzle_nir_scratch_addr(const brw::fs_builder &bld,
+                                   const fs_reg &addr,
+                                   bool in_dwords);
    void nir_emit_intrinsic(const brw::fs_builder &bld,
                            nir_intrinsic_instr *instr);
    void nir_emit_tes_intrinsic(const brw::fs_builder &bld,
@@ -341,6 +343,7 @@ public:
    int *push_constant_loc;
 
    fs_reg subgroup_id;
+   fs_reg scratch_base;
    fs_reg frag_depth;
    fs_reg frag_stencil;
    fs_reg sample_mask;

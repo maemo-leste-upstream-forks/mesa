@@ -113,7 +113,7 @@ legalize_block(struct ir3_legalize_ctx *ctx, struct ir3_block *block)
 	list_replace(&block->instr_list, &instr_list);
 	list_inithead(&block->instr_list);
 
-	list_for_each_entry_safe (struct ir3_instruction, n, &instr_list, node) {
+	foreach_instr_safe (n, &instr_list) {
 		struct ir3_register *reg;
 		unsigned i;
 
@@ -134,6 +134,15 @@ legalize_block(struct ir3_legalize_ctx *ctx, struct ir3_block *block)
 		if (last_n && is_barrier(last_n)) {
 			n->flags |= IR3_INSTR_SS | IR3_INSTR_SY;
 			last_input_needs_ss = false;
+			regmask_init(&state->needs_ss_war);
+			regmask_init(&state->needs_ss);
+			regmask_init(&state->needs_sy);
+		}
+
+		if (last_n && (last_n->opc == OPC_CONDEND)) {
+			n->flags |= IR3_INSTR_SS;
+			regmask_init(&state->needs_ss_war);
+			regmask_init(&state->needs_ss);
 		}
 
 		/* NOTE: consider dst register too.. it could happen that
@@ -200,10 +209,10 @@ legalize_block(struct ir3_legalize_ctx *ctx, struct ir3_block *block)
 		}
 
 		/* need to be able to set (ss) on first instruction: */
-		if (list_empty(&block->instr_list) && (opc_cat(n->opc) >= 5))
+		if (list_is_empty(&block->instr_list) && (opc_cat(n->opc) >= 5))
 			ir3_NOP(block);
 
-		if (is_nop(n) && !list_empty(&block->instr_list)) {
+		if (is_nop(n) && !list_is_empty(&block->instr_list)) {
 			struct ir3_instruction *last = list_last_entry(&block->instr_list,
 					struct ir3_instruction, node);
 			if (is_nop(last) && (last->repeat < 5)) {
@@ -410,7 +419,7 @@ resolve_dest_block(struct ir3_block *block)
 	 *   (2) (block-is-empty || only-instr-is-jump)
 	 */
 	if (block->successors[1] == NULL) {
-		if (list_empty(&block->instr_list)) {
+		if (list_is_empty(&block->instr_list)) {
 			return block->successors[0];
 		} else if (list_length(&block->instr_list) == 1) {
 			struct ir3_instruction *instr = list_first_entry(
@@ -512,8 +521,8 @@ resolve_jump(struct ir3_instruction *instr)
 static bool
 resolve_jumps(struct ir3 *ir)
 {
-	list_for_each_entry (struct ir3_block, block, &ir->block_list, node)
-		list_for_each_entry (struct ir3_instruction, instr, &block->instr_list, node)
+	foreach_block (block, &ir->block_list)
+		foreach_instr (instr, &block->instr_list)
 			if (is_flow(instr) && instr->cat0.target)
 				if (resolve_jump(instr))
 					return true;
@@ -538,7 +547,7 @@ static void mark_jp(struct ir3_block *block)
 static void
 mark_xvergence_points(struct ir3 *ir)
 {
-	list_for_each_entry (struct ir3_block, block, &ir->block_list, node) {
+	foreach_block (block, &ir->block_list) {
 		if (block->predecessors->entries > 1) {
 			/* if a block has more than one possible predecessor, then
 			 * the first instruction is a convergence point.
@@ -569,14 +578,14 @@ ir3_legalize(struct ir3 *ir, bool *has_ssbo, bool *need_pixlod, int *max_bary)
 	ctx->type = ir->type;
 
 	/* allocate per-block data: */
-	list_for_each_entry (struct ir3_block, block, &ir->block_list, node) {
+	foreach_block (block, &ir->block_list) {
 		block->data = rzalloc(ctx, struct ir3_legalize_block_data);
 	}
 
 	/* process each block: */
 	do {
 		progress = false;
-		list_for_each_entry (struct ir3_block, block, &ir->block_list, node) {
+		foreach_block (block, &ir->block_list) {
 			progress |= legalize_block(ctx, block);
 		}
 	} while (progress);

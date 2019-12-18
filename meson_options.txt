@@ -1,4 +1,4 @@
-# Copyright © 2017-2018 Intel Corporation
+# Copyright © 2017-2019 Intel Corporation
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -61,7 +61,7 @@ option(
   choices : [
     '', 'auto', 'kmsro', 'radeonsi', 'r300', 'r600', 'nouveau', 'freedreno',
     'swrast', 'v3d', 'vc4', 'etnaviv', 'tegra', 'i915', 'svga', 'virgl',
-    'swr', 'panfrost', 'iris', 'lima'
+    'swr', 'panfrost', 'iris', 'lima', 'zink'
   ],
   description : 'List of gallium drivers to build. If this is set to auto all drivers applicable to the target OS/architecture will be built'
 )
@@ -347,6 +347,12 @@ option(
   value : false,
   description : 'Allow work-in-progress freedreno vulkan driver to be enabled',
 )
+option(
+  'prefer-iris',
+  type : 'boolean',
+  value : false,
+  description : 'Prefer new Intel iris driver over older i965 driver'
+)
 option('egl-lib-suffix',
   type : 'string',
   value : '',
@@ -365,4 +371,11 @@ option(
   max : 28,
   value : 25,
   description : 'Android Platform SDK version. Default: Nougat version.'
+)
+option(
+  'zstd',
+  type : 'combo',
+  choices : ['auto', 'true', 'false'],
+  value : 'auto',
+  description : 'Use ZSTD instead of ZLIB in some cases.'
 )

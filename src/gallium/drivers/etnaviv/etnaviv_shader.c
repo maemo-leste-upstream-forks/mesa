@@ -151,6 +151,10 @@ etna_link_shaders(struct etna_context *ctx, struct compiled_shader_state *cs,
       cs->VS_OUTPUT_COUNT_PSIZE = cs->VS_OUTPUT_COUNT;
    }
 
+   /* if fragment shader doesn't read pointcoord, disable it */
+   if (link.pcoord_varying_comp_ofs == -1)
+      cs->PA_CONFIG &= ~VIVS_PA_CONFIG_POINT_SPRITE_ENABLE;
+
    cs->VS_LOAD_BALANCING = vs->vs_load_balancing;
    cs->VS_START_PC = 0;
 
@@ -161,7 +165,6 @@ etna_link_shaders(struct etna_context *ctx, struct compiled_shader_state *cs,
       VIVS_PS_INPUT_COUNT_UNK8(fs->input_count_unk8);
    cs->PS_TEMP_REGISTER_CONTROL =
       VIVS_PS_TEMP_REGISTER_CONTROL_NUM_TEMPS(MAX2(fs->num_temps, link.num_varyings + 1));
-   cs->PS_CONTROL = VIVS_PS_CONTROL_SATURATE_RT0; /* XXX when can we set BYPASS? */
    cs->PS_START_PC = 0;
 
    /* Precompute PS_INPUT_COUNT and TEMP_REGISTER_CONTROL in the case of MSAA

@@ -1306,7 +1306,7 @@ struct __DRIdri2ExtensionRec {
  * extensions.
  */
 #define __DRI_IMAGE "DRI_IMAGE"
-#define __DRI_IMAGE_VERSION 18
+#define __DRI_IMAGE_VERSION 17
 
 /**
  * These formats correspond to the similarly named MESA_FORMAT_*
@@ -1343,6 +1343,7 @@ struct __DRIdri2ExtensionRec {
 #define __DRI_IMAGE_FORMAT_UYVY         0x1013
 #define __DRI_IMAGE_FORMAT_XBGR16161616F 0x1014
 #define __DRI_IMAGE_FORMAT_ABGR16161616F 0x1015
+#define __DRI_IMAGE_FORMAT_SXRGB8       0x1016
 
 #define __DRI_IMAGE_USE_SHARE		0x0001
 #define __DRI_IMAGE_USE_SCANOUT		0x0002
@@ -1353,8 +1354,6 @@ struct __DRIdri2ExtensionRec {
  * could be read after a flush."
  */
 #define __DRI_IMAGE_USE_BACKBUFFER      0x0010
-/* Whether to expect explicit flushes for external consumers. */
-#define __DRI_IMAGE_USE_FLUSH_EXTERNAL  0x0020
 
 
 #define __DRI_IMAGE_TRANSFER_READ            0x1
@@ -1372,6 +1371,7 @@ struct __DRIdri2ExtensionRec {
 
 #define __DRI_IMAGE_FOURCC_SARGB8888	0x83324258
 #define __DRI_IMAGE_FOURCC_SABGR8888	0x84324258
+#define __DRI_IMAGE_FOURCC_SXRGB8888	0x85324258
 
 /**
  * Queryable on images created by createImageFromNames.
@@ -1755,53 +1755,6 @@ struct __DRIimageExtensionRec {
                                                 int renderbuffer,
                                                 void *loaderPrivate,
                                                 unsigned *error);
-
-    /**
-     * Flush the image for external consumers. This is called when
-     * the current context is the producer.
-     *
-     * \since 18
-     */
-    void (*imageFlushExternal)(__DRIcontext *context, __DRIimage *image,
-                               unsigned flags);
-
-    /**
-     * This call indicates that the image has been modified outside of
-     * the current context. This is called when the current context is
-     * the consumer of the image.
-     *
-     * \since 18
-     */
-    void (*imageInvalidateExternal)(__DRIcontext *context, __DRIimage *image,
-                                    unsigned flags);
-
-    /**
-     * Same as createImageFromName, but also specifies use.
-     *
-     * \since 18
-     */
-    __DRIimage *(*createImageFromName2)(__DRIscreen *screen,
-				       int width, int height, int format,
-				       int name, int pitch, unsigned use,
-				       void *loaderPrivate);
-
-    /**
-     * Same as createImageFromDmaBufs, but also specifies modifier and use.
-     * Set modifier to DRM_FORMAT_MOD_INVALID if not using it.
-     *
-     * \since 18
-     */
-    __DRIimage *(*createImageFromDmaBufs3)(__DRIscreen *screen,
-                                           int width, int height, int fourcc,
-                                           uint64_t modifier, unsigned use,
-                                           int *fds, int num_fds,
-                                           int *strides, int *offsets,
-                                           enum __DRIYUVColorSpace color_space,
-                                           enum __DRISampleRange sample_range,
-                                           enum __DRIChromaSiting horiz_siting,
-                                           enum __DRIChromaSiting vert_siting,
-                                           unsigned *error,
-                                           void *loaderPrivate);
 };
 
 

@@ -176,7 +176,7 @@ void amdgpu_bo_destroy(struct pb_buffer *_buf)
 
    if (ws->debug_all_bos) {
       simple_mtx_lock(&ws->global_bo_list_lock);
-      LIST_DEL(&bo->u.real.global_list_item);
+      list_del(&bo->u.real.global_list_item);
       ws->num_buffers--;
       simple_mtx_unlock(&ws->global_bo_list_lock);
    }
@@ -414,7 +414,7 @@ static void amdgpu_add_buffer_to_global_list(struct amdgpu_winsys_bo *bo)
 
    if (ws->debug_all_bos) {
       simple_mtx_lock(&ws->global_bo_list_lock);
-      LIST_ADDTAIL(&bo->u.real.global_list_item, &ws->global_bo_list);
+      list_addtail(&bo->u.real.global_list_item, &ws->global_bo_list);
       ws->num_buffers++;
       simple_mtx_unlock(&ws->global_bo_list_lock);
    }
@@ -664,7 +664,7 @@ struct pb_slab *amdgpu_bo_slab_alloc(void *priv, unsigned heap,
    if (!slab->entries)
       goto fail_buffer;
 
-   LIST_INITHEAD(&slab->base.free);
+   list_inithead(&slab->base.free);
 
    base_id = __sync_fetch_and_add(&ws->next_bo_unique_id, slab->base.num_entries);
 
@@ -692,7 +692,7 @@ struct pb_slab *amdgpu_bo_slab_alloc(void *priv, unsigned heap,
          assert(bo->u.slab.real->bo);
       }
 
-      LIST_ADDTAIL(&bo->u.slab.entry.head, &slab->base.free);
+      list_addtail(&bo->u.slab.entry.head, &slab->base.free);
    }
 
    return &slab->base;
@@ -961,7 +961,7 @@ static void amdgpu_bo_sparse_destroy(struct pb_buffer *_buf)
       fprintf(stderr, "amdgpu: clearing PRT VA region on destroy failed (%d)\n", r);
    }
 
-   while (!list_empty(&bo->u.sparse.backing)) {
+   while (!list_is_empty(&bo->u.sparse.backing)) {
       struct amdgpu_sparse_backing *dummy = NULL;
       sparse_free_backing_buffer(bo,
                                  container_of(bo->u.sparse.backing.next,
@@ -1017,7 +1017,7 @@ amdgpu_bo_sparse_create(struct amdgpu_winsys *ws, uint64_t size,
    if (!bo->u.sparse.commitments)
       goto error_alloc_commitments;
 
-   LIST_INITHEAD(&bo->u.sparse.backing);
+   list_inithead(&bo->u.sparse.backing);
 
    /* For simplicity, we always map a multiple of the page size. */
    map_size = align64(size, RADEON_SPARSE_PAGE_SIZE);

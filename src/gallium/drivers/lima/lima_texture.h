@@ -27,21 +27,24 @@
 
 #define lima_min_tex_desc_size 64
 
+#define LIMA_TEXTURE_TYPE_2D   2
+#define LIMA_TEXTURE_TYPE_CUBE 5
+
 typedef struct __attribute__((__packed__)) {
    /* Word 0 */
    uint32_t format : 6;
    uint32_t flag1: 1;
    uint32_t swap_r_b: 1;
-   uint32_t unknown_0_1: 10;
-   uint32_t stride: 13;
+   uint32_t unknown_0_1: 8;
+   uint32_t stride: 15;
    uint32_t unknown_0_2: 1;
 
    /* Word 1-3 */
    uint32_t unknown_1_1: 7;
    uint32_t unnorm_coords: 1;
-   uint32_t unknown_1_2: 2;
-   uint32_t texture_2d: 1;
-   uint32_t unknown_1_3: 13;
+   uint32_t unknown_1_2: 1;
+   uint32_t texture_type: 3;
+   uint32_t unknown_1_3: 12;
    uint32_t miplevels: 4;
    uint32_t min_mipfilter_1: 9; /* 0x0 for linear, 0x1ff for nearest */
    uint32_t unknown_2_1: 3;

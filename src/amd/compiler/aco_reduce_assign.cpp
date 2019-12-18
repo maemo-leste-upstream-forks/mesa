@@ -115,10 +115,21 @@ void setup_reduce_temp(Program* program)
          }
 
          /* same as before, except for the vector temporary instead of the reduce temporary */
+         unsigned cluster_size = static_cast<Pseudo_reduction_instruction *>(instr)->cluster_size;
          bool need_vtmp = op == imul32 || op == fadd64 || op == fmul64 ||
-                          op == fmin64 || op == fmax64;
+                          op == fmin64 || op == fmax64 || op == umin64 ||
+                          op == umax64 || op == imin64 || op == imax64 ||
+                          op == imul64;
 
-         need_vtmp |= static_cast<Pseudo_reduction_instruction *>(instr)->cluster_size == 32;
+         if (program->chip_class >= GFX10 && cluster_size == 64 && op != gfx10_wave64_bpermute)
+            need_vtmp = true;
+         if (program->chip_class >= GFX10 && op == iadd64)
+            need_vtmp = true;
+         if (program->chip_class <= GFX7)
+            need_vtmp = true;
+
+         need_vtmp |= cluster_size == 32;
+
          vtmp_in_loop |= need_vtmp && block.loop_nest_depth > 0;
          if (need_vtmp && (int)last_top_level_block_idx != vtmp_inserted_at) {
             vtmp = {program->allocateId(), vtmp.regClass()};
@@ -144,18 +155,26 @@ void setup_reduce_temp(Program* program)
          instr->definitions[1] = bld.def(s2);
 
          /* scalar identity temporary */
-         if (instr->opcode == aco_opcode::p_exclusive_scan &&
-             (op == imin32 || op == imin64 ||
-              op == imax32 || op == imax64 ||
-              op == fmin32 || op == fmin64 ||
-              op == fmax32 || op == fmax64 ||
-              op == fmul64)) {
+         bool need_sitmp = (program->chip_class <= GFX7 || program->chip_class >= GFX10) && instr->opcode != aco_opcode::p_reduce;
+         if (instr->opcode == aco_opcode::p_exclusive_scan) {
+            need_sitmp |=
+               (op == imin32 || op == imin64 || op == imax32 || op == imax64 ||
+                op == fmin32 || op == fmin64 || op == fmax32 || op == fmax64 ||
+                op == fmul64);
+         }
+         if (need_sitmp) {
             instr->definitions[2] = bld.def(RegClass(RegType::sgpr, instr->operands[0].size()));
          }
 
          /* vcc clobber */
-         if (op == iadd32 && program->chip_class < GFX9)
-            instr->definitions[4] = Definition(vcc, s2);
+         bool clobber_vcc = false;
+         if ((op == iadd32 || op == imul64) && program->chip_class < GFX9)
+            clobber_vcc = true;
+         if (op == iadd64 || op == umin64 || op == umax64 || op == imin64 || op == imax64)
+            clobber_vcc = true;
+
+         if (clobber_vcc)
+            instr->definitions[4] = Definition(vcc, bld.lm);
       }
    }
 }

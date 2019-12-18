@@ -248,7 +248,7 @@ radv_dump_descriptors(struct radv_device *device, FILE *f)
 	fprintf(f, "Descriptors:\n");
 	for (i = 0; i < MAX_SETS; i++) {
 		struct radv_descriptor_set *set =
-			(struct radv_descriptor_set *)ptr[i + 3];
+			*(struct radv_descriptor_set **)(ptr + i + 3);
 
 		radv_dump_descriptor_set(device, set, i, f);
 	}
@@ -497,7 +497,7 @@ radv_get_saved_graphics_pipeline(struct radv_device *device)
 {
 	uint64_t *ptr = (uint64_t *)device->trace_id_ptr;
 
-	return (struct radv_pipeline *)ptr[1];
+	return *(struct radv_pipeline **)(ptr + 1);
 }
 
 static struct radv_pipeline *
@@ -505,7 +505,7 @@ radv_get_saved_compute_pipeline(struct radv_device *device)
 {
 	uint64_t *ptr = (uint64_t *)device->trace_id_ptr;
 
-	return (struct radv_pipeline *)ptr[2];
+	return *(struct radv_pipeline **)(ptr + 2);
 }
 
 static void
@@ -643,7 +643,7 @@ radv_check_gpu_hangs(struct radv_queue *queue, struct radeon_cmdbuf *cs)
 }
 
 void
-radv_print_spirv(uint32_t *data, uint32_t size, FILE *fp)
+radv_print_spirv(const char *data, uint32_t size, FILE *fp)
 {
 	char path[] = "/tmp/fileXXXXXX";
 	char line[2048], command[128];

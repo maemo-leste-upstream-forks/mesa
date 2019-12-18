@@ -62,6 +62,7 @@ blorp_alloc_vertex_buffer(struct blorp_batch *batch, uint32_t size,
 static void
 blorp_vf_invalidate_for_vb_48b_transitions(struct blorp_batch *batch,
                                            const struct blorp_address *addrs,
+                                           uint32_t *sizes,
                                            unsigned num_vbs);
 
 #if GEN_GEN >= 8
@@ -344,15 +345,15 @@ blorp_emit_vertex_buffers(struct blorp_batch *batch,
    memset(vb, 0, sizeof(vb));
 
    struct blorp_address addrs[2] = {};
-   uint32_t size;
-   blorp_emit_vertex_data(batch, params, &addrs[0], &size);
-   blorp_fill_vertex_buffer_state(batch, vb, 0, addrs[0], size,
+   uint32_t sizes[2];
+   blorp_emit_vertex_data(batch, params, &addrs[0], &sizes[0]);
+   blorp_fill_vertex_buffer_state(batch, vb, 0, addrs[0], sizes[0],
                                   3 * sizeof(float));
 
-   blorp_emit_input_varying_data(batch, params, &addrs[1], &size);
-   blorp_fill_vertex_buffer_state(batch, vb, 1, addrs[1], size, 0);
+   blorp_emit_input_varying_data(batch, params, &addrs[1], &sizes[1]);
+   blorp_fill_vertex_buffer_state(batch, vb, 1, addrs[1], sizes[1], 0);
 
-   blorp_vf_invalidate_for_vb_48b_transitions(batch, addrs, num_vbs);
+   blorp_vf_invalidate_for_vb_48b_transitions(batch, addrs, sizes, num_vbs);
 
    const unsigned num_dwords = 1 + num_vbs * GENX(VERTEX_BUFFER_STATE_length);
    uint32_t *dw = blorp_emitn(batch, GENX(3DSTATE_VERTEX_BUFFERS), num_dwords);
@@ -1111,11 +1112,6 @@ blorp_emit_depth_stencil_state(struct blorp_batch *batch,
       ds.DepthBufferWriteEnable = true;
 
       switch (params->hiz_op) {
-      case ISL_AUX_OP_NONE:
-         ds.DepthTestEnable = true;
-         ds.DepthTestFunction = COMPAREFUNCTION_ALWAYS;
-         break;
-
       /* See the following sections of the Sandy Bridge PRM, Volume 2, Part1:
        *   - 7.5.3.1 Depth Buffer Clear
        *   - 7.5.3.2 Depth Buffer Resolve
@@ -1126,6 +1122,7 @@ blorp_emit_depth_stencil_state(struct blorp_batch *batch,
          ds.DepthTestFunction = COMPAREFUNCTION_NEVER;
          break;
 
+      case ISL_AUX_OP_NONE:
       case ISL_AUX_OP_FAST_CLEAR:
       case ISL_AUX_OP_AMBIGUATE:
          ds.DepthTestEnable = false;
@@ -1256,6 +1253,12 @@ blorp_emit_pipeline(struct blorp_batch *batch,
    (void)depth_stencil_state_offset;
 #endif
 
+#if GEN_GEN >= 12
+   blorp_emit(batch, GENX(3DSTATE_CONSTANT_ALL), pc) {
+      /* Update empty push constants for all stages (bitmask = 11111b) */
+      pc.ShaderUpdateEnable = 0x1f;
+   }
+#else
    blorp_emit(batch, GENX(3DSTATE_CONSTANT_VS), vs);
 #if GEN_GEN >= 7
    blorp_emit(batch, GENX(3DSTATE_CONSTANT_HS), hs);
@@ -1263,6 +1266,7 @@ blorp_emit_pipeline(struct blorp_batch *batch,
 #endif
    blorp_emit(batch, GENX(3DSTATE_CONSTANT_GS), gs);
    blorp_emit(batch, GENX(3DSTATE_CONSTANT_PS), ps);
+#endif
 
    if (params->src.enabled)
       blorp_emit_sampler_state(batch);
@@ -1360,9 +1364,8 @@ blorp_emit_surface_state(struct blorp_batch *batch,
    }
 
    /* Blorp doesn't support HiZ in any of the blit or slow-clear paths */
+   assert(!isl_aux_usage_has_hiz(surface->aux_usage));
    enum isl_aux_usage aux_usage = surface->aux_usage;
-   if (aux_usage == ISL_AUX_USAGE_HIZ)
-      aux_usage = ISL_AUX_USAGE_NONE;
 
    isl_channel_mask_t write_disable_mask = 0;
    if (is_render_target && GEN_GEN <= 5) {
@@ -1524,6 +1527,9 @@ blorp_emit_surface_states(struct blorp_batch *batch,
        */
       blorp_emit(batch, GENX(PIPE_CONTROL), pipe) {
          pipe.StateCacheInvalidationEnable = true;
+#if GEN_GEN >= 12
+         pipe.TileCacheFlushEnable = true;
+#endif
       }
    }
 #endif
@@ -1577,7 +1583,7 @@ blorp_emit_depth_stencil_config(struct blorp_batch *batch,
                           params->depth.addr, 0);
 
       info.hiz_usage = params->depth.aux_usage;
-      if (info.hiz_usage == ISL_AUX_USAGE_HIZ) {
+      if (isl_aux_usage_has_hiz(info.hiz_usage)) {
          info.hiz_surf = &params->depth.aux_surf;
 
          struct blorp_address hiz_address = params->depth.aux_addr;
@@ -1605,6 +1611,7 @@ blorp_emit_depth_stencil_config(struct blorp_batch *batch,
    if (params->stencil.enabled) {
       info.stencil_surf = &params->stencil.surf;
 
+      info.stencil_aux_usage = params->stencil.aux_usage;
       struct blorp_address stencil_address = params->stencil.addr;
 #if GEN_GEN == 6
       /* Sandy bridge hardware does not technically support mipmapped stencil.
@@ -1625,6 +1632,20 @@ blorp_emit_depth_stencil_config(struct blorp_batch *batch,
    }
 
    isl_emit_depth_stencil_hiz_s(isl_dev, dw, &info);
+
+#if GEN_GEN >= 12
+   /* GEN:BUG:1408224581
+    *
+    * Workaround: Gen12LP Astep only An additional pipe control with
+    * post-sync = store dword operation would be required.( w/a is to
+    * have an additional pipe control after the stencil state whenever
+    * the surface state bits of this state is changing).
+    */
+   blorp_emit(batch, GENX(PIPE_CONTROL), pc) {
+      pc.PostSyncOperation = WriteImmediateData;
+      pc.Address = blorp_get_workaround_page(batch);
+   }
+#endif
 }
 
 #if GEN_GEN >= 8
@@ -1640,11 +1661,18 @@ blorp_emit_gen8_hiz_op(struct blorp_batch *batch,
     */
    assert(params->depth.enabled || params->stencil.enabled);
 
-   /* The stencil buffer should only be enabled if a fast clear operation is
-    * requested.
+   /* The stencil buffer should only be enabled on GEN == 12, if a fast clear
+    * or full resolve operation is requested. On rest of the GEN, if a fast
+    * clear operation is requested.
     */
-   if (params->stencil.enabled)
+   if (params->stencil.enabled) {
+#if GEN_GEN >= 12
+      assert(params->hiz_op == ISL_AUX_OP_FAST_CLEAR ||
+             params->hiz_op == ISL_AUX_OP_FULL_RESOLVE);
+#else
       assert(params->hiz_op == ISL_AUX_OP_FAST_CLEAR);
+#endif
+   }
 
    /* From the BDW PRM Volume 2, 3DSTATE_WM_HZ_OP:
     *
@@ -1700,7 +1728,13 @@ blorp_emit_gen8_hiz_op(struct blorp_batch *batch,
          break;
       case ISL_AUX_OP_FULL_RESOLVE:
          assert(params->full_surface_hiz_op);
-         hzp.DepthBufferResolveEnable = true;
+         hzp.DepthBufferResolveEnable = params->depth.enabled;
+#if GEN_GEN >= 12
+         if (params->stencil.enabled) {
+            assert(params->stencil.aux_usage == ISL_AUX_USAGE_CCS_E);
+            hzp.StencilBufferResolveEnable = true;
+         }
+#endif
          break;
       case ISL_AUX_OP_AMBIGUATE:
          assert(params->full_surface_hiz_op);
@@ -1780,13 +1814,51 @@ blorp_update_clear_color(struct blorp_batch *batch,
          pipe.TextureCacheInvalidationEnable = true;
       }
 #elif GEN_GEN >= 9
+
+      /* According to GEN:BUG:2201730850, in the Clear Color Programming Note
+       * under the Red channel, "Software shall write the converted Depth
+       * Clear to this dword." The only depth formats listed under the red
+       * channel are IEEE_FP and UNORM24_X8. These two requirements are
+       * incompatible with the UNORM16 depth format, so just ignore that case
+       * and simply perform the conversion for all depth formats.
+       */
+      union isl_color_value fixed_color = info->clear_color;
+      if (GEN_GEN == 12 && isl_surf_usage_is_depth(info->surf.usage)) {
+         isl_color_value_pack(&info->clear_color, info->surf.format,
+                              fixed_color.u32);
+      }
+
       for (int i = 0; i < 4; i++) {
          blorp_emit(batch, GENX(MI_STORE_DATA_IMM), sdi) {
             sdi.Address = info->clear_color_addr;
             sdi.Address.offset += i * 4;
-            sdi.ImmediateData = info->clear_color.u32[i];
+            sdi.ImmediateData = fixed_color.u32[i];
+#if GEN_GEN >= 12
+            if (i == 3)
+               sdi.ForceWriteCompletionCheck = true;
+#endif
          }
       }
+
+/* The RENDER_SURFACE_STATE::ClearColor field states that software should
+ * write the converted depth value 16B after the clear address:
+ *
+ *    3D Sampler will always fetch clear depth from the location 16-bytes
+ *    above this address, where the clear depth, converted to native
+ *    surface format by software, will be stored.
+ *
+ */
+#if GEN_GEN >= 12
+      if (isl_surf_usage_is_depth(info->surf.usage)) {
+         blorp_emit(batch, GENX(MI_STORE_DATA_IMM), sdi) {
+            sdi.Address = info->clear_color_addr;
+            sdi.Address.offset += 4 * 4;
+            sdi.ImmediateData = fixed_color.u32[0];
+            sdi.ForceWriteCompletionCheck = true;
+         }
+      }
+#endif
+
 #elif GEN_GEN >= 7
       blorp_emit(batch, GENX(MI_STORE_DATA_IMM), sdi) {
          sdi.Address = info->clear_color_addr;

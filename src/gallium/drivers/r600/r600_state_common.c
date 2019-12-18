@@ -28,7 +28,7 @@
 #include "r600_shader.h"
 #include "r600d.h"
 
-#include "util/u_format_s3tc.h"
+#include "util/format/u_format_s3tc.h"
 #include "util/u_index_modify.h"
 #include "util/u_memory.h"
 #include "util/u_upload_mgr.h"
@@ -419,7 +419,7 @@ static void r600_sampler_view_destroy(struct pipe_context *ctx,
 
 	if (view->tex_resource->gpu_address &&
 	    view->tex_resource->b.b.target == PIPE_BUFFER)
-		LIST_DELINIT(&view->list);
+		list_delinit(&view->list);
 
 	pipe_resource_reference(&state->texture, NULL);
 	FREE(view);

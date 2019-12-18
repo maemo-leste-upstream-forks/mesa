@@ -91,7 +91,7 @@ fd_acc_begin_query(struct fd_context *ctx, struct fd_query *q)
 		p->resume(aq, batch);
 
 	/* add to active list: */
-	assert(list_empty(&aq->node));
+	assert(list_is_empty(&aq->node));
 	list_addtail(&aq->node, &ctx->acc_active_queries);
 
 	return true;
@@ -123,7 +123,7 @@ fd_acc_get_query_result(struct fd_context *ctx, struct fd_query *q,
 
 	DBG("%p: wait=%d, active=%d", q, wait, q->active);
 
-	assert(LIST_IS_EMPTY(&aq->node));
+	assert(list_is_empty(&aq->node));
 
 	/* if !wait, then check the last sample (the one most likely to
 	 * not be ready yet) and bail if it is not ready:

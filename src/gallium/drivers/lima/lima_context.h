@@ -81,7 +81,10 @@ struct lima_vs_shader_state {
 
    struct lima_varying_info varying[LIMA_MAX_VARYING_NUM];
    int varying_stride;
-   int num_varying;
+   int num_outputs;
+   int num_varyings;
+   int gl_pos_idx;
+   int point_size_idx;
 
    struct lima_bo *bo;
 };
@@ -118,8 +121,8 @@ struct lima_context_constant_buffer {
 };
 
 enum lima_ctx_buff {
-   lima_ctx_buff_sh_varying,
    lima_ctx_buff_sh_gl_pos,
+   lima_ctx_buff_sh_gl_point_size,
    lima_ctx_buff_gp_varying_info,
    lima_ctx_buff_gp_attribute_info,
    lima_ctx_buff_gp_uniform,
@@ -223,6 +226,7 @@ struct lima_context {
    struct lima_bo *gp_tile_heap[LIMA_CTX_PLB_MAX_NUM];
    #define gp_tile_heap_size         0x100000
    struct lima_bo *plb_gp_stream;
+   struct lima_bo *sh_varying;
 
    struct hash_table *plb_pp_stream;
    uint32_t plb_index;
@@ -240,6 +244,9 @@ struct lima_context {
    struct pipe_debug_callback debug;
 
    int pp_max_stack_size;
+
+   unsigned index_offset;
+   struct lima_resource *index_res;
 };
 
 static inline struct lima_context *

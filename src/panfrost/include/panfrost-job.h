@@ -31,18 +31,10 @@
 #include <stdint.h>
 #include <panfrost-misc.h>
 
-#define MALI_SHORT_PTR_BITS (sizeof(u64)*8)
-
-#define MALI_FBD_HIERARCHY_WEIGHTS 8
-
-#define MALI_PAYLOAD_SIZE 256
-
-typedef u32 mali_jd_core_req;
-
 enum mali_job_type {
         JOB_NOT_STARTED	= 0,
         JOB_TYPE_NULL = 1,
-        JOB_TYPE_SET_VALUE = 2,
+        JOB_TYPE_WRITE_VALUE = 2,
         JOB_TYPE_CACHE_FLUSH = 3,
         JOB_TYPE_COMPUTE = 4,
         JOB_TYPE_VERTEX = 5,
@@ -70,7 +62,6 @@ enum mali_draw_mode {
 
 /* Applies to tiler_gl_enables */
 
-
 #define MALI_OCCLUSION_QUERY    (1 << 3)
 #define MALI_OCCLUSION_PRECISE  (1 << 4)
 
@@ -78,19 +69,11 @@ enum mali_draw_mode {
  * In OpenGL, this would corresponds to glFrontFace(GL_CW). Mesa and the blob
  * disagree about how to do viewport flipping, so the blob actually sets this
  * for GL_CW but then has a negative viewport stride */
+
 #define MALI_FRONT_CCW_TOP      (1 << 5)
 
 #define MALI_CULL_FACE_FRONT    (1 << 6)
 #define MALI_CULL_FACE_BACK     (1 << 7)
-
-/* TODO: Might this actually be a finer bitfield? */
-#define MALI_DEPTH_STENCIL_ENABLE 0x6400
-
-#define DS_ENABLE(field) \
-	(field == MALI_DEPTH_STENCIL_ENABLE) \
-	? "MALI_DEPTH_STENCIL_ENABLE" \
-	: (field == 0) ? "0" \
-	: "0 /* XXX: Unknown, check hexdump */"
 
 /* Used in stencil and depth tests */
 
@@ -131,7 +114,7 @@ enum mali_alt_func {
 #define MALI_GET_DEPTH_FUNC(flags) ((flags >> 8) & 0x7)
 #define MALI_DEPTH_FUNC_MASK	   MALI_DEPTH_FUNC(0x7)
 
-#define MALI_DEPTH_TEST		(1 << 11)
+#define MALI_DEPTH_WRITEMASK    (1 << 11)
 
 /* Next flags to unknown2_4 */
 #define MALI_STENCIL_TEST      	(1 << 0)
@@ -434,6 +417,14 @@ union midgard_blend {
         };
 };
 
+/* We need to load the tilebuffer to blend (i.e. the destination factor is not
+ * ZERO) */
+
+#define MALI_BLEND_LOAD_TIB (0x1)
+
+/* A blend shader is used to blend this render target */
+#define MALI_BLEND_MRT_SHADER (0x2)
+
 /* On MRT Midgard systems (using an MFBD), each render target gets its own
  * blend descriptor */
 
@@ -445,8 +436,7 @@ union midgard_blend {
 struct midgard_blend_rt {
         /* Flags base value of 0x200 to enable the render target.
          * OR with 0x1 for blending (anything other than REPLACE).
-         * OR with 0x2 for programmable blending with 0-2 registers
-         * OR with 0x3 for programmable blending with 2+ registers
+         * OR with 0x2 for programmable blending
          * OR with MALI_BLEND_SRGB for implicit sRGB
          */
 
@@ -667,9 +657,16 @@ enum mali_exception_access {
         MALI_EXCEPTION_ACCESS_WRITE   = 3
 };
 
-struct mali_payload_set_value {
-        u64 out;
-        u64 unknown;
+/* Details about write_value from panfrost igt tests which use it as a generic
+ * dword write primitive */
+
+#define MALI_WRITE_VALUE_ZERO 3
+
+struct mali_payload_write_value {
+        u64 address;
+        u32 value_descriptor;
+        u32 reserved;
+        u64 immediate;
 } __attribute__((packed));
 
 /* Special attributes have a fixed index */
@@ -875,13 +872,10 @@ struct mali_attr_meta {
         int32_t src_offset;
 } __attribute__((packed));
 
-enum mali_fbd_type {
-        MALI_SFBD = 0,
-        MALI_MFBD = 1,
-};
-
-#define FBD_TYPE (1)
 #define FBD_MASK (~0x3f)
+
+/* MFBD, rather than SFBD */
+#define MALI_MFBD (0x1)
 
 /* ORed into an MFBD address to specify the fbx section is included */
 #define MALI_MFBD_TAG_EXTRA (0x2)
@@ -943,13 +937,16 @@ struct mali_vertex_tiler_prefix {
          */
         u32 invocation_count;
 
-        u32 size_y_shift : 5;
-        u32 size_z_shift : 5;
-        u32 workgroups_x_shift : 6;
-        u32 workgroups_y_shift : 6;
-        u32 workgroups_z_shift : 6;
-        /* This is max(workgroups_x_shift, 2) in all the cases I've seen. */
-        u32 workgroups_x_shift_2 : 4;
+        /* Bitfield for shifts:
+         *
+         * size_y_shift : 5
+         * size_z_shift : 5
+         * workgroups_x_shift : 6
+         * workgroups_y_shift : 6
+         * workgroups_z_shift : 6
+         * workgroups_x_shift_2 : 4
+         */
+        u32 invocation_shifts;
 
         u32 draw_mode : 4;
         u32 unknown_draw : 22;
@@ -1092,8 +1089,7 @@ struct mali_vertex_tiler_postfix {
         u64 sampler_descriptor;
 
         u64 uniforms;
-        u8 flags : 4;
-        u64 _shader_upper : MALI_SHORT_PTR_BITS - 4; /* struct shader_meta */
+        u64 shader;
         u64 attributes; /* struct attribute_buffer[] */
         u64 attribute_meta; /* attribute_meta[] */
         u64 varyings; /* struct attr */
@@ -1290,12 +1286,13 @@ FIXED_16(float x)
 }
 
 struct mali_sampler_descriptor {
-        uint32_t filter_mode;
+        uint16_t filter_mode;
 
         /* Fixed point. Upper 8-bits is before the decimal point, although it
          * caps [0-31]. Lower 8-bits is after the decimal point: int(round(x *
          * 256)) */
 
+        uint16_t lod_bias;
         uint16_t min_lod;
         uint16_t max_lod;
 
@@ -1383,9 +1380,10 @@ struct mali_payload_fragment {
 /* Flags apply to format. With just MSAA_A and MSAA_B, the framebuffer is
  * configured for 4x. With MSAA_8, it is configured for 8x. */
 
-#define MALI_FRAMEBUFFER_MSAA_8 (1 << 3)
-#define MALI_FRAMEBUFFER_MSAA_A (1 << 4)
-#define MALI_FRAMEBUFFER_MSAA_B (1 << 23)
+#define MALI_SFBD_FORMAT_MSAA_8 (1 << 3)
+#define MALI_SFBD_FORMAT_MSAA_A (1 << 4)
+#define MALI_SFBD_FORMAT_MSAA_B (1 << 4)
+#define MALI_SFBD_FORMAT_SRGB 	(1 << 5)
 
 /* Fast/slow based on whether all three buffers are cleared at once */
 
@@ -1400,8 +1398,16 @@ struct mali_payload_fragment {
 /* See pan_tiler.c for derivation */
 #define MALI_HIERARCHY_MASK ((1 << 9) - 1)
 
-/* Flag disabling the tiler for clear-only jobs */
+/* Flag disabling the tiler for clear-only jobs, with
+   hierarchical tiling */
 #define MALI_TILER_DISABLED (1 << 12)
+
+/* Flag selecting userspace-generated polygon list, for clear-only jobs without
+ * hierarhical tiling. */
+#define MALI_TILER_USER 0xFFF
+
+/* Absent any geometry, the minimum size of the polygon list header */
+#define MALI_TILER_MINIMUM_HEADER_SIZE 0x200
 
 struct midgard_tiler_descriptor {
         /* Size of the entire polygon list; see pan_tiler.c for the
@@ -1435,17 +1441,41 @@ struct midgard_tiler_descriptor {
         u32 weights[8];
 };
 
+enum mali_block_format {
+        MALI_BLOCK_TILED   = 0x0,
+        MALI_BLOCK_UNKNOWN = 0x1,
+        MALI_BLOCK_LINEAR  = 0x2,
+        MALI_BLOCK_AFBC    = 0x3,
+};
+
+struct mali_sfbd_format {
+        /* 0x1 */
+        unsigned unk1 : 6;
+
+        /* mali_channel_swizzle */
+        unsigned swizzle : 12;
+
+        /* MALI_POSITIVE */
+        unsigned nr_channels : 2;
+
+        /* 0x4 */
+        unsigned unk2 : 6;
+
+        enum mali_block_format block : 2;
+
+        /* 0xb */
+        unsigned unk3 : 4;
+};
+
 struct mali_single_framebuffer {
         u32 unknown1;
         u32 unknown2;
-        u64 unknown_address_0;
+        mali_ptr scratchpad;
+
         u64 zero1;
         u64 zero0;
 
-        /* Exact format is ironically not known, since EGL is finnicky with the
-         * blob. MSAA, colourspace, etc are configured here. */
-
-        u32 format;
+        struct mali_sfbd_format format;
 
         u32 clear_flags;
         u32 zero2;
@@ -1456,7 +1486,10 @@ struct mali_single_framebuffer {
         u16 width;
         u16 height;
 
-        u32 zero3[8];
+        u32 zero3[4];
+        mali_ptr checksum;
+        u32 checksum_stride;
+        u32 zero5;
 
         /* By default, the framebuffer is upside down from OpenGL's
          * perspective. Set framebuffer to the end and negate the stride to
@@ -1474,10 +1507,14 @@ struct mali_single_framebuffer {
          * disabled. */
 
         mali_ptr depth_buffer; // not SAME_VA
-        u64 depth_buffer_enable;
+        u32 depth_stride_zero : 4;
+        u32 depth_stride : 28;
+        u32 zero7;
 
         mali_ptr stencil_buffer; // not SAME_VA
-        u64 stencil_buffer_enable;
+        u32 stencil_stride_zero : 4;
+        u32 stencil_stride : 28;
+        u32 zero8;
 
         u32 clear_color_1; // RGBA8888 from glClear, actually used by hardware
         u32 clear_color_2; // always equal, but unclear function?
@@ -1512,13 +1549,6 @@ struct mali_compute_fbd {
 #define MALI_MFBD_FORMAT_MSAA 	  (1 << 1)
 #define MALI_MFBD_FORMAT_SRGB 	  (1 << 2)
 
-enum mali_mfbd_block_format {
-        MALI_MFBD_BLOCK_TILED   = 0x0,
-        MALI_MFBD_BLOCK_UNKNOWN = 0x1,
-        MALI_MFBD_BLOCK_LINEAR  = 0x2,
-        MALI_MFBD_BLOCK_AFBC    = 0x3,
-};
-
 struct mali_rt_format {
         unsigned unk1 : 32;
         unsigned unk2 : 3;
@@ -1526,7 +1556,7 @@ struct mali_rt_format {
         unsigned nr_channels : 2; /* MALI_POSITIVE */
 
         unsigned unk3 : 5;
-        enum mali_mfbd_block_format block : 2;
+        enum mali_block_format block : 2;
         unsigned flags : 4;
 
         unsigned swizzle : 12;
@@ -1641,7 +1671,8 @@ struct bifrost_fb_extra {
 #define MALI_MFBD_EXTRA (1 << 13)
 
 struct bifrost_framebuffer {
-        u32 unk0; // = 0x10
+        u32 stack_shift : 4;
+        u32 unk0 : 28;
 
         u32 unknown2; // = 0x1f, same as SFBD
         mali_ptr scratchpad;

@@ -32,7 +32,6 @@
 #include "drm-uapi/drm_fourcc.h"
 
 #include "anv_private.h"
-#include "util/strtod.h"
 #include "util/debug.h"
 #include "util/build_id.h"
 #include "util/disk_cache.h"
@@ -55,6 +54,10 @@ DRI_CONF_BEGIN
       DRI_CONF_VK_X11_OVERRIDE_MIN_IMAGE_COUNT(0)
       DRI_CONF_VK_X11_STRICT_IMAGE_COUNT("false")
    DRI_CONF_SECTION_END
+
+   DRI_CONF_SECTION_DEBUG
+      DRI_CONF_ALWAYS_FLUSH_CACHE("false")
+   DRI_CONF_SECTION_END
 DRI_CONF_END;
 
 /* This is probably far to big but it reflects the max size used for messages
@@ -68,7 +71,7 @@ compiler_debug_log(void *data, const char *fmt, ...)
    char str[MAX_DEBUG_MESSAGE_LENGTH];
    struct anv_device *device = (struct anv_device *)data;
 
-   if (list_empty(&device->instance->debug_report_callbacks.callbacks))
+   if (list_is_empty(&device->instance->debug_report_callbacks.callbacks))
       return;
 
    va_list args;
@@ -123,25 +126,28 @@ anv_compute_heap_size(int fd, uint64_t gtt_size)
 static VkResult
 anv_physical_device_init_heaps(struct anv_physical_device *device, int fd)
 {
-   uint64_t gtt_size;
    if (anv_gem_get_context_param(fd, 0, I915_CONTEXT_PARAM_GTT_SIZE,
-                                 &gtt_size) == -1) {
+                                 &device->gtt_size) == -1) {
       /* If, for whatever reason, we can't actually get the GTT size from the
        * kernel (too old?) fall back to the aperture size.
        */
       anv_perf_warn(NULL, NULL,
                     "Failed to get I915_CONTEXT_PARAM_GTT_SIZE: %m");
 
-      if (anv_gem_get_aperture(fd, &gtt_size) == -1) {
+      if (anv_gem_get_aperture(fd, &device->gtt_size) == -1) {
          return vk_errorf(NULL, NULL, VK_ERROR_INITIALIZATION_FAILED,
                           "failed to get aperture size: %m");
       }
    }
 
+   /* We only allow 48-bit addresses with softpin because knowing the actual
+    * address is required for the vertex cache flush workaround.
+    */
    device->supports_48bit_addresses = (device->info.gen >= 8) &&
-      gtt_size > (4ULL << 30 /* GiB */);
+                                      device->has_softpin &&
+                                      device->gtt_size > (4ULL << 30 /* GiB */);
 
-   uint64_t heap_size = anv_compute_heap_size(fd, gtt_size);
+   uint64_t heap_size = anv_compute_heap_size(fd, device->gtt_size);
 
    if (heap_size > (2ull << 30) && !device->supports_48bit_addresses) {
       /* When running with an overridden PCI ID, we may get a GTT size from
@@ -155,69 +161,14 @@ anv_physical_device_init_heaps(struct anv_physical_device *device, int fd)
       heap_size = 2ull << 30;
    }
 
-   if (heap_size <= 3ull * (1ull << 30)) {
-      /* In this case, everything fits nicely into the 32-bit address space,
-       * so there's no need for supporting 48bit addresses on client-allocated
-       * memory objects.
-       */
-      device->memory.heap_count = 1;
-      device->memory.heaps[0] = (struct anv_memory_heap) {
-         .vma_start = LOW_HEAP_MIN_ADDRESS,
-         .vma_size = LOW_HEAP_SIZE,
-         .size = heap_size,
-         .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT,
-         .supports_48bit_addresses = false,
-      };
-   } else {
-      /* Not everything will fit nicely into a 32-bit address space.  In this
-       * case we need a 64-bit heap.  Advertise a small 32-bit heap and a
-       * larger 48-bit heap.  If we're in this case, then we have a total heap
-       * size larger than 3GiB which most likely means they have 8 GiB of
-       * video memory and so carving off 1 GiB for the 32-bit heap should be
-       * reasonable.
-       */
-      const uint64_t heap_size_32bit = 1ull << 30;
-      const uint64_t heap_size_48bit = heap_size - heap_size_32bit;
-
-      assert(device->supports_48bit_addresses);
-
-      device->memory.heap_count = 2;
-      device->memory.heaps[0] = (struct anv_memory_heap) {
-         .vma_start = HIGH_HEAP_MIN_ADDRESS,
-         /* Leave the last 4GiB out of the high vma range, so that no state
-          * base address + size can overflow 48 bits. For more information see
-          * the comment about Wa32bitGeneralStateOffset in anv_allocator.c
-          */
-         .vma_size = gtt_size - (1ull << 32) - HIGH_HEAP_MIN_ADDRESS,
-         .size = heap_size_48bit,
-         .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT,
-         .supports_48bit_addresses = true,
-      };
-      device->memory.heaps[1] = (struct anv_memory_heap) {
-         .vma_start = LOW_HEAP_MIN_ADDRESS,
-         .vma_size = LOW_HEAP_SIZE,
-         .size = heap_size_32bit,
-         .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT,
-         .supports_48bit_addresses = false,
-      };
-   }
+   device->memory.heap_count = 1;
+   device->memory.heaps[0] = (struct anv_memory_heap) {
+      .size = heap_size,
+      .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT,
+   };
 
    uint32_t type_count = 0;
    for (uint32_t heap = 0; heap < device->memory.heap_count; heap++) {
-      uint32_t valid_buffer_usage = ~0;
-
-      /* There appears to be a hardware issue in the VF cache where it only
-       * considers the bottom 32 bits of memory addresses.  If you happen to
-       * have two vertex buffers which get placed exactly 4 GiB apart and use
-       * them in back-to-back draw calls, you can get collisions.  In order to
-       * solve this problem, we require vertex and index buffers be bound to
-       * memory allocated out of the 32-bit heap.
-       */
-      if (device->memory.heaps[heap].supports_48bit_addresses) {
-         valid_buffer_usage &= ~(VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-      }
-
       if (device->info.has_llc) {
          /* Big core GPUs share LLC with the CPU and thus one memory type can be
           * both cached and coherent at the same time.
@@ -228,7 +179,6 @@ anv_physical_device_init_heaps(struct anv_physical_device *device, int fd)
                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
                              VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
             .heapIndex = heap,
-            .valid_buffer_usage = valid_buffer_usage,
          };
       } else {
          /* The spec requires that we expose a host-visible, coherent memory
@@ -241,14 +191,12 @@ anv_physical_device_init_heaps(struct anv_physical_device *device, int fd)
                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
             .heapIndex = heap,
-            .valid_buffer_usage = valid_buffer_usage,
          };
          device->memory.types[type_count++] = (struct anv_memory_type) {
             .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                              VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
             .heapIndex = heap,
-            .valid_buffer_usage = valid_buffer_usage,
          };
       }
    }
@@ -468,10 +416,7 @@ anv_physical_device_init(struct anv_physical_device *device,
       goto fail;
    }
 
-   result = anv_physical_device_init_heaps(device, fd);
-   if (result != VK_SUCCESS)
-      goto fail;
-
+   device->has_softpin = anv_gem_get_param(fd, I915_PARAM_HAS_EXEC_SOFTPIN);
    device->has_exec_async = anv_gem_get_param(fd, I915_PARAM_HAS_EXEC_ASYNC);
    device->has_exec_capture = anv_gem_get_param(fd, I915_PARAM_HAS_EXEC_CAPTURE);
    device->has_exec_fence = anv_gem_get_param(fd, I915_PARAM_HAS_EXEC_FENCE);
@@ -480,8 +425,12 @@ anv_physical_device_init(struct anv_physical_device *device,
                               anv_gem_supports_syncobj_wait(fd);
    device->has_context_priority = anv_gem_has_context_priority(fd);
 
-   device->use_softpin = anv_gem_get_param(fd, I915_PARAM_HAS_EXEC_SOFTPIN)
-      && device->supports_48bit_addresses;
+   result = anv_physical_device_init_heaps(device, fd);
+   if (result != VK_SUCCESS)
+      goto fail;
+
+   device->use_softpin = device->has_softpin &&
+                         device->supports_48bit_addresses;
 
    device->has_context_isolation =
       anv_gem_get_param(fd, I915_PARAM_HAS_CONTEXT_ISOLATION);
@@ -509,6 +458,9 @@ anv_physical_device_init(struct anv_physical_device *device,
    device->has_bindless_samplers = device->info.gen >= 8;
 
    device->has_mem_available = get_available_system_memory() != 0;
+
+   device->always_flush_cache =
+      driQueryOptionb(&instance->dri_options, "always_flush_cache");
 
    /* Starting with Gen10, the timestamp frequency of the command streamer may
     * vary from one part to another. We can query the value from the kernel.
@@ -561,6 +513,7 @@ anv_physical_device_init(struct anv_physical_device *device,
    device->compiler->constant_buffer_0_is_relative =
       device->info.gen < 8 || !device->has_context_isolation;
    device->compiler->supports_shader_constants = true;
+   device->compiler->compact_params = false;
 
    /* Broadwell PRM says:
     *
@@ -792,7 +745,6 @@ VkResult anv_CreateInstance(
    instance->pipeline_cache_enabled =
       env_var_as_boolean("ANV_ENABLE_PIPELINE_CACHE", true);
 
-   _mesa_locale_init();
    glsl_type_singleton_init_or_ref();
 
    VG(VALGRIND_CREATE_MEMPOOL(instance, 0, false));
@@ -831,7 +783,6 @@ void anv_DestroyInstance(
    vk_debug_report_instance_destroy(&instance->debug_report_callbacks);
 
    glsl_type_singleton_decref();
-   _mesa_locale_fini();
 
    driDestroyOptionCache(&instance->dri_options);
    driDestroyOptionInfo(&instance->available_dri_options);
@@ -961,7 +912,7 @@ void anv_GetPhysicalDeviceFeatures(
       .depthClamp                               = true,
       .depthBiasClamp                           = true,
       .fillModeNonSolid                         = true,
-      .depthBounds                              = false,
+      .depthBounds                              = pdevice->info.gen >= 12,
       .wideLines                                = true,
       .largePoints                              = true,
       .alphaToOne                               = true,
@@ -1043,6 +994,15 @@ void anv_GetPhysicalDeviceFeatures2(
          VkPhysicalDeviceBufferDeviceAddressFeaturesEXT *features = (void *)ext;
          features->bufferDeviceAddress = pdevice->has_a64_buffer_access;
          features->bufferDeviceAddressCaptureReplay = false;
+         features->bufferDeviceAddressMultiDevice = false;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES_KHR: {
+         VkPhysicalDeviceBufferDeviceAddressFeaturesKHR *features = (void *)ext;
+         features->bufferDeviceAddress = pdevice->has_a64_buffer_access;
+         features->bufferDeviceAddressCaptureReplay =
+            pdevice->has_a64_buffer_access;
          features->bufferDeviceAddressMultiDevice = false;
          break;
       }
@@ -1141,7 +1101,15 @@ void anv_GetPhysicalDeviceFeatures2(
             (VkPhysicalDeviceLineRasterizationFeaturesEXT *)ext;
          features->rectangularLines = true;
          features->bresenhamLines = true;
-         features->smoothLines = true;
+         /* Support for Smooth lines with MSAA was removed on gen11.  From the
+          * BSpec section "Multisample ModesState" table for "AA Line Support
+          * Requirements":
+          *
+          *    GEN10:BUG:######## 	NUM_MULTISAMPLES == 1
+          *
+          * Fortunately, this isn't a case most people care about.
+          */
+         features->smoothLines = pdevice->info.gen < 10;
          features->stippledRectangularLines = false;
          features->stippledBresenhamLines = true;
          features->stippledSmoothLines = false;
@@ -1188,6 +1156,13 @@ void anv_GetPhysicalDeviceFeatures2(
          VkPhysicalDeviceScalarBlockLayoutFeaturesEXT *features =
             (VkPhysicalDeviceScalarBlockLayoutFeaturesEXT *)ext;
          features->scalarBlockLayout = true;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SEPARATE_DEPTH_STENCIL_LAYOUTS_FEATURES_KHR: {
+         VkPhysicalDeviceSeparateDepthStencilLayoutsFeaturesKHR *features =
+            (VkPhysicalDeviceSeparateDepthStencilLayoutsFeaturesKHR *)ext;
+         features->separateDepthStencilLayouts = true;
          break;
       }
 
@@ -1238,6 +1213,13 @@ void anv_GetPhysicalDeviceFeatures2(
          VkPhysicalDeviceTexelBufferAlignmentFeaturesEXT *features =
             (VkPhysicalDeviceTexelBufferAlignmentFeaturesEXT *)ext;
          features->texelBufferAlignment = true;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES_KHR: {
+         VkPhysicalDeviceTimelineSemaphoreFeaturesKHR *features =
+            (VkPhysicalDeviceTimelineSemaphoreFeaturesKHR *) ext;
+         features->timelineSemaphore = true;
          break;
       }
 
@@ -1686,7 +1668,7 @@ void anv_GetPhysicalDeviceProperties2(
          VkPhysicalDeviceSamplerFilterMinmaxPropertiesEXT *properties =
             (VkPhysicalDeviceSamplerFilterMinmaxPropertiesEXT *)ext;
          properties->filterMinmaxImageComponentMapping = pdevice->info.gen >= 9;
-         properties->filterMinmaxSingleComponentFormats = true;
+         properties->filterMinmaxSingleComponentFormats = pdevice->info.gen >= 9;
          break;
       }
 
@@ -1790,6 +1772,13 @@ void anv_GetPhysicalDeviceProperties2(
           */
          props->uniformTexelBufferOffsetAlignmentBytes = 1;
          props->uniformTexelBufferOffsetSingleTexelAlignment = false;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_PROPERTIES_KHR: {
+         VkPhysicalDeviceTimelineSemaphorePropertiesKHR *props =
+            (VkPhysicalDeviceTimelineSemaphorePropertiesKHR *) ext;
+         props->maxTimelineSemaphoreValueDifference = UINT64_MAX;
          break;
       }
 
@@ -2110,19 +2099,6 @@ anv_DebugReportMessageEXT(VkInstance _instance,
                    object, location, messageCode, pLayerPrefix, pMessage);
 }
 
-static void
-anv_queue_init(struct anv_device *device, struct anv_queue *queue)
-{
-   queue->_loader_data.loaderMagic = ICD_LOADER_MAGIC;
-   queue->device = device;
-   queue->flags = 0;
-}
-
-static void
-anv_queue_finish(struct anv_queue *queue)
-{
-}
-
 static struct anv_state
 anv_state_pool_emit_data(struct anv_state_pool *pool, size_t size, size_t align, const void *p)
 {
@@ -2194,35 +2170,29 @@ anv_device_init_border_colors(struct anv_device *device)
    }
 }
 
-static void
+static VkResult
 anv_device_init_trivial_batch(struct anv_device *device)
 {
-   anv_bo_init_new(&device->trivial_batch_bo, device, 4096);
-
-   if (device->instance->physicalDevice.has_exec_async)
-      device->trivial_batch_bo.flags |= EXEC_OBJECT_ASYNC;
-
-   if (device->instance->physicalDevice.use_softpin)
-      device->trivial_batch_bo.flags |= EXEC_OBJECT_PINNED;
-
-   anv_vma_alloc(device, &device->trivial_batch_bo);
-
-   void *map = anv_gem_mmap(device, device->trivial_batch_bo.gem_handle,
-                            0, 4096, 0);
+   VkResult result = anv_device_alloc_bo(device, 4096,
+                                         ANV_BO_ALLOC_MAPPED,
+                                         0 /* explicit_address */,
+                                         &device->trivial_batch_bo);
+   if (result != VK_SUCCESS)
+      return result;
 
    struct anv_batch batch = {
-      .start = map,
-      .next = map,
-      .end = map + 4096,
+      .start = device->trivial_batch_bo->map,
+      .next = device->trivial_batch_bo->map,
+      .end = device->trivial_batch_bo->map + 4096,
    };
 
    anv_batch_emit(&batch, GEN7_MI_BATCH_BUFFER_END, bbe);
    anv_batch_emit(&batch, GEN7_MI_NOOP, noop);
 
    if (!device->info.has_llc)
-      gen_clflush_range(map, batch.next - map);
+      gen_clflush_range(batch.start, batch.next - batch.start);
 
-   anv_gem_munmap(map, device->trivial_batch_bo.size);
+   return VK_SUCCESS;
 }
 
 VkResult anv_EnumerateDeviceExtensionProperties(
@@ -2309,27 +2279,25 @@ vk_priority_to_gen(int priority)
    }
 }
 
-static void
+static VkResult
 anv_device_init_hiz_clear_value_bo(struct anv_device *device)
 {
-   anv_bo_init_new(&device->hiz_clear_bo, device, 4096);
-
-   if (device->instance->physicalDevice.has_exec_async)
-      device->hiz_clear_bo.flags |= EXEC_OBJECT_ASYNC;
-
-   if (device->instance->physicalDevice.use_softpin)
-      device->hiz_clear_bo.flags |= EXEC_OBJECT_PINNED;
-
-   anv_vma_alloc(device, &device->hiz_clear_bo);
-
-   uint32_t *map = anv_gem_mmap(device, device->hiz_clear_bo.gem_handle,
-                                0, 4096, 0);
+   VkResult result = anv_device_alloc_bo(device, 4096,
+                                         ANV_BO_ALLOC_MAPPED,
+                                         0 /* explicit_address */,
+                                         &device->hiz_clear_bo);
+   if (result != VK_SUCCESS)
+      return result;
 
    union isl_color_value hiz_clear = { .u32 = { 0, } };
    hiz_clear.f32[0] = ANV_HZ_FC_VAL;
 
-   memcpy(map, hiz_clear.u32, sizeof(hiz_clear.u32));
-   anv_gem_munmap(map, device->hiz_clear_bo.size);
+   memcpy(device->hiz_clear_bo->map, hiz_clear.u32, sizeof(hiz_clear.u32));
+
+   if (!device->info.has_llc)
+      gen_clflush_range(device->hiz_clear_bo->map, sizeof(hiz_clear.u32));
+
+   return VK_SUCCESS;
 }
 
 static bool
@@ -2337,14 +2305,13 @@ get_bo_from_pool(struct gen_batch_decode_bo *ret,
                  struct anv_block_pool *pool,
                  uint64_t address)
 {
-   for (uint32_t i = 0; i < pool->nbos; i++) {
-      uint64_t bo_address = pool->bos[i].offset & (~0ull >> 16);
-      uint32_t bo_size = pool->bos[i].size;
-      if (address >= bo_address && address < (bo_address + bo_size)) {
+   anv_block_pool_foreach_bo(bo, pool) {
+      uint64_t bo_address = gen_48b_address(bo->offset);
+      if (address >= bo_address && address < (bo_address + bo->size)) {
          *ret = (struct gen_batch_decode_bo) {
             .addr = bo_address,
-            .size = bo_size,
-            .map = pool->bos[i].map,
+            .size = bo->size,
+            .map = bo->map,
          };
          return true;
       }
@@ -2377,13 +2344,13 @@ decode_get_bo(void *v_batch, bool ppgtt, uint64_t address)
 
    u_vector_foreach(bo, &device->cmd_buffer_being_decoded->seen_bbos) {
       /* The decoder zeroes out the top 16 bits, so we need to as well */
-      uint64_t bo_address = (*bo)->bo.offset & (~0ull >> 16);
+      uint64_t bo_address = (*bo)->bo->offset & (~0ull >> 16);
 
-      if (address >= bo_address && address < bo_address + (*bo)->bo.size) {
+      if (address >= bo_address && address < bo_address + (*bo)->bo->size) {
          return (struct gen_batch_decode_bo) {
             .addr = bo_address,
-            .size = (*bo)->bo.size,
-            .map = (*bo)->bo.map,
+            .size = (*bo)->bo->size,
+            .map = (*bo)->bo->map,
          };
       }
    }
@@ -2536,23 +2503,30 @@ VkResult anv_CreateDevice(
       goto fail_fd;
    }
 
+   result = anv_queue_init(device, &device->queue);
+   if (result != VK_SUCCESS)
+      goto fail_context_id;
+
    if (physical_device->use_softpin) {
       if (pthread_mutex_init(&device->vma_mutex, NULL) != 0) {
          result = vk_error(VK_ERROR_INITIALIZATION_FAILED);
-         goto fail_context_id;
+         goto fail_queue;
       }
 
       /* keep the page with address zero out of the allocator */
-      struct anv_memory_heap *low_heap =
-         &physical_device->memory.heaps[physical_device->memory.heap_count - 1];
-      util_vma_heap_init(&device->vma_lo, low_heap->vma_start, low_heap->vma_size);
-      device->vma_lo_available = low_heap->size;
+      util_vma_heap_init(&device->vma_lo,
+                         LOW_HEAP_MIN_ADDRESS, LOW_HEAP_SIZE);
 
-      struct anv_memory_heap *high_heap =
-         &physical_device->memory.heaps[0];
-      util_vma_heap_init(&device->vma_hi, high_heap->vma_start, high_heap->vma_size);
-      device->vma_hi_available = physical_device->memory.heap_count == 1 ? 0 :
-         high_heap->size;
+      util_vma_heap_init(&device->vma_cva, CLIENT_VISIBLE_HEAP_MIN_ADDRESS,
+                         CLIENT_VISIBLE_HEAP_SIZE);
+
+      /* Leave the last 4GiB out of the high vma range, so that no state
+       * base address + size can overflow 48 bits. For more information see
+       * the comment about Wa32bitGeneralStateOffset in anv_allocator.c
+       */
+      util_vma_heap_init(&device->vma_hi, HIGH_HEAP_MIN_ADDRESS,
+                         physical_device->gtt_size - (1ull << 32) -
+                         HIGH_HEAP_MIN_ADDRESS);
    }
 
    list_inithead(&device->memory_objects);
@@ -2590,7 +2564,7 @@ VkResult anv_CreateDevice(
 
    if (pthread_mutex_init(&device->mutex, NULL) != 0) {
       result = vk_error(VK_ERROR_INITIALIZATION_FAILED);
-      goto fail_context_id;
+      goto fail_queue;
    }
 
    pthread_condattr_t condattr;
@@ -2610,47 +2584,30 @@ VkResult anv_CreateDevice(
    }
    pthread_condattr_destroy(&condattr);
 
-   uint64_t bo_flags =
-      (physical_device->supports_48bit_addresses ? EXEC_OBJECT_SUPPORTS_48B_ADDRESS : 0) |
-      (physical_device->has_exec_async ? EXEC_OBJECT_ASYNC : 0) |
-      (physical_device->has_exec_capture ? EXEC_OBJECT_CAPTURE : 0) |
-      (physical_device->use_softpin ? EXEC_OBJECT_PINNED : 0);
-
-   anv_bo_pool_init(&device->batch_bo_pool, device, bo_flags);
-
    result = anv_bo_cache_init(&device->bo_cache);
+   if (result != VK_SUCCESS)
+      goto fail_queue_cond;
+
+   anv_bo_pool_init(&device->batch_bo_pool, device);
+
+   result = anv_state_pool_init(&device->dynamic_state_pool, device,
+                                DYNAMIC_STATE_POOL_MIN_ADDRESS, 16384);
    if (result != VK_SUCCESS)
       goto fail_batch_bo_pool;
 
-   if (!physical_device->use_softpin)
-      bo_flags &= ~EXEC_OBJECT_SUPPORTS_48B_ADDRESS;
-
-   result = anv_state_pool_init(&device->dynamic_state_pool, device,
-                                DYNAMIC_STATE_POOL_MIN_ADDRESS,
-                                16384,
-                                bo_flags);
-   if (result != VK_SUCCESS)
-      goto fail_bo_cache;
-
    result = anv_state_pool_init(&device->instruction_state_pool, device,
-                                INSTRUCTION_STATE_POOL_MIN_ADDRESS,
-                                16384,
-                                bo_flags);
+                                INSTRUCTION_STATE_POOL_MIN_ADDRESS, 16384);
    if (result != VK_SUCCESS)
       goto fail_dynamic_state_pool;
 
    result = anv_state_pool_init(&device->surface_state_pool, device,
-                                SURFACE_STATE_POOL_MIN_ADDRESS,
-                                4096,
-                                bo_flags);
+                                SURFACE_STATE_POOL_MIN_ADDRESS, 4096);
    if (result != VK_SUCCESS)
       goto fail_instruction_state_pool;
 
    if (physical_device->use_softpin) {
       result = anv_state_pool_init(&device->binding_table_pool, device,
-                                   BINDING_TABLE_POOL_MIN_ADDRESS,
-                                   4096,
-                                   bo_flags);
+                                   BINDING_TABLE_POOL_MIN_ADDRESS, 4096);
       if (result != VK_SUCCESS)
          goto fail_surface_state_pool;
    }
@@ -2662,24 +2619,23 @@ VkResult anv_CreateDevice(
          goto fail_binding_table_pool;
    }
 
-   result = anv_bo_init_new(&device->workaround_bo, device, 4096);
+   result = anv_device_alloc_bo(device, 4096, 0 /* flags */,
+                                0 /* explicit_address */,
+                                &device->workaround_bo);
    if (result != VK_SUCCESS)
       goto fail_surface_aux_map_pool;
 
-   if (physical_device->use_softpin)
-      device->workaround_bo.flags |= EXEC_OBJECT_PINNED;
-
-   if (!anv_vma_alloc(device, &device->workaround_bo))
+   result = anv_device_init_trivial_batch(device);
+   if (result != VK_SUCCESS)
       goto fail_workaround_bo;
 
-   anv_device_init_trivial_batch(device);
-
-   if (device->info.gen >= 10)
-      anv_device_init_hiz_clear_value_bo(device);
+   if (device->info.gen >= 10) {
+      result = anv_device_init_hiz_clear_value_bo(device);
+      if (result != VK_SUCCESS)
+         goto fail_trivial_batch_bo;
+   }
 
    anv_scratch_pool_init(device, &device->scratch_pool);
-
-   anv_queue_init(device, &device->queue);
 
    switch (device->info.gen) {
    case 7:
@@ -2724,10 +2680,12 @@ VkResult anv_CreateDevice(
    return VK_SUCCESS;
 
  fail_workaround_bo:
-   anv_queue_finish(&device->queue);
    anv_scratch_pool_finish(device, &device->scratch_pool);
-   anv_gem_munmap(device->workaround_bo.map, device->workaround_bo.size);
-   anv_gem_close(device, device->workaround_bo.gem_handle);
+   if (device->info.gen >= 10)
+      anv_device_release_bo(device, device->hiz_clear_bo);
+   anv_device_release_bo(device, device->workaround_bo);
+ fail_trivial_batch_bo:
+   anv_device_release_bo(device, device->trivial_batch_bo);
  fail_surface_aux_map_pool:
    if (device->info.gen >= 12) {
       gen_aux_map_finish(device->aux_map_ctx);
@@ -2742,18 +2700,21 @@ VkResult anv_CreateDevice(
    anv_state_pool_finish(&device->instruction_state_pool);
  fail_dynamic_state_pool:
    anv_state_pool_finish(&device->dynamic_state_pool);
- fail_bo_cache:
-   anv_bo_cache_finish(&device->bo_cache);
  fail_batch_bo_pool:
    anv_bo_pool_finish(&device->batch_bo_pool);
+   anv_bo_cache_finish(&device->bo_cache);
+ fail_queue_cond:
    pthread_cond_destroy(&device->queue_submit);
  fail_mutex:
    pthread_mutex_destroy(&device->mutex);
  fail_vmas:
    if (physical_device->use_softpin) {
       util_vma_heap_finish(&device->vma_hi);
+      util_vma_heap_finish(&device->vma_cva);
       util_vma_heap_finish(&device->vma_lo);
    }
+ fail_queue:
+   anv_queue_finish(&device->queue);
  fail_context_id:
    anv_gem_destroy_context(device, device->context_id);
  fail_fd:
@@ -2792,14 +2753,10 @@ void anv_DestroyDevice(
 
    anv_scratch_pool_finish(device, &device->scratch_pool);
 
-   anv_gem_munmap(device->workaround_bo.map, device->workaround_bo.size);
-   anv_vma_free(device, &device->workaround_bo);
-   anv_gem_close(device, device->workaround_bo.gem_handle);
-
-   anv_vma_free(device, &device->trivial_batch_bo);
-   anv_gem_close(device, device->trivial_batch_bo.gem_handle);
+   anv_device_release_bo(device, device->workaround_bo);
+   anv_device_release_bo(device, device->trivial_batch_bo);
    if (device->info.gen >= 10)
-      anv_gem_close(device, device->hiz_clear_bo.gem_handle);
+      anv_device_release_bo(device, device->hiz_clear_bo);
 
    if (device->info.gen >= 12) {
       gen_aux_map_finish(device->aux_map_ctx);
@@ -2812,12 +2769,13 @@ void anv_DestroyDevice(
    anv_state_pool_finish(&device->instruction_state_pool);
    anv_state_pool_finish(&device->dynamic_state_pool);
 
-   anv_bo_cache_finish(&device->bo_cache);
-
    anv_bo_pool_finish(&device->batch_bo_pool);
+
+   anv_bo_cache_finish(&device->bo_cache);
 
    if (physical_device->use_softpin) {
       util_vma_heap_finish(&device->vma_hi);
+      util_vma_heap_finish(&device->vma_cva);
       util_vma_heap_finish(&device->vma_lo);
    }
 
@@ -2867,11 +2825,15 @@ void anv_GetDeviceQueue(
     uint32_t                                    queueIndex,
     VkQueue*                                    pQueue)
 {
-   ANV_FROM_HANDLE(anv_device, device, _device);
+   const VkDeviceQueueInfo2 info = {
+      .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_INFO_2,
+      .pNext = NULL,
+      .flags = 0,
+      .queueFamilyIndex = queueNodeIndex,
+      .queueIndex = queueIndex,
+   };
 
-   assert(queueIndex == 0);
-
-   *pQueue = anv_queue_to_handle(&device->queue);
+   anv_GetDeviceQueue2(_device, &info, pQueue);
 }
 
 void anv_GetDeviceQueue2(
@@ -2897,10 +2859,32 @@ _anv_device_set_lost(struct anv_device *device,
    VkResult err;
    va_list ap;
 
-   device->_lost = true;
+   p_atomic_inc(&device->_lost);
 
    va_start(ap, msg);
    err = __vk_errorv(device->instance, device,
+                     VK_DEBUG_REPORT_OBJECT_TYPE_DEVICE_EXT,
+                     VK_ERROR_DEVICE_LOST, file, line, msg, ap);
+   va_end(ap);
+
+   if (env_var_as_boolean("ANV_ABORT_ON_DEVICE_LOSS", false))
+      abort();
+
+   return err;
+}
+
+VkResult
+_anv_queue_set_lost(struct anv_queue *queue,
+                    const char *file, int line,
+                    const char *msg, ...)
+{
+   VkResult err;
+   va_list ap;
+
+   p_atomic_inc(&queue->device->_lost);
+
+   va_start(ap, msg);
+   err = __vk_errorv(queue->device->instance, queue->device,
                      VK_DEBUG_REPORT_OBJECT_TYPE_DEVICE_EXT,
                      VK_ERROR_DEVICE_LOST, file, line, msg, ap);
    va_end(ap);
@@ -2985,50 +2969,74 @@ VkResult anv_DeviceWaitIdle(
     VkDevice                                    _device)
 {
    ANV_FROM_HANDLE(anv_device, device, _device);
+
    if (anv_device_is_lost(device))
       return VK_ERROR_DEVICE_LOST;
 
-   struct anv_batch batch;
-
-   uint32_t cmds[8];
-   batch.start = batch.next = cmds;
-   batch.end = (void *) cmds + sizeof(cmds);
-
-   anv_batch_emit(&batch, GEN7_MI_BATCH_BUFFER_END, bbe);
-   anv_batch_emit(&batch, GEN7_MI_NOOP, noop);
-
-   return anv_device_submit_simple_batch(device, &batch);
+   return anv_queue_submit_simple_batch(&device->queue, NULL);
 }
 
 bool
-anv_vma_alloc(struct anv_device *device, struct anv_bo *bo)
+anv_vma_alloc(struct anv_device *device, struct anv_bo *bo,
+              uint64_t client_address)
 {
-   if (!(bo->flags & EXEC_OBJECT_PINNED))
+   const struct anv_physical_device *pdevice = &device->instance->physicalDevice;
+   const struct gen_device_info *devinfo = &pdevice->info;
+   /* Gen12 CCS surface addresses need to be 64K aligned. We have no way of
+    * telling what this allocation is for so pick the largest alignment.
+    */
+   const uint32_t vma_alignment =
+      devinfo->gen >= 12 ? (64 * 1024) : (4 * 1024);
+
+   if (!(bo->flags & EXEC_OBJECT_PINNED)) {
+      assert(!(bo->has_client_visible_address));
       return true;
+   }
 
    pthread_mutex_lock(&device->vma_mutex);
 
    bo->offset = 0;
 
-   if (bo->flags & EXEC_OBJECT_SUPPORTS_48B_ADDRESS &&
-       device->vma_hi_available >= bo->size) {
-      uint64_t addr = util_vma_heap_alloc(&device->vma_hi, bo->size, 4096);
+   if (bo->has_client_visible_address) {
+      assert(bo->flags & EXEC_OBJECT_SUPPORTS_48B_ADDRESS);
+      if (client_address) {
+         if (util_vma_heap_alloc_addr(&device->vma_cva,
+                                      client_address, bo->size)) {
+            bo->offset = gen_canonical_address(client_address);
+         }
+      } else {
+         uint64_t addr =
+            util_vma_heap_alloc(&device->vma_cva, bo->size, vma_alignment);
+         if (addr) {
+            bo->offset = gen_canonical_address(addr);
+            assert(addr == gen_48b_address(bo->offset));
+         }
+      }
+      /* We don't want to fall back to other heaps */
+      goto done;
+   }
+
+   assert(client_address == 0);
+
+   if (bo->flags & EXEC_OBJECT_SUPPORTS_48B_ADDRESS) {
+      uint64_t addr =
+         util_vma_heap_alloc(&device->vma_hi, bo->size, vma_alignment);
       if (addr) {
          bo->offset = gen_canonical_address(addr);
          assert(addr == gen_48b_address(bo->offset));
-         device->vma_hi_available -= bo->size;
       }
    }
 
-   if (bo->offset == 0 && device->vma_lo_available >= bo->size) {
-      uint64_t addr = util_vma_heap_alloc(&device->vma_lo, bo->size, 4096);
+   if (bo->offset == 0) {
+      uint64_t addr =
+         util_vma_heap_alloc(&device->vma_lo, bo->size, vma_alignment);
       if (addr) {
          bo->offset = gen_canonical_address(addr);
          assert(addr == gen_48b_address(bo->offset));
-         device->vma_lo_available -= bo->size;
       }
    }
 
+done:
    pthread_mutex_unlock(&device->vma_mutex);
 
    return bo->offset != 0;
@@ -3047,32 +3055,17 @@ anv_vma_free(struct anv_device *device, struct anv_bo *bo)
    if (addr_48b >= LOW_HEAP_MIN_ADDRESS &&
        addr_48b <= LOW_HEAP_MAX_ADDRESS) {
       util_vma_heap_free(&device->vma_lo, addr_48b, bo->size);
-      device->vma_lo_available += bo->size;
+   } else if (addr_48b >= CLIENT_VISIBLE_HEAP_MIN_ADDRESS &&
+              addr_48b <= CLIENT_VISIBLE_HEAP_MAX_ADDRESS) {
+      util_vma_heap_free(&device->vma_cva, addr_48b, bo->size);
    } else {
-      ASSERTED const struct anv_physical_device *physical_device =
-         &device->instance->physicalDevice;
-      assert(addr_48b >= physical_device->memory.heaps[0].vma_start &&
-             addr_48b < (physical_device->memory.heaps[0].vma_start +
-                         physical_device->memory.heaps[0].vma_size));
+      assert(addr_48b >= HIGH_HEAP_MIN_ADDRESS);
       util_vma_heap_free(&device->vma_hi, addr_48b, bo->size);
-      device->vma_hi_available += bo->size;
    }
 
    pthread_mutex_unlock(&device->vma_mutex);
 
    bo->offset = 0;
-}
-
-VkResult
-anv_bo_init_new(struct anv_bo *bo, struct anv_device *device, uint64_t size)
-{
-   uint32_t gem_handle = anv_gem_create(device, size);
-   if (!gem_handle)
-      return vk_error(VK_ERROR_OUT_OF_DEVICE_MEMORY);
-
-   anv_bo_init(bo, gem_handle, size);
-
-   return VK_SUCCESS;
 }
 
 VkResult anv_AllocateMemory(
@@ -3091,10 +3084,22 @@ VkResult anv_AllocateMemory(
    /* The Vulkan 1.0.33 spec says "allocationSize must be greater than 0". */
    assert(pAllocateInfo->allocationSize > 0);
 
-   if (pAllocateInfo->allocationSize > MAX_MEMORY_ALLOCATION_SIZE)
-      return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+   VkDeviceSize aligned_alloc_size =
+      align_u64(pAllocateInfo->allocationSize, 4096);
 
-   /* FINISHME: Fail if allocation request exceeds heap size. */
+   if (aligned_alloc_size > MAX_MEMORY_ALLOCATION_SIZE)
+      return vk_error(VK_ERROR_OUT_OF_DEVICE_MEMORY);
+
+   assert(pAllocateInfo->memoryTypeIndex < pdevice->memory.type_count);
+   struct anv_memory_type *mem_type =
+      &pdevice->memory.types[pAllocateInfo->memoryTypeIndex];
+   assert(mem_type->heapIndex < pdevice->memory.heap_count);
+   struct anv_memory_heap *mem_heap =
+      &pdevice->memory.heaps[mem_type->heapIndex];
+
+   uint64_t mem_heap_used = p_atomic_read(&mem_heap->used);
+   if (mem_heap_used + aligned_alloc_size > mem_heap->size)
+      return vk_error(VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
    mem = vk_alloc2(&device->alloc, pAllocator, sizeof(*mem), 8,
                     VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
@@ -3102,35 +3107,65 @@ VkResult anv_AllocateMemory(
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
    assert(pAllocateInfo->memoryTypeIndex < pdevice->memory.type_count);
-   mem->type = &pdevice->memory.types[pAllocateInfo->memoryTypeIndex];
+   mem->type = mem_type;
    mem->map = NULL;
    mem->map_size = 0;
    mem->ahw = NULL;
    mem->host_ptr = NULL;
 
-   uint64_t bo_flags = 0;
+   enum anv_bo_alloc_flags alloc_flags = 0;
 
-   assert(mem->type->heapIndex < pdevice->memory.heap_count);
-   if (pdevice->memory.heaps[mem->type->heapIndex].supports_48bit_addresses)
-      bo_flags |= EXEC_OBJECT_SUPPORTS_48B_ADDRESS;
+   const VkExportMemoryAllocateInfo *export_info = NULL;
+   const VkImportAndroidHardwareBufferInfoANDROID *ahw_import_info = NULL;
+   const VkImportMemoryFdInfoKHR *fd_info = NULL;
+   const VkImportMemoryHostPointerInfoEXT *host_ptr_info = NULL;
+   const VkMemoryDedicatedAllocateInfo *dedicated_info = NULL;
+   VkMemoryAllocateFlags vk_flags = 0;
+   uint64_t client_address = 0;
 
-   const struct wsi_memory_allocate_info *wsi_info =
-      vk_find_struct_const(pAllocateInfo->pNext, WSI_MEMORY_ALLOCATE_INFO_MESA);
-   if (wsi_info && wsi_info->implicit_sync) {
-      /* We need to set the WRITE flag on window system buffers so that GEM
-       * will know we're writing to them and synchronize uses on other rings
-       * (eg if the display server uses the blitter ring).
-       */
-      bo_flags |= EXEC_OBJECT_WRITE;
-   } else if (pdevice->has_exec_async) {
-      bo_flags |= EXEC_OBJECT_ASYNC;
+   vk_foreach_struct_const(ext, pAllocateInfo->pNext) {
+      switch (ext->sType) {
+      case VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO:
+         export_info = (void *)ext;
+         break;
+
+      case VK_STRUCTURE_TYPE_IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID:
+         ahw_import_info = (void *)ext;
+         break;
+
+      case VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR:
+         fd_info = (void *)ext;
+         break;
+
+      case VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT:
+         host_ptr_info = (void *)ext;
+         break;
+
+      case VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO: {
+         const VkMemoryAllocateFlagsInfo *flags_info = (void *)ext;
+         vk_flags = flags_info->flags;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO:
+         dedicated_info = (void *)ext;
+         break;
+
+      case VK_STRUCTURE_TYPE_MEMORY_OPAQUE_CAPTURE_ADDRESS_ALLOCATE_INFO_KHR: {
+         const VkMemoryOpaqueCaptureAddressAllocateInfoKHR *addr_info =
+            (const VkMemoryOpaqueCaptureAddressAllocateInfoKHR *)ext;
+         client_address = addr_info->opaqueCaptureAddress;
+         break;
+      }
+
+      default:
+         anv_debug_ignored_stype(ext->sType);
+         break;
+      }
    }
 
-   if (pdevice->use_softpin)
-      bo_flags |= EXEC_OBJECT_PINNED;
-
-   const VkExportMemoryAllocateInfo *export_info =
-      vk_find_struct_const(pAllocateInfo->pNext, EXPORT_MEMORY_ALLOCATE_INFO);
+   if (vk_flags & VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT_KHR)
+      alloc_flags |= ANV_BO_ALLOC_CLIENT_VISIBLE_ADDRESS;
 
    /* Check if we need to support Android HW buffer export. If so,
     * create AHardwareBuffer and import memory from it.
@@ -3139,11 +3174,6 @@ VkResult anv_AllocateMemory(
    if (export_info && export_info->handleTypes &
        VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID)
       android_export = true;
-
-   /* Android memory import. */
-   const struct VkImportAndroidHardwareBufferInfoANDROID *ahw_import_info =
-      vk_find_struct_const(pAllocateInfo->pNext,
-                           IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID);
 
    if (ahw_import_info) {
       result = anv_import_ahw_memory(_device, mem, ahw_import_info);
@@ -3166,9 +3196,6 @@ VkResult anv_AllocateMemory(
       goto success;
    }
 
-   const VkImportMemoryFdInfoKHR *fd_info =
-      vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_FD_INFO_KHR);
-
    /* The Vulkan spec permits handleType to be 0, in which case the struct is
     * ignored.
     */
@@ -3179,8 +3206,8 @@ VkResult anv_AllocateMemory(
              fd_info->handleType ==
                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
 
-      result = anv_bo_cache_import(device, &device->bo_cache, fd_info->fd,
-                                   bo_flags | ANV_BO_EXTERNAL, &mem->bo);
+      result = anv_device_import_bo(device, fd_info->fd, alloc_flags,
+                                    client_address, &mem->bo);
       if (result != VK_SUCCESS)
          goto fail;
 
@@ -3202,7 +3229,7 @@ VkResult anv_AllocateMemory(
                             "VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT: "
                             "%"PRIu64"B > %"PRIu64"B",
                             aligned_alloc_size, mem->bo->size);
-         anv_bo_cache_release(device, &device->bo_cache, mem->bo);
+         anv_device_release_bo(device, mem->bo);
          goto fail;
       }
 
@@ -3219,9 +3246,6 @@ VkResult anv_AllocateMemory(
       goto success;
    }
 
-   const VkImportMemoryHostPointerInfoEXT *host_ptr_info =
-      vk_find_struct_const(pAllocateInfo->pNext,
-                           IMPORT_MEMORY_HOST_POINTER_INFO_EXT);
    if (host_ptr_info && host_ptr_info->handleType) {
       if (host_ptr_info->handleType ==
           VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_MAPPED_FOREIGN_MEMORY_BIT_EXT) {
@@ -3232,10 +3256,12 @@ VkResult anv_AllocateMemory(
       assert(host_ptr_info->handleType ==
              VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT);
 
-      result = anv_bo_cache_import_host_ptr(
-         device, &device->bo_cache, host_ptr_info->pHostPointer,
-         pAllocateInfo->allocationSize, bo_flags, &mem->bo);
-
+      result = anv_device_import_bo_from_host_ptr(device,
+                                                  host_ptr_info->pHostPointer,
+                                                  pAllocateInfo->allocationSize,
+                                                  alloc_flags,
+                                                  client_address,
+                                                  &mem->bo);
       if (result != VK_SUCCESS)
          goto fail;
 
@@ -3246,16 +3272,13 @@ VkResult anv_AllocateMemory(
    /* Regular allocate (not importing memory). */
 
    if (export_info && export_info->handleTypes)
-      bo_flags |= ANV_BO_EXTERNAL;
+      alloc_flags |= ANV_BO_ALLOC_EXTERNAL;
 
-   result = anv_bo_cache_alloc(device, &device->bo_cache,
-                               pAllocateInfo->allocationSize, bo_flags,
-                               &mem->bo);
+   result = anv_device_alloc_bo(device, pAllocateInfo->allocationSize,
+                                alloc_flags, client_address, &mem->bo);
    if (result != VK_SUCCESS)
       goto fail;
 
-   const VkMemoryDedicatedAllocateInfo *dedicated_info =
-      vk_find_struct_const(pAllocateInfo->pNext, MEMORY_DEDICATED_ALLOCATE_INFO);
    if (dedicated_info && dedicated_info->image != VK_NULL_HANDLE) {
       ANV_FROM_HANDLE(anv_image, image, dedicated_info->image);
 
@@ -3269,23 +3292,31 @@ VkResult anv_AllocateMemory(
                                       image->planes[0].surface.isl.row_pitch_B,
                                       i915_tiling);
          if (ret) {
-            anv_bo_cache_release(device, &device->bo_cache, mem->bo);
-            return vk_errorf(device->instance, NULL,
-                             VK_ERROR_OUT_OF_DEVICE_MEMORY,
-                             "failed to set BO tiling: %m");
+            anv_device_release_bo(device, mem->bo);
+            result = vk_errorf(device->instance, NULL,
+                               VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                               "failed to set BO tiling: %m");
+            goto fail;
          }
       }
    }
 
  success:
+   mem_heap_used = p_atomic_add_return(&mem_heap->used, mem->bo->size);
+   if (mem_heap_used > mem_heap->size) {
+      p_atomic_add(&mem_heap->used, -mem->bo->size);
+      anv_device_release_bo(device, mem->bo);
+      result = vk_errorf(device->instance, NULL,
+                         VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                         "Out of heap memory");
+      goto fail;
+   }
+
    pthread_mutex_lock(&device->mutex);
    list_addtail(&mem->link, &device->memory_objects);
    pthread_mutex_unlock(&device->mutex);
 
    *pMem = anv_device_memory_to_handle(mem);
-
-   p_atomic_add(&pdevice->memory.heaps[mem->type->heapIndex].used,
-                mem->bo->size);
 
    return VK_SUCCESS;
 
@@ -3308,7 +3339,7 @@ VkResult anv_GetMemoryFdKHR(
    assert(pGetFdInfo->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT ||
           pGetFdInfo->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
 
-   return anv_bo_cache_export(dev, &dev->bo_cache, mem->bo, pFd);
+   return anv_device_export_bo(dev, mem->bo, pFd);
 }
 
 VkResult anv_GetMemoryFdPropertiesKHR(
@@ -3387,7 +3418,7 @@ void anv_FreeMemory(
    p_atomic_add(&pdevice->memory.heaps[mem->type->heapIndex].used,
                 -mem->bo->size);
 
-   anv_bo_cache_release(device, &device->bo_cache, mem->bo);
+   anv_device_release_bo(device, mem->bo);
 
 #if defined(ANDROID) && ANDROID_API_LEVEL >= 26
    if (mem->ahw)
@@ -3546,12 +3577,7 @@ void anv_GetBufferMemoryRequirements(
     *    only if the memory type `i` in the VkPhysicalDeviceMemoryProperties
     *    structure for the physical device is supported.
     */
-   uint32_t memory_types = 0;
-   for (uint32_t i = 0; i < pdevice->memory.type_count; i++) {
-      uint32_t valid_usage = pdevice->memory.types[i].valid_buffer_usage;
-      if ((valid_usage & buffer->usage) == buffer->usage)
-         memory_types |= (1u << i);
-   }
+   uint32_t memory_types = (1ull << pdevice->memory.type_count) - 1;
 
    /* Base alignment requirement of a cache line */
    uint32_t alignment = 16;
@@ -3745,7 +3771,6 @@ anv_bind_buffer_memory(const VkBindBufferMemoryInfo *pBindInfo)
    assert(pBindInfo->sType == VK_STRUCTURE_TYPE_BIND_BUFFER_MEMORY_INFO);
 
    if (mem) {
-      assert((buffer->usage & mem->type->valid_buffer_usage) == buffer->usage);
       buffer->address = (struct anv_address) {
          .bo = mem->bo,
          .offset = pBindInfo->memoryOffset,
@@ -3906,7 +3931,16 @@ VkResult anv_CreateBuffer(
     VkBuffer*                                   pBuffer)
 {
    ANV_FROM_HANDLE(anv_device, device, _device);
+   struct anv_physical_device *pdevice = &device->instance->physicalDevice;
    struct anv_buffer *buffer;
+
+   /* Don't allow creating buffers bigger than our address space.  The real
+    * issue here is that we may align up the buffer size and we don't want
+    * doing so to cause roll-over.  However, no one has any business
+    * allocating a buffer larger than our GTT size.
+    */
+   if (pCreateInfo->size > pdevice->gtt_size)
+      return vk_error(VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO);
 
@@ -3938,15 +3972,35 @@ void anv_DestroyBuffer(
    vk_free2(&device->alloc, pAllocator, buffer);
 }
 
-VkDeviceAddress anv_GetBufferDeviceAddressEXT(
+VkDeviceAddress anv_GetBufferDeviceAddressKHR(
     VkDevice                                    device,
-    const VkBufferDeviceAddressInfoEXT*         pInfo)
+    const VkBufferDeviceAddressInfoKHR*         pInfo)
 {
    ANV_FROM_HANDLE(anv_buffer, buffer, pInfo->buffer);
 
+   assert(!anv_address_is_null(buffer->address));
    assert(buffer->address.bo->flags & EXEC_OBJECT_PINNED);
 
    return anv_address_physical(buffer->address);
+}
+
+uint64_t anv_GetBufferOpaqueCaptureAddressKHR(
+    VkDevice                                    device,
+    const VkBufferDeviceAddressInfoKHR*         pInfo)
+{
+   return 0;
+}
+
+uint64_t anv_GetDeviceMemoryOpaqueCaptureAddressKHR(
+    VkDevice                                    device,
+    const VkDeviceMemoryOpaqueCaptureAddressInfoKHR* pInfo)
+{
+   ANV_FROM_HANDLE(anv_device_memory, memory, pInfo->memory);
+
+   assert(memory->bo->flags & EXEC_OBJECT_PINNED);
+   assert(memory->bo->has_client_visible_address);
+
+   return gen_48b_address(memory->bo->offset);
 }
 
 void
@@ -3957,7 +4011,7 @@ anv_fill_buffer_surface_state(struct anv_device *device, struct anv_state state,
 {
    isl_buffer_fill_state(&device->isl_dev, state.map,
                          .address = anv_address_physical(address),
-                         .mocs = device->default_mocs,
+                         .mocs = device->isl_dev.mocs.internal,
                          .size_B = range,
                          .format = format,
                          .swizzle = ISL_SWIZZLE_IDENTITY,

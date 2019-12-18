@@ -285,6 +285,15 @@ add_aux_state_tracking_buffer(struct anv_image *image,
       }
    }
 
+   /* Add some padding to make sure the fast clear color state buffer starts at
+    * a 4K alignment. We believe that 256B might be enough, but due to lack of
+    * testing we will leave this as 4K for now.
+    */
+   image->planes[plane].size = ALIGN(image->planes[plane].size, 4096);
+   image->size = ALIGN(image->size, 4096);
+
+   assert(image->planes[plane].offset % 4096 == 0);
+
    image->planes[plane].fast_clear_state_offset =
       image->planes[plane].offset + image->planes[plane].size;
 
@@ -451,7 +460,8 @@ make_surface(const struct anv_device *dev,
          assert(image->planes[plane].aux_surface.isl.size_B == 0);
          ok = isl_surf_get_ccs_surf(&dev->isl_dev,
                                     &image->planes[plane].surface.isl,
-                                    &image->planes[plane].aux_surface.isl, 0);
+                                    &image->planes[plane].aux_surface.isl,
+                                    NULL, 0);
          if (ok) {
 
             /* Disable CCS when it is not useful (i.e., when you can't render
@@ -470,9 +480,6 @@ make_surface(const struct anv_device *dev,
                return VK_SUCCESS;
             }
 
-            add_surface(image, &image->planes[plane].aux_surface, plane);
-            add_aux_state_tracking_buffer(image, plane, dev);
-
             /* For images created without MUTABLE_FORMAT_BIT set, we know that
              * they will always be used with the original format.  In
              * particular, they will always be used with a format that
@@ -484,7 +491,16 @@ make_surface(const struct anv_device *dev,
             if (!(image->usage & VK_IMAGE_USAGE_STORAGE_BIT) &&
                 image->ccs_e_compatible) {
                image->planes[plane].aux_usage = ISL_AUX_USAGE_CCS_E;
+            } else if (dev->info.gen >= 12) {
+               anv_perf_warn(dev->instance, image,
+                             "The CCS_D aux mode is not yet handled on "
+                             "Gen12+. Not allocating a CCS buffer.");
+               image->planes[plane].aux_surface.isl.size_B = 0;
+               return VK_SUCCESS;
             }
+
+            add_surface(image, &image->planes[plane].aux_surface, plane);
+            add_aux_state_tracking_buffer(image, plane, dev);
          }
       }
    } else if ((aspect & VK_IMAGE_ASPECT_ANY_COLOR_BIT_ANV) && image->samples > 1) {
@@ -788,8 +804,7 @@ anv_DestroyImage(VkDevice _device, VkImage _image,
       }
       if (image->planes[p].bo_is_owned) {
          assert(image->planes[p].address.bo != NULL);
-         anv_bo_cache_release(device, &device->bo_cache,
-                              image->planes[p].address.bo);
+         anv_device_release_bo(device, image->planes[p].address.bo);
       }
    }
 
@@ -1131,6 +1146,7 @@ anv_layout_to_aux_usage(const struct gen_device_info * const devinfo,
 
 
    /* Sampling Layouts */
+   case VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL_KHR:
    case VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL:
    case VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL:
       assert((image->aspects & VK_IMAGE_ASPECT_ANY_COLOR_BIT_ANV) == 0);
@@ -1144,6 +1160,9 @@ anv_layout_to_aux_usage(const struct gen_device_info * const devinfo,
       } else {
          return image->planes[plane].aux_usage;
       }
+
+   case VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL_KHR:
+      return ISL_AUX_USAGE_NONE;
 
 
    case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR: {
@@ -1165,6 +1184,8 @@ anv_layout_to_aux_usage(const struct gen_device_info * const devinfo,
    /* Rendering Layouts */
    case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
       assert(aspect & VK_IMAGE_ASPECT_ANY_COLOR_BIT_ANV);
+      /* fall-through */
+   case VK_IMAGE_LAYOUT_STENCIL_ATTACHMENT_OPTIMAL_KHR:
       if (image->planes[plane].aux_usage == ISL_AUX_USAGE_NONE) {
          assert(image->samples == 1);
          return ISL_AUX_USAGE_CCS_D;
@@ -1173,6 +1194,7 @@ anv_layout_to_aux_usage(const struct gen_device_info * const devinfo,
          return image->planes[plane].aux_usage;
       }
 
+   case VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR:
    case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
    case VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL:
       assert(aspect == VK_IMAGE_ASPECT_DEPTH_BIT);
@@ -1460,7 +1482,7 @@ anv_image_fill_surface_state(struct anv_device *device,
       if (device->info.gen >= 10 && aux_usage != ISL_AUX_USAGE_NONE) {
          if (aux_usage == ISL_AUX_USAGE_HIZ) {
             clear_address = (struct anv_address) {
-               .bo = &device->hiz_clear_bo,
+               .bo = device->hiz_clear_bo,
                .offset = 0,
             };
          } else {

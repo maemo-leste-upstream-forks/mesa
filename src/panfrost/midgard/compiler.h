@@ -27,6 +27,7 @@
 #include "midgard.h"
 #include "helpers.h"
 #include "midgard_compile.h"
+#include "lcra.h"
 
 #include "util/hash_table.h"
 #include "util/u_dynarray.h"
@@ -77,6 +78,9 @@ typedef struct midgard_branch {
  * emitted before the register allocation pass.
  */
 
+#define MIR_SRC_COUNT 3
+#define MIR_VEC_COMPONENTS 16
+
 typedef struct midgard_instruction {
         /* Must be first for casting */
         struct list_head link;
@@ -88,8 +92,8 @@ typedef struct midgard_instruction {
         unsigned src[3];
         unsigned dest;
 
-        /* Swizzle for the conditional for a csel/branch */
-        unsigned cond_swizzle;
+        /* vec16 swizzle, unpacked, per source */
+        unsigned swizzle[MIR_SRC_COUNT][MIR_VEC_COMPONENTS];
 
         /* Special fields for an ALU instruction */
         midgard_reg_info registers;
@@ -123,9 +127,10 @@ typedef struct midgard_instruction {
         bool invert;
 
         /* Hint for the register allocator not to spill the destination written
-         * from this instruction (because it is a spill/unspill node itself) */
+         * from this instruction (because it is a spill/unspill node itself).
+         * Bitmask of spilled classes */
 
-        bool no_spill;
+        unsigned no_spill;
 
         /* Generic hint for intra-pass use */
         bool hint;
@@ -139,6 +144,9 @@ typedef struct midgard_instruction {
 
         unsigned nr_dependencies;
         BITSET_WORD *dependents;
+
+        /* For load/store ops.. force 64-bit destination */
+        bool load_64;
 
         union {
                 midgard_load_store_word load_store;
@@ -190,6 +198,9 @@ typedef struct midgard_block {
          * simple bit fields, but for us, liveness is a vector idea. */
         uint16_t *live_in;
         uint16_t *live_out;
+
+        /* Indicates this is a fixed-function fragment epilogue block */
+        bool epilogue;
 } midgard_block;
 
 typedef struct midgard_bundle {
@@ -213,11 +224,11 @@ typedef struct compiler_context {
         nir_shader *nir;
         gl_shader_stage stage;
 
-        /* The screen we correspond to */
-        struct midgard_screen *screen;
-
         /* Is internally a blend shader? Depends on stage == FRAGMENT */
         bool is_blend;
+
+        /* Render target number for a keyed blend shader. Depends on is_blend */
+        unsigned blend_rt;
 
         /* Tracking for blend constant patching */
         int blend_constant_offset;
@@ -289,6 +300,9 @@ typedef struct compiler_context {
 
         /* Bitmask of valid metadata */
         unsigned metadata;
+
+        /* Model-specific quirk set */
+        uint32_t quirks;
 } compiler_context;
 
 /* Per-block live_in/live_out */
@@ -383,7 +397,7 @@ mir_next_op(struct midgard_instruction *ins)
         mir_foreach_bundle_in_block_rev(block, _bundle) \
                 for (i = (_bundle->instruction_count - 1), v = _bundle->instructions[i]; \
                                 i >= 0; \
-                                --i, v = _bundle->instructions[i]) \
+                                --i, v = (i >= 0) ? _bundle->instructions[i] : NULL) \
 
 #define mir_foreach_instr_global(ctx, v) \
         mir_foreach_block(ctx, v_block) \
@@ -500,24 +514,23 @@ nir_dest_index(compiler_context *ctx, nir_dest *dst)
 
 /* MIR manipulation */
 
-unsigned mir_get_swizzle(midgard_instruction *ins, unsigned idx);
-void mir_set_swizzle(midgard_instruction *ins, unsigned idx, unsigned new);
 void mir_rewrite_index(compiler_context *ctx, unsigned old, unsigned new);
 void mir_rewrite_index_src(compiler_context *ctx, unsigned old, unsigned new);
 void mir_rewrite_index_dst(compiler_context *ctx, unsigned old, unsigned new);
 void mir_rewrite_index_dst_single(midgard_instruction *ins, unsigned old, unsigned new);
 void mir_rewrite_index_src_single(midgard_instruction *ins, unsigned old, unsigned new);
-void mir_rewrite_index_src_swizzle(compiler_context *ctx, unsigned old, unsigned new, unsigned swizzle);
+void mir_rewrite_index_src_swizzle(compiler_context *ctx, unsigned old, unsigned new, unsigned *swizzle);
 bool mir_single_use(compiler_context *ctx, unsigned value);
 bool mir_special_index(compiler_context *ctx, unsigned idx);
 unsigned mir_use_count(compiler_context *ctx, unsigned value);
 bool mir_is_written_before(compiler_context *ctx, midgard_instruction *ins, unsigned node);
 uint16_t mir_bytemask_of_read_components(midgard_instruction *ins, unsigned node);
-unsigned mir_ubo_shift(midgard_load_store_op op);
 midgard_reg_mode mir_typesize(midgard_instruction *ins);
 midgard_reg_mode mir_srcsize(midgard_instruction *ins, unsigned i);
 unsigned mir_bytes_for_mode(midgard_reg_mode mode);
+midgard_reg_mode mir_mode_for_destsize(unsigned size);
 uint16_t mir_from_bytemask(uint16_t bytemask, midgard_reg_mode mode);
+uint16_t mir_to_bytemask(midgard_reg_mode mode, unsigned mask);
 uint16_t mir_bytemask(midgard_instruction *ins);
 uint16_t mir_round_bytemask_down(uint16_t mask, midgard_reg_mode mode);
 void mir_set_bytemask(midgard_instruction *ins, uint16_t bytemask);
@@ -530,7 +543,6 @@ void mir_print_block(midgard_block *block);
 void mir_print_shader(compiler_context *ctx);
 bool mir_nontrivial_source2_mod(midgard_instruction *ins);
 bool mir_nontrivial_source2_mod_simple(midgard_instruction *ins);
-bool mir_nontrivial_mod(midgard_vector_alu_src src, bool is_int, unsigned mask);
 bool mir_nontrivial_outmod(midgard_instruction *ins);
 
 void mir_insert_instruction_before_scheduled(compiler_context *ctx, midgard_block *block, midgard_instruction *tag, midgard_instruction ins);
@@ -538,42 +550,80 @@ void mir_insert_instruction_after_scheduled(compiler_context *ctx, midgard_block
 void mir_flip(midgard_instruction *ins);
 void mir_compute_temp_count(compiler_context *ctx);
 
-/* MIR goodies */
-
-static const midgard_vector_alu_src blank_alu_src = {
-        .swizzle = SWIZZLE(COMPONENT_X, COMPONENT_Y, COMPONENT_Z, COMPONENT_W),
-};
-
-static const midgard_vector_alu_src blank_alu_src_xxxx = {
-        .swizzle = SWIZZLE(COMPONENT_X, COMPONENT_X, COMPONENT_X, COMPONENT_X),
-};
-
-static const midgard_scalar_alu_src blank_scalar_alu_src = {
-        .full = true
-};
-
-/* Used for encoding the unused source of 1-op instructions */
-static const midgard_vector_alu_src zero_alu_src = { 0 };
-
 /* 'Intrinsic' move for aliasing */
 
 static inline midgard_instruction
-v_mov(unsigned src, midgard_vector_alu_src mod, unsigned dest)
+v_mov(unsigned src, unsigned dest)
 {
         midgard_instruction ins = {
                 .type = TAG_ALU_4,
                 .mask = 0xF,
                 .src = { SSA_UNUSED, src, SSA_UNUSED },
+                .swizzle = SWIZZLE_IDENTITY,
                 .dest = dest,
                 .alu = {
                         .op = midgard_alu_op_imov,
                         .reg_mode = midgard_reg_mode_32,
                         .dest_override = midgard_dest_override_none,
-                        .outmod = midgard_outmod_int_wrap,
-                        .src1 = vector_alu_srco_unsigned(zero_alu_src),
-                        .src2 = vector_alu_srco_unsigned(mod)
+                        .outmod = midgard_outmod_int_wrap
                 },
         };
+
+        return ins;
+}
+
+/* Broad types of register classes so we can handle special
+ * registers */
+
+#define REG_CLASS_WORK          0
+#define REG_CLASS_LDST          1
+#define REG_CLASS_TEXR          3
+#define REG_CLASS_TEXW          4
+
+/* Like a move, but to thread local storage! */
+
+static inline midgard_instruction
+v_load_store_scratch(
+                unsigned srcdest,
+                unsigned index,
+                bool is_store,
+                unsigned mask)
+{
+        /* We index by 32-bit vec4s */
+        unsigned byte = (index * 4 * 4);
+
+        midgard_instruction ins = {
+                .type = TAG_LOAD_STORE_4,
+                .mask = mask,
+                .dest = ~0,
+                .src = { ~0, ~0, ~0 },
+                .swizzle = SWIZZLE_IDENTITY_4,
+                .load_store = {
+                        .op = is_store ? midgard_op_st_int4 : midgard_op_ld_int4,
+
+                        /* For register spilling - to thread local storage */
+                        .arg_1 = 0xEA,
+                        .arg_2 = 0x1E,
+                },
+
+                /* If we spill an unspill, RA goes into an infinite loop */
+                .no_spill = (1 << REG_CLASS_WORK)
+        };
+
+        ins.constants[0] = byte;
+
+        if (is_store) {
+                ins.src[0] = srcdest;
+
+                /* Ensure we are tightly swizzled so liveness analysis is
+                 * correct */
+
+                for (unsigned i = 0; i < 4; ++i) {
+                        if (!(mask & (1 << i)))
+                                ins.swizzle[0][i] = COMPONENT_X;
+                }
+        } else
+                ins.dest = srcdest;
 
         return ins;
 }
@@ -596,25 +646,9 @@ mir_has_arg(midgard_instruction *ins, unsigned arg)
 
 void schedule_program(compiler_context *ctx);
 
-/* Register allocation */
-
-struct ra_graph;
-
-/* Broad types of register classes so we can handle special
- * registers */
-
-#define NR_REG_CLASSES 6
-
-#define REG_CLASS_WORK          0
-#define REG_CLASS_LDST          1
-#define REG_CLASS_LDST27        2
-#define REG_CLASS_TEXR          3
-#define REG_CLASS_TEXW          4
-#define REG_CLASS_FRAGC         5
-
+void mir_ra(compiler_context *ctx);
+void mir_squeeze_index(compiler_context *ctx);
 void mir_lower_special_reads(compiler_context *ctx);
-struct ra_graph* allocate_registers(compiler_context *ctx, bool *spilled);
-void install_registers(compiler_context *ctx, struct ra_graph *g);
 void mir_liveness_ins_update(uint16_t *live, midgard_instruction *ins, unsigned max);
 void mir_compute_liveness(compiler_context *ctx);
 void mir_invalidate_liveness(compiler_context *ctx);
@@ -643,7 +677,7 @@ midgard_emit_derivatives(compiler_context *ctx, nir_alu_instr *instr);
 void
 midgard_lower_derivatives(compiler_context *ctx, midgard_block *block);
 
-bool mir_op_computes_derivatives(unsigned op);
+bool mir_op_computes_derivatives(gl_shader_stage stage, unsigned op);
 
 /* Final emission */
 
@@ -655,6 +689,8 @@ void emit_binary_bundle(
 
 bool
 nir_undef_to_zero(nir_shader *shader);
+
+void midgard_nir_lod_errata(nir_shader *shader);
 
 /* Optimizations */
 

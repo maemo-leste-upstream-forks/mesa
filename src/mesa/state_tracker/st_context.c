@@ -57,6 +57,7 @@
 #include "st_cb_memoryobjects.h"
 #include "st_cb_msaa.h"
 #include "st_cb_perfmon.h"
+#include "st_cb_perfquery.h"
 #include "st_cb_program.h"
 #include "st_cb_queryobj.h"
 #include "st_cb_readpixels.h"
@@ -137,18 +138,18 @@ st_query_memory_info(struct gl_context *ctx, struct gl_memory_info *out)
 static uint64_t
 st_get_active_states(struct gl_context *ctx)
 {
-   struct st_vertex_program *vp =
-      st_vertex_program(ctx->VertexProgram._Current);
-   struct st_common_program *tcp =
-      st_common_program(ctx->TessCtrlProgram._Current);
-   struct st_common_program *tep =
-      st_common_program(ctx->TessEvalProgram._Current);
-   struct st_common_program *gp =
-      st_common_program(ctx->GeometryProgram._Current);
-   struct st_common_program *fp =
-      st_common_program(ctx->FragmentProgram._Current);
-   struct st_common_program *cp =
-      st_common_program(ctx->ComputeProgram._Current);
+   struct st_program *vp =
+      st_program(ctx->VertexProgram._Current);
+   struct st_program *tcp =
+      st_program(ctx->TessCtrlProgram._Current);
+   struct st_program *tep =
+      st_program(ctx->TessEvalProgram._Current);
+   struct st_program *gp =
+      st_program(ctx->GeometryProgram._Current);
+   struct st_program *fp =
+      st_program(ctx->FragmentProgram._Current);
+   struct st_program *cp =
+      st_program(ctx->ComputeProgram._Current);
    uint64_t active_shader_states = 0;
 
    if (vp)
@@ -307,7 +308,7 @@ st_save_zombie_sampler_view(struct st_context *st,
     * while free_zombie_resource_views() is called from another.
     */
    simple_mtx_lock(&st->zombie_sampler_views.mutex);
-   LIST_ADDTAIL(&entry->node, &st->zombie_sampler_views.list.node);
+   list_addtail(&entry->node, &st->zombie_sampler_views.list.node);
    simple_mtx_unlock(&st->zombie_sampler_views.mutex);
 }
 
@@ -340,7 +341,7 @@ st_save_zombie_shader(struct st_context *st,
     * while free_zombie_shaders() is called from another.
     */
    simple_mtx_lock(&st->zombie_shaders.mutex);
-   LIST_ADDTAIL(&entry->node, &st->zombie_shaders.list.node);
+   list_addtail(&entry->node, &st->zombie_shaders.list.node);
    simple_mtx_unlock(&st->zombie_shaders.mutex);
 }
 
@@ -353,7 +354,7 @@ free_zombie_sampler_views(struct st_context *st)
 {
    struct st_zombie_sampler_view_node *entry, *next;
 
-   if (LIST_IS_EMPTY(&st->zombie_sampler_views.list.node)) {
+   if (list_is_empty(&st->zombie_sampler_views.list.node)) {
       return;
    }
 
@@ -361,7 +362,7 @@ free_zombie_sampler_views(struct st_context *st)
 
    LIST_FOR_EACH_ENTRY_SAFE(entry, next,
                             &st->zombie_sampler_views.list.node, node) {
-      LIST_DEL(&entry->node);  // remove this entry from the list
+      list_del(&entry->node);  // remove this entry from the list
 
       assert(entry->view->context == st->pipe);
       pipe_sampler_view_reference(&entry->view, NULL);
@@ -369,7 +370,7 @@ free_zombie_sampler_views(struct st_context *st)
       free(entry);
    }
 
-   assert(LIST_IS_EMPTY(&st->zombie_sampler_views.list.node));
+   assert(list_is_empty(&st->zombie_sampler_views.list.node));
 
    simple_mtx_unlock(&st->zombie_sampler_views.mutex);
 }
@@ -383,7 +384,7 @@ free_zombie_shaders(struct st_context *st)
 {
    struct st_zombie_shader_node *entry, *next;
 
-   if (LIST_IS_EMPTY(&st->zombie_shaders.list.node)) {
+   if (list_is_empty(&st->zombie_shaders.list.node)) {
       return;
    }
 
@@ -391,7 +392,7 @@ free_zombie_shaders(struct st_context *st)
 
    LIST_FOR_EACH_ENTRY_SAFE(entry, next,
                             &st->zombie_shaders.list.node, node) {
-      LIST_DEL(&entry->node);  // remove this entry from the list
+      list_del(&entry->node);  // remove this entry from the list
 
       switch (entry->type) {
       case PIPE_SHADER_VERTEX:
@@ -418,7 +419,7 @@ free_zombie_shaders(struct st_context *st)
       free(entry);
    }
 
-   assert(LIST_IS_EMPTY(&st->zombie_shaders.list.node));
+   assert(list_is_empty(&st->zombie_shaders.list.node));
 
    simple_mtx_unlock(&st->zombie_shaders.mutex);
 }
@@ -453,6 +454,7 @@ st_destroy_context_priv(struct st_context *st, bool destroy_pipe)
    st_destroy_bound_image_handles(st);
 
    for (i = 0; i < ARRAY_SIZE(st->state.frag_sampler_views); i++) {
+      pipe_sampler_view_reference(&st->state.vert_sampler_views[i], NULL);
       pipe_sampler_view_reference(&st->state.frag_sampler_views[i], NULL);
    }
 
@@ -719,6 +721,10 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
       ctx->Extensions.AMD_performance_monitor = GL_TRUE;
    }
 
+   if (st_have_perfquery(st)) {
+      ctx->Extensions.INTEL_performance_query = GL_TRUE;
+   }
+
    /* Enable shader-based fallbacks for ARB_color_buffer_float if needed. */
    if (screen->get_param(screen, PIPE_CAP_VERTEX_COLOR_UNCLAMPED)) {
       if (!screen->get_param(screen, PIPE_CAP_VERTEX_COLOR_CLAMPED)) {
@@ -753,6 +759,8 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
     */
    ctx->Const.ShaderCompilerOptions[MESA_SHADER_VERTEX].EmitNoSat =
       !screen->get_param(screen, PIPE_CAP_VERTEX_SHADER_SATURATE);
+
+   ctx->Const.ShaderCompilerOptions[MESA_SHADER_VERTEX].PositionAlwaysInvariant = options->vs_position_always_invariant;
 
    if (ctx->Const.GLSLVersion < 400) {
       for (i = 0; i < MESA_SHADER_STAGES; i++)
@@ -805,11 +813,11 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
    st_init_driver_flags(st);
 
    /* Initialize context's winsys buffers list */
-   LIST_INITHEAD(&st->winsys_buffers);
+   list_inithead(&st->winsys_buffers);
 
-   LIST_INITHEAD(&st->zombie_sampler_views.list.node);
+   list_inithead(&st->zombie_sampler_views.list.node);
    simple_mtx_init(&st->zombie_sampler_views.mutex, mtx_plain);
-   LIST_INITHEAD(&st->zombie_shaders.list.node);
+   list_inithead(&st->zombie_shaders.list.node);
    simple_mtx_init(&st->zombie_shaders.mutex, mtx_plain);
 
    return st;
@@ -883,6 +891,7 @@ st_init_driver_functions(struct pipe_screen *screen,
    st_init_memoryobject_functions(functions);
    st_init_msaa_functions(functions);
    st_init_perfmon_functions(functions);
+   st_init_perfquery_functions(functions);
    st_init_program_functions(functions);
    st_init_query_functions(functions);
    st_init_cond_render_functions(functions);
@@ -960,8 +969,7 @@ st_create_context(gl_api api, struct pipe_context *pipe,
 
    st_debug_init();
 
-   if (pipe->screen->get_disk_shader_cache &&
-       !(ST_DEBUG & DEBUG_TGSI))
+   if (pipe->screen->get_disk_shader_cache)
       ctx->Cache = pipe->screen->get_disk_shader_cache(pipe->screen);
 
    /* XXX: need a capability bit in gallium to query if the pipe
@@ -1056,7 +1064,7 @@ st_destroy_context(struct st_context *st)
 
    st_reference_prog(st, &st->fp, NULL);
    st_reference_prog(st, &st->gp, NULL);
-   st_reference_vertprog(st, &st->vp, NULL);
+   st_reference_prog(st, &st->vp, NULL);
    st_reference_prog(st, &st->tcp, NULL);
    st_reference_prog(st, &st->tep, NULL);
    st_reference_prog(st, &st->cp, NULL);
@@ -1075,7 +1083,7 @@ st_destroy_context(struct st_context *st)
 
    st_destroy_program_variants(st);
 
-   _mesa_free_context_data(ctx, false);
+   _mesa_free_context_data(ctx);
 
    /* This will free the st_context too, so 'st' must not be accessed
     * afterwards. */

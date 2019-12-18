@@ -326,7 +326,6 @@ amdgpu_winsys_create(int fd, const struct pipe_screen_config *config,
    aws = util_hash_table_get(dev_tab, dev);
    if (aws) {
       pipe_reference(NULL, &aws->reference);
-      simple_mtx_unlock(&dev_tab_mutex);
 
       /* Release the device handle, because we don't need it anymore.
        * This function is returning an existing winsys instance, which
@@ -383,7 +382,7 @@ amdgpu_winsys_create(int fd, const struct pipe_screen_config *config,
       /* init reference */
       pipe_reference_init(&aws->reference, 1);
 
-      LIST_INITHEAD(&aws->global_bo_list);
+      list_inithead(&aws->global_bo_list);
       aws->bo_export_table = util_hash_table_create(hash_pointer, compare_pointers);
 
       (void) simple_mtx_init(&aws->global_bo_list_lock, mtx_plain);
