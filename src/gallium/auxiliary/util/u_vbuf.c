@@ -91,6 +91,7 @@
 #include "util/format/u_format.h"
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
+#include "util/u_screen.h"
 #include "util/u_upload_mgr.h"
 #include "translate/translate.h"
 #include "translate/translate_cache.h"
@@ -180,6 +181,8 @@ struct u_vbuf {
    uint32_t incompatible_vb_mask; /* each bit describes a corresp. buffer */
    /* Which buffer has a non-zero stride. */
    uint32_t nonzero_stride_vb_mask; /* each bit describes a corresp. buffer */
+   /* Which buffers are allowed (supported by hardware). */
+   uint32_t allowed_vb_mask;
 };
 
 static void *
@@ -287,6 +290,12 @@ boolean u_vbuf_get_caps(struct pipe_screen *screen, struct u_vbuf_caps *caps,
                          PIPE_CAP_VERTEX_ELEMENT_SRC_OFFSET_4BYTE_ALIGNED_ONLY);
    caps->user_vertex_buffers =
       screen->get_param(screen, PIPE_CAP_USER_VERTEX_BUFFERS);
+   caps->max_vertex_buffers =
+      screen->get_param(screen, PIPE_CAP_MAX_VERTEX_BUFFERS);
+
+   /* OpenGL 2.0 requires a minimum of 16 vertex buffers */
+   if (caps->max_vertex_buffers < 16)
+      fallback = TRUE;
 
    if (!caps->buffer_offset_unaligned ||
        !caps->buffer_stride_unaligned ||
@@ -308,6 +317,7 @@ u_vbuf_create(struct pipe_context *pipe, struct u_vbuf_caps *caps)
    mgr->cso_cache = cso_cache_create();
    mgr->translate_cache = translate_cache_create();
    memset(mgr->fallback_vbs, ~0, sizeof(mgr->fallback_vbs));
+   mgr->allowed_vb_mask = u_bit_consecutive(0, mgr->caps.max_vertex_buffers);
 
    mgr->has_signed_vb_offset =
       pipe->screen->get_param(pipe->screen,
@@ -536,16 +546,24 @@ u_vbuf_translate_find_free_vb_slots(struct u_vbuf *mgr,
    uint32_t unused_vb_mask =
       mgr->ve->incompatible_vb_mask_all | mgr->incompatible_vb_mask |
       ~mgr->enabled_vb_mask;
+   uint32_t unused_vb_mask_orig;
+   boolean insufficient_buffers = false;
+
+   /* No vertex buffers available at all */
+   if (!unused_vb_mask)
+      return FALSE;
 
    memset(fallback_vbs, ~0, sizeof(fallback_vbs));
 
    /* Find free slots for each type if needed. */
+   unused_vb_mask_orig = unused_vb_mask;
    for (type = 0; type < VB_NUM; type++) {
       if (mask[type]) {
          uint32_t index;
 
          if (!unused_vb_mask) {
-            return FALSE;
+            insufficient_buffers = true;
+            break;
          }
 
          index = ffs(unused_vb_mask) - 1;
@@ -553,6 +571,17 @@ u_vbuf_translate_find_free_vb_slots(struct u_vbuf *mgr,
          unused_vb_mask &= ~(1 << index);
          /*printf("found slot=%i for type=%i\n", index, type);*/
       }
+   }
+
+   if (insufficient_buffers) {
+      /* not enough vbs for all types supported by the hardware, they will have to share one
+       * buffer */
+      uint32_t index = ffs(unused_vb_mask_orig) - 1;
+      /* When sharing one vertex buffer use per-vertex frequency for everything. */
+      fallback_vbs[VB_VERTEX] = index;
+      mask[VB_VERTEX] = mask[VB_VERTEX] | mask[VB_CONST] | mask[VB_INSTANCE];
+      mask[VB_CONST] = 0;
+      mask[VB_INSTANCE] = 0;
    }
 
    for (type = 0; type < VB_NUM; type++) {
@@ -783,6 +812,17 @@ u_vbuf_create_vertex_elements(struct u_vbuf *mgr, unsigned count,
       }
    }
 
+   if (used_buffers & ~mgr->allowed_vb_mask) {
+      /* More vertex buffers are used than the hardware supports.  In
+       * principle, we only need to make sure that less vertex buffers are
+       * used, and mark some of the latter vertex buffers as incompatible.
+       * For now, mark all vertex buffers as incompatible.
+       */
+      ve->incompatible_vb_mask_any = used_buffers;
+      ve->compatible_vb_mask_any = 0;
+      ve->incompatible_elem_mask = u_bit_consecutive(0, count);
+   }
+
    ve->used_vb_mask = used_buffers;
    ve->compatible_vb_mask_all = ~ve->incompatible_vb_mask_any & used_buffers;
    ve->incompatible_vb_mask_all = ~ve->compatible_vb_mask_any & used_buffers;
@@ -795,8 +835,12 @@ u_vbuf_create_vertex_elements(struct u_vbuf *mgr, unsigned count,
       }
    }
 
-   ve->driver_cso =
-      pipe->create_vertex_elements_state(pipe, count, driver_attribs);
+   /* Only create driver CSO if no incompatible elements */
+   if (!ve->incompatible_elem_mask) {
+      ve->driver_cso =
+         pipe->create_vertex_elements_state(pipe, count, driver_attribs);
+   }
+
    return ve;
 }
 
@@ -805,7 +849,8 @@ static void u_vbuf_delete_vertex_elements(struct u_vbuf *mgr, void *cso)
    struct pipe_context *pipe = mgr->pipe;
    struct u_vbuf_elements *ve = cso;
 
-   pipe->delete_vertex_elements_state(pipe, ve->driver_cso);
+   if (ve->driver_cso)
+      pipe->delete_vertex_elements_state(pipe, ve->driver_cso);
    FREE(ve);
 }
 

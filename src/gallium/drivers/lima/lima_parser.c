@@ -24,7 +24,6 @@
 
 #include "util/u_math.h"
 
-#include <assert.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -72,8 +71,8 @@ parse_vs_draw(FILE *fp, uint32_t *value1, uint32_t *value2)
 static void
 parse_vs_shader_info(FILE *fp, uint32_t *value1, uint32_t *value2)
 {
-   fprintf(fp, "\t/* SHADER_INFO: prefetch: %s, size: %d */\n",
-           (*value1 & 0x00100000) ? "enabled" : "disabled",
+   fprintf(fp, "\t/* SHADER_INFO: prefetch: %d, size: %d */\n",
+           (*value1 & 0xfff00000) >> 20,
            (((*value1 & 0x000fffff) >> 10) + 1) << 4);
 }
 
@@ -522,7 +521,6 @@ parse_rsw(FILE *fp, uint32_t *value, int i, uint32_t *helper)
               *value & 0xffffffe0, *value & 0x0000001f);
       break;
    case 10: /* VARYING TYPES */
-      assert(*helper);
       fprintf(fp, "(1): ");
       int val, j;
       /* 0 - 5 */

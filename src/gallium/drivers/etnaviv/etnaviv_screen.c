@@ -188,6 +188,8 @@ etna_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 128;
    case PIPE_CAP_MAX_VERTEX_ELEMENT_SRC_OFFSET:
       return 255;
+   case PIPE_CAP_MAX_VERTEX_BUFFERS:
+      return screen->specs.stream_count;
 
    /* Texturing. */
    case PIPE_CAP_TEXTURE_SHADOW_MAP:
@@ -406,7 +408,8 @@ gpu_supports_texture_format(struct etna_screen *screen, uint32_t fmt,
    if (util_format_is_snorm(format))
       supported = VIV_FEATURE(screen, chipMinorFeatures2, HALTI1);
 
-   if (util_format_is_pure_integer(format) || util_format_is_float(format))
+   if (format != PIPE_FORMAT_S8_UINT_Z24_UNORM &&
+       (util_format_is_pure_integer(format) || util_format_is_float(format)))
       supported = VIV_FEATURE(screen, chipMinorFeatures4, HALTI2);
 
 
@@ -431,6 +434,8 @@ gpu_supports_render_format(struct etna_screen *screen, enum pipe_format format,
    /* Validate MSAA; number of samples must be allowed, and render target
     * must have MSAA'able format. */
    if (sample_count > 1) {
+      if (!VIV_FEATURE(screen, chipFeatures, MSAA))
+         return false;
       if (!translate_samples_to_xyscale(sample_count, NULL, NULL))
          return false;
       if (translate_ts_format(format) == ETNA_NO_MATCH)
@@ -702,6 +707,10 @@ etna_get_specs(struct etna_screen *screen)
    screen->specs.vertex_sampler_offset = 8;
    screen->specs.fragment_sampler_count = 8;
    screen->specs.vertex_sampler_count = 4;
+
+   if (screen->model == 0x400)
+      screen->specs.vertex_sampler_count = 0;
+
    screen->specs.vs_need_z_div =
       screen->model < 0x1000 && screen->model != 0x880;
    screen->specs.has_sin_cos_sqrt =

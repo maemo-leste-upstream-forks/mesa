@@ -122,11 +122,7 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 1 + util_logbase2(screen->props.limits.maxImageDimensionCube);
 
    case PIPE_CAP_BLEND_EQUATION_SEPARATE:
-      return 1;
-
    case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
-      return 0; /* TODO: re-enable after implementing nir_texop_txd */
-
    case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
    case PIPE_CAP_VERTEX_SHADER_SATURATE:
       return 1;
@@ -143,10 +139,8 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 0;
 #endif
 
-#if 0 /* TODO: Enable me */
    case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
       return 1;
-#endif
 
    case PIPE_CAP_SEAMLESS_CUBE_MAP:
       return 1;

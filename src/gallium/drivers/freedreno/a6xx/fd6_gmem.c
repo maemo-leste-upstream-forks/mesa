@@ -112,8 +112,8 @@ emit_mrt(struct fd_ringbuffer *ring, struct pipe_framebuffer_state *pfb,
 		offset = fd_resource_offset(rsc, psurf->u.tex.level,
 				psurf->u.tex.first_layer);
 
-		stride = slice->pitch * rsc->layout.cpp * pfb->samples;
-		swap = rsc->layout.tile_mode ? WZYX : fd6_pipe2swap(pformat);
+		stride = slice->pitch * rsc->layout.cpp;
+		swap = fd6_resource_swap(rsc, pformat);
 
 		tile_mode = fd_resource_tile_mode(psurf->texture, psurf->u.tex.level);
 
@@ -127,8 +127,6 @@ emit_mrt(struct fd_ringbuffer *ring, struct pipe_framebuffer_state *pfb,
 				type = LAYER_CUBEMAP;
 			else if (psurf->texture->target == PIPE_TEXTURE_3D)
 				type = LAYER_3D;
-
-			stride /= pfb->samples;
 		}
 
 		debug_assert((offset + slice->size0) <= fd_bo_size(rsc->bo));
@@ -442,7 +440,7 @@ emit_vsc_overflow_test(struct fd_batch *batch)
 
 	OUT_PKT7(ring, CP_MEM_TO_REG, 3);
 	OUT_RING(ring, CP_MEM_TO_REG_0_REG(OVERFLOW_FLAG_REG) |
-			CP_MEM_TO_REG_0_CNT(1 - 1));
+			CP_MEM_TO_REG_0_CNT(0));
 	OUT_RELOC(ring, control_ptr(fd6_ctx, vsc_scratch));  /* SRC_LO/HI */
 
 	/*
@@ -461,7 +459,7 @@ emit_vsc_overflow_test(struct fd_batch *batch)
 	OUT_PKT7(ring, CP_REG_TEST, 1);
 	OUT_RING(ring, A6XX_CP_REG_TEST_0_REG(OVERFLOW_FLAG_REG) |
 			A6XX_CP_REG_TEST_0_BIT(0) |
-			A6XX_CP_REG_TEST_0_UNK25);
+			A6XX_CP_REG_TEST_0_WAIT_FOR_ME);
 
 	OUT_PKT7(ring, CP_COND_REG_EXEC, 2);
 	OUT_RING(ring, 0x10000000);
@@ -568,7 +566,7 @@ emit_conditional_ib(struct fd_batch *batch, struct fd_tile *tile,
 	OUT_PKT7(ring, CP_REG_TEST, 1);
 	OUT_RING(ring, A6XX_CP_REG_TEST_0_REG(REG_A6XX_VSC_STATE_REG(tile->p)) |
 			A6XX_CP_REG_TEST_0_BIT(tile->n) |
-			A6XX_CP_REG_TEST_0_UNK25);
+			A6XX_CP_REG_TEST_0_WAIT_FOR_ME);
 
 	OUT_PKT7(ring, CP_COND_REG_EXEC, 2);
 	OUT_RING(ring, 0x10000000);
@@ -856,7 +854,7 @@ fd6_emit_tile_prep(struct fd_batch *batch, struct fd_tile *tile)
 		OUT_PKT7(ring, CP_REG_TEST, 1);
 		OUT_RING(ring, A6XX_CP_REG_TEST_0_REG(OVERFLOW_FLAG_REG) |
 				A6XX_CP_REG_TEST_0_BIT(0) |
-				A6XX_CP_REG_TEST_0_UNK25);
+				A6XX_CP_REG_TEST_0_WAIT_FOR_ME);
 
 		OUT_PKT7(ring, CP_COND_REG_EXEC, 2);
 		OUT_RING(ring, 0x10000000);
@@ -961,7 +959,7 @@ emit_blit(struct fd_batch *batch,
 	enum a6xx_color_fmt format = fd6_pipe2color(pfmt);
 	uint32_t stride = slice->pitch * rsc->layout.cpp;
 	uint32_t size = slice->size0;
-	enum a3xx_color_swap swap = rsc->layout.tile_mode ? WZYX : fd6_pipe2swap(pfmt);
+	enum a3xx_color_swap swap = fd6_resource_swap(rsc, pfmt);
 	enum a3xx_msaa_samples samples =
 			fd_msaa_samples(rsc->base.nr_samples);
 	uint32_t tile_mode = fd_resource_tile_mode(&rsc->base, psurf->u.tex.level);
@@ -1332,7 +1330,7 @@ fd6_emit_tile_gmem2mem(struct fd_batch *batch, struct fd_tile *tile)
 		OUT_PKT7(ring, CP_REG_TEST, 1);
 		OUT_RING(ring, A6XX_CP_REG_TEST_0_REG(OVERFLOW_FLAG_REG) |
 				A6XX_CP_REG_TEST_0_BIT(0) |
-				A6XX_CP_REG_TEST_0_UNK25);
+				A6XX_CP_REG_TEST_0_WAIT_FOR_ME);
 
 		OUT_PKT7(ring, CP_COND_REG_EXEC, 2);
 		OUT_RING(ring, 0x10000000);

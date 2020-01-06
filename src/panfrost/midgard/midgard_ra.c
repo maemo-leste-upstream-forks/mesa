@@ -380,6 +380,27 @@ mir_compute_interference(
         /* First, we need liveness information to be computed per block */
         mir_compute_liveness(ctx);
 
+        /* We need to force r1.w live throughout a blend shader */
+
+        if (ctx->is_blend) {
+                unsigned r1w = ~0;
+
+                mir_foreach_block(ctx, block) {
+                        mir_foreach_instr_in_block_rev(block, ins) {
+                                if (ins->writeout)
+                                        r1w = ins->src[2];
+                        }
+
+                        if (r1w != ~0)
+                                break;
+                }
+
+                mir_foreach_instr_global(ctx, ins) {
+                        if (ins->dest < ctx->temp_count)
+                                lcra_add_node_interference(l, ins->dest, mir_bytemask(ins), r1w, 0xF);
+                }
+        }
+
         /* Now that every block has live_in/live_out computed, we can determine
          * interference by walking each block linearly. Take live_out at the
          * end of each block and walk the block backwards. */
@@ -506,13 +527,25 @@ allocate_registers(compiler_context *ctx, bool *spilled)
                         set_class(l->class, ins->src[1], REG_CLASS_LDST);
                         set_class(l->class, ins->src[2], REG_CLASS_LDST);
 
-                        if (OP_IS_VEC4_ONLY(ins->load_store.op))
+                        if (OP_IS_VEC4_ONLY(ins->load_store.op)) {
                                 lcra_restrict_range(l, ins->dest, 16);
+                                lcra_restrict_range(l, ins->src[0], 16);
+                                lcra_restrict_range(l, ins->src[1], 16);
+                                lcra_restrict_range(l, ins->src[2], 16);
+                        }
                 } else if (ins->type == TAG_TEXTURE_4) {
                         set_class(l->class, ins->dest, REG_CLASS_TEXW);
                         set_class(l->class, ins->src[0], REG_CLASS_TEXR);
                         set_class(l->class, ins->src[1], REG_CLASS_TEXR);
                         set_class(l->class, ins->src[2], REG_CLASS_TEXR);
+                        set_class(l->class, ins->src[3], REG_CLASS_TEXR);
+
+                        /* Texture offsets need to be aligned to vec4, since
+                         * the swizzle for x is forced to x in hardware, while
+                         * the other components are free. TODO: Relax to 8 for
+                         * half-registers if that ever occurs. */
+
+                        //lcra_restrict_range(l, ins->src[3], 16);
                 }
         }
 
@@ -543,6 +576,7 @@ allocate_registers(compiler_context *ctx, bool *spilled)
         *spilled = !lcra_solve(l);
         return l;
 }
+
 
 /* Once registers have been decided via register allocation
  * (allocate_registers), we need to rewrite the MIR to use registers instead of
@@ -650,6 +684,7 @@ install_registers_instr(
                 struct phys_reg dest = index_to_reg(ctx, l, ins->dest, mir_typesize(ins));
                 struct phys_reg coord = index_to_reg(ctx, l, ins->src[1], mir_srcsize(ins, 1));
                 struct phys_reg lod = index_to_reg(ctx, l, ins->src[2], mir_srcsize(ins, 2));
+                struct phys_reg offset = index_to_reg(ctx, l, ins->src[3], mir_srcsize(ins, 2));
 
                 /* First, install the texture coordinate */
                 ins->texture.in_reg_full = 1;
@@ -668,7 +703,7 @@ install_registers_instr(
                 if (ins->src[2] != ~0) {
                         assert(!(lod.offset & 3));
                         midgard_tex_register_select sel = {
-                                .select = lod.reg,
+                                .select = lod.reg & 1,
                                 .full = 1,
                                 .component = lod.offset / 4
                         };
@@ -676,6 +711,24 @@ install_registers_instr(
                         uint8_t packed;
                         memcpy(&packed, &sel, sizeof(packed));
                         ins->texture.bias = packed;
+                }
+
+                /* If there is an offset register, install it */
+                if (ins->src[3] != ~0) {
+                        unsigned x = offset.offset / 4;
+                        unsigned y = x + 1;
+                        unsigned z = x + 2;
+
+                        /* Check range, TODO: half-registers */
+                        assert(z < 4);
+
+                        ins->texture.offset =
+                                (1)                   | /* full */
+                                (offset.reg & 1) << 1 | /* select */
+                                (0 << 2)              | /* upper */
+                                (x << 3)              | /* swizzle */
+                                (y << 5)              | /* swizzle */
+                                (z << 7);               /* swizzle */
                 }
 
                 break;

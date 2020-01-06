@@ -27,6 +27,7 @@
 #include "midgard.h"
 #include "helpers.h"
 #include "midgard_compile.h"
+#include "midgard_ops.h"
 #include "lcra.h"
 
 #include "util/hash_table.h"
@@ -78,7 +79,7 @@ typedef struct midgard_branch {
  * emitted before the register allocation pass.
  */
 
-#define MIR_SRC_COUNT 3
+#define MIR_SRC_COUNT 4
 #define MIR_VEC_COMPONENTS 16
 
 typedef struct midgard_instruction {
@@ -89,7 +90,7 @@ typedef struct midgard_instruction {
 
         /* Instruction arguments represented as block-local SSA
          * indices, rather than registers. ~0 means unused. */
-        unsigned src[3];
+        unsigned src[MIR_SRC_COUNT];
         unsigned dest;
 
         /* vec16 swizzle, unpacked, per source */
@@ -109,7 +110,7 @@ typedef struct midgard_instruction {
 
         bool compact_branch;
         bool writeout;
-        bool prepacked_branch;
+        bool last_writeout;
 
         /* Kind of a hack, but hint against aggressive DCE */
         bool dont_eliminate;
@@ -121,7 +122,7 @@ typedef struct midgard_instruction {
         uint16_t mask;
 
         /* For ALU ops only: set to true to invert (bitwise NOT) the
-         * destination of an integer-out op. Not imeplemented in hardware but
+         * destination of an integer-out op. Not implemented in hardware but
          * allows more optimizations */
 
         bool invert;
@@ -218,6 +219,7 @@ typedef struct midgard_bundle {
         bool has_embedded_constants;
         float constants[4];
         bool has_blend_constant;
+        bool last_writeout;
 } midgard_bundle;
 
 typedef struct compiler_context {
@@ -303,6 +305,9 @@ typedef struct compiler_context {
 
         /* Model-specific quirk set */
         uint32_t quirks;
+
+        /* Writeout instructions for each render target */
+        midgard_instruction *writeout_branch[4];
 } compiler_context;
 
 /* Per-block live_in/live_out */
@@ -463,7 +468,7 @@ mir_exit_block(struct compiler_context *ctx)
 static inline bool
 mir_is_alu_bundle(midgard_bundle *bundle)
 {
-        return IS_ALU(bundle->tag);
+        return midgard_word_types[bundle->tag] == midgard_word_type_alu;
 }
 
 /* Registers/SSA are distinguish in the backend by the bottom-most bit */
@@ -534,6 +539,7 @@ uint16_t mir_to_bytemask(midgard_reg_mode mode, unsigned mask);
 uint16_t mir_bytemask(midgard_instruction *ins);
 uint16_t mir_round_bytemask_down(uint16_t mask, midgard_reg_mode mode);
 void mir_set_bytemask(midgard_instruction *ins, uint16_t bytemask);
+unsigned mir_upper_override(midgard_instruction *ins);
 
 /* MIR printing */
 
@@ -558,7 +564,7 @@ v_mov(unsigned src, unsigned dest)
         midgard_instruction ins = {
                 .type = TAG_ALU_4,
                 .mask = 0xF,
-                .src = { SSA_UNUSED, src, SSA_UNUSED },
+                .src = { ~0, src, ~0, ~0 },
                 .swizzle = SWIZZLE_IDENTITY,
                 .dest = dest,
                 .alu = {
@@ -596,7 +602,7 @@ v_load_store_scratch(
                 .type = TAG_LOAD_STORE_4,
                 .mask = mask,
                 .dest = ~0,
-                .src = { ~0, ~0, ~0 },
+                .src = { ~0, ~0, ~0, ~0 },
                 .swizzle = SWIZZLE_IDENTITY_4,
                 .load_store = {
                         .op = is_store ? midgard_op_st_int4 : midgard_op_ld_int4,
@@ -655,9 +661,7 @@ void mir_invalidate_liveness(compiler_context *ctx);
 bool mir_is_live_after(compiler_context *ctx, midgard_block *block, midgard_instruction *start, int src);
 
 void mir_create_pipeline_registers(compiler_context *ctx);
-
-void
-midgard_promote_uniforms(compiler_context *ctx, unsigned promoted_count);
+void midgard_promote_uniforms(compiler_context *ctx);
 
 midgard_instruction *
 emit_ubo_read(
@@ -706,5 +710,7 @@ bool midgard_opt_fuse_src_invert(compiler_context *ctx, midgard_block *block);
 bool midgard_opt_fuse_dest_invert(compiler_context *ctx, midgard_block *block);
 bool midgard_opt_csel_invert(compiler_context *ctx, midgard_block *block);
 bool midgard_opt_promote_fmov(compiler_context *ctx, midgard_block *block);
+bool midgard_opt_drop_cmp_invert(compiler_context *ctx, midgard_block *block);
+bool midgard_opt_invert_branch(compiler_context *ctx, midgard_block *block);
 
 #endif

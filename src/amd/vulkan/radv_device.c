@@ -1286,11 +1286,11 @@ void radv_GetPhysicalDeviceProperties(
 		.maxFragmentCombinedOutputResources       = 8,
 		.maxComputeSharedMemorySize               = 32768,
 		.maxComputeWorkGroupCount                 = { 65535, 65535, 65535 },
-		.maxComputeWorkGroupInvocations           = 2048,
+		.maxComputeWorkGroupInvocations           = 1024,
 		.maxComputeWorkGroupSize = {
-			2048,
-			2048,
-			2048
+			1024,
+			1024,
+			1024
 		},
 		.subPixelPrecisionBits                    = 8,
 		.subTexelPrecisionBits                    = 8,
@@ -1323,7 +1323,7 @@ void radv_GetPhysicalDeviceProperties(
 		.framebufferNoAttachmentsSampleCounts     = sample_counts,
 		.maxColorAttachments                      = MAX_RTS,
 		.sampledImageColorSampleCounts            = sample_counts,
-		.sampledImageIntegerSampleCounts          = VK_SAMPLE_COUNT_1_BIT,
+		.sampledImageIntegerSampleCounts          = sample_counts,
 		.sampledImageDepthSampleCounts            = sample_counts,
 		.sampledImageStencilSampleCounts          = sample_counts,
 		.storageImageSampleCounts                 = pdevice->rad_info.chip_class >= GFX8 ? sample_counts : VK_SAMPLE_COUNT_1_BIT,
@@ -3033,7 +3033,7 @@ fill_geom_tess_rings(struct radv_queue *queue,
 
 		if (queue->device->physical_device->rad_info.chip_class >= GFX10) {
 			desc[3] |= S_008F0C_FORMAT(V_008F0C_IMG_FORMAT_32_FLOAT) |
-				   S_008F0C_OOB_SELECT(2) |
+				   S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_DISABLED) |
 				   S_008F0C_RESOURCE_LEVEL(1);
 		} else {
 			desc[3] |= S_008F0C_NUM_FORMAT(V_008F0C_BUF_NUM_FORMAT_FLOAT) |
@@ -3054,7 +3054,7 @@ fill_geom_tess_rings(struct radv_queue *queue,
 
 		if (queue->device->physical_device->rad_info.chip_class >= GFX10) {
 			desc[7] |= S_008F0C_FORMAT(V_008F0C_IMG_FORMAT_32_FLOAT) |
-				   S_008F0C_OOB_SELECT(2) |
+				   S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_DISABLED) |
 				   S_008F0C_RESOURCE_LEVEL(1);
 		} else {
 			desc[7] |= S_008F0C_NUM_FORMAT(V_008F0C_BUF_NUM_FORMAT_FLOAT) |
@@ -3080,7 +3080,7 @@ fill_geom_tess_rings(struct radv_queue *queue,
 
 		if (queue->device->physical_device->rad_info.chip_class >= GFX10) {
 			desc[3] |= S_008F0C_FORMAT(V_008F0C_IMG_FORMAT_32_FLOAT) |
-				   S_008F0C_OOB_SELECT(2) |
+				   S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_DISABLED) |
 				   S_008F0C_RESOURCE_LEVEL(1);
 		} else {
 			desc[3] |= S_008F0C_NUM_FORMAT(V_008F0C_BUF_NUM_FORMAT_FLOAT) |
@@ -3103,7 +3103,7 @@ fill_geom_tess_rings(struct radv_queue *queue,
 
 		if (queue->device->physical_device->rad_info.chip_class >= GFX10) {
 			desc[7] |= S_008F0C_FORMAT(V_008F0C_IMG_FORMAT_32_FLOAT) |
-				   S_008F0C_OOB_SELECT(2) |
+				   S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_DISABLED) |
 				   S_008F0C_RESOURCE_LEVEL(1);
 		} else {
 			desc[7] |= S_008F0C_NUM_FORMAT(V_008F0C_BUF_NUM_FORMAT_FLOAT) |
@@ -3129,7 +3129,7 @@ fill_geom_tess_rings(struct radv_queue *queue,
 
 		if (queue->device->physical_device->rad_info.chip_class >= GFX10) {
 			desc[3] |= S_008F0C_FORMAT(V_008F0C_IMG_FORMAT_32_FLOAT) |
-				   S_008F0C_OOB_SELECT(3) |
+				   S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_RAW) |
 				   S_008F0C_RESOURCE_LEVEL(1);
 		} else {
 			desc[3] |= S_008F0C_NUM_FORMAT(V_008F0C_BUF_NUM_FORMAT_FLOAT) |
@@ -3146,7 +3146,7 @@ fill_geom_tess_rings(struct radv_queue *queue,
 
 		if (queue->device->physical_device->rad_info.chip_class >= GFX10) {
 			desc[7] |= S_008F0C_FORMAT(V_008F0C_IMG_FORMAT_32_FLOAT) |
-				   S_008F0C_OOB_SELECT(3) |
+				   S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_RAW) |
 				   S_008F0C_RESOURCE_LEVEL(1);
 		} else {
 			desc[7] |= S_008F0C_NUM_FORMAT(V_008F0C_BUF_NUM_FORMAT_FLOAT) |

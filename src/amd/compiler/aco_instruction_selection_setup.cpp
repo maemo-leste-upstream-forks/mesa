@@ -53,7 +53,7 @@ struct isel_context {
    Block *block;
    bool *divergent_vals;
    std::unique_ptr<Temp[]> allocated;
-   std::unordered_map<unsigned, std::array<Temp,4>> allocated_vec;
+   std::unordered_map<unsigned, std::array<Temp,NIR_MAX_VEC_COMPONENTS>> allocated_vec;
    Stage stage; /* Stage */
    bool has_gfx10_wave64_bpermute = false;
    struct {
@@ -800,11 +800,13 @@ setup_isel_context(Program* program,
    program->lds_alloc_granule = args->options->chip_class >= GFX7 ? 512 : 256;
    program->lds_limit = args->options->chip_class >= GFX7 ? 65536 : 32768;
    program->vgpr_limit = 256;
+   program->vgpr_alloc_granule = 3;
 
    if (args->options->chip_class >= GFX10) {
       program->physical_sgprs = 2560; /* doesn't matter as long as it's at least 128 * 20 */
       program->sgpr_alloc_granule = 127;
       program->sgpr_limit = 106;
+      program->vgpr_alloc_granule = program->wave_size == 32 ? 7 : 3;
    } else if (program->chip_class >= GFX8) {
       program->physical_sgprs = 800;
       program->sgpr_alloc_granule = 15;

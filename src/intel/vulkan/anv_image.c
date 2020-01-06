@@ -745,7 +745,7 @@ anv_CreateImage(VkDevice device,
                 const VkAllocationCallbacks *pAllocator,
                 VkImage *pImage)
 {
-   const struct VkExternalMemoryImageCreateInfo *create_info =
+   const VkExternalMemoryImageCreateInfo *create_info =
       vk_find_struct_const(pCreateInfo->pNext, EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
 
    if (create_info && (create_info->handleTypes &
@@ -754,7 +754,7 @@ anv_CreateImage(VkDevice device,
                                      pAllocator, pImage);
 
    bool use_external_format = false;
-   const struct VkExternalFormatANDROID *ext_format =
+   const VkExternalFormatANDROID *ext_format =
       vk_find_struct_const(pCreateInfo->pNext, EXTERNAL_FORMAT_ANDROID);
 
    /* "If externalFormat is zero, the effect is as if the
@@ -1131,7 +1131,6 @@ anv_layout_to_aux_usage(const struct gen_device_info * const devinfo,
     */
    case VK_IMAGE_LAYOUT_GENERAL:
    case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
-   case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
       if (aspect == VK_IMAGE_ASPECT_DEPTH_BIT) {
          /* This buffer could be a depth buffer used in a transfer operation.
           * BLORP currently doesn't use HiZ for transfer operations so we must
@@ -1151,6 +1150,7 @@ anv_layout_to_aux_usage(const struct gen_device_info * const devinfo,
    case VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL:
       assert((image->aspects & VK_IMAGE_ASPECT_ANY_COLOR_BIT_ANV) == 0);
       /* Fall-through */
+   case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
    case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
       if (aspect == VK_IMAGE_ASPECT_DEPTH_BIT) {
          if (anv_can_sample_with_hiz(devinfo, image))
@@ -1590,7 +1590,7 @@ anv_CreateImageView(VkDevice _device,
 
    /* Check if a conversion info was passed. */
    const struct anv_format *conv_format = NULL;
-   const struct VkSamplerYcbcrConversionInfo *conv_info =
+   const VkSamplerYcbcrConversionInfo *conv_info =
       vk_find_struct_const(pCreateInfo->pNext, SAMPLER_YCBCR_CONVERSION_INFO);
 
    /* If image has an external format, the pNext chain must contain an instance of

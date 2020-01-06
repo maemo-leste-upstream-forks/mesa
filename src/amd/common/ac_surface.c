@@ -206,6 +206,17 @@ static int gfx6_compute_level(ADDR_HANDLE addrlib,
 		AddrSurfInfoIn->width = align(AddrSurfInfoIn->width, alignment);
 	}
 
+	/* addrlib assumes the bytes/pixel is a divisor of 64, which is not
+	 * true for r32g32b32 formats. */
+	if (AddrSurfInfoIn->bpp == 96) {
+		assert(config->info.levels == 1);
+		assert(AddrSurfInfoIn->tileMode == ADDR_TM_LINEAR_ALIGNED);
+
+		/* The least common multiple of 64 bytes and 12 bytes/pixel is
+		 * 192 bytes, or 16 pixels. */
+		AddrSurfInfoIn->width = align(AddrSurfInfoIn->width, 16);
+	}
+
 	if (config->is_3d)
 		AddrSurfInfoIn->numSlices = u_minify(config->info.depth, level);
 	else if (config->is_cube)
@@ -1051,8 +1062,10 @@ static int gfx9_compute_miptree(ADDR_HANDLE addrlib,
 	surf->surf_alignment = out.baseAlign;
 
 	if (in->swizzleMode == ADDR_SW_LINEAR) {
-		for (unsigned i = 0; i < in->numMipLevels; i++)
+		for (unsigned i = 0; i < in->numMipLevels; i++) {
 			surf->u.gfx9.offset[i] = mip_info[i].offset;
+			surf->u.gfx9.pitch[i] = mip_info[i].pitch;
+		}
 	}
 
 	if (in->flags.depth) {
@@ -1352,6 +1365,7 @@ static int gfx9_compute_miptree(ADDR_HANDLE addrlib,
 
 		/* CMASK -- on GFX10 only for FMASK */
 		if (in->swizzleMode != ADDR_SW_LINEAR &&
+		    in->resourceType == ADDR_RSRC_TEX_2D &&
 		    ((info->chip_class <= GFX9 && in->numSamples == 1) ||
 		     (surf->fmask_size && in->numSamples >= 2))) {
 			ADDR2_COMPUTE_CMASK_INFO_INPUT cin = {0};

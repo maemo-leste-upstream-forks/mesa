@@ -310,7 +310,7 @@ static int si_init_surface(struct si_screen *sscreen,
 	if (!is_imported && (sscreen->debug_flags & DBG(NO_DCC)))
 		flags |= RADEON_SURF_DISABLE_DCC;
 
-	if (ptex->bind & PIPE_BIND_SCANOUT || is_scanout) {
+	if (is_scanout) {
 		/* This should catch bugs in gallium users setting incorrect flags. */
 		assert(ptex->nr_samples <= 1 &&
 		       ptex->array_size == 1 &&
@@ -374,10 +374,8 @@ static void si_get_display_metadata(struct si_screen *sscreen,
 		else
 			*array_mode = RADEON_SURF_MODE_LINEAR_ALIGNED;
 
-		*is_scanout = metadata->u.gfx9.swizzle_mode == 0 ||
-			      metadata->u.gfx9.swizzle_mode % 4 == 2;
-
 		surf->u.gfx9.surf.swizzle_mode = metadata->u.gfx9.swizzle_mode;
+		*is_scanout = metadata->u.gfx9.scanout;
 
 		if (metadata->u.gfx9.dcc_offset_256B) {
 			surf->u.gfx9.display_dcc_pitch_max = metadata->u.gfx9.dcc_pitch_max;
@@ -464,10 +462,8 @@ static void si_texture_zero_dcc_fields(struct si_texture *tex)
 static bool si_texture_discard_dcc(struct si_screen *sscreen,
 				   struct si_texture *tex)
 {
-	if (!si_can_disable_dcc(tex)) {
-		assert(tex->surface.display_dcc_offset == 0);
+	if (!si_can_disable_dcc(tex))
 		return false;
-	}
 
 	assert(tex->dcc_separate_buffer == NULL);
 
@@ -658,6 +654,7 @@ static void si_set_tex_bo_metadata(struct si_screen *sscreen,
 
 	if (sscreen->info.chip_class >= GFX9) {
 		md.u.gfx9.swizzle_mode = surface->u.gfx9.surf.swizzle_mode;
+		md.u.gfx9.scanout = (surface->flags & RADEON_SURF_SCANOUT) != 0;
 
 		if (tex->surface.dcc_offset && !tex->dcc_separate_buffer) {
 			uint64_t dcc_offset =
@@ -808,12 +805,7 @@ static bool si_read_tex_bo_metadata(struct si_screen *sscreen,
 
 	if (sscreen->info.chip_class >= GFX8 &&
 	    G_008F28_COMPRESSION_EN(desc[6])) {
-		/* Read DCC information.
-		 *
-		 * Some state trackers don't set the SCANOUT flag when
-		 * importing displayable images, which affects PIPE_ALIGNED
-		 * and RB_ALIGNED, so we need to recover them here.
-		 */
+		/* Read DCC information. */
 		switch (sscreen->info.chip_class) {
 		case GFX8:
 			tex->surface.dcc_offset = (uint64_t)desc[7] << 8;
@@ -831,7 +823,7 @@ static bool si_read_tex_bo_metadata(struct si_screen *sscreen,
 			/* If DCC is unaligned, this can only be a displayable image. */
 			if (!tex->surface.u.gfx9.dcc.pipe_aligned &&
 			    !tex->surface.u.gfx9.dcc.rb_aligned)
-				tex->surface.is_displayable = true;
+				assert(tex->surface.is_displayable);
 			break;
 
 		case GFX10:
@@ -1701,7 +1693,8 @@ struct pipe_resource *si_texture_create(struct pipe_screen *screen,
 			plane_templ[i].bind |= PIPE_BIND_SHARED;
 
 		if (si_init_surface(sscreen, &surface[i], &plane_templ[i],
-				    tile_mode, 0, false, false,
+				    tile_mode, 0, false,
+				    plane_templ[i].bind & PIPE_BIND_SCANOUT,
 				    is_flushed_depth, tc_compatible_htile))
 			return NULL;
 

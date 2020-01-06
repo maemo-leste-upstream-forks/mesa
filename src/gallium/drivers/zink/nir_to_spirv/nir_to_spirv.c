@@ -56,7 +56,7 @@ struct ntv_context {
    bool block_started;
    SpvId loop_break, loop_cont;
 
-   SpvId front_face_var;
+   SpvId front_face_var, vertex_id_var;
 };
 
 static SpvId
@@ -906,6 +906,7 @@ emit_alu(struct ntv_context *ctx, nir_alu_instr *alu)
       result = emit_builtin_unop(ctx, spirv_op, dest_type, src[0]); \
       break;
 
+   BUILTIN_UNOP(nir_op_iabs, GLSLstd450SAbs)
    BUILTIN_UNOP(nir_op_fabs, GLSLstd450FAbs)
    BUILTIN_UNOP(nir_op_fsqrt, GLSLstd450Sqrt)
    BUILTIN_UNOP(nir_op_frsq, GLSLstd450InverseSqrt)
@@ -948,6 +949,7 @@ emit_alu(struct ntv_context *ctx, nir_alu_instr *alu)
    BINOP(nir_op_imul, SpvOpIMul)
    BINOP(nir_op_idiv, SpvOpSDiv)
    BINOP(nir_op_udiv, SpvOpUDiv)
+   BINOP(nir_op_umod, SpvOpUMod)
    BINOP(nir_op_fadd, SpvOpFAdd)
    BINOP(nir_op_fsub, SpvOpFSub)
    BINOP(nir_op_fmul, SpvOpFMul)
@@ -957,6 +959,7 @@ emit_alu(struct ntv_context *ctx, nir_alu_instr *alu)
    BINOP(nir_op_ige, SpvOpSGreaterThanEqual)
    BINOP(nir_op_ieq, SpvOpIEqual)
    BINOP(nir_op_ine, SpvOpINotEqual)
+   BINOP(nir_op_uge, SpvOpUGreaterThanEqual)
    BINOP(nir_op_flt, SpvOpFOrdLessThan)
    BINOP(nir_op_fge, SpvOpFOrdGreaterThanEqual)
    BINOP(nir_op_feq, SpvOpFOrdEqual)
@@ -1242,30 +1245,54 @@ emit_store_deref(struct ntv_context *ctx, nir_intrinsic_instr *intr)
    spirv_builder_emit_store(&ctx->builder, ptr, result);
 }
 
+static SpvId
+create_builtin_var(struct ntv_context *ctx, SpvId var_type,
+                   SpvStorageClass storage_class,
+                   const char *name, SpvBuiltIn builtin)
+{
+   SpvId pointer_type = spirv_builder_type_pointer(&ctx->builder,
+                                                   storage_class,
+                                                   var_type);
+   SpvId var = spirv_builder_emit_var(&ctx->builder, pointer_type,
+                                      storage_class);
+   spirv_builder_emit_name(&ctx->builder, var, name);
+   spirv_builder_emit_builtin(&ctx->builder, var, builtin);
+
+   assert(ctx->num_entry_ifaces < ARRAY_SIZE(ctx->entry_ifaces));
+   ctx->entry_ifaces[ctx->num_entry_ifaces++] = var;
+   return var;
+}
+
 static void
 emit_load_front_face(struct ntv_context *ctx, nir_intrinsic_instr *intr)
 {
-   SpvId var_type = get_glsl_type(ctx, glsl_bool_type());
-   if (!ctx->front_face_var) {
-      SpvId pointer_type = spirv_builder_type_pointer(&ctx->builder,
-                                                      SpvStorageClassInput,
-                                                      var_type);
-      ctx->front_face_var = spirv_builder_emit_var(&ctx->builder,
-                                                   pointer_type,
-                                                   SpvStorageClassInput);
-      spirv_builder_emit_name(&ctx->builder, ctx->front_face_var,
-                              "gl_FrontFacing");
-      spirv_builder_emit_builtin(&ctx->builder, ctx->front_face_var,
-                                 SpvBuiltInFrontFacing);
-
-      assert(ctx->num_entry_ifaces < ARRAY_SIZE(ctx->entry_ifaces));
-      ctx->entry_ifaces[ctx->num_entry_ifaces++] = ctx->front_face_var;
-   }
+   SpvId var_type = spirv_builder_type_bool(&ctx->builder);
+   if (!ctx->front_face_var)
+      ctx->front_face_var = create_builtin_var(ctx, var_type,
+                                               SpvStorageClassInput,
+                                               "gl_FrontFacing",
+                                               SpvBuiltInFrontFacing);
 
    SpvId result = spirv_builder_emit_load(&ctx->builder, var_type,
                                           ctx->front_face_var);
    assert(1 == nir_dest_num_components(intr->dest));
    result = bvec_to_uvec(ctx, result, 1);
+   store_dest_uint(ctx, &intr->dest, result);
+}
+
+static void
+emit_load_vertex_id(struct ntv_context *ctx, nir_intrinsic_instr *intr)
+{
+   SpvId var_type = spirv_builder_type_uint(&ctx->builder, 32);
+   if (!ctx->vertex_id_var)
+      ctx->vertex_id_var = create_builtin_var(ctx, var_type,
+                                               SpvStorageClassInput,
+                                               "gl_VertexID",
+                                               SpvBuiltInVertexIndex);
+
+   SpvId result = spirv_builder_emit_load(&ctx->builder, var_type,
+                                          ctx->vertex_id_var);
+   assert(1 == nir_dest_num_components(intr->dest));
    store_dest_uint(ctx, &intr->dest, result);
 }
 
@@ -1291,6 +1318,10 @@ emit_intrinsic(struct ntv_context *ctx, nir_intrinsic_instr *intr)
 
    case nir_intrinsic_load_front_face:
       emit_load_front_face(ctx, intr);
+      break;
+
+   case nir_intrinsic_load_vertex_id:
+      emit_load_vertex_id(ctx, intr);
       break;
 
    default:
@@ -1319,21 +1350,35 @@ get_src_float(struct ntv_context *ctx, nir_src *src)
    return bitcast_to_fvec(ctx, def, bit_size, num_components);
 }
 
+static SpvId
+get_src_int(struct ntv_context *ctx, nir_src *src)
+{
+   SpvId def = get_src_uint(ctx, src);
+   unsigned num_components = nir_src_num_components(*src);
+   unsigned bit_size = nir_src_bit_size(*src);
+   return bitcast_to_ivec(ctx, def, bit_size, num_components);
+}
+
 static void
 emit_tex(struct ntv_context *ctx, nir_tex_instr *tex)
 {
    assert(tex->op == nir_texop_tex ||
           tex->op == nir_texop_txb ||
-          tex->op == nir_texop_txl);
+          tex->op == nir_texop_txl ||
+          tex->op == nir_texop_txd ||
+          tex->op == nir_texop_txf);
    assert(nir_alu_type_get_base_type(tex->dest_type) == nir_type_float);
    assert(tex->texture_index == tex->sampler_index);
 
-   SpvId coord = 0, proj = 0, bias = 0, lod = 0, dref = 0;
+   SpvId coord = 0, proj = 0, bias = 0, lod = 0, dref = 0, dx = 0, dy = 0;
    unsigned coord_components = 0;
    for (unsigned i = 0; i < tex->num_srcs; i++) {
       switch (tex->src[i].src_type) {
       case nir_tex_src_coord:
-         coord = get_src_float(ctx, &tex->src[i].src);
+         if (tex->op == nir_texop_txf)
+            coord = get_src_int(ctx, &tex->src[i].src);
+         else
+            coord = get_src_float(ctx, &tex->src[i].src);
          coord_components = nir_src_num_components(tex->src[i].src);
          break;
 
@@ -1351,7 +1396,10 @@ emit_tex(struct ntv_context *ctx, nir_tex_instr *tex)
 
       case nir_tex_src_lod:
          assert(nir_src_num_components(tex->src[i].src) == 1);
-         lod = get_src_float(ctx, &tex->src[i].src);
+         if (tex->op == nir_texop_txf)
+            lod = get_src_int(ctx, &tex->src[i].src);
+         else
+            lod = get_src_float(ctx, &tex->src[i].src);
          assert(lod != 0);
          break;
 
@@ -1359,6 +1407,16 @@ emit_tex(struct ntv_context *ctx, nir_tex_instr *tex)
          assert(nir_src_num_components(tex->src[i].src) == 1);
          dref = get_src_float(ctx, &tex->src[i].src);
          assert(dref != 0);
+         break;
+
+      case nir_tex_src_ddx:
+         dx = get_src_float(ctx, &tex->src[i].src);
+         assert(dx != 0);
+         break;
+
+      case nir_tex_src_ddy:
+         dy = get_src_float(ctx, &tex->src[i].src);
+         assert(dy != 0);
          break;
 
       default:
@@ -1414,11 +1472,19 @@ emit_tex(struct ntv_context *ctx, nir_tex_instr *tex)
    if (dref)
       actual_dest_type = float_type;
 
-   SpvId result = spirv_builder_emit_image_sample(&ctx->builder,
-                                                  actual_dest_type, load,
-                                                  coord,
-                                                  proj != 0,
-                                                  lod, bias, dref);
+   SpvId result;
+   if (tex->op == nir_texop_txf) {
+      SpvId image = spirv_builder_emit_image(&ctx->builder, image_type, load);
+      result = spirv_builder_emit_image_fetch(&ctx->builder, dest_type,
+                                              image, coord, lod);
+   } else {
+      result = spirv_builder_emit_image_sample(&ctx->builder,
+                                               actual_dest_type, load,
+                                               coord,
+                                               proj != 0,
+                                               lod, bias, dref, dx, dy);
+   }
+
    spirv_builder_emit_decoration(&ctx->builder, result,
                                  SpvDecorationRelaxedPrecision);
 

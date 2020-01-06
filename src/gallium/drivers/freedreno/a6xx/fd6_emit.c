@@ -753,8 +753,8 @@ fd6_emit_streamout(struct fd_ringbuffer *ring, struct fd6_emit *emit, struct ir3
 		} else {
 			OUT_PKT7(ring, CP_MEM_TO_REG, 3);
 			OUT_RING(ring, CP_MEM_TO_REG_0_REG(REG_A6XX_VPC_SO_BUFFER_OFFSET(i)) |
-					CP_MEM_TO_REG_0_64B | CP_MEM_TO_REG_0_ACCUMULATE |
-					CP_MEM_TO_REG_0_CNT(1 - 1));
+					CP_MEM_TO_REG_0_SHIFT_BY_2 | CP_MEM_TO_REG_0_UNK31 |
+					CP_MEM_TO_REG_0_CNT(0));
 			OUT_RELOC(ring, control_ptr(fd6_context(ctx), flush_base[i].offset));
 		}
 
@@ -1320,7 +1320,7 @@ fd6_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
 	WRITE(REG_A6XX_UCHE_CLIENT_PF, 4);
 	WRITE(REG_A6XX_RB_UNKNOWN_8E01, 0x1);
 	WRITE(REG_A6XX_SP_UNKNOWN_AB00, 0x5);
-	WRITE(REG_A6XX_VFD_UNKNOWN_A009, 0x00000001);
+	WRITE(REG_A6XX_VFD_ADD_OFFSET, A6XX_VFD_ADD_OFFSET_VERTEX);
 	WRITE(REG_A6XX_RB_UNKNOWN_8811, 0x00000010);
 	WRITE(REG_A6XX_PC_MODE_CNTL, 0x1f);
 
@@ -1444,11 +1444,12 @@ fd6_framebuffer_barrier(struct fd_context *ctx)
 	seqno = fd6_event_write(batch, ring, CACHE_FLUSH_AND_INV_EVENT, true);
 
 	OUT_PKT7(ring, CP_WAIT_REG_MEM, 6);
-	OUT_RING(ring, 0x00000013);
+	OUT_RING(ring, CP_WAIT_REG_MEM_0_FUNCTION(WRITE_EQ) |
+		       CP_WAIT_REG_MEM_0_POLL_MEMORY);
 	OUT_RELOC(ring, control_ptr(fd6_ctx, seqno));
-	OUT_RING(ring, seqno);
-	OUT_RING(ring, 0xffffffff);
-	OUT_RING(ring, 0x00000010);
+	OUT_RING(ring, CP_WAIT_REG_MEM_3_REF(seqno));
+	OUT_RING(ring, CP_WAIT_REG_MEM_4_MASK(~0));
+	OUT_RING(ring, CP_WAIT_REG_MEM_5_DELAY_LOOP_CYCLES(16));
 
 	fd6_event_write(batch, ring, UNK_1D, true);
 	fd6_event_write(batch, ring, UNK_1C, true);
@@ -1457,10 +1458,10 @@ fd6_framebuffer_barrier(struct fd_context *ctx)
 
 	fd6_event_write(batch, ring, 0x31, false);
 
-	OUT_PKT7(ring, CP_UNK_A6XX_14, 4);
-	OUT_RING(ring, 0x00000000);
+	OUT_PKT7(ring, CP_WAIT_MEM_GTE, 4);
+	OUT_RING(ring, CP_WAIT_MEM_GTE_0_RESERVED(0));
 	OUT_RELOC(ring, control_ptr(fd6_ctx, seqno));
-	OUT_RING(ring, seqno);
+	OUT_RING(ring, CP_WAIT_MEM_GTE_3_REF(seqno));
 }
 
 void

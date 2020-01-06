@@ -112,7 +112,7 @@ mir_print_instruction(midgard_instruction *ins)
                         "goto", "break", "continue", "discard"
                 };
 
-                if (ins->compact_branch && !ins->prepacked_branch)
+                if (ins->compact_branch)
                         name = branch_target_names[ins->branch.target_type];
 
                 if (ins->unit)
@@ -140,7 +140,7 @@ mir_print_instruction(midgard_instruction *ins)
                 assert(0);
         }
 
-        if (ins->invert || (ins->compact_branch && !ins->prepacked_branch && ins->branch.invert_conditional))
+        if (ins->invert || (ins->compact_branch && ins->branch.invert_conditional))
                 printf(".not");
 
         printf(" ");
@@ -165,6 +165,10 @@ mir_print_instruction(midgard_instruction *ins)
         printf(", ");
         mir_print_index(ins->src[2]);
         mir_print_swizzle(ins->swizzle[2]);
+
+        printf(", ");
+        mir_print_index(ins->src[3]);
+        mir_print_swizzle(ins->swizzle[3]);
 
         if (ins->has_constants) {
                 uint32_t *uc = ins->constants;

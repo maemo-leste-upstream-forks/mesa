@@ -447,8 +447,8 @@ VkResult genX(CreateSampler)(
       }
 #if GEN_GEN >= 9
       case VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO_EXT: {
-         struct VkSamplerReductionModeCreateInfoEXT *sampler_reduction =
-            (struct VkSamplerReductionModeCreateInfoEXT *) ext;
+         VkSamplerReductionModeCreateInfoEXT *sampler_reduction =
+            (VkSamplerReductionModeCreateInfoEXT *) ext;
          sampler_reduction_mode =
             vk_to_gen_sampler_reduction_mode[sampler_reduction->reductionMode];
          enable_sampler_reduction = true;
@@ -506,7 +506,8 @@ VkResult genX(CreateSampler)(
          .MagModeFilter = vk_to_gen_tex_filter(mag_filter, pCreateInfo->anisotropyEnable),
          .MinModeFilter = vk_to_gen_tex_filter(min_filter, pCreateInfo->anisotropyEnable),
          .TextureLODBias = anv_clamp_f(pCreateInfo->mipLodBias, -16, 15.996),
-         .AnisotropicAlgorithm = EWAApproximation,
+         .AnisotropicAlgorithm =
+            pCreateInfo->anisotropyEnable ? EWAApproximation : LEGACY,
          .MinLOD = anv_clamp_f(pCreateInfo->minLod, 0, 14),
          .MaxLOD = anv_clamp_f(pCreateInfo->maxLod, 0, 14),
          .ChromaKeyEnable = 0,

@@ -270,7 +270,7 @@ void radv_logi_v(const char *format, va_list va);
 				fprintf(stderr, "%s:%d ASSERT: %s\n", __FILE__, __LINE__, #x); \
 		})
 #else
-#define radv_assert(x)
+#define radv_assert(x) do {} while(0)
 #endif
 
 #define stub_return(v)					\
@@ -2156,6 +2156,9 @@ struct radv_subpass {
 	struct radv_subpass_barrier                  start_barrier;
 
 	uint32_t                                     view_mask;
+
+	VkSampleCountFlagBits                        color_sample_count;
+	VkSampleCountFlagBits                        depth_sample_count;
 	VkSampleCountFlagBits                        max_sample_count;
 };
 

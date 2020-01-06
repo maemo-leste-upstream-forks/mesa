@@ -121,8 +121,6 @@ struct lima_context_constant_buffer {
 };
 
 enum lima_ctx_buff {
-   lima_ctx_buff_sh_gl_pos,
-   lima_ctx_buff_sh_gl_point_size,
    lima_ctx_buff_gp_varying_info,
    lima_ctx_buff_gp_attribute_info,
    lima_ctx_buff_gp_uniform,
@@ -190,7 +188,6 @@ struct lima_context {
    } dirty;
 
    struct u_upload_mgr *uploader;
-   struct u_suballocator *suballocator;
    struct blitter_context *blitter;
 
    struct slab_child_pool transfer_pool;
@@ -198,6 +195,7 @@ struct lima_context {
    struct lima_context_framebuffer framebuffer;
    struct lima_context_viewport_state viewport;
    struct pipe_scissor_state scissor;
+   struct pipe_scissor_state damage_rect;
    struct lima_context_clear clear;
    struct lima_vs_shader_state *vs;
    struct lima_fs_shader_state *fs;
@@ -226,7 +224,9 @@ struct lima_context {
    struct lima_bo *gp_tile_heap[LIMA_CTX_PLB_MAX_NUM];
    #define gp_tile_heap_size         0x100000
    struct lima_bo *plb_gp_stream;
-   struct lima_bo *sh_varying;
+   struct lima_bo *gp_output;
+   uint32_t gp_output_varyings_offt;
+   uint32_t gp_output_point_size_offt;
 
    struct hash_table *plb_pp_stream;
    uint32_t plb_index;
@@ -282,7 +282,7 @@ uint32_t lima_ctx_buff_va(struct lima_context *ctx, enum lima_ctx_buff buff,
                           unsigned submit);
 void *lima_ctx_buff_map(struct lima_context *ctx, enum lima_ctx_buff buff);
 void *lima_ctx_buff_alloc(struct lima_context *ctx, enum lima_ctx_buff buff,
-                          unsigned size, bool uploader);
+                          unsigned size);
 
 void lima_state_init(struct lima_context *ctx);
 void lima_state_fini(struct lima_context *ctx);

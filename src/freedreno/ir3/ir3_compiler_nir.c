@@ -1536,7 +1536,7 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 					 * that is easier than mapping things back to a
 					 * nir_variable to figure out what it is.
 					 */
-					dst[i] = ctx->ir->inputs[inloc];
+					dst[i] = ctx->inputs[inloc];
 				}
 			}
 		} else {
@@ -1670,6 +1670,12 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 			ctx->basevertex = create_driver_param(ctx, IR3_DP_VTXID_BASE);
 		}
 		dst[0] = ctx->basevertex;
+		break;
+	case nir_intrinsic_load_base_instance:
+		if (!ctx->base_instance) {
+			ctx->base_instance = create_driver_param(ctx, IR3_DP_INSTID_BASE);
+		}
+		dst[0] = ctx->base_instance;
 		break;
 	case nir_intrinsic_load_vertex_id_zero_base:
 	case nir_intrinsic_load_vertex_id:
@@ -3495,7 +3501,7 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
 		assert(in->opc == OPC_META_INPUT);
 		unsigned inidx = in->input.inidx;
 
-		if (pre_assign_inputs) {
+		if (pre_assign_inputs && !so->inputs[inidx].sysval) {
 			if (VALIDREG(so->nonbinning->inputs[inidx].regid)) {
 				compile_assert(ctx, in->regs[0]->num ==
 						so->nonbinning->inputs[inidx].regid);

@@ -450,7 +450,7 @@ tu6_emit_fs_config(struct tu_cs *cs, struct tu_shader *shader,
       A6XX_SP_FS_CTRL_REG0_FULLREGFOOTPRINT(fs->info.max_reg + 1) |
       A6XX_SP_FS_CTRL_REG0_MERGEDREGS |
       A6XX_SP_FS_CTRL_REG0_BRANCHSTACK(fs->branchstack);
-   if (fs->total_in > 0 || fs->frag_coord)
+   if (fs->total_in > 0)
       sp_fs_ctrl |= A6XX_SP_FS_CTRL_REG0_VARYING;
    if (fs->need_pixlod)
       sp_fs_ctrl |= A6XX_SP_FS_CTRL_REG0_PIXLODENABLE;
@@ -874,7 +874,7 @@ tu6_emit_fs_outputs(struct tu_cs *cs,
 
    uint32_t gras_su_depth_plane_cntl = 0;
    uint32_t rb_depth_plane_cntl = 0;
-   if (fs->no_earlyz | fs->writes_pos) {
+   if (fs->no_earlyz || fs->writes_pos) {
       gras_su_depth_plane_cntl |= A6XX_GRAS_SU_DEPTH_PLANE_CNTL_FRAG_WRITES_Z;
       rb_depth_plane_cntl |= A6XX_RB_DEPTH_PLANE_CNTL_FRAG_WRITES_Z;
    }
@@ -1980,7 +1980,7 @@ tu_graphics_pipeline_create(VkDevice device,
    if (result == VK_SUCCESS)
       *pPipeline = tu_pipeline_to_handle(pipeline);
    else
-      *pPipeline = NULL;
+      *pPipeline = VK_NULL_HANDLE;
 
    return result;
 }
