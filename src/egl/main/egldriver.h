@@ -96,6 +96,7 @@ struct _egl_driver
    EGLBoolean (*MakeCurrent)(_EGLDisplay *disp,
                              _EGLSurface *draw, _EGLSurface *read,
                              _EGLContext *ctx);
+   EGLint (*QueryContextClientVersion)(_EGLDisplay *disp, _EGLContext *ctx);
 
    /* surface funcs */
    _EGLSurface *(*CreateWindowSurface)(_EGLDisplay *disp, _EGLConfig *config,

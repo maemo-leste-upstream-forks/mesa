@@ -298,6 +298,14 @@ haiku_make_current(_EGLDisplay *disp, _EGLSurface *dsurf,
 
 
 extern "C"
+EGLint
+haiku_dri2_query_context_client_version(_EGLDisplay *disp, _EGLContext *ctx)
+{
+	// Tell caller to use the default value.
+	return 0;
+}
+
+extern "C"
 EGLBoolean
 haiku_swap_buffers(_EGLDisplay *disp, _EGLSurface *surf)
 {
@@ -316,6 +324,7 @@ const _EGLDriver _eglDriver = {
 	.CreateContext = haiku_create_context,
 	.DestroyContext = haiku_destroy_context,
 	.MakeCurrent = haiku_make_current,
+	.QueryContextClientVersion = haiku_dri2_query_context_client_version,
 	.CreateWindowSurface = haiku_create_window_surface,
 	.CreatePixmapSurface = haiku_create_pixmap_surface,
 	.CreatePbufferSurface = haiku_create_pbuffer_surface,

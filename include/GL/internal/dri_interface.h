@@ -1980,6 +1980,8 @@ typedef struct __DRIDriverVtableExtensionRec {
 
 #define __DRI2_RENDERER_HAS_PROTECTED_CONTEXT                 0x0020
 
+#define __DRI2_RENDERER_OPENGL_ES2_CONTEXT_CLIENT_VERSION_IMG 0x7001
+
 typedef struct __DRI2rendererQueryExtensionRec __DRI2rendererQueryExtension;
 struct __DRI2rendererQueryExtensionRec {
    __DRIextension base;
