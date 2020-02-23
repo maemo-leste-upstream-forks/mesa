@@ -33,13 +33,6 @@ anv_wsi_proc_addr(VkPhysicalDevice physicalDevice, const char *pName)
    return anv_lookup_entrypoint(&physical_device->info, pName);
 }
 
-static uint64_t
-anv_wsi_image_get_modifier(VkImage _image)
-{
-   ANV_FROM_HANDLE(anv_image, image, _image);
-   return image->drm_format_mod;
-}
-
 static void
 anv_wsi_signal_semaphore_for_memory(VkDevice _device,
                                     VkSemaphore _semaphore,
@@ -97,7 +90,6 @@ anv_init_wsi(struct anv_physical_device *physical_device)
       return result;
 
    physical_device->wsi_device.supports_modifiers = true;
-   physical_device->wsi_device.image_get_modifier = anv_wsi_image_get_modifier;
    physical_device->wsi_device.signal_semaphore_for_memory =
       anv_wsi_signal_semaphore_for_memory;
    physical_device->wsi_device.signal_fence_for_memory =
@@ -221,7 +213,7 @@ VkResult anv_CreateSwapchainKHR(
     VkSwapchainKHR*                              pSwapchain)
 {
    ANV_FROM_HANDLE(anv_device, device, _device);
-   struct wsi_device *wsi_device = &device->instance->physicalDevice.wsi_device;
+   struct wsi_device *wsi_device = &device->physical->wsi_device;
    const VkAllocationCallbacks *alloc;
 
    if (pAllocator)
@@ -286,10 +278,9 @@ VkResult anv_AcquireNextImage2KHR(
     uint32_t*                                    pImageIndex)
 {
    ANV_FROM_HANDLE(anv_device, device, _device);
-   struct anv_physical_device *pdevice = &device->instance->physicalDevice;
 
-   return wsi_common_acquire_next_image2(&pdevice->wsi_device, _device,
-                                         pAcquireInfo, pImageIndex);
+   return wsi_common_acquire_next_image2(&device->physical->wsi_device,
+                                         _device, pAcquireInfo, pImageIndex);
 }
 
 VkResult anv_QueuePresentKHR(
@@ -297,10 +288,8 @@ VkResult anv_QueuePresentKHR(
     const VkPresentInfoKHR*                  pPresentInfo)
 {
    ANV_FROM_HANDLE(anv_queue, queue, _queue);
-   struct anv_physical_device *pdevice =
-      &queue->device->instance->physicalDevice;
 
-   return wsi_common_queue_present(&pdevice->wsi_device,
+   return wsi_common_queue_present(&queue->device->physical->wsi_device,
                                    anv_device_to_handle(queue->device),
                                    _queue, 0,
                                    pPresentInfo);

@@ -78,6 +78,7 @@
 #include "gen_gem.h"
 
 #include "dev/gen_device_info.h"
+#include "isl/isl.h"
 
 #include "drm-uapi/i915_drm.h"
 #include "util/list.h"
@@ -151,7 +152,7 @@ align_and_verify_space(struct gen_aux_map_context *ctx, uint32_t size,
    struct aux_map_buffer *tail =
       list_last_entry(&ctx->buffers, struct aux_map_buffer, link);
    uint64_t gpu = tail->buffer->gpu + ctx->tail_offset;
-   uint64_t aligned = ALIGN(gpu, align);
+   uint64_t aligned = align64(gpu, align);
 
    if ((aligned - gpu) + size > ctx->tail_remaining) {
       return false;
@@ -281,78 +282,6 @@ get_u64_entry_ptr(struct gen_aux_map_context *ctx, uint64_t addr)
 }
 
 static uint8_t
-get_format_encoding(const struct isl_surf *isl_surf)
-{
-   switch(isl_surf->format) {
-   case ISL_FORMAT_R32G32B32A32_FLOAT: return 0x11;
-   case ISL_FORMAT_R32G32B32X32_FLOAT: return 0x11;
-   case ISL_FORMAT_R32G32B32A32_SINT: return 0x12;
-   case ISL_FORMAT_R32G32B32A32_UINT: return 0x13;
-   case ISL_FORMAT_R16G16B16A16_UNORM: return 0x14;
-   case ISL_FORMAT_R16G16B16A16_SNORM: return 0x15;
-   case ISL_FORMAT_R16G16B16A16_SINT: return 0x16;
-   case ISL_FORMAT_R16G16B16A16_UINT: return 0x17;
-   case ISL_FORMAT_R16G16B16A16_FLOAT: return 0x10;
-   case ISL_FORMAT_R16G16B16X16_FLOAT: return 0x10;
-   case ISL_FORMAT_R32G32_FLOAT: return 0x11;
-   case ISL_FORMAT_R32G32_SINT: return 0x12;
-   case ISL_FORMAT_R32G32_UINT: return 0x13;
-   case ISL_FORMAT_B8G8R8A8_UNORM: return 0xA;
-   case ISL_FORMAT_B8G8R8X8_UNORM: return 0xA;
-   case ISL_FORMAT_B8G8R8A8_UNORM_SRGB: return 0xA;
-   case ISL_FORMAT_B8G8R8X8_UNORM_SRGB: return 0xA;
-   case ISL_FORMAT_R10G10B10A2_UNORM: return 0x18;
-   case ISL_FORMAT_R10G10B10A2_UNORM_SRGB: return 0x18;
-   case ISL_FORMAT_R10G10B10_FLOAT_A2_UNORM: return 0x19;
-   case ISL_FORMAT_R10G10B10A2_UINT: return 0x1A;
-   case ISL_FORMAT_R8G8B8A8_UNORM: return 0xA;
-   case ISL_FORMAT_R8G8B8A8_UNORM_SRGB: return 0xA;
-   case ISL_FORMAT_R8G8B8A8_SNORM: return 0x1B;
-   case ISL_FORMAT_R8G8B8A8_SINT: return 0x1C;
-   case ISL_FORMAT_R8G8B8A8_UINT: return 0x1D;
-   case ISL_FORMAT_R16G16_UNORM: return 0x14;
-   case ISL_FORMAT_R16G16_SNORM: return 0x15;
-   case ISL_FORMAT_R16G16_SINT: return 0x16;
-   case ISL_FORMAT_R16G16_UINT: return 0x17;
-   case ISL_FORMAT_R16G16_FLOAT: return 0x10;
-   case ISL_FORMAT_B10G10R10A2_UNORM: return 0x18;
-   case ISL_FORMAT_B10G10R10A2_UNORM_SRGB: return 0x18;
-   case ISL_FORMAT_R11G11B10_FLOAT: return 0x1E;
-   case ISL_FORMAT_R32_SINT: return 0x12;
-   case ISL_FORMAT_R32_UINT: return 0x13;
-   case ISL_FORMAT_R32_FLOAT: return 0x11;
-   case ISL_FORMAT_R24_UNORM_X8_TYPELESS: return 0x11;
-   case ISL_FORMAT_B5G6R5_UNORM: return 0xA;
-   case ISL_FORMAT_B5G6R5_UNORM_SRGB: return 0xA;
-   case ISL_FORMAT_B5G5R5A1_UNORM: return 0xA;
-   case ISL_FORMAT_B5G5R5A1_UNORM_SRGB: return 0xA;
-   case ISL_FORMAT_B4G4R4A4_UNORM: return 0xA;
-   case ISL_FORMAT_B4G4R4A4_UNORM_SRGB: return 0xA;
-   case ISL_FORMAT_R8G8_UNORM: return 0xA;
-   case ISL_FORMAT_R8G8_SNORM: return 0x1B;
-   case ISL_FORMAT_R8G8_SINT: return 0x1C;
-   case ISL_FORMAT_R8G8_UINT: return 0x1D;
-   case ISL_FORMAT_R16_UNORM: return 0x14;
-   case ISL_FORMAT_R16_SNORM: return 0x15;
-   case ISL_FORMAT_R16_SINT: return 0x16;
-   case ISL_FORMAT_R16_UINT: return 0x17;
-   case ISL_FORMAT_R16_FLOAT: return 0x10;
-   case ISL_FORMAT_B5G5R5X1_UNORM: return 0xA;
-   case ISL_FORMAT_B5G5R5X1_UNORM_SRGB: return 0xA;
-   case ISL_FORMAT_A1B5G5R5_UNORM: return 0xA;
-   case ISL_FORMAT_A4B4G4R4_UNORM: return 0xA;
-   case ISL_FORMAT_R8_UNORM: return 0xA;
-   case ISL_FORMAT_R8_SNORM: return 0x1B;
-   case ISL_FORMAT_R8_SINT: return 0x1C;
-   case ISL_FORMAT_R8_UINT: return 0x1D;
-   case ISL_FORMAT_A8_UNORM: return 0xA;
-   default:
-      unreachable("Unsupported aux-map format!");
-      return 0;
-   }
-}
-
-static uint8_t
 get_bpp_encoding(uint16_t bpp)
 {
    switch (bpp) {
@@ -369,20 +298,42 @@ get_bpp_encoding(uint16_t bpp)
    }
 }
 
-static void
-add_mapping(struct gen_aux_map_context *ctx, uint64_t address,
-            uint64_t aux_address, const struct isl_surf *isl_surf,
-            bool *state_changed)
-{
-   if (aux_map_debug)
-      fprintf(stderr, "AUX-MAP 0x%"PRIx64" => 0x%"PRIx64"\n", address,
-              aux_address);
+#define GEN_AUX_MAP_ENTRY_Y_TILED_BIT  (0x1ull << 52)
 
+uint64_t
+gen_aux_map_format_bits_for_isl_surf(const struct isl_surf *isl_surf)
+{
+   const struct isl_format_layout *fmtl =
+      isl_format_get_layout(isl_surf->format);
+
+   uint16_t bpp = fmtl->bpb;
+   assert(fmtl->bw == 1 && fmtl->bh == 1 && fmtl->bd == 1);
+   if (aux_map_debug)
+      fprintf(stderr, "AUX-MAP entry %s, bpp=%d\n",
+              isl_format_get_name(isl_surf->format), bpp);
+
+   assert(isl_tiling_is_any_y(isl_surf->tiling));
+
+   uint64_t format_bits =
+      ((uint64_t)isl_format_get_aux_map_encoding(isl_surf->format) << 58) |
+      ((uint64_t)get_bpp_encoding(bpp) << 54) |
+      GEN_AUX_MAP_ENTRY_Y_TILED_BIT;
+
+   assert((format_bits & GEN_AUX_MAP_FORMAT_BITS_MASK) == format_bits);
+
+   return format_bits;
+}
+
+static void
+get_aux_entry(struct gen_aux_map_context *ctx, uint64_t address,
+              uint32_t *l1_index_out, uint64_t *l1_entry_addr_out,
+              uint64_t **l1_entry_map_out)
+{
    uint32_t l3_index = (address >> 36) & 0xfff;
    uint64_t *l3_entry = &ctx->level3_map[l3_index];
 
    uint64_t *l2_map;
-   if ((*l3_entry & 1) == 0) {
+   if ((*l3_entry & GEN_AUX_MAP_ENTRY_VALID_BIT) == 0) {
       uint64_t l2_gpu;
       if (add_sub_table(ctx, 32 * 1024, 32 * 1024, &l2_gpu, &l2_map)) {
          if (aux_map_debug)
@@ -399,41 +350,49 @@ add_mapping(struct gen_aux_map_context *ctx, uint64_t address,
    uint32_t l2_index = (address >> 24) & 0xfff;
    uint64_t *l2_entry = &l2_map[l2_index];
 
-   uint64_t *l1_map;
-   if ((*l2_entry & 1) == 0) {
-      uint64_t l1_gpu;
-      if (add_sub_table(ctx, 8 * 1024, 8 * 1024, &l1_gpu, &l1_map)) {
+   uint64_t l1_addr, *l1_map;
+   if ((*l2_entry & GEN_AUX_MAP_ENTRY_VALID_BIT) == 0) {
+      if (add_sub_table(ctx, 8 * 1024, 8 * 1024, &l1_addr, &l1_map)) {
          if (aux_map_debug)
             fprintf(stderr, "AUX-MAP L2[0x%x]: 0x%"PRIx64", map=%p\n",
-                    l2_index, l1_gpu, l1_map);
+                    l2_index, l1_addr, l1_map);
       } else {
          unreachable("Failed to add L1 Aux-Map Page Table!");
       }
-      *l2_entry = (l1_gpu & 0xffffffffe000ULL) | 1;
+      *l2_entry = (l1_addr & 0xffffffffe000ULL) | 1;
    } else {
-      uint64_t l1_addr = gen_canonical_address(*l2_entry & ~0x1fffULL);
+      l1_addr = gen_canonical_address(*l2_entry & ~0x1fffULL);
       l1_map = get_u64_entry_ptr(ctx, l1_addr);
    }
    uint32_t l1_index = (address >> 16) & 0xff;
-   uint64_t *l1_entry = &l1_map[l1_index];
+   if (l1_index_out)
+      *l1_index_out = l1_index;
+   if (l1_entry_addr_out)
+      *l1_entry_addr_out = l1_addr + l1_index * sizeof(*l1_map);
+   if (l1_entry_map_out)
+      *l1_entry_map_out = &l1_map[l1_index];
+}
 
-   const struct isl_format_layout *fmtl =
-      isl_format_get_layout(isl_surf->format);
-   uint16_t bpp = fmtl->bpb;
-   assert(fmtl->bw == 1 && fmtl->bh == 1 && fmtl->bd == 1);
+static void
+add_mapping(struct gen_aux_map_context *ctx, uint64_t address,
+            uint64_t aux_address, uint64_t format_bits,
+            bool *state_changed)
+{
    if (aux_map_debug)
-      fprintf(stderr, "AUX-MAP entry %s, bpp=%d\n",
-              isl_format_get_name(isl_surf->format), bpp);
+      fprintf(stderr, "AUX-MAP 0x%"PRIx64" => 0x%"PRIx64"\n", address,
+              aux_address);
+
+   uint32_t l1_index;
+   uint64_t *l1_entry;
+   get_aux_entry(ctx, address, &l1_index, NULL, &l1_entry);
 
    const uint64_t l1_data =
-      (aux_address & 0xffffffffff00ULL) |
-      ((uint64_t)get_format_encoding(isl_surf) << 58) |
-      ((uint64_t)get_bpp_encoding(bpp) << 54) |
-      (1ULL /* Y tiling */ << 52) |
-      1 /* Valid entry */;
+      (aux_address & GEN_AUX_MAP_ADDRESS_MASK) |
+      format_bits |
+      GEN_AUX_MAP_ENTRY_VALID_BIT;
 
    const uint64_t current_l1_data = *l1_entry;
-   if ((current_l1_data & 1) == 0) {
+   if ((current_l1_data & GEN_AUX_MAP_ENTRY_VALID_BIT) == 0) {
       assert((aux_address & 0xffULL) == 0);
       if (aux_map_debug)
          fprintf(stderr, "AUX-MAP L1[0x%x] 0x%"PRIx64" -> 0x%"PRIx64"\n",
@@ -444,7 +403,8 @@ add_mapping(struct gen_aux_map_context *ctx, uint64_t address,
        * what we want to program into the entry, then we must force the
        * aux-map tables to be flushed.
        */
-      if (current_l1_data != 0 && (current_l1_data | 1) != l1_data)
+      if (current_l1_data != 0 && \
+          (current_l1_data | GEN_AUX_MAP_ENTRY_VALID_BIT) != l1_data)
          *state_changed = true;
       *l1_entry = l1_data;
    } else {
@@ -455,25 +415,47 @@ add_mapping(struct gen_aux_map_context *ctx, uint64_t address,
    }
 }
 
+uint64_t *
+gen_aux_map_get_entry(struct gen_aux_map_context *ctx,
+                      uint64_t address,
+                      uint64_t *entry_address)
+{
+   pthread_mutex_lock(&ctx->mutex);
+   uint64_t *l1_entry_map;
+   get_aux_entry(ctx, address, NULL, entry_address, &l1_entry_map);
+   pthread_mutex_unlock(&ctx->mutex);
+
+   return l1_entry_map;
+}
+
 void
-gen_aux_map_add_image(struct gen_aux_map_context *ctx,
-                      const struct isl_surf *isl_surf, uint64_t address,
-                      uint64_t aux_address)
+gen_aux_map_add_mapping(struct gen_aux_map_context *ctx, uint64_t address,
+                        uint64_t aux_address, uint64_t main_size_B,
+                        uint64_t format_bits)
 {
    bool state_changed = false;
    pthread_mutex_lock(&ctx->mutex);
    uint64_t map_addr = address;
    uint64_t dest_aux_addr = aux_address;
-   assert(ALIGN(address, 64 * 1024) == address);
-   assert(ALIGN(aux_address, 4 * 64) == aux_address);
-   while (map_addr - address < isl_surf->size_B) {
-      add_mapping(ctx, map_addr, dest_aux_addr, isl_surf, &state_changed);
-      map_addr += 64 * 1024;
-      dest_aux_addr += 4 * 64;
+   assert(align64(address, GEN_AUX_MAP_MAIN_PAGE_SIZE) == address);
+   assert(align64(aux_address, GEN_AUX_MAP_AUX_PAGE_SIZE) == aux_address);
+   while (map_addr - address < main_size_B) {
+      add_mapping(ctx, map_addr, dest_aux_addr, format_bits, &state_changed);
+      map_addr += GEN_AUX_MAP_MAIN_PAGE_SIZE;
+      dest_aux_addr += GEN_AUX_MAP_AUX_PAGE_SIZE;
    }
    pthread_mutex_unlock(&ctx->mutex);
    if (state_changed)
       p_atomic_inc(&ctx->state_num);
+}
+
+void
+gen_aux_map_add_image(struct gen_aux_map_context *ctx,
+                      const struct isl_surf *isl_surf, uint64_t address,
+                      uint64_t aux_address)
+{
+   gen_aux_map_add_mapping(ctx, address, aux_address, isl_surf->size_B,
+                           gen_aux_map_format_bits_for_isl_surf(isl_surf));
 }
 
 /**
@@ -490,7 +472,7 @@ remove_mapping(struct gen_aux_map_context *ctx, uint64_t address,
    uint64_t *l3_entry = &ctx->level3_map[l3_index];
 
    uint64_t *l2_map;
-   if ((*l3_entry & 1) == 0) {
+   if ((*l3_entry & GEN_AUX_MAP_ENTRY_VALID_BIT) == 0) {
       return;
    } else {
       uint64_t l2_addr = gen_canonical_address(*l3_entry & ~0x7fffULL);
@@ -500,7 +482,7 @@ remove_mapping(struct gen_aux_map_context *ctx, uint64_t address,
    uint64_t *l2_entry = &l2_map[l2_index];
 
    uint64_t *l1_map;
-   if ((*l2_entry & 1) == 0) {
+   if ((*l2_entry & GEN_AUX_MAP_ENTRY_VALID_BIT) == 0) {
       return;
    } else {
       uint64_t l1_addr = gen_canonical_address(*l2_entry & ~0x1fffULL);
@@ -512,7 +494,7 @@ remove_mapping(struct gen_aux_map_context *ctx, uint64_t address,
    const uint64_t current_l1_data = *l1_entry;
    const uint64_t l1_data = current_l1_data & ~1ull;
 
-   if ((current_l1_data & 1) == 0) {
+   if ((current_l1_data & GEN_AUX_MAP_ENTRY_VALID_BIT) == 0) {
       return;
    } else {
       if (aux_map_debug)
@@ -540,7 +522,7 @@ gen_aux_map_unmap_range(struct gen_aux_map_context *ctx, uint64_t address,
               address + size);
 
    uint64_t map_addr = address;
-   assert(ALIGN(address, 64 * 1024) == address);
+   assert(align64(address, GEN_AUX_MAP_MAIN_PAGE_SIZE) == address);
    while (map_addr - address < size) {
       remove_mapping(ctx, map_addr, &state_changed);
       map_addr += 64 * 1024;

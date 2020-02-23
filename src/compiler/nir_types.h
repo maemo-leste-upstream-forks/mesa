@@ -80,6 +80,9 @@ unsigned glsl_get_length(const struct glsl_type *type);
 
 unsigned glsl_get_aoa_size(const struct glsl_type *type);
 
+unsigned glsl_count_vec4_slots(const struct glsl_type *type,
+                               bool is_gl_vertex_input, bool is_bindless);
+unsigned glsl_count_dword_slots(const struct glsl_type *type, bool is_bindless);
 unsigned glsl_count_attribute_slots(const struct glsl_type *type,
                                     bool is_gl_vertex_input);
 unsigned glsl_get_component_slots(const struct glsl_type *type);
@@ -160,6 +163,8 @@ const struct glsl_type *glsl_bool_type(void);
 const struct glsl_type *glsl_scalar_type(enum glsl_base_type base_type);
 const struct glsl_type *glsl_vector_type(enum glsl_base_type base_type,
                                          unsigned components);
+const struct glsl_type * glsl_replace_vector_type(const struct glsl_type *t,
+                                                  unsigned components);
 const struct glsl_type *glsl_matrix_type(enum glsl_base_type base_type,
                                          unsigned rows, unsigned columns);
 const struct glsl_type *glsl_explicit_matrix_type(const struct glsl_type *mat,

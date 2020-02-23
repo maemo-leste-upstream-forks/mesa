@@ -110,7 +110,7 @@ DispatchSanity_test::SetUpCtx(gl_api api, unsigned int version)
                             &visual,
                             NULL, // share_list
                             &driver_functions);
-   _vbo_CreateContext(&ctx);
+   _vbo_CreateContext(&ctx, false);
 
    _mesa_override_extensions(&ctx);
    ctx.Version = version;
@@ -558,6 +558,10 @@ const struct function common_desktop_functions_possible[] = {
    /* GL_OES_EGL_image */
    { "glEGLImageTargetRenderbufferStorageOES", 31, -1 },
    { "glEGLImageTargetTexture2DOES", 31, -1 },
+
+   /* EXT_EGL_image_storage */
+   { "glEGLImageTargetTexStorageEXT", 31, -1 },
+   { "glEGLImageTargetTextureStorageEXT", 31, -1 },
 
    /* GL 3.2 */
    { "glGetInteger64i_v", 32, -1 },
@@ -2636,6 +2640,9 @@ const struct function gles3_functions_possible[] = {
    /* GL_MESA_framebuffer_flip_y */
    { "glFramebufferParameteriMESA", 30, -1 },
    { "glGetFramebufferParameterivMESA", 30, -1 },
+
+   /* EXT_EGL_image_storage */
+   { "glEGLImageTargetTexStorageEXT", 30, -1 },
 
    { NULL, 0, -1 }
 };

@@ -62,14 +62,11 @@
  * subsequent partial writes to r0.xy.  So the 'add r0.z, ...' is the
  * defining instruction, as it is the first to partially write r0.xyz.
  *
- * Note i965 has a similar scenario, which they solve with a virtual
- * LOAD_PAYLOAD instruction which gets turned into multiple MOV's after
- * register assignment.  But for us that is horrible from a scheduling
- * standpoint.  Instead what we do is use idea of 'definer' instruction.
- * Ie. the first instruction (lowest ip) to write to the variable is the
- * one we consider from use/def perspective when building interference
- * graph.  (Other instructions which write other variable components
- * just define the variable some more.)
+ * To address the fragmentation that this can potentially cause, a
+ * two pass register allocation is used.  After the first pass the
+ * assignment of scalars is discarded, but the assignment of vecN (for
+ * N > 1) is used to pre-color in the second pass, which considers
+ * only scalars.
  *
  * Arrays of arbitrary size are handled via pre-coloring a consecutive
  * sequence of registers.  Additional scalar (single component) reg
@@ -289,7 +286,7 @@ ir3_ra_alloc_reg_set(struct ir3_compiler *compiler)
 		for (unsigned i = 0; i < half_class_count; i++) {
 			/* NOTE there are fewer half class sizes, but they match the
 			 * first N full class sizes.. but assert in case that ever
-			 * accidentially changes:
+			 * accidentally changes:
 			 */
 			debug_assert(class_sizes[i] == half_class_sizes[i]);
 			for (unsigned j = 0; j < CLASS_REGS(i) / 2; j++) {
@@ -297,8 +294,7 @@ ir3_ra_alloc_reg_set(struct ir3_compiler *compiler)
 				unsigned hreg0 = set->gpr_to_ra_reg[i + HALF_OFFSET][(j * 2) + 0];
 				unsigned hreg1 = set->gpr_to_ra_reg[i + HALF_OFFSET][(j * 2) + 1];
 
-				ra_add_transitive_reg_conflict(set->regs, freg, hreg0);
-				ra_add_transitive_reg_conflict(set->regs, freg, hreg1);
+				ra_add_transitive_reg_pair_conflict(set->regs, freg, hreg0, hreg1);
 			}
 		}
 
@@ -335,6 +331,13 @@ struct ir3_ra_ctx {
 
 	struct ir3_ra_reg_set *set;
 	struct ra_graph *g;
+
+	/* Are we in the scalar assignment pass?  In this pass, all larger-
+	 * than-vec1 vales have already been assigned and pre-colored, so
+	 * we only consider scalar values.
+	 */
+	bool scalar_pass;
+
 	unsigned alloc_count;
 	/* one per class, plus one slot for arrays: */
 	unsigned class_alloc_count[total_class_count + 1];
@@ -386,14 +389,11 @@ size_to_class(unsigned sz, bool half, bool high)
 static bool
 writes_gpr(struct ir3_instruction *instr)
 {
-	if (is_store(instr))
-		return false;
-	if (instr->regs_count == 0)
+	if (dest_regs(instr) == 0)
 		return false;
 	/* is dest a normal temp register: */
 	struct ir3_register *reg = instr->regs[0];
-	if (reg->flags & (IR3_REG_CONST | IR3_REG_IMMED))
-		return false;
+	debug_assert(!(reg->flags & (IR3_REG_CONST | IR3_REG_IMMED)));
 	if ((reg->num == regid(REG_A0, 0)) ||
 			(reg->num == regid(REG_P0, 0)))
 		return false;
@@ -415,6 +415,12 @@ get_definer(struct ir3_ra_ctx *ctx, struct ir3_instruction *instr,
 	struct ir3_ra_instr_data *id = &ctx->instrd[instr->ip];
 	struct ir3_instruction *d = NULL;
 
+	if (ctx->scalar_pass) {
+		id->defn = instr;
+		id->off = 0;
+		id->sz = 1;     /* considering things as N scalar regs now */
+	}
+
 	if (id->defn) {
 		*sz = id->sz;
 		*off = id->off;
@@ -432,7 +438,7 @@ get_definer(struct ir3_ra_ctx *ctx, struct ir3_instruction *instr,
 		/* note: don't use foreach_ssa_src as this gets called once
 		 * while assigning regs (which clears SSA flag)
 		 */
-		foreach_src_n(src, n, instr) {
+		foreach_src_n (src, n, instr) {
 			struct ir3_instruction *dd;
 			if (!src->instr)
 				continue;
@@ -594,12 +600,36 @@ ra_block_name_instructions(struct ir3_ra_ctx *ctx, struct ir3_block *block)
 		if (id->defn != instr)
 			continue;
 
+		/* In scalar pass, collect/split don't get their own names,
+		 * but instead inherit them from their src(s):
+		 *
+		 * Possibly we don't need this because of scalar_name(), but
+		 * it does make the ir3_print() dumps easier to read.
+		 */
+		if (ctx->scalar_pass) {
+			if (instr->opc == OPC_META_SPLIT) {
+				instr->name = instr->regs[1]->instr->name + instr->split.off;
+				continue;
+			}
+
+			if (instr->opc == OPC_META_COLLECT) {
+				instr->name = instr->regs[1]->instr->name;
+				continue;
+			}
+		}
+
 		/* arrays which don't fit in one of the pre-defined class
 		 * sizes are pre-colored:
 		 */
 		if ((id->cls >= 0) && (id->cls < total_class_count)) {
-			instr->name = ctx->class_alloc_count[id->cls]++;
-			ctx->alloc_count++;
+			/* in the scalar pass, we generate a name for each
+			 * scalar component, instr->name is the name of the
+			 * first component.
+			 */
+			unsigned n = ctx->scalar_pass ? dest_regs(instr) : 1;
+			instr->name = ctx->class_alloc_count[id->cls];
+			ctx->class_alloc_count[id->cls] += n;
+			ctx->alloc_count += n;
 		}
 	}
 }
@@ -664,10 +694,53 @@ ra_name(struct ir3_ra_ctx *ctx, struct ir3_ra_instr_data *id)
 	return __ra_name(ctx, id->cls, id->defn);
 }
 
+/* Get the scalar name of the n'th component of an instruction dst: */
+static int
+scalar_name(struct ir3_ra_ctx *ctx, struct ir3_instruction *instr, unsigned n)
+{
+	if (ctx->scalar_pass) {
+		if (instr->opc == OPC_META_SPLIT) {
+			debug_assert(n == 0);     /* split results in a scalar */
+			struct ir3_instruction *src = instr->regs[1]->instr;
+			return scalar_name(ctx, src, instr->split.off);
+		} else if (instr->opc == OPC_META_COLLECT) {
+			debug_assert(n < (instr->regs_count + 1));
+			struct ir3_instruction *src = instr->regs[n + 1]->instr;
+			return scalar_name(ctx, src, 0);
+		}
+	} else {
+		debug_assert(n == 0);
+	}
+
+	return ra_name(ctx, &ctx->instrd[instr->ip]) + n;
+}
+
 static void
 ra_destroy(struct ir3_ra_ctx *ctx)
 {
 	ralloc_free(ctx->g);
+}
+
+static void
+__def(struct ir3_ra_ctx *ctx, struct ir3_ra_block_data *bd, unsigned name,
+		struct ir3_instruction *instr)
+{
+	debug_assert(name < ctx->alloc_count);
+	/* defined on first write: */
+	if (!ctx->def[name])
+		ctx->def[name] = instr->ip;
+	ctx->use[name] = MAX2(ctx->use[name], instr->ip);
+	BITSET_SET(bd->def, name);
+}
+
+static void
+__use(struct ir3_ra_ctx *ctx, struct ir3_ra_block_data *bd, unsigned name,
+		struct ir3_instruction *instr)
+{
+	debug_assert(name < ctx->alloc_count);
+	ctx->use[name] = MAX2(ctx->use[name], instr->ip);
+	if (!BITSET_TEST(bd->def, name))
+		BITSET_SET(bd->use, name);
 }
 
 static void
@@ -676,21 +749,8 @@ ra_block_compute_live_ranges(struct ir3_ra_ctx *ctx, struct ir3_block *block)
 	struct ir3_ra_block_data *bd;
 	unsigned bitset_words = BITSET_WORDS(ctx->alloc_count);
 
-#define def(name, instr) \
-		do { \
-			/* defined on first write: */ \
-			if (!ctx->def[name]) \
-				ctx->def[name] = instr->ip; \
-			ctx->use[name] = instr->ip; \
-			BITSET_SET(bd->def, name); \
-		} while(0);
-
-#define use(name, instr) \
-		do { \
-			ctx->use[name] = MAX2(ctx->use[name], instr->ip); \
-			if (!BITSET_TEST(bd->def, name)) \
-				BITSET_SET(bd->use, name); \
-		} while(0);
+#define def(name, instr) __def(ctx, bd, name, instr)
+#define use(name, instr) __use(ctx, bd, name, instr)
 
 	bd = rzalloc(ctx->g, struct ir3_ra_block_data);
 
@@ -709,29 +769,9 @@ ra_block_compute_live_ranges(struct ir3_ra_ctx *ctx, struct ir3_block *block)
 		}
 	}
 
-
 	foreach_instr (instr, &block->instr_list) {
 		struct ir3_instruction *src;
 		struct ir3_register *reg;
-
-		/* There are a couple special cases to deal with here:
-		 *
-		 * split: used to split values from a higher class to a lower
-		 *     class, for example split the results of a texture fetch
-		 *     into individual scalar values;  We skip over these from
-		 *     a 'def' perspective, and for a 'use' we walk the chain
-		 *     up to the defining instruction.
-		 *
-		 * collect: used to collect values from lower class and assemble
-		 *     them together into a higher class, for example arguments
-		 *     to texture sample instructions;  We consider these to be
-		 *     defined at the earliest collect source.
-		 *
-		 * Most of this is handled in the get_definer() helper.
-		 *
-		 * In either case, we trace the instruction back to the original
-		 * definer and consider that as the def/use ip.
-		 */
 
 		if (writes_gpr(instr)) {
 			struct ir3_ra_instr_data *id = &ctx->instrd[instr->ip];
@@ -767,27 +807,40 @@ ra_block_compute_live_ranges(struct ir3_ra_ctx *ctx, struct ir3_block *block)
 					unsigned name = arr->base + dst->array.offset;
 					def(name, instr);
 				}
-
 			} else if (id->defn == instr) {
-				unsigned name = ra_name(ctx, id);
+				/* in scalar pass, we aren't considering virtual register
+				 * classes, ie. if an instruction writes a vec2, then it
+				 * defines two different scalar register names.
+				 */
+				unsigned n = ctx->scalar_pass ? dest_regs(instr) : 1;
+				for (unsigned i = 0; i < n; i++) {
+					unsigned name = scalar_name(ctx, instr, i);
 
-				/* since we are in SSA at this point: */
-				debug_assert(!BITSET_TEST(bd->use, name));
+					/* tex instructions actually have a wrmask, and
+					 * don't touch masked out components.  We can't do
+					 * anything useful about that in the first pass,
+					 * but in the scalar pass we can realize these
+					 * registers are available:
+					 */
+					if (ctx->scalar_pass && is_tex_or_prefetch(instr) &&
+							!(instr->regs[0]->wrmask & (1 << i)))
+						continue;
 
-				def(name, id->defn);
+					def(name, instr);
 
-				if (instr->opc == OPC_META_INPUT)
-					use(name, first_non_input);
+					if ((instr->opc == OPC_META_INPUT) && first_non_input)
+						use(name, first_non_input);
 
-				if (is_high(id->defn)) {
-					ra_set_node_class(ctx->g, name,
-							ctx->set->high_classes[id->cls - HIGH_OFFSET]);
-				} else if (is_half(id->defn)) {
-					ra_set_node_class(ctx->g, name,
-							ctx->set->half_classes[id->cls - HALF_OFFSET]);
-				} else {
-					ra_set_node_class(ctx->g, name,
-							ctx->set->classes[id->cls]);
+					if (is_high(instr)) {
+						ra_set_node_class(ctx->g, name,
+								ctx->set->high_classes[id->cls - HIGH_OFFSET]);
+					} else if (is_half(instr)) {
+						ra_set_node_class(ctx->g, name,
+								ctx->set->half_classes[id->cls - HALF_OFFSET]);
+					} else {
+						ra_set_node_class(ctx->g, name,
+								ctx->set->classes[id->cls]);
+					}
 				}
 			}
 		}
@@ -799,7 +852,7 @@ ra_block_compute_live_ranges(struct ir3_ra_ctx *ctx, struct ir3_block *block)
 				arr->start_ip = MIN2(arr->start_ip, instr->ip);
 				arr->end_ip = MAX2(arr->end_ip, instr->ip);
 
-				/* indirect read is treated like a read fromall array
+				/* indirect read is treated like a read from all array
 				 * elements, since we don't know which one is actually
 				 * read:
 				 */
@@ -808,6 +861,7 @@ ra_block_compute_live_ranges(struct ir3_ra_ctx *ctx, struct ir3_block *block)
 					for (i = 0; i < arr->length; i++) {
 						unsigned name = arr->base + i;
 						use(name, instr);
+						BITSET_SET(bd->use, name);
 					}
 				} else {
 					unsigned name = arr->base + reg->array.offset;
@@ -817,6 +871,37 @@ ra_block_compute_live_ranges(struct ir3_ra_ctx *ctx, struct ir3_block *block)
 					 */
 					BITSET_SET(bd->use, name);
 					debug_assert(reg->array.offset < arr->length);
+				}
+			} else if (ctx->scalar_pass) {
+				struct ir3_instruction *src = reg->instr;
+				/* skip things that aren't SSA: */
+				unsigned n = src ? dest_regs(src) : 0;
+
+				/* in scalar pass, we aren't considering virtual register
+				 * classes, ie. if an instruction writes a vec2, then it
+				 * defines two different scalar register names.
+				 *
+				 * We need to traverse up thru collect/split to find the
+				 * actual non-meta instruction names for each of the
+				 * components:
+				 */
+				for (unsigned i = 0; i < n; i++) {
+					/* Need to filter out a couple special cases, ie.
+					 * writes to a0.x or p0.x:
+					 */
+					if (!writes_gpr(src))
+						continue;
+
+					/* split takes a src w/ wrmask potentially greater
+					 * than 0x1, but it really only cares about a single
+					 * component.  This shows up in splits coming out of
+					 * a tex instruction w/ wrmask=.z, for example.
+					 */
+					if (ctx->scalar_pass && (instr->opc == OPC_META_SPLIT) &&
+							!(i == instr->split.off))
+						continue;
+
+					use(scalar_name(ctx, src, i), instr);
 				}
 			} else if ((src = ssa(reg)) && writes_gpr(src)) {
 				unsigned name = ra_name(ctx, &ctx->instrd[src->ip]);
@@ -925,6 +1010,19 @@ ra_add_interference(struct ir3_ra_ctx *ctx)
 			debug_printf("  start_ip: %u\n", arr->start_ip);
 			debug_printf("  end_ip:   %u\n", arr->end_ip);
 		}
+		debug_printf("INSTRUCTION VREG NAMES:\n");
+		foreach_block (block, &ctx->ir->block_list) {
+			foreach_instr (instr, &block->instr_list) {
+				if (!ctx->instrd[instr->ip].defn)
+					continue;
+				debug_printf("%04u: ", scalar_name(ctx, instr, 0));
+				ir3_print_instr(instr);
+			}
+		}
+		debug_printf("ARRAY VREG NAMES:\n");
+		foreach_array (arr, &ctx->ir->array_list) {
+			debug_printf("%04u: arr%u\n", arr->base, arr->id);
+		}
 	}
 
 	/* extend start/end ranges based on livein/liveout info from cfg: */
@@ -1012,6 +1110,21 @@ static void fixup_half_instr_dst(struct ir3_instruction *instr)
 			break;
 		}
 		break;
+	case 4:
+		switch (instr->opc) {
+		case OPC_RSQ:
+			instr->opc = OPC_HRSQ;
+			break;
+		case OPC_LOG2:
+			instr->opc = OPC_HLOG2;
+			break;
+		case OPC_EXP2:
+			instr->opc = OPC_HEXP2;
+			break;
+		default:
+			break;
+		}
+		break;
 	case 5:
 		instr->cat5.type = half_type(instr->cat5.type);
 		break;
@@ -1055,21 +1168,49 @@ reg_assign(struct ir3_ra_ctx *ctx, struct ir3_register *reg,
 
 		reg->flags &= ~IR3_REG_ARRAY;
 	} else if ((id = &ctx->instrd[instr->ip]) && id->defn) {
-		unsigned name = ra_name(ctx, id);
+		unsigned first_component = 0;
+
+		/* Special case for tex instructions, which may use the wrmask
+		 * to mask off the first component(s).  In the scalar pass,
+		 * this means the masked off component(s) are not def'd/use'd,
+		 * so we get a bogus value when we ask the register_allocate
+		 * algo to get the assigned reg for the unused/untouched
+		 * component.  So we need to consider the first used component:
+		 */
+		if (ctx->scalar_pass && is_tex_or_prefetch(id->defn)) {
+			unsigned n = ffs(id->defn->regs[0]->wrmask);
+			debug_assert(n > 0);
+			first_component = n - 1;
+		}
+
+		unsigned name = scalar_name(ctx, id->defn, first_component);
 		unsigned r = ra_get_node_reg(ctx->g, name);
 		unsigned num = ctx->set->ra_reg_to_gpr[r] + id->off;
 
 		debug_assert(!(reg->flags & IR3_REG_RELATIV));
 
+		debug_assert(num >= first_component);
+
 		if (is_high(id->defn))
 			num += FIRST_HIGH_REG;
 
-		reg->num = num;
+		reg->num = num - first_component;
+
 		reg->flags &= ~IR3_REG_SSA;
 
 		if (is_half(id->defn))
 			reg->flags |= IR3_REG_HALF;
 	}
+}
+
+/* helper to determine which regs to assign in which pass: */
+static bool
+should_assign(struct ir3_ra_ctx *ctx, struct ir3_instruction *instr)
+{
+	if ((instr->opc == OPC_META_SPLIT) ||
+			(instr->opc == OPC_META_COLLECT))
+		return !ctx->scalar_pass;
+	return ctx->scalar_pass;
 }
 
 static void
@@ -1079,18 +1220,43 @@ ra_block_alloc(struct ir3_ra_ctx *ctx, struct ir3_block *block)
 		struct ir3_register *reg;
 
 		if (writes_gpr(instr)) {
-			reg_assign(ctx, instr->regs[0], instr);
-			if (instr->regs[0]->flags & IR3_REG_HALF)
-				fixup_half_instr_dst(instr);
+			if (should_assign(ctx, instr)) {
+				reg_assign(ctx, instr->regs[0], instr);
+				if (instr->regs[0]->flags & IR3_REG_HALF)
+					fixup_half_instr_dst(instr);
+			}
 		}
 
 		foreach_src_n(reg, n, instr) {
 			struct ir3_instruction *src = reg->instr;
+
+			if (src && !should_assign(ctx, src) && !should_assign(ctx, instr))
+				continue;
+
+			if (src && should_assign(ctx, instr))
+				reg_assign(ctx, src->regs[0], src);
+
 			/* Note: reg->instr could be null for IR3_REG_ARRAY */
 			if (src || (reg->flags & IR3_REG_ARRAY))
 				reg_assign(ctx, instr->regs[n+1], src);
+
 			if (instr->regs[n+1]->flags & IR3_REG_HALF)
 				fixup_half_instr_src(instr);
+		}
+	}
+
+	/* We need to pre-color outputs for the scalar pass in
+	 * ra_precolor_assigned(), so we need to actually assign
+	 * them in the first pass:
+	 */
+	if (!ctx->scalar_pass) {
+		struct ir3_instruction *in, *out;
+
+		foreach_input (in, ctx->ir) {
+			reg_assign(ctx, in->regs[0], in);
+		}
+		foreach_output (out, ctx->ir) {
+			reg_assign(ctx, out->regs[0], out);
 		}
 	}
 }
@@ -1106,12 +1272,16 @@ ra_precolor(struct ir3_ra_ctx *ctx, struct ir3_instruction **precolor, unsigned 
 	for (unsigned i = 0; i < nprecolor; i++) {
 		if (precolor[i] && !(precolor[i]->flags & IR3_INSTR_UNUSED)) {
 			struct ir3_instruction *instr = precolor[i];
+
 			struct ir3_ra_instr_data *id = &ctx->instrd[instr->ip];
 
 			debug_assert(!(instr->regs[0]->flags & (IR3_REG_HALF | IR3_REG_HIGH)));
 
 			/* only consider the first component: */
 			if (id->off > 0)
+				continue;
+
+			if (ctx->scalar_pass && !should_assign(ctx, instr))
 				continue;
 
 			/* 'base' is in scalar (class 0) but we need to map that
@@ -1140,6 +1310,10 @@ ra_precolor(struct ir3_ra_ctx *ctx, struct ir3_instruction **precolor, unsigned 
 	}
 
 	/* pre-assign array elements:
+	 *
+	 * TODO this is going to need some work for half-precision.. possibly
+	 * this is easier on a6xx, where we can just divide array size by two?
+	 * But on a5xx and earlier it will need to track two bases.
 	 */
 	foreach_array (arr, &ctx->ir->array_list) {
 		unsigned base = 0;
@@ -1170,7 +1344,7 @@ retry:
 		for (unsigned i = 0; i < nprecolor; i++) {
 			struct ir3_instruction *instr = precolor[i];
 
-			if (!instr)
+			if (!instr || (instr->flags & IR3_INSTR_UNUSED))
 				continue;
 
 			struct ir3_ra_instr_data *id = &ctx->instrd[instr->ip];
@@ -1205,6 +1379,68 @@ retry:
 			ra_set_node_reg(ctx->g, name, reg);
 		}
 	}
+
+	if (ir3_shader_debug & IR3_DBG_OPTMSGS) {
+		foreach_array (arr, &ctx->ir->array_list) {
+			unsigned first = arr->reg;
+			unsigned last  = arr->reg + arr->length - 1;
+			debug_printf("arr[%d] at r%d.%c->r%d.%c\n", arr->id,
+					(first >> 2), "xyzw"[first & 0x3],
+					(last >> 2), "xyzw"[last & 0x3]);
+		}
+	}
+}
+
+static void
+precolor(struct ir3_ra_ctx *ctx, struct ir3_instruction *instr)
+{
+	struct ir3_ra_instr_data *id = &ctx->instrd[instr->ip];
+	unsigned n = dest_regs(instr);
+	for (unsigned i = 0; i < n; i++) {
+		/* tex instructions actually have a wrmask, and
+		 * don't touch masked out components.  So we
+		 * shouldn't precolor them::
+		 */
+		if (is_tex_or_prefetch(instr) &&
+				!(instr->regs[0]->wrmask & (1 << i)))
+			continue;
+
+		unsigned name = scalar_name(ctx, instr, i);
+		unsigned regid = instr->regs[0]->num + i;
+
+		if (instr->regs[0]->flags & IR3_REG_HIGH)
+			regid -= FIRST_HIGH_REG;
+
+		unsigned vreg = ctx->set->gpr_to_ra_reg[id->cls][regid];
+		ra_set_node_reg(ctx->g, name, vreg);
+	}
+}
+
+/* pre-color non-scalar registers based on the registers assigned in previous
+ * pass.  Do this by looking actually at the fanout instructions.
+ */
+static void
+ra_precolor_assigned(struct ir3_ra_ctx *ctx)
+{
+	debug_assert(ctx->scalar_pass);
+
+	foreach_block (block, &ctx->ir->block_list) {
+		foreach_instr (instr, &block->instr_list) {
+
+			if ((instr->opc != OPC_META_SPLIT) &&
+					(instr->opc != OPC_META_COLLECT))
+				continue;
+
+			precolor(ctx, instr);
+
+			struct ir3_register *src;
+			foreach_src (src, instr) {
+				if (!src->instr)
+					continue;
+				precolor(ctx, src->instr);
+			}
+		}
+	}
 }
 
 static int
@@ -1220,20 +1456,87 @@ ra_alloc(struct ir3_ra_ctx *ctx)
 	return 0;
 }
 
-int ir3_ra(struct ir3_shader_variant *v, struct ir3_instruction **precolor, unsigned nprecolor)
+/* if we end up with split/collect instructions with non-matching src
+ * and dest regs, that means something has gone wrong.  Which makes it
+ * a pretty good sanity check.
+ */
+static void
+ra_sanity_check(struct ir3 *ir)
+{
+	foreach_block (block, &ir->block_list) {
+		foreach_instr (instr, &block->instr_list) {
+			if (instr->opc == OPC_META_SPLIT) {
+				struct ir3_register *dst = instr->regs[0];
+				struct ir3_register *src = instr->regs[1];
+				debug_assert(dst->num == (src->num + instr->split.off));
+			} else if (instr->opc == OPC_META_COLLECT) {
+				struct ir3_register *dst = instr->regs[0];
+				struct ir3_register *src;
+
+				foreach_src_n (src, n, instr) {
+					debug_assert(dst->num == (src->num - n));
+				}
+			}
+		}
+	}
+}
+
+static int
+ir3_ra_pass(struct ir3_shader_variant *v, struct ir3_instruction **precolor,
+		unsigned nprecolor, bool scalar_pass)
 {
 	struct ir3_ra_ctx ctx = {
 			.v = v,
 			.ir = v->ir,
 			.set = v->ir->compiler->set,
+			.scalar_pass = scalar_pass,
 	};
 	int ret;
 
 	ra_init(&ctx);
 	ra_add_interference(&ctx);
 	ra_precolor(&ctx, precolor, nprecolor);
+	if (scalar_pass)
+		ra_precolor_assigned(&ctx);
 	ret = ra_alloc(&ctx);
 	ra_destroy(&ctx);
+
+	return ret;
+}
+
+int
+ir3_ra(struct ir3_shader_variant *v, struct ir3_instruction **precolor,
+		unsigned nprecolor)
+{
+	int ret;
+
+	/* First pass, assign the vecN (non-scalar) registers: */
+	ret = ir3_ra_pass(v, precolor, nprecolor, false);
+	if (ret)
+		return ret;
+
+	if (ir3_shader_debug & IR3_DBG_OPTMSGS) {
+		printf("AFTER RA (1st pass):\n");
+		ir3_print(v->ir);
+	}
+
+	/* Second pass, assign the scalar registers: */
+	ret = ir3_ra_pass(v, precolor, nprecolor, true);
+	if (ret)
+		return ret;
+
+	if (ir3_shader_debug & IR3_DBG_OPTMSGS) {
+		printf("AFTER RA (2nd pass):\n");
+		ir3_print(v->ir);
+	}
+
+#ifdef DEBUG
+#  define SANITY_CHECK DEBUG
+#else
+#  define SANITY_CHECK 0
+#endif
+	if (SANITY_CHECK)
+		ra_sanity_check(v->ir);
 
 	return ret;
 }

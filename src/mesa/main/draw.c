@@ -352,24 +352,22 @@ _mesa_draw_arrays(struct gl_context *ctx, GLenum mode, GLint start,
                   GLsizei count, GLuint numInstances, GLuint baseInstance,
                   GLuint drawID)
 {
-   struct _mesa_prim prim;
-
    if (skip_validated_draw(ctx))
       return;
 
    /* OpenGL 4.5 says that primitive restart is ignored with non-indexed
     * draws.
     */
-   memset(&prim, 0, sizeof(prim));
-   prim.begin = 1;
-   prim.end = 1;
-   prim.mode = mode;
-   prim.num_instances = numInstances;
-   prim.base_instance = baseInstance;
-   prim.draw_id = drawID;
-   prim.is_indirect = 0;
-   prim.start = start;
-   prim.count = count;
+   struct _mesa_prim prim = {
+      .begin = 1,
+      .end = 1,
+      .mode = mode,
+      .num_instances = numInstances,
+      .base_instance = baseInstance,
+      .draw_id = drawID,
+      .start = start,
+      .count = count,
+   };
 
    ctx->Driver.Draw(ctx, &prim, 1, NULL,
                     GL_TRUE, start, start + count - 1, NULL, 0, NULL);
@@ -771,12 +769,10 @@ _mesa_validated_drawrangeelements(struct gl_context *ctx, GLenum mode,
 
    prim.begin = 1;
    prim.end = 1;
-   prim.pad = 0;
    prim.mode = mode;
    prim.start = 0;
    prim.count = count;
    prim.indexed = 1;
-   prim.is_indirect = 0;
    prim.basevertex = basevertex;
    prim.num_instances = numInstances;
    prim.base_instance = baseInstance;
@@ -1230,7 +1226,6 @@ _mesa_validated_multidrawelements(struct gl_context *ctx, GLenum mode,
       for (i = 0; i < primcount; i++) {
          prim[i].begin = (i == 0);
          prim[i].end = (i == primcount - 1);
-         prim[i].pad = 0;
          prim[i].mode = mode;
          prim[i].start =
             ((uintptr_t) indices[i] - min_index_ptr) / index_type_size;
@@ -1239,7 +1234,6 @@ _mesa_validated_multidrawelements(struct gl_context *ctx, GLenum mode,
          prim[i].num_instances = 1;
          prim[i].base_instance = 0;
          prim[i].draw_id = i;
-         prim[i].is_indirect = 0;
          if (basevertex != NULL)
             prim[i].basevertex = basevertex[i];
          else
@@ -1261,7 +1255,6 @@ _mesa_validated_multidrawelements(struct gl_context *ctx, GLenum mode,
 
          prim[0].begin = 1;
          prim[0].end = 1;
-         prim[0].pad = 0;
          prim[0].mode = mode;
          prim[0].start = 0;
          prim[0].count = count[i];
@@ -1269,7 +1262,6 @@ _mesa_validated_multidrawelements(struct gl_context *ctx, GLenum mode,
          prim[0].num_instances = 1;
          prim[0].base_instance = 0;
          prim[0].draw_id = i;
-         prim[0].is_indirect = 0;
          if (basevertex != NULL)
             prim[0].basevertex = basevertex[i];
          else
@@ -1387,7 +1379,6 @@ _mesa_draw_transform_feedback(struct gl_context *ctx, GLenum mode,
    prim.mode = mode;
    prim.num_instances = numInstances;
    prim.base_instance = 0;
-   prim.is_indirect = 0;
 
    /* Maybe we should do some primitive splitting for primitive restart
     * (like in DrawArrays), but we have no way to know how many vertices
@@ -2069,78 +2060,5 @@ _mesa_MultiModeDrawElementsIBM( const GLenum * mode, const GLsizei * count,
          CALL_DrawElements(ctx->CurrentServerDispatch, ( m, count[i], type,
                                                          indices[i] ));
       }
-   }
-}
-
-
-/*
- * Helper function for _mesa_draw_indirect below that additionally takes a zero
- * initialized array of _mesa_prim scratch space memory as the last argument.
- */
-static void
-draw_indirect(struct gl_context *ctx, GLuint mode,
-              struct gl_buffer_object *indirect_data,
-              GLsizeiptr indirect_offset, unsigned draw_count,
-              unsigned stride,
-              struct gl_buffer_object *indirect_draw_count_buffer,
-              GLsizeiptr indirect_draw_count_offset,
-              const struct _mesa_index_buffer *ib,
-              struct _mesa_prim *prim)
-{
-   prim[0].begin = 1;
-   prim[draw_count - 1].end = 1;
-   for (unsigned i = 0; i < draw_count; ++i, indirect_offset += stride) {
-      prim[i].mode = mode;
-      prim[i].indexed = !!ib;
-      prim[i].indirect_offset = indirect_offset;
-      prim[i].is_indirect = 1;
-      prim[i].draw_id = i;
-   }
-
-   /* This should always be true at this time */
-   assert(indirect_data == ctx->DrawIndirectBuffer);
-
-   ctx->Driver.Draw(ctx, prim, draw_count, ib, false, 0u, ~0u,
-                    NULL, 0, indirect_data);
-}
-
-
-/*
- * Function to be put into dd_function_table::DrawIndirect as fallback.
- * Calls into dd_function_table::Draw past adapting call arguments.
- * See dd_function_table::DrawIndirect for call argument documentation.
- */
-void
-_mesa_draw_indirect(struct gl_context *ctx, GLuint mode,
-                    struct gl_buffer_object *indirect_data,
-                    GLsizeiptr indirect_offset, unsigned draw_count,
-                    unsigned stride,
-                    struct gl_buffer_object *indirect_draw_count_buffer,
-                    GLsizeiptr indirect_draw_count_offset,
-                    const struct _mesa_index_buffer *ib)
-{
-   /* Use alloca for the prim space if we are somehow in bounds. */
-   if (draw_count*sizeof(struct _mesa_prim) < 1024) {
-      struct _mesa_prim *space = alloca(draw_count*sizeof(struct _mesa_prim));
-      memset(space, 0, draw_count*sizeof(struct _mesa_prim));
-
-      draw_indirect(ctx, mode, indirect_data, indirect_offset, draw_count,
-                    stride, indirect_draw_count_buffer,
-                    indirect_draw_count_offset, ib, space);
-   } else {
-      struct _mesa_prim *space = calloc(draw_count, sizeof(struct _mesa_prim));
-      if (space == NULL) {
-         _mesa_error(ctx, GL_OUT_OF_MEMORY, "gl%sDraw%sIndirect%s",
-                     (draw_count > 1) ? "Multi" : "",
-                     ib ? "Elements" : "Arrays",
-                     indirect_data ? "CountARB" : "");
-         return;
-      }
-
-      draw_indirect(ctx, mode, indirect_data, indirect_offset, draw_count,
-                    stride, indirect_draw_count_buffer,
-                    indirect_draw_count_offset, ib, space);
-
-      free(space);
    }
 }

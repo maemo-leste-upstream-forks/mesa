@@ -38,7 +38,7 @@
 struct fd6_image {
 	struct pipe_resource *prsc;
 	enum pipe_format pfmt;
-	enum a6xx_tex_fmt fmt;
+	enum a6xx_format fmt;
 	enum a6xx_tex_fetchsize fetchsize;
 	enum a6xx_tex_type type;
 	bool srgb;
@@ -197,9 +197,16 @@ static void emit_image_tex(struct fd_ringbuffer *ring, struct fd6_image *img)
 
 	if (ubwc_enabled) {
 		struct fdl_slice *ubwc_slice = &rsc->layout.ubwc_slices[img->level];
+
+		uint32_t block_width, block_height;
+		fdl6_get_ubwc_blockwidth(&rsc->layout, &block_width, &block_height);
+
 		OUT_RELOC(ring, rsc->bo, img->ubwc_offset, 0, 0);
-		OUT_RING(ring, A6XX_TEX_CONST_9_FLAG_BUFFER_ARRAY_PITCH(rsc->layout.ubwc_size));
-		OUT_RING(ring, A6XX_TEX_CONST_10_FLAG_BUFFER_PITCH(ubwc_slice->pitch));
+		OUT_RING(ring, A6XX_TEX_CONST_9_FLAG_BUFFER_ARRAY_PITCH(rsc->layout.ubwc_layer_size >> 2));
+		OUT_RING(ring,
+				A6XX_TEX_CONST_10_FLAG_BUFFER_PITCH(ubwc_slice->pitch) |
+				A6XX_TEX_CONST_10_FLAG_BUFFER_LOGW(util_logbase2_ceil(DIV_ROUND_UP(img->width, block_width))) |
+				A6XX_TEX_CONST_10_FLAG_BUFFER_LOGH(util_logbase2_ceil(DIV_ROUND_UP(img->height, block_height))));
 	} else {
 		OUT_RING(ring, 0x00000000);   /* texconst7 */
 		OUT_RING(ring, 0x00000000);   /* texconst8 */
@@ -232,6 +239,15 @@ fd6_emit_ssbo_tex(struct fd_ringbuffer *ring, const struct pipe_shader_buffer *p
 
 static void emit_image_ssbo(struct fd_ringbuffer *ring, struct fd6_image *img)
 {
+	/* If the SSBO isn't present (becasue gallium doesn't pack atomic
+	 * counters), zero-fill the slot.
+	 */
+	if (!img->prsc) {
+		for (int i = 0; i < 16; i++)
+			OUT_RING(ring, 0);
+		return;
+	}
+
 	struct fd_resource *rsc = fd_resource(img->prsc);
 	enum a6xx_tile_mode tile_mode = fd_resource_tile_mode(img->prsc, img->level);
 	bool ubwc_enabled = fd_resource_ubwc_enabled(rsc, img->level);
@@ -257,7 +273,7 @@ static void emit_image_ssbo(struct fd_ringbuffer *ring, struct fd6_image *img)
 	if (ubwc_enabled) {
 		struct fdl_slice *ubwc_slice = &rsc->layout.ubwc_slices[img->level];
 		OUT_RELOCW(ring, rsc->bo, img->ubwc_offset, 0, 0);
-		OUT_RING(ring, A6XX_IBO_9_FLAG_BUFFER_ARRAY_PITCH(rsc->layout.ubwc_size));
+		OUT_RING(ring, A6XX_IBO_9_FLAG_BUFFER_ARRAY_PITCH(rsc->layout.ubwc_layer_size >> 2));
 		OUT_RING(ring, A6XX_IBO_10_FLAG_BUFFER_PITCH(ubwc_slice->pitch));
 	} else {
 		OUT_RING(ring, 0x00000000);
@@ -280,24 +296,24 @@ fd6_build_ibo_state(struct fd_context *ctx, const struct ir3_shader_variant *v,
 {
 	struct fd_shaderbuf_stateobj *bufso = &ctx->shaderbuf[shader];
 	struct fd_shaderimg_stateobj *imgso = &ctx->shaderimg[shader];
-	const struct ir3_ibo_mapping *mapping = &v->image_mapping;
 
 	struct fd_ringbuffer *state =
 		fd_submit_new_ringbuffer(ctx->batch->submit,
-			mapping->num_ibo * 16 * 4, FD_RINGBUFFER_STREAMING);
+				(v->shader->nir->info.num_ssbos +
+				 v->shader->nir->info.num_images) * 16 * 4,
+				FD_RINGBUFFER_STREAMING);
 
 	assert(shader == PIPE_SHADER_COMPUTE || shader == PIPE_SHADER_FRAGMENT);
 
-	for (unsigned i = 0; i < mapping->num_ibo; i++) {
+	for (unsigned i = 0; i < v->shader->nir->info.num_ssbos; i++) {
 		struct fd6_image img;
-		unsigned idx = mapping->ibo_to_image[i];
+		translate_buf(&img, &bufso->sb[i]);
+		emit_image_ssbo(state, &img);
+	}
 
-		if (idx & IBO_SSBO) {
-			translate_buf(&img, &bufso->sb[idx & ~IBO_SSBO]);
-		} else {
-			translate_image(&img, &imgso->si[idx]);
-		}
-
+	for (unsigned i = 0; i < v->shader->nir->info.num_images; i++) {
+		struct fd6_image img;
+		translate_image(&img, &imgso->si[i]);
 		emit_image_ssbo(state, &img);
 	}
 

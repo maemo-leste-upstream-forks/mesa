@@ -561,8 +561,14 @@ allocate_registers(compiler_context *ctx, bool *spilled)
         mir_foreach_instr_global(ctx, ins) {
                 if (!(ins->compact_branch && ins->writeout)) continue;
 
-                if (ins->src[0] < ctx->temp_count)
-                        l->solutions[ins->src[0]] = 0;
+                if (ins->src[0] < ctx->temp_count) {
+                        if (ins->writeout_depth)
+                                l->solutions[ins->src[0]] = (16 * 1) + COMPONENT_X * 4;
+                        else if (ins->writeout_stencil)
+                                l->solutions[ins->src[0]] = (16 * 1) + COMPONENT_Y * 4;
+                        else
+                                l->solutions[ins->src[0]] = 0;
+                }
 
                 if (ins->src[1] < ctx->temp_count)
                         l->solutions[ins->src[1]] = (16 * 1) + COMPONENT_Z * 4;
@@ -680,6 +686,9 @@ install_registers_instr(
         }
 
         case TAG_TEXTURE_4: {
+                if (ins->texture.op == TEXTURE_OP_BARRIER)
+                        break;
+
                 /* Grab RA results */
                 struct phys_reg dest = index_to_reg(ctx, l, ins->dest, mir_typesize(ins));
                 struct phys_reg coord = index_to_reg(ctx, l, ins->src[1], mir_srcsize(ins, 1));

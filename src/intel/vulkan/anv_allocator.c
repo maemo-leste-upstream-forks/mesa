@@ -29,6 +29,7 @@
 
 #include "anv_private.h"
 
+#include "common/gen_aux_map.h"
 #include "util/anon_file.h"
 
 #ifdef HAVE_VALGRIND
@@ -207,7 +208,7 @@ anv_state_table_expand_range(struct anv_state_table *table, uint32_t size)
    map = mmap(NULL, size, PROT_READ | PROT_WRITE,
               MAP_SHARED | MAP_POPULATE, table->fd, 0);
    if (map == MAP_FAILED) {
-      return vk_errorf(table->device->instance, table->device,
+      return vk_errorf(table->device, table->device,
                        VK_ERROR_OUT_OF_HOST_MEMORY, "mmap failed: %m");
    }
 
@@ -369,7 +370,7 @@ anv_block_pool_init(struct anv_block_pool *pool,
    VkResult result;
 
    pool->device = device;
-   pool->use_softpin = device->instance->physicalDevice.use_softpin;
+   pool->use_softpin = device->physical->use_softpin;
    pool->nbos = 0;
    pool->size = 0;
    pool->center_bo_offset = 0;
@@ -519,7 +520,7 @@ anv_block_pool_expand_range(struct anv_block_pool *pool,
                        MAP_SHARED | MAP_POPULATE, pool->fd,
                        BLOCK_POOL_MEMFD_CENTER - center_bo_offset);
       if (map == MAP_FAILED)
-         return vk_errorf(pool->device->instance, pool->device,
+         return vk_errorf(pool->device, pool->device,
                           VK_ERROR_MEMORY_MAP_FAILED, "mmap failed: %m");
 
       struct anv_bo *new_bo;
@@ -564,7 +565,7 @@ anv_block_pool_expand_range(struct anv_block_pool *pool,
  * rather than the start of the block pool BO map.
  */
 void*
-anv_block_pool_map(struct anv_block_pool *pool, int32_t offset)
+anv_block_pool_map(struct anv_block_pool *pool, int32_t offset, uint32_t size)
 {
    if (pool->use_softpin) {
       struct anv_bo *bo = NULL;
@@ -578,6 +579,7 @@ anv_block_pool_map(struct anv_block_pool *pool, int32_t offset)
       }
       assert(bo != NULL);
       assert(offset >= bo_offset);
+      assert((offset - bo_offset) + size <= bo->size);
 
       return bo->map + (offset - bo_offset);
    } else {
@@ -610,7 +612,8 @@ anv_block_pool_map(struct anv_block_pool *pool, int32_t offset)
  *     the pool and a 4K CPU page.
  */
 static uint32_t
-anv_block_pool_grow(struct anv_block_pool *pool, struct anv_block_state *state)
+anv_block_pool_grow(struct anv_block_pool *pool, struct anv_block_state *state,
+                    uint32_t contiguous_size)
 {
    VkResult result = VK_SUCCESS;
 
@@ -641,12 +644,24 @@ anv_block_pool_grow(struct anv_block_pool *pool, struct anv_block_state *state)
     */
    assert(old_size > 0);
 
+   const uint32_t old_back = pool->center_bo_offset;
+   const uint32_t old_front = old_size - pool->center_bo_offset;
+
    /* The back_used and front_used may actually be smaller than the actual
     * requirement because they are based on the next pointers which are
     * updated prior to calling this function.
     */
-   uint32_t back_required = MAX2(back_used, pool->center_bo_offset);
-   uint32_t front_required = MAX2(front_used, old_size - pool->center_bo_offset);
+   uint32_t back_required = MAX2(back_used, old_back);
+   uint32_t front_required = MAX2(front_used, old_front);
+
+   if (pool->use_softpin) {
+      /* With softpin, the pool is made up of a bunch of buffers with separate
+       * maps.  Make sure we have enough contiguous space that we can get a
+       * properly contiguous map for the next chunk.
+       */
+      assert(old_back == 0);
+      front_required = MAX2(front_required, old_front + contiguous_size);
+   }
 
    if (back_used * 2 <= back_required && front_used * 2 <= front_required) {
       /* If we're in this case then this isn't the firsta allocation and we
@@ -755,7 +770,7 @@ anv_block_pool_alloc_new(struct anv_block_pool *pool,
           */
          new.next = state.next + block_size;
          do {
-            new.end = anv_block_pool_grow(pool, pool_state);
+            new.end = anv_block_pool_grow(pool, pool_state, block_size);
          } while (new.end < new.next);
 
          old.u64 = __sync_lock_test_and_set(&pool_state->u64, new.u64);
@@ -928,7 +943,9 @@ anv_state_pool_return_blocks(struct anv_state_pool *pool,
                                                       st_idx + i);
       state_i->alloc_size = block_size;
       state_i->offset = chunk_offset + block_size * i;
-      state_i->map = anv_block_pool_map(&pool->block_pool, state_i->offset);
+      state_i->map = anv_block_pool_map(&pool->block_pool,
+                                        state_i->offset,
+                                        state_i->alloc_size);
    }
 
    uint32_t block_bucket = anv_state_pool_get_bucket(block_size);
@@ -1069,7 +1086,7 @@ anv_state_pool_alloc_no_vg(struct anv_state_pool *pool,
    state = anv_state_table_get(&pool->table, idx);
    state->offset = offset;
    state->alloc_size = alloc_size;
-   state->map = anv_block_pool_map(&pool->block_pool, offset);
+   state->map = anv_block_pool_map(&pool->block_pool, offset, alloc_size);
 
    if (padding > 0) {
       uint32_t return_offset = offset - padding;
@@ -1113,7 +1130,7 @@ anv_state_pool_alloc_back(struct anv_state_pool *pool)
    state = anv_state_table_get(&pool->table, idx);
    state->offset = offset;
    state->alloc_size = alloc_size;
-   state->map = anv_block_pool_map(&pool->block_pool, state->offset);
+   state->map = anv_block_pool_map(&pool->block_pool, offset, alloc_size);
 
 done:
    VG(VALGRIND_MEMPOOL_ALLOC(pool, state->map, state->alloc_size));
@@ -1376,11 +1393,9 @@ anv_scratch_pool_alloc(struct anv_device *device, struct anv_scratch_pool *pool,
    if (bo != NULL)
       return bo;
 
-   const struct anv_physical_device *physical_device =
-      &device->instance->physicalDevice;
-   const struct gen_device_info *devinfo = &physical_device->info;
+   const struct gen_device_info *devinfo = &device->info;
 
-   const unsigned subslices = MAX2(physical_device->subslice_total, 1);
+   const unsigned subslices = MAX2(device->physical->subslice_total, 1);
 
    unsigned scratch_ids_per_subslice;
    if (devinfo->gen >= 11) {
@@ -1499,7 +1514,7 @@ static uint32_t
 anv_bo_alloc_flags_to_bo_flags(struct anv_device *device,
                                enum anv_bo_alloc_flags alloc_flags)
 {
-   struct anv_physical_device *pdevice = &device->instance->physicalDevice;
+   struct anv_physical_device *pdevice = device->physical;
 
    uint64_t bo_flags = 0;
    if (!(alloc_flags & ANV_BO_ALLOC_32BIT_ADDRESS) &&
@@ -1523,6 +1538,17 @@ anv_bo_alloc_flags_to_bo_flags(struct anv_device *device,
    return bo_flags;
 }
 
+static uint32_t
+anv_device_get_bo_align(struct anv_device *device,
+                        enum anv_bo_alloc_flags alloc_flags)
+{
+   /* Gen12 CCS surface addresses need to be 64K aligned. */
+   if (device->info.gen >= 12 && (alloc_flags & ANV_BO_ALLOC_IMPLICIT_CCS))
+      return 64 * 1024;
+
+   return 4096;
+}
+
 VkResult
 anv_device_alloc_bo(struct anv_device *device,
                     uint64_t size,
@@ -1530,6 +1556,9 @@ anv_device_alloc_bo(struct anv_device *device,
                     uint64_t explicit_address,
                     struct anv_bo **bo_out)
 {
+   if (!device->physical->has_implicit_ccs)
+      assert(!(alloc_flags & ANV_BO_ALLOC_IMPLICIT_CCS));
+
    const uint32_t bo_flags =
       anv_bo_alloc_flags_to_bo_flags(device, alloc_flags);
    assert(bo_flags == (bo_flags & ANV_BO_CACHE_SUPPORTED_FLAGS));
@@ -1537,7 +1566,20 @@ anv_device_alloc_bo(struct anv_device *device,
    /* The kernel is going to give us whole pages anyway */
    size = align_u64(size, 4096);
 
-   uint32_t gem_handle = anv_gem_create(device, size);
+   const uint32_t align = anv_device_get_bo_align(device, alloc_flags);
+
+   uint64_t ccs_size = 0;
+   if (device->info.has_aux_map && (alloc_flags & ANV_BO_ALLOC_IMPLICIT_CCS)) {
+      /* Align the size up to the next multiple of 64K so we don't have any
+       * AUX-TT entries pointing from a 64K page to itself.
+       */
+      size = align_u64(size, 64 * 1024);
+
+      /* See anv_bo::_ccs_size */
+      ccs_size = align_u64(DIV_ROUND_UP(size, GEN_AUX_MAP_GEN12_CCS_SCALE), 4096);
+   }
+
+   uint32_t gem_handle = anv_gem_create(device, size + ccs_size);
    if (gem_handle == 0)
       return vk_error(VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
@@ -1546,10 +1588,12 @@ anv_device_alloc_bo(struct anv_device *device,
       .refcount = 1,
       .offset = -1,
       .size = size,
+      ._ccs_size = ccs_size,
       .flags = bo_flags,
       .is_external = (alloc_flags & ANV_BO_ALLOC_EXTERNAL),
       .has_client_visible_address =
          (alloc_flags & ANV_BO_ALLOC_CLIENT_VISIBLE_ADDRESS) != 0,
+      .has_implicit_ccs = ccs_size > 0,
    };
 
    if (alloc_flags & ANV_BO_ALLOC_MAPPED) {
@@ -1583,15 +1627,26 @@ anv_device_alloc_bo(struct anv_device *device,
    if (alloc_flags & ANV_BO_ALLOC_FIXED_ADDRESS) {
       new_bo.has_fixed_address = true;
       new_bo.offset = explicit_address;
-   } else {
-      if (!anv_vma_alloc(device, &new_bo, explicit_address)) {
+   } else if (new_bo.flags & EXEC_OBJECT_PINNED) {
+      new_bo.offset = anv_vma_alloc(device, new_bo.size + new_bo._ccs_size,
+                                    align, alloc_flags, explicit_address);
+      if (new_bo.offset == 0) {
          if (new_bo.map)
             anv_gem_munmap(new_bo.map, size);
          anv_gem_close(device, new_bo.gem_handle);
-         return vk_errorf(device->instance, NULL,
-                          VK_ERROR_OUT_OF_DEVICE_MEMORY,
+         return vk_errorf(device, NULL, VK_ERROR_OUT_OF_DEVICE_MEMORY,
                           "failed to allocate virtual address for BO");
       }
+   } else {
+      assert(!new_bo.has_client_visible_address);
+   }
+
+   if (new_bo._ccs_size > 0) {
+      assert(device->info.has_aux_map);
+      gen_aux_map_add_mapping(device->aux_map_ctx,
+                              gen_canonical_address(new_bo.offset),
+                              gen_canonical_address(new_bo.offset + new_bo.size),
+                              new_bo.size, 0 /* format_bits */);
    }
 
    assert(new_bo.gem_handle);
@@ -1618,6 +1673,10 @@ anv_device_import_bo_from_host_ptr(struct anv_device *device,
                            ANV_BO_ALLOC_SNOOPED |
                            ANV_BO_ALLOC_FIXED_ADDRESS)));
 
+   /* We can't do implicit CCS with an aux table on shared memory */
+   if (!device->physical->has_implicit_ccs || device->info.has_aux_map)
+       assert(!(alloc_flags & ANV_BO_ALLOC_IMPLICIT_CCS));
+
    struct anv_bo_cache *cache = &device->bo_cache;
    const uint32_t bo_flags =
       anv_bo_alloc_flags_to_bo_flags(device, alloc_flags);
@@ -1638,24 +1697,21 @@ anv_device_import_bo_from_host_ptr(struct anv_device *device,
       assert(bo->gem_handle == gem_handle);
       if (bo_flags != bo->flags) {
          pthread_mutex_unlock(&cache->mutex);
-         return vk_errorf(device->instance, NULL,
-                          VK_ERROR_INVALID_EXTERNAL_HANDLE,
+         return vk_errorf(device, NULL, VK_ERROR_INVALID_EXTERNAL_HANDLE,
                           "same host pointer imported two different ways");
       }
 
       if (bo->has_client_visible_address !=
           ((alloc_flags & ANV_BO_ALLOC_CLIENT_VISIBLE_ADDRESS) != 0)) {
          pthread_mutex_unlock(&cache->mutex);
-         return vk_errorf(device->instance, NULL,
-                          VK_ERROR_INVALID_EXTERNAL_HANDLE,
+         return vk_errorf(device, NULL, VK_ERROR_INVALID_EXTERNAL_HANDLE,
                           "The same BO was imported with and without buffer "
                           "device address");
       }
 
       if (client_address && client_address != gen_48b_address(bo->offset)) {
          pthread_mutex_unlock(&cache->mutex);
-         return vk_errorf(device->instance, NULL,
-                          VK_ERROR_INVALID_EXTERNAL_HANDLE,
+         return vk_errorf(device, NULL, VK_ERROR_INVALID_EXTERNAL_HANDLE,
                           "The same BO was imported at two different "
                           "addresses");
       }
@@ -1676,12 +1732,20 @@ anv_device_import_bo_from_host_ptr(struct anv_device *device,
       };
 
       assert(client_address == gen_48b_address(client_address));
-      if (!anv_vma_alloc(device, &new_bo, client_address)) {
-         anv_gem_close(device, new_bo.gem_handle);
-         pthread_mutex_unlock(&cache->mutex);
-         return vk_errorf(device->instance, NULL,
-                          VK_ERROR_OUT_OF_DEVICE_MEMORY,
-                          "failed to allocate virtual address for BO");
+      if (new_bo.flags & EXEC_OBJECT_PINNED) {
+         assert(new_bo._ccs_size == 0);
+         new_bo.offset = anv_vma_alloc(device, new_bo.size,
+                                       anv_device_get_bo_align(device,
+                                                               alloc_flags),
+                                       alloc_flags, client_address);
+         if (new_bo.offset == 0) {
+            anv_gem_close(device, new_bo.gem_handle);
+            pthread_mutex_unlock(&cache->mutex);
+            return vk_errorf(device, NULL, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                             "failed to allocate virtual address for BO");
+         }
+      } else {
+         assert(!new_bo.has_client_visible_address);
       }
 
       *bo = new_bo;
@@ -1703,6 +1767,10 @@ anv_device_import_bo(struct anv_device *device,
    assert(!(alloc_flags & (ANV_BO_ALLOC_MAPPED |
                            ANV_BO_ALLOC_SNOOPED |
                            ANV_BO_ALLOC_FIXED_ADDRESS)));
+
+   /* We can't do implicit CCS with an aux table on shared memory */
+   if (!device->physical->has_implicit_ccs || device->info.has_aux_map)
+       assert(!(alloc_flags & ANV_BO_ALLOC_IMPLICIT_CCS));
 
    struct anv_bo_cache *cache = &device->bo_cache;
    const uint32_t bo_flags =
@@ -1739,8 +1807,7 @@ anv_device_import_bo(struct anv_device *device,
       if ((bo->flags & EXEC_OBJECT_PINNED) !=
           (bo_flags & EXEC_OBJECT_PINNED)) {
          pthread_mutex_unlock(&cache->mutex);
-         return vk_errorf(device->instance, NULL,
-                          VK_ERROR_INVALID_EXTERNAL_HANDLE,
+         return vk_errorf(device, NULL, VK_ERROR_INVALID_EXTERNAL_HANDLE,
                           "The same BO was imported two different ways");
       }
 
@@ -1755,24 +1822,21 @@ anv_device_import_bo(struct anv_device *device,
           (bo->flags & EXEC_OBJECT_SUPPORTS_48B_ADDRESS) !=
           (bo_flags & EXEC_OBJECT_SUPPORTS_48B_ADDRESS)) {
          pthread_mutex_unlock(&cache->mutex);
-         return vk_errorf(device->instance, NULL,
-                          VK_ERROR_INVALID_EXTERNAL_HANDLE,
+         return vk_errorf(device, NULL, VK_ERROR_INVALID_EXTERNAL_HANDLE,
                           "The same BO was imported on two different heaps");
       }
 
       if (bo->has_client_visible_address !=
           ((alloc_flags & ANV_BO_ALLOC_CLIENT_VISIBLE_ADDRESS) != 0)) {
          pthread_mutex_unlock(&cache->mutex);
-         return vk_errorf(device->instance, NULL,
-                          VK_ERROR_INVALID_EXTERNAL_HANDLE,
+         return vk_errorf(device, NULL, VK_ERROR_INVALID_EXTERNAL_HANDLE,
                           "The same BO was imported with and without buffer "
                           "device address");
       }
 
       if (client_address && client_address != gen_48b_address(bo->offset)) {
          pthread_mutex_unlock(&cache->mutex);
-         return vk_errorf(device->instance, NULL,
-                          VK_ERROR_INVALID_EXTERNAL_HANDLE,
+         return vk_errorf(device, NULL, VK_ERROR_INVALID_EXTERNAL_HANDLE,
                           "The same BO was imported at two different "
                           "addresses");
       }
@@ -1800,12 +1864,20 @@ anv_device_import_bo(struct anv_device *device,
       };
 
       assert(client_address == gen_48b_address(client_address));
-      if (!anv_vma_alloc(device, &new_bo, client_address)) {
-         anv_gem_close(device, new_bo.gem_handle);
-         pthread_mutex_unlock(&cache->mutex);
-         return vk_errorf(device->instance, NULL,
-                          VK_ERROR_OUT_OF_DEVICE_MEMORY,
-                          "failed to allocate virtual address for BO");
+      if (new_bo.flags & EXEC_OBJECT_PINNED) {
+         assert(new_bo._ccs_size == 0);
+         new_bo.offset = anv_vma_alloc(device, new_bo.size,
+                                       anv_device_get_bo_align(device,
+                                                               alloc_flags),
+                                       alloc_flags, client_address);
+         if (new_bo.offset == 0) {
+            anv_gem_close(device, new_bo.gem_handle);
+            pthread_mutex_unlock(&cache->mutex);
+            return vk_errorf(device, NULL, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                             "failed to allocate virtual address for BO");
+         }
+      } else {
+         assert(!new_bo.has_client_visible_address);
       }
 
       *bo = new_bo;
@@ -1887,8 +1959,17 @@ anv_device_release_bo(struct anv_device *device,
    if (bo->map && !bo->from_host_ptr)
       anv_gem_munmap(bo->map, bo->size);
 
-   if (!bo->has_fixed_address)
-      anv_vma_free(device, bo);
+   if (bo->_ccs_size > 0) {
+      assert(device->physical->has_implicit_ccs);
+      assert(device->info.has_aux_map);
+      assert(bo->has_implicit_ccs);
+      gen_aux_map_unmap_range(device->aux_map_ctx,
+                              gen_canonical_address(bo->offset),
+                              bo->size);
+   }
+
+   if ((bo->flags & EXEC_OBJECT_PINNED) && !bo->has_fixed_address)
+      anv_vma_free(device, bo->offset, bo->size + bo->_ccs_size);
 
    uint32_t gem_handle = bo->gem_handle;
 

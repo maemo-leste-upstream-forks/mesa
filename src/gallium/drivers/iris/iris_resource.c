@@ -85,7 +85,8 @@ modifier_is_supported(const struct gen_device_info *devinfo,
 
       enum isl_format linear_format = isl_format_srgb_to_linear(rt_format);
 
-      if (!isl_format_supports_ccs_e(devinfo, linear_format))
+      if (linear_format == ISL_FORMAT_UNSUPPORTED ||
+          !isl_format_supports_ccs_e(devinfo, linear_format))
          return false;
 
       return devinfo->gen >= 9 && devinfo->gen <= 11;
@@ -553,6 +554,8 @@ iris_resource_configure_aux(struct iris_screen *screen,
          initial_state = ISL_AUX_STATE_PASS_THROUGH;
       *alloc_flags |= BO_ALLOC_ZEROED;
       break;
+   case ISL_AUX_USAGE_MC:
+      unreachable("Unsupported aux mode");
    }
 
    /* Create the aux_state for the auxiliary buffer. */

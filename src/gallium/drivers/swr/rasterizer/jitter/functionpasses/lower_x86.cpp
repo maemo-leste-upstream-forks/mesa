@@ -48,6 +48,12 @@ namespace SwrJit
 {
     using namespace llvm;
 
+#if LLVM_VERSION_MAJOR > 10
+    typedef unsigned IntrinsicID;
+#else
+    typedef Intrinsic::ID IntrinsicID;
+#endif
+
     enum TargetArch
     {
         AVX    = 0,
@@ -68,13 +74,13 @@ namespace SwrJit
 
     struct X86Intrinsic
     {
-        Intrinsic::ID intrin[NUM_WIDTHS];
+        IntrinsicID intrin[NUM_WIDTHS];
         EmuFunc       emuFunc;
     };
 
     // Map of intrinsics that haven't been moved to the new mechanism yet. If used, these get the
     // previous behavior of mapping directly to avx/avx2 intrinsics.
-    static std::map<std::string, Intrinsic::ID> intrinsicMap = {
+    static std::map<std::string, IntrinsicID> intrinsicMap = {
         {"meta.intrinsic.BEXTR_32", Intrinsic::x86_bmi_bextr_32},
         {"meta.intrinsic.VPSHUFB", Intrinsic::x86_avx2_pshuf_b},
         {"meta.intrinsic.VCVTPS2PH", Intrinsic::x86_vcvtps2ph_256},
@@ -224,13 +230,16 @@ namespace SwrJit
                                       TargetWidth*    pWidth,
                                       Type**          pTy)
         {
+            assert(pCallInst);
             Type* pVecTy = pCallInst->getType();
 
             // Check for intrinsic specific types
             // VCVTPD2PS type comes from src, not dst
             if (intrinName.equals("meta.intrinsic.VCVTPD2PS"))
             {
-                pVecTy = pCallInst->getOperand(0)->getType();
+                Value* pOp = pCallInst->getOperand(0);
+                assert(pOp);
+                pVecTy = pOp->getType();
             }
 
             if (!pVecTy->isVectorTy())
@@ -307,14 +316,16 @@ namespace SwrJit
 
         Instruction* ProcessIntrinsicAdvanced(CallInst* pCallInst)
         {
-            Function*   pFunc     = pCallInst->getCalledFunction();
-            auto&       intrinsic = intrinsicMap2[mTarget][pFunc->getName()];
+            Function*   pFunc = pCallInst->getCalledFunction();
+            assert(pFunc);
+
+            auto&       intrinsic = intrinsicMap2[mTarget][pFunc->getName().str()];
             TargetWidth vecWidth;
             Type*       pElemTy;
             GetRequestedWidthAndType(pCallInst, pFunc->getName(), &vecWidth, &pElemTy);
 
             // Check if there is a native intrinsic for this instruction
-            Intrinsic::ID id = intrinsic.intrin[vecWidth];
+            IntrinsicID id = intrinsic.intrin[vecWidth];
             if (id == DOUBLE)
             {
                 // Double pump the next smaller SIMD intrinsic
@@ -367,18 +378,19 @@ namespace SwrJit
         Instruction* ProcessIntrinsic(CallInst* pCallInst)
         {
             Function* pFunc = pCallInst->getCalledFunction();
+            assert(pFunc);
 
             // Forward to the advanced support if found
-            if (intrinsicMap2[mTarget].find(pFunc->getName()) != intrinsicMap2[mTarget].end())
+            if (intrinsicMap2[mTarget].find(pFunc->getName().str()) != intrinsicMap2[mTarget].end())
             {
                 return ProcessIntrinsicAdvanced(pCallInst);
             }
 
-            SWR_ASSERT(intrinsicMap.find(pFunc->getName()) != intrinsicMap.end(),
+            SWR_ASSERT(intrinsicMap.find(pFunc->getName().str()) != intrinsicMap.end(),
                        "Unimplemented intrinsic %s.",
-                       pFunc->getName());
+                       pFunc->getName().str());
 
-            Intrinsic::ID x86Intrinsic = intrinsicMap[pFunc->getName()];
+            Intrinsic::ID x86Intrinsic = intrinsicMap[pFunc->getName().str()];
             Function*     pX86IntrinFunc =
                 Intrinsic::getDeclaration(B->JM()->mpCurrentModule, x86Intrinsic);
 
@@ -507,7 +519,7 @@ namespace SwrJit
         uint32_t numElem  = vSrc->getType()->getVectorNumElements();
         auto     i32Scale = B->Z_EXT(i8Scale, B->mInt32Ty);
         auto     srcTy    = vSrc->getType()->getVectorElementType();
-        Value*   v32Gather;
+        Value*   v32Gather = nullptr;
         if (arch == AVX)
         {
             // Full emulation for AVX
@@ -536,7 +548,7 @@ namespace SwrJit
         }
         else if (arch == AVX2 || (arch == AVX512 && width == W256))
         {
-            Function* pX86IntrinFunc;
+            Function* pX86IntrinFunc = nullptr;
             if (srcTy == B->mFP32Ty)
             {
                 pX86IntrinFunc = Intrinsic::getDeclaration(B->JM()->mpCurrentModule,
@@ -627,8 +639,8 @@ namespace SwrJit
         }
         else if (arch == AVX512)
         {
-            Value*    iMask;
-            Function* pX86IntrinFunc;
+            Value*    iMask = nullptr;
+            Function* pX86IntrinFunc = nullptr;
             if (srcTy == B->mFP32Ty)
             {
                 pX86IntrinFunc = Intrinsic::getDeclaration(B->JM()->mpCurrentModule,
@@ -731,7 +743,9 @@ namespace SwrJit
 
         auto B       = pThis->B;
         auto vf32Src = pCallInst->getOperand(0);
+        assert(vf32Src);
         auto i8Round = pCallInst->getOperand(1);
+        assert(i8Round);
         auto pfnFunc =
             Intrinsic::getDeclaration(B->JM()->mpCurrentModule, Intrinsic::x86_avx_round_ps_256);
 

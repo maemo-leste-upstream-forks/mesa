@@ -268,10 +268,11 @@ static void rvce_begin_frame(struct pipe_video_codec *encoder,
 		enc->pic.rate_ctrl.rate_ctrl_method != pic->rate_ctrl.rate_ctrl_method ||
 		enc->pic.quant_i_frames != pic->quant_i_frames ||
 		enc->pic.quant_p_frames != pic->quant_p_frames ||
-		enc->pic.quant_b_frames != pic->quant_b_frames;
+		enc->pic.quant_b_frames != pic->quant_b_frames ||
+		enc->pic.rate_ctrl.target_bitrate != pic->rate_ctrl.target_bitrate;
 
 	enc->pic = *pic;
-	si_get_pic_param(enc, pic);
+	enc->si_get_pic_param(enc, pic);
 
 	enc->get_buffer(vid_buf->resources[0], &enc->handle, &enc->luma);
 	enc->get_buffer(vid_buf->resources[1], NULL, &enc->chroma);
@@ -489,7 +490,6 @@ struct pipe_video_codec *si_vce_create_encoder(struct pipe_context *context,
 	switch (sscreen->info.vce_fw_version) {
 	case FW_40_2_2:
 		si_vce_40_2_2_init(enc);
-		si_get_pic_param = si_vce_40_2_2_get_param;
 		break;
 
 	case FW_50_0_1:
@@ -497,20 +497,17 @@ struct pipe_video_codec *si_vce_create_encoder(struct pipe_context *context,
 	case FW_50_10_2:
 	case FW_50_17_3:
 		si_vce_50_init(enc);
-		si_get_pic_param = si_vce_50_get_param;
 		break;
 
 	case FW_52_0_3:
 	case FW_52_4_3:
 	case FW_52_8_3:
 		si_vce_52_init(enc);
-		si_get_pic_param = si_vce_52_get_param;
 		break;
 
 	default:
 		if ((sscreen->info.vce_fw_version & (0xff << 24)) >= FW_53) {
 			si_vce_52_init(enc);
-			si_get_pic_param = si_vce_52_get_param;
 		} else
 			goto error;
 	}

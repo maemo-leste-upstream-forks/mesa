@@ -452,14 +452,23 @@ fs_generator::generate_mov_indirect(fs_inst *inst,
        * In the end, while base_offset is nice to look at in the generated
        * code, using it saves us 0 instructions and would require quite a bit
        * of case-by-case work.  It's just not worth it.
+       *
+       * There's some sort of HW bug on Gen12 which causes issues if we write
+       * to the address register in control-flow.  Since we only ever touch
+       * the address register from the generator, we can easily enough work
+       * around it by setting NoMask on the add.
        */
+      brw_push_insn_state(p);
+      if (devinfo->gen == 12)
+         brw_set_default_mask_control(p, BRW_MASK_DISABLE);
       brw_ADD(p, addr, indirect_byte_offset, brw_imm_uw(imm_byte_offset));
+      brw_pop_insn_state(p);
       brw_set_default_swsb(p, tgl_swsb_regdist(1));
 
       if (type_sz(reg.type) > 4 &&
           ((devinfo->gen == 7 && !devinfo->is_haswell) ||
            devinfo->is_cherryview || gen_device_info_is_9lp(devinfo) ||
-           !devinfo->has_64bit_types)) {
+           !devinfo->has_64bit_float)) {
          /* IVB has an issue (which we found empirically) where it reads two
           * address register components per channel for indirectly addressed
           * 64-bit sources.
@@ -1369,8 +1378,8 @@ fs_generator::generate_scratch_write(fs_inst *inst, struct brw_reg src)
       brw_set_default_group(p, inst->group + lower_size * i);
 
       if (i > 0) {
-         brw_set_default_swsb(p, tgl_swsb_null());
-         brw_SYNC(p, TGL_SYNC_ALLRD);
+         assert(swsb.mode & TGL_SBID_SET);
+         brw_set_default_swsb(p, tgl_swsb_sbid(TGL_SBID_SRC, swsb.sbid));
       } else {
          brw_set_default_swsb(p, tgl_swsb_src_dep(swsb));
       }
@@ -1378,11 +1387,7 @@ fs_generator::generate_scratch_write(fs_inst *inst, struct brw_reg src)
       brw_MOV(p, brw_uvec_mrf(lower_size, inst->base_mrf + 1, 0),
               retype(offset(src, block_size * i), BRW_REGISTER_TYPE_UD));
 
-      if (i + 1 < inst->exec_size / lower_size)
-         brw_set_default_swsb(p, tgl_swsb_regdist(1));
-      else
-         brw_set_default_swsb(p, tgl_swsb_dst_dep(swsb, 1));
-
+      brw_set_default_swsb(p, tgl_swsb_dst_dep(swsb, 1));
       brw_oword_block_write_scratch(p, brw_message_reg(inst->base_mrf),
                                     block_size,
                                     inst->offset + block_size * REG_SIZE * i);
@@ -1711,6 +1716,7 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
     */
    int spill_count = 0, fill_count = 0;
    int loop_count = 0, send_count = 0;
+   bool is_accum_used = false;
 
    struct disasm_info *disasm_info = disasm_initialize(devinfo, cfg);
 
@@ -1739,6 +1745,23 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
           inst->dst.component_size(inst->exec_size) > REG_SIZE) {
          brw_NOP(p);
          last_insn_offset = p->next_insn_offset;
+      }
+
+      /* GEN:BUG:14010017096:
+       *
+       * Clear accumulator register before end of thread.
+       */
+      if (inst->eot && is_accum_used && devinfo->gen >= 12) {
+         brw_set_default_exec_size(p, BRW_EXECUTE_16);
+         brw_set_default_mask_control(p, BRW_MASK_DISABLE);
+         brw_set_default_predicate_control(p, BRW_PREDICATE_NONE);
+         brw_MOV(p, brw_acc_reg(8), brw_imm_f(0.0f));
+         last_insn_offset = p->next_insn_offset;
+      }
+
+      if (!is_accum_used && !inst->eot) {
+         is_accum_used = inst->writes_accumulator_implicitly(devinfo) ||
+                         inst->dst.is_accumulator();
       }
 
       if (unlikely(debug_flag))
@@ -2177,6 +2200,11 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
          send_count++;
          break;
 
+      case FS_OPCODE_SCHEDULING_FENCE:
+         if (unlikely(debug_flag))
+            disasm_info->use_tail = true;
+         break;
+
       case SHADER_OPCODE_INTERLOCK:
          assert(devinfo->gen >= 9);
          /* The interlock is basically a memory fence issued via sendc */
@@ -2192,7 +2220,16 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
          brw_find_live_channel(p, dst, mask);
          break;
       }
-
+      case FS_OPCODE_LOAD_LIVE_CHANNELS: {
+         assert(devinfo->gen >= 8);
+         assert(inst->force_writemask_all && inst->group == 0);
+         assert(inst->dst.file == BAD_FILE);
+         brw_set_default_exec_size(p, BRW_EXECUTE_1);
+         brw_MOV(p, retype(brw_flag_subreg(inst->flag_subreg),
+                           BRW_REGISTER_TYPE_UD),
+                 retype(brw_mask_reg(0), BRW_REGISTER_TYPE_UD));
+         break;
+      }
       case SHADER_OPCODE_BROADCAST:
          assert(inst->force_writemask_all);
          brw_broadcast(p, dst, src[0], src[1]);

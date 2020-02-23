@@ -656,7 +656,8 @@ _nir_mul_imm(nir_builder *build, nir_ssa_def *x, uint64_t y, bool amul)
       return nir_imm_intN_t(build, 0, x->bit_size);
    } else if (y == 1) {
       return x;
-   } else if (util_is_power_of_two_or_zero64(y)) {
+   } else if (!build->shader->options->lower_bitops &&
+              util_is_power_of_two_or_zero64(y)) {
       return nir_ishl(build, x, nir_imm_int(build, ffsll(y) - 1));
    } else if (amul) {
       return nir_amul(build, x, nir_imm_intN_t(build, y, x->bit_size));
@@ -1249,8 +1250,9 @@ static inline nir_ssa_def *
 nir_load_barycentric(nir_builder *build, nir_intrinsic_op op,
                      unsigned interp_mode)
 {
+   unsigned num_components = op == nir_intrinsic_load_barycentric_model ? 3 : 2;
    nir_intrinsic_instr *bary = nir_intrinsic_instr_create(build->shader, op);
-   nir_ssa_dest_init(&bary->instr, &bary->dest, 2, 32, NULL);
+   nir_ssa_dest_init(&bary->instr, &bary->dest, num_components, 32, NULL);
    nir_intrinsic_set_interp_mode(bary, interp_mode);
    nir_builder_instr_insert(build, &bary->instr);
    return &bary->dest.ssa;

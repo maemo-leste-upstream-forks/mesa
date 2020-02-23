@@ -534,6 +534,7 @@ struct vtn_image_pointer {
    struct vtn_pointer *image;
    nir_ssa_def *coord;
    nir_ssa_def *sample;
+   nir_ssa_def *lod;
 };
 
 struct vtn_sampled_image {
@@ -624,6 +625,9 @@ struct vtn_builder {
 
    /* True if we should watch out for GLSLang issue #179 */
    bool wa_glslang_179;
+
+   /* True if we need to fix up CS OpControlBarrier */
+   bool wa_glslang_cs_barrier;
 
    gl_shader_stage entry_point_stage;
    const char *entry_point_name;
@@ -886,6 +890,11 @@ bool vtn_handle_amd_shader_ballot_instruction(struct vtn_builder *b, SpvOp ext_o
 
 bool vtn_handle_amd_shader_trinary_minmax_instruction(struct vtn_builder *b, SpvOp ext_opcode,
 						      const uint32_t *words, unsigned count);
+
+bool vtn_handle_amd_shader_explicit_vertex_parameter_instruction(struct vtn_builder *b,
+                                                                 SpvOp ext_opcode,
+                                                                 const uint32_t *words,
+                                                                 unsigned count);
 
 SpvMemorySemanticsMask vtn_storage_class_to_memory_semantics(SpvStorageClass sc);
 

@@ -381,22 +381,21 @@ mir_from_bytemask(uint16_t bytemask, midgard_reg_mode mode)
         return value;
 }
 
-/* Rounds down a bytemask to fit a given component count. Iterate each
- * component, and check if all bytes in the component are masked on */
+/* Rounds up a bytemask to fill a given component count. Iterate each
+ * component, and check if any bytes in the component are masked on */
 
 uint16_t
-mir_round_bytemask_down(uint16_t mask, midgard_reg_mode mode)
+mir_round_bytemask_up(uint16_t mask, midgard_reg_mode mode)
 {
         unsigned bytes = mir_bytes_for_mode(mode);
         unsigned maxmask = mask_of(bytes);
         unsigned channels = 16 / bytes;
 
         for (unsigned c = 0; c < channels; ++c) {
-                /* Get bytes in component */
-                unsigned submask = (mask >> (c * bytes)) & maxmask;
+                unsigned submask = maxmask << (c * bytes);
 
-                if (submask != maxmask)
-                        mask &= ~(maxmask << (c * bytes));
+                if (mask & submask)
+                        mask |= submask;
         }
 
         return mask;
@@ -467,6 +466,45 @@ mir_bytemask_of_read_components_single(unsigned *swizzle, unsigned inmask, midga
 }
 
 uint16_t
+mir_bytemask_of_read_components_index(midgard_instruction *ins, unsigned i)
+{
+        if (ins->compact_branch && ins->writeout && (i == 0)) {
+                /* Non-ZS writeout uses all components */
+                if (!ins->writeout_depth && !ins->writeout_stencil)
+                        return 0xFFFF;
+
+                /* For ZS-writeout, if both Z and S are written we need two
+                 * components, otherwise we only need one.
+                 */
+                if (ins->writeout_depth && ins->writeout_stencil)
+                        return 0xFF;
+                else
+                        return 0xF;
+        }
+
+        /* Conditional branches read one 32-bit component = 4 bytes (TODO: multi branch??) */
+        if (ins->compact_branch && ins->branch.conditional && (i == 0))
+                return 0xF;
+
+        /* ALU ops act componentwise so we need to pay attention to
+         * their mask. Texture/ldst does not so we don't clamp source
+         * readmasks based on the writemask */
+        unsigned qmask = (ins->type == TAG_ALU_4) ? ins->mask : ~0;
+
+        /* Handle dot products and things */
+        if (ins->type == TAG_ALU_4 && !ins->compact_branch) {
+                unsigned props = alu_opcode_props[ins->alu.op].props;
+
+                unsigned channel_override = GET_CHANNEL_COUNT(props);
+
+                if (channel_override)
+                        qmask = mask_of(channel_override);
+        }
+
+        return mir_bytemask_of_read_components_single(ins->swizzle[i], qmask, mir_srcsize(ins, i));
+}
+
+uint16_t
 mir_bytemask_of_read_components(midgard_instruction *ins, unsigned node)
 {
         uint16_t mask = 0;
@@ -476,31 +514,7 @@ mir_bytemask_of_read_components(midgard_instruction *ins, unsigned node)
 
         mir_foreach_src(ins, i) {
                 if (ins->src[i] != node) continue;
-
-                /* Branch writeout uses all components */
-                if (ins->compact_branch && ins->writeout && (i == 0))
-                        return 0xFFFF;
-
-                /* Conditional branches read one 32-bit component = 4 bytes (TODO: multi branch??) */
-                if (ins->compact_branch && ins->branch.conditional && (i == 0))
-                        return 0xF;
-
-                /* ALU ops act componentwise so we need to pay attention to
-                 * their mask. Texture/ldst does not so we don't clamp source
-                 * readmasks based on the writemask */
-                unsigned qmask = (ins->type == TAG_ALU_4) ? ins->mask : ~0;
-
-                /* Handle dot products and things */
-                if (ins->type == TAG_ALU_4 && !ins->compact_branch) {
-                        unsigned props = alu_opcode_props[ins->alu.op].props;
-
-                        unsigned channel_override = GET_CHANNEL_COUNT(props);
-
-                        if (channel_override)
-                                qmask = mask_of(channel_override);
-                }
-
-                mask |= mir_bytemask_of_read_components_single(ins->swizzle[i], qmask, mir_srcsize(ins, i));
+                mask |= mir_bytemask_of_read_components_index(ins, i);
         }
 
         return mask;
@@ -574,7 +588,7 @@ mir_insert_instruction_before_scheduled(
         memcpy(bundles + before, &new, sizeof(new));
 
         list_addtail(&new.instructions[0]->link, &before_bundle->instructions[0]->link);
-        block->quadword_count += midgard_word_size[new.tag];
+        block->quadword_count += midgard_tag_props[new.tag].size;
 }
 
 void
@@ -599,7 +613,7 @@ mir_insert_instruction_after_scheduled(
         midgard_bundle new = mir_bundle_for_op(ctx, ins);
         memcpy(bundles + after + 1, &new, sizeof(new));
         list_add(&new.instructions[0]->link, &after_bundle->instructions[after_bundle->instruction_count - 1]->link);
-        block->quadword_count += midgard_word_size[new.tag];
+        block->quadword_count += midgard_tag_props[new.tag].size;
 }
 
 /* Flip the first-two arguments of a (binary) op. Currently ALU

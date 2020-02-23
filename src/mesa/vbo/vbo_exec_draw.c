@@ -179,7 +179,8 @@ vbo_exec_bind_arrays(struct gl_context *ctx)
    GLintptr buffer_offset;
    if (_mesa_is_bufferobj(exec->vtx.bufferobj)) {
       assert(exec->vtx.bufferobj->Mappings[MAP_INTERNAL].Pointer);
-      buffer_offset = exec->vtx.bufferobj->Mappings[MAP_INTERNAL].Offset;
+      buffer_offset = exec->vtx.bufferobj->Mappings[MAP_INTERNAL].Offset +
+                      exec->vtx.buffer_offset;
    } else {
       /* Ptr into ordinary app memory */
       buffer_offset = (GLbyte *)exec->vtx.buffer_map - (GLbyte *)NULL;
@@ -209,8 +210,8 @@ vbo_exec_bind_arrays(struct gl_context *ctx)
       const int vao_attr = u_bit_scan(&mask);
       const GLubyte vbo_attr = vao_to_vbo_map[vao_attr];
 
-      const GLubyte size = exec->vtx.attrsz[vbo_attr];
-      const GLenum16 type = exec->vtx.attrtype[vbo_attr];
+      const GLubyte size = exec->vtx.attr[vbo_attr].size;
+      const GLenum16 type = exec->vtx.attr[vbo_attr].type;
       const GLuint offset = (GLuint)((GLbyte *)exec->vtx.attrptr[vbo_attr] -
                                      (GLbyte *)exec->vtx.vertex);
       assert(offset <= ctx->Const.MaxVertexAttribRelativeOffset);
@@ -240,7 +241,8 @@ vbo_exec_vtx_unmap(struct vbo_exec_context *exec)
    if (_mesa_is_bufferobj(exec->vtx.bufferobj)) {
       struct gl_context *ctx = exec->ctx;
 
-      if (ctx->Driver.FlushMappedBufferRange) {
+      if (ctx->Driver.FlushMappedBufferRange &&
+          !ctx->Extensions.ARB_buffer_storage) {
          GLintptr offset = exec->vtx.buffer_used -
                            exec->vtx.bufferobj->Mappings[MAP_INTERNAL].Offset;
          GLsizeiptr length = (exec->vtx.buffer_ptr - exec->vtx.buffer_map) *
@@ -265,6 +267,12 @@ vbo_exec_vtx_unmap(struct vbo_exec_context *exec)
    }
 }
 
+static bool
+vbo_exec_buffer_has_space(struct vbo_exec_context *exec)
+{
+   return VBO_VERT_BUFFER_SIZE > exec->vtx.buffer_used + 1024;
+}
+
 
 /**
  * Map the vertex buffer to begin storing glVertex, glColor, etc data.
@@ -273,12 +281,23 @@ void
 vbo_exec_vtx_map(struct vbo_exec_context *exec)
 {
    struct gl_context *ctx = exec->ctx;
-   const GLenum accessRange = GL_MAP_WRITE_BIT |  /* for MapBufferRange */
-                              GL_MAP_INVALIDATE_RANGE_BIT |
-                              GL_MAP_UNSYNCHRONIZED_BIT |
-                              GL_MAP_FLUSH_EXPLICIT_BIT |
-                              MESA_MAP_NOWAIT_BIT;
    const GLenum usage = GL_STREAM_DRAW_ARB;
+   GLenum accessRange = GL_MAP_WRITE_BIT |  /* for MapBufferRange */
+                        GL_MAP_UNSYNCHRONIZED_BIT;
+
+   if (ctx->Extensions.ARB_buffer_storage) {
+      /* We sometimes read from the buffer, so map it for read too.
+       * Only the persistent mapping can do that, because the non-persistent
+       * mapping uses flags that are incompatible with GL_MAP_READ_BIT.
+       */
+      accessRange |= GL_MAP_PERSISTENT_BIT |
+                     GL_MAP_COHERENT_BIT |
+                     GL_MAP_READ_BIT;
+   } else {
+      accessRange |= GL_MAP_INVALIDATE_RANGE_BIT |
+                     GL_MAP_FLUSH_EXPLICIT_BIT |
+                     MESA_MAP_NOWAIT_BIT;
+   }
 
    if (!_mesa_is_bufferobj(exec->vtx.bufferobj))
       return;
@@ -286,7 +305,7 @@ vbo_exec_vtx_map(struct vbo_exec_context *exec)
    assert(!exec->vtx.buffer_map);
    assert(!exec->vtx.buffer_ptr);
 
-   if (VBO_VERT_BUFFER_SIZE > exec->vtx.buffer_used + 1024) {
+   if (vbo_exec_buffer_has_space(exec)) {
       /* The VBO exists and there's room for more */
       if (exec->vtx.bufferobj->Size > 0) {
          exec->vtx.buffer_map = (fi_type *)
@@ -312,6 +331,10 @@ vbo_exec_vtx_map(struct vbo_exec_context *exec)
                                  VBO_VERT_BUFFER_SIZE,
                                  NULL, usage,
                                  GL_MAP_WRITE_BIT |
+                                 (ctx->Extensions.ARB_buffer_storage ?
+                                    GL_MAP_PERSISTENT_BIT |
+                                    GL_MAP_COHERENT_BIT |
+                                    GL_MAP_READ_BIT : 0) |
                                  GL_DYNAMIC_STORAGE_BIT |
                                  GL_CLIENT_STORAGE_BIT,
                                  exec->vtx.bufferobj)) {
@@ -330,6 +353,7 @@ vbo_exec_vtx_map(struct vbo_exec_context *exec)
    }
 
    exec->vtx.buffer_ptr = exec->vtx.buffer_map;
+   exec->vtx.buffer_offset = 0;
 
    if (!exec->vtx.buffer_map) {
       /* out of memory */
@@ -353,11 +377,15 @@ vbo_exec_vtx_map(struct vbo_exec_context *exec)
 
 /**
  * Execute the buffer and save copied verts.
- * \param keep_unmapped  if true, leave the VBO unmapped when we're done.
  */
 void
-vbo_exec_vtx_flush(struct vbo_exec_context *exec, GLboolean keepUnmapped)
+vbo_exec_vtx_flush(struct vbo_exec_context *exec)
 {
+   /* Only unmap if persistent mappings are unsupported. */
+   bool persistent_mapping = exec->ctx->Extensions.ARB_buffer_storage &&
+                             _mesa_is_bufferobj(exec->vtx.bufferobj) &&
+                             exec->vtx.buffer_map;
+
    if (0)
       vbo_exec_debug_verts(exec);
 
@@ -375,7 +403,8 @@ vbo_exec_vtx_flush(struct vbo_exec_context *exec, GLboolean keepUnmapped)
          if (ctx->NewState)
             _mesa_update_state(ctx);
 
-         vbo_exec_vtx_unmap(exec);
+         if (!persistent_mapping)
+            vbo_exec_vtx_unmap(exec);
 
          assert(ctx->NewState == 0);
 
@@ -388,18 +417,27 @@ vbo_exec_vtx_flush(struct vbo_exec_context *exec, GLboolean keepUnmapped)
                           NULL, 0, NULL);
 
          /* Get new storage -- unless asked not to. */
-         if (!keepUnmapped)
+         if (!persistent_mapping)
             vbo_exec_vtx_map(exec);
       }
    }
 
-   /* May have to unmap explicitly if we didn't draw:
-    */
-   if (keepUnmapped && exec->vtx.buffer_map) {
-      vbo_exec_vtx_unmap(exec);
+   if (persistent_mapping) {
+      exec->vtx.buffer_used += (exec->vtx.buffer_ptr - exec->vtx.buffer_map) *
+                               sizeof(float);
+      exec->vtx.buffer_map = exec->vtx.buffer_ptr;
+
+      /* Set the buffer offset for the next draw. */
+      exec->vtx.buffer_offset = exec->vtx.buffer_used;
+
+      if (!vbo_exec_buffer_has_space(exec)) {
+         /* This will allocate a new buffer. */
+         vbo_exec_vtx_unmap(exec);
+         vbo_exec_vtx_map(exec);
+      }
    }
 
-   if (keepUnmapped || exec->vtx.vertex_size == 0)
+   if (exec->vtx.vertex_size == 0)
       exec->vtx.max_vert = 0;
    else
       exec->vtx.max_vert = vbo_compute_max_verts(exec);

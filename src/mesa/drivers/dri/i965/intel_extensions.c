@@ -97,6 +97,7 @@ intelInitExtensions(struct gl_context *ctx)
    ctx->Extensions.EXT_blend_func_separate = true;
    ctx->Extensions.EXT_blend_minmax = true;
    ctx->Extensions.EXT_draw_buffers2 = true;
+   ctx->Extensions.EXT_EGL_image_storage = true;
    ctx->Extensions.EXT_float_blend = true;
    ctx->Extensions.EXT_framebuffer_sRGB = true;
    ctx->Extensions.EXT_gpu_program_parameters = true;
@@ -314,11 +315,22 @@ intelInitExtensions(struct gl_context *ctx)
       ctx->Extensions.OES_copy_image = true;
    }
 
+   /* Gen < 6 still uses the blitter. It's somewhat annoying to add support
+    * for blackhole there... Does anybody actually care anymore anyway?
+    */
+   if (devinfo->gen >= 6)
+      ctx->Extensions.INTEL_blackhole_render = true;
+
    if (devinfo->gen >= 8) {
       ctx->Extensions.ARB_gpu_shader_int64 = true;
       /* requires ARB_gpu_shader_int64 */
       ctx->Extensions.ARB_shader_ballot = true;
       ctx->Extensions.ARB_ES3_2_compatibility = true;
+
+      /* Currently only implemented in the scalar backend, so only enable for
+       * Gen8+.  Eventually Gen6+ could be supported.
+       */
+      ctx->Extensions.INTEL_shader_integer_functions2 = true;
    }
 
    if (devinfo->gen >= 9) {

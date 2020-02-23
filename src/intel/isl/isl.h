@@ -44,6 +44,7 @@
 
 #include "c99_compat.h"
 #include "util/macros.h"
+#include "util/format/u_format.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -1483,6 +1484,8 @@ isl_format_get_name(enum isl_format fmt)
    return isl_format_get_layout(fmt)->name;
 }
 
+enum isl_format isl_format_for_pipe_format(enum pipe_format pf);
+
 bool isl_format_supports_rendering(const struct gen_device_info *devinfo,
                                    enum isl_format format);
 bool isl_format_supports_alpha_blending(const struct gen_device_info *devinfo,
@@ -1507,6 +1510,7 @@ bool isl_format_supports_multisampling(const struct gen_device_info *devinfo,
 bool isl_formats_are_ccs_e_compatible(const struct gen_device_info *devinfo,
                                       enum isl_format format1,
                                       enum isl_format format2);
+uint8_t isl_format_get_aux_map_encoding(enum isl_format format);
 
 bool isl_format_has_unorm_channel(enum isl_format fmt) ATTRIBUTE_CONST;
 bool isl_format_has_snorm_channel(enum isl_format fmt) ATTRIBUTE_CONST;
@@ -1700,6 +1704,20 @@ isl_aux_usage_has_ccs(enum isl_aux_usage usage)
           usage == ISL_AUX_USAGE_MC ||
           usage == ISL_AUX_USAGE_HIZ_CCS ||
           usage == ISL_AUX_USAGE_MCS_CCS;
+}
+
+static inline bool
+isl_aux_state_has_valid_primary(enum isl_aux_state state)
+{
+   return state == ISL_AUX_STATE_RESOLVED ||
+          state == ISL_AUX_STATE_PASS_THROUGH ||
+          state == ISL_AUX_STATE_AUX_INVALID;
+}
+
+static inline bool
+isl_aux_state_has_valid_aux(enum isl_aux_state state)
+{
+   return state != ISL_AUX_STATE_AUX_INVALID;
 }
 
 const struct isl_drm_modifier_info * ATTRIBUTE_CONST
@@ -2089,6 +2107,27 @@ isl_surf_get_image_offset_B_tile_sa(const struct isl_surf *surf,
                                     uint32_t *offset_B,
                                     uint32_t *x_offset_sa,
                                     uint32_t *y_offset_sa);
+
+/**
+ * Calculate the range in bytes occupied by a subimage, to the nearest tile.
+ *
+ * The range returned will be the smallest memory range in which the give
+ * subimage fits, rounded to even tiles.  Intel images do not usually have a
+ * direct subimage -> range mapping so the range returned may contain data
+ * from other sub-images.  The returned range is a half-open interval where
+ * all of the addresses within the subimage are < end_tile_B.
+ *
+ * @invariant level < surface levels
+ * @invariant logical_array_layer < logical array length of surface
+ * @invariant logical_z_offset_px < logical depth of surface at level
+ */
+void
+isl_surf_get_image_range_B_tile(const struct isl_surf *surf,
+                                uint32_t level,
+                                uint32_t logical_array_layer,
+                                uint32_t logical_z_offset_px,
+                                uint32_t *start_tile_B,
+                                uint32_t *end_tile_B);
 
 /**
  * Create an isl_surf that represents a particular subimage in the surface.

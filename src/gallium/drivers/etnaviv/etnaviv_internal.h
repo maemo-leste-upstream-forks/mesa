@@ -38,6 +38,7 @@
 #define ETNA_NUM_LOD (14)
 #define ETNA_NUM_LAYERS (6)
 #define ETNA_MAX_UNIFORMS (256)
+#define ETNA_MAX_CONST_BUF 16
 #define ETNA_MAX_PIXELPIPES 2
 
 /* All RS operations must have width%16 = 0 */
@@ -228,12 +229,13 @@ struct compiled_vertex_elements_state {
    uint32_t NFE_GENERIC_ATTRIB_CONFIG0[VIVS_NFE_GENERIC_ATTRIB__LEN];
    uint32_t NFE_GENERIC_ATTRIB_SCALE[VIVS_NFE_GENERIC_ATTRIB__LEN];
    uint32_t NFE_GENERIC_ATTRIB_CONFIG1[VIVS_NFE_GENERIC_ATTRIB__LEN];
+   unsigned num_buffers;
+   uint32_t NFE_VERTEX_STREAMS_VERTEX_DIVISOR[VIVS_NFE_VERTEX_STREAMS__LEN];
 };
 
 /* Compiled context->set_vertex_buffer result */
 struct compiled_set_vertex_buffer {
    uint32_t FE_VERTEX_STREAM_CONTROL;
-   uint32_t FE_VERTEX_STREAM_VERTEX_DIVISOR;
    struct etna_reloc FE_VERTEX_STREAM_BASE_ADDR;
 };
 
@@ -264,6 +266,7 @@ struct compiled_shader_state {
    uint32_t GL_VARYING_NUM_COMPONENTS;
    uint32_t GL_VARYING_COMPONENT_USE[2];
    uint32_t GL_HALTI5_SH_SPECIALS;
+   uint32_t FE_HALTI5_ID_CONFIG;
    unsigned vs_inst_mem_size;
    unsigned ps_inst_mem_size;
    uint32_t *VS_INST_MEM;

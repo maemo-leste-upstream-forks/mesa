@@ -148,8 +148,15 @@ static int emit_cat0(struct ir3_instruction *instr, void *ptr,
 	cat0->sync     = !!(instr->flags & IR3_INSTR_SY);
 	cat0->opc_cat  = 0;
 
-	if (instr->opc == OPC_CONDEND || instr->opc == OPC_ENDPATCH)
+	switch (instr->opc) {
+	case OPC_IF:
+	case OPC_ELSE:
+	case OPC_ENDIF:
 		cat0->dummy4 = 16;
+		break;
+	default:
+		break;
+	}
 
 	return 0;
 }
@@ -456,23 +463,15 @@ static int emit_cat5(struct ir3_instruction *instr, void *ptr,
 	instr_cat5_t *cat5 = ptr;
 
 	iassert((instr->regs_count == 2) ||
-			(instr->regs_count == 3) || (instr->regs_count == 4));
+			(instr->regs_count == 3) ||
+			(instr->regs_count == 4));
 
-	switch (instr->opc) {
-	case OPC_DSX:
-	case OPC_DSXPP_1:
-	case OPC_DSY:
-	case OPC_DSYPP_1:
-	case OPC_RGETPOS:
-	case OPC_RGETINFO:
-		iassert((instr->flags & IR3_INSTR_S2EN) == 0);
-		src1 = instr->regs[1];
-		src2 = instr->regs_count > 2 ? instr->regs[2] : NULL;
-		break;
-	default:
+	if (instr->flags & IR3_INSTR_S2EN) {
 		src1 = instr->regs[2];
 		src2 = instr->regs_count > 3 ? instr->regs[3] : NULL;
-		break;
+	} else {
+		src1 = instr->regs[1];
+		src2 = instr->regs_count > 2 ? instr->regs[2] : NULL;
 	}
 
 	assume(src1 || !src2);
@@ -1098,7 +1097,7 @@ ir3_clear_mark(struct ir3 *ir)
 unsigned
 ir3_count_instructions(struct ir3 *ir)
 {
-	unsigned cnt = 0;
+	unsigned cnt = 1;
 	foreach_block (block, &ir->block_list) {
 		block->start_ip = cnt;
 		block->end_ip = cnt;

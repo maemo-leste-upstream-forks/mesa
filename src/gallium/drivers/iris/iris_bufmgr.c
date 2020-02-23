@@ -57,6 +57,7 @@
 #include "common/gen_gem.h"
 #include "dev/gen_device_info.h"
 #include "main/macros.h"
+#include "os/os_mman.h"
 #include "util/debug.h"
 #include "util/macros.h"
 #include "util/hash_table.h"
@@ -159,18 +160,6 @@ static void bo_free(struct iris_bo *bo);
 static uint64_t vma_alloc(struct iris_bufmgr *bufmgr,
                           enum iris_memory_zone memzone,
                           uint64_t size, uint64_t alignment);
-
-static uint32_t
-key_hash_uint(const void *key)
-{
-   return _mesa_hash_data(key, 4);
-}
-
-static bool
-key_uint_equal(const void *a, const void *b)
-{
-   return *((unsigned *) a) == *((unsigned *) b);
-}
 
 static struct iris_bo *
 find_and_ref_external_bo(struct hash_table *ht, unsigned int key)
@@ -762,15 +751,15 @@ bo_free(struct iris_bo *bo)
 
    if (bo->map_cpu && !bo->userptr) {
       VG_NOACCESS(bo->map_cpu, bo->size);
-      munmap(bo->map_cpu, bo->size);
+      os_munmap(bo->map_cpu, bo->size);
    }
    if (bo->map_wc) {
       VG_NOACCESS(bo->map_wc, bo->size);
-      munmap(bo->map_wc, bo->size);
+      os_munmap(bo->map_wc, bo->size);
    }
    if (bo->map_gtt) {
       VG_NOACCESS(bo->map_gtt, bo->size);
-      munmap(bo->map_gtt, bo->size);
+      os_munmap(bo->map_gtt, bo->size);
    }
 
    if (bo->idle) {
@@ -933,7 +922,7 @@ iris_bo_map_cpu(struct pipe_debug_callback *dbg,
 
       if (p_atomic_cmpxchg(&bo->map_cpu, NULL, map)) {
          VG_NOACCESS(map, bo->size);
-         munmap(map, bo->size);
+         os_munmap(map, bo->size);
       }
    }
    assert(bo->map_cpu);
@@ -995,7 +984,7 @@ iris_bo_map_wc(struct pipe_debug_callback *dbg,
 
       if (p_atomic_cmpxchg(&bo->map_wc, NULL, map)) {
          VG_NOACCESS(map, bo->size);
-         munmap(map, bo->size);
+         os_munmap(map, bo->size);
       }
    }
    assert(bo->map_wc);
@@ -1053,8 +1042,8 @@ iris_bo_map_gtt(struct pipe_debug_callback *dbg,
       }
 
       /* and mmap it. */
-      void *map = mmap(0, bo->size, PROT_READ | PROT_WRITE,
-                       MAP_SHARED, bufmgr->fd, mmap_arg.offset);
+      void *map = os_mmap(0, bo->size, PROT_READ | PROT_WRITE,
+                          MAP_SHARED, bufmgr->fd, mmap_arg.offset);
       if (map == MAP_FAILED) {
          DBG("%s:%d: Error mapping buffer %d (%s): %s .\n",
              __FILE__, __LINE__, bo->gem_handle, bo->name, strerror(errno));
@@ -1070,7 +1059,7 @@ iris_bo_map_gtt(struct pipe_debug_callback *dbg,
 
       if (p_atomic_cmpxchg(&bo->map_gtt, NULL, map)) {
          VG_NOACCESS(map, bo->size);
-         munmap(map, bo->size);
+         os_munmap(map, bo->size);
       }
    }
    assert(bo->map_gtt);
@@ -1698,9 +1687,9 @@ iris_bufmgr_init(struct gen_device_info *devinfo, int fd, bool bo_reuse)
    init_cache_buckets(bufmgr);
 
    bufmgr->name_table =
-      _mesa_hash_table_create(NULL, key_hash_uint, key_uint_equal);
+      _mesa_hash_table_create(NULL, _mesa_hash_uint, _mesa_key_uint_equal);
    bufmgr->handle_table =
-      _mesa_hash_table_create(NULL, key_hash_uint, key_uint_equal);
+      _mesa_hash_table_create(NULL, _mesa_hash_uint, _mesa_key_uint_equal);
 
    if (devinfo->gen >= 12) {
       bufmgr->aux_map_ctx = gen_aux_map_init(bufmgr, &aux_map_allocator,

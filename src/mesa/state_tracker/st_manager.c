@@ -662,7 +662,7 @@ st_context_flush(struct st_context_iface *stctxi, unsigned flags,
       pipe_flags |= PIPE_FLUSH_FENCE_FD;
 
    FLUSH_VERTICES(st->ctx, 0);
-   FLUSH_CURRENT(st->ctx, 0);
+
    /* Notify the caller that we're ready to flush */
    if (before_flush_cb)
       before_flush_cb(args);
@@ -1269,8 +1269,9 @@ get_version(struct pipe_screen *screen,
 
    st_init_limits(screen, &consts, &extensions);
    st_init_extensions(screen, &consts, &extensions, options, api);
-
-   return _mesa_get_version(&extensions, &consts, api);
+   version = _mesa_get_version(&extensions, &consts, api);
+   free(consts.SpirVExtensions);
+   return version;
 }
 
 

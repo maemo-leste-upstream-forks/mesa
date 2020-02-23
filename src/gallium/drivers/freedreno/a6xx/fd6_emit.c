@@ -652,7 +652,7 @@ build_vbo_state(struct fd6_emit *emit, const struct ir3_shader_variant *vp)
 					&vtx->vertexbuf.vb[elem->vertex_buffer_index];
 			struct fd_resource *rsc = fd_resource(vb->buffer.resource);
 			enum pipe_format pfmt = elem->src_format;
-			enum a6xx_vtx_fmt fmt = fd6_pipe2vtx(pfmt);
+			enum a6xx_format fmt = fd6_pipe2vtx(pfmt);
 			bool isint = util_format_is_pure_integer(pfmt);
 			uint32_t off = vb->buffer_offset + elem->src_offset;
 			uint32_t size = fd_bo_size(rsc->bo) - off;
@@ -1014,41 +1014,25 @@ fd6_emit_state(struct fd_ringbuffer *ring, struct fd6_emit *emit)
 		fd6_emit_add_group(emit, prog->binning_stateobj,
 				FD6_GROUP_PROG_BINNING, CP_SET_DRAW_STATE__0_BINNING);
 
-		/* emit remaining non-stateobj program state, ie. what depends
-		 * on other emit state, so cannot be pre-baked.  This could
-		 * be moved to a separate stateobj which is dynamically
-		 * created.
+		/* emit remaining streaming program state, ie. what depends on
+		 * other emit state, so cannot be pre-baked.
 		 */
-		fd6_program_emit(ring, emit);
+		struct fd_ringbuffer *streaming = fd6_program_interp_state(emit);
+
+		fd6_emit_take_group(emit, streaming, FD6_GROUP_PROG_INTERP, ENABLE_DRAW);
 	}
 
 	if (dirty & FD_DIRTY_RASTERIZER) {
-		struct fd6_rasterizer_stateobj *rasterizer =
-				fd6_rasterizer_stateobj(ctx->rasterizer);
-		fd6_emit_add_group(emit, rasterizer->stateobj,
+		struct fd_ringbuffer *stateobj =
+			fd6_rasterizer_state(ctx, emit->primitive_restart);
+		fd6_emit_add_group(emit, stateobj,
 						   FD6_GROUP_RASTERIZER, ENABLE_ALL);
 	}
 
-	/* Since the primitive restart state is not part of a tracked object, we
-	 * re-emit this register every time.
-	 */
-	if (emit->info && ctx->rasterizer) {
-		struct fd6_rasterizer_stateobj *rasterizer =
-				fd6_rasterizer_stateobj(ctx->rasterizer);
-		OUT_PKT4(ring, REG_A6XX_PC_UNKNOWN_9806, 1);
-		OUT_RING(ring, 0);
-		OUT_PKT4(ring, REG_A6XX_PC_UNKNOWN_9990, 1);
-		OUT_RING(ring, 0);
-		OUT_PKT4(ring, REG_A6XX_VFD_UNKNOWN_A008, 1);
-		OUT_RING(ring, 0);
-
-		OUT_PKT4(ring, REG_A6XX_PC_PRIMITIVE_CNTL_0, 1);
-		OUT_RING(ring, rasterizer->pc_primitive_cntl |
-				 COND(emit->info->primitive_restart && emit->info->index_size,
-					  A6XX_PC_PRIMITIVE_CNTL_0_PRIMITIVE_RESTART));
-	}
-
 	if (dirty & (FD_DIRTY_FRAMEBUFFER | FD_DIRTY_RASTERIZER | FD_DIRTY_PROG)) {
+		struct fd_ringbuffer *ring = fd_submit_new_ringbuffer(
+				emit->ctx->batch->submit, 5 * 4, FD_RINGBUFFER_STREAMING);
+
 		unsigned nr = pfb->nr_cbufs;
 
 		if (ctx->rasterizer->rasterizer_discard)
@@ -1062,6 +1046,8 @@ fd6_emit_state(struct fd_ringbuffer *ring, struct fd6_emit *emit)
 
 		OUT_PKT4(ring, REG_A6XX_SP_FS_OUTPUT_CNTL1, 1);
 		OUT_RING(ring, A6XX_SP_FS_OUTPUT_CNTL1_MRT(nr));
+
+		fd6_emit_take_group(emit, ring, FD6_GROUP_PROG_FB_RAST, ENABLE_DRAW);
 	}
 
 	fd6_emit_consts(emit, vs, PIPE_SHADER_VERTEX, FD6_GROUP_VS_CONST, ENABLE_ALL);
@@ -1089,39 +1075,7 @@ fd6_emit_state(struct fd_ringbuffer *ring, struct fd6_emit *emit)
 
 	if (dirty & FD_DIRTY_BLEND) {
 		struct fd6_blend_stateobj *blend = fd6_blend_stateobj(ctx->blend);
-		uint32_t i;
-
-		for (i = 0; i < pfb->nr_cbufs; i++) {
-			enum pipe_format format = pipe_surface_format(pfb->cbufs[i]);
-			bool is_int = util_format_is_pure_integer(format);
-			bool has_alpha = util_format_has_alpha(format);
-			uint32_t control = blend->rb_mrt[i].control;
-			uint32_t blend_control = blend->rb_mrt[i].blend_control_alpha;
-
-			if (is_int) {
-				control &= A6XX_RB_MRT_CONTROL_COMPONENT_ENABLE__MASK;
-				control |= A6XX_RB_MRT_CONTROL_ROP_CODE(ROP_COPY);
-			}
-
-			if (has_alpha) {
-				blend_control |= blend->rb_mrt[i].blend_control_rgb;
-			} else {
-				blend_control |= blend->rb_mrt[i].blend_control_no_alpha_rgb;
-				control &= ~A6XX_RB_MRT_CONTROL_BLEND2;
-			}
-
-			OUT_PKT4(ring, REG_A6XX_RB_MRT_CONTROL(i), 1);
-			OUT_RING(ring, control);
-
-			OUT_PKT4(ring, REG_A6XX_RB_MRT_BLEND_CONTROL(i), 1);
-			OUT_RING(ring, blend_control);
-		}
-
-		OUT_PKT4(ring, REG_A6XX_RB_DITHER_CNTL, 1);
-		OUT_RING(ring, blend->rb_dither_cntl);
-
-		OUT_PKT4(ring, REG_A6XX_SP_BLEND_CNTL, 1);
-		OUT_RING(ring, blend->sp_blend_cntl);
+		fd6_emit_add_group(emit, blend->stateobj, FD6_GROUP_BLEND, ENABLE_DRAW);
 	}
 
 	if (dirty & (FD_DIRTY_BLEND | FD_DIRTY_SAMPLE_MASK)) {
@@ -1156,11 +1110,11 @@ fd6_emit_state(struct fd_ringbuffer *ring, struct fd6_emit *emit)
 		emit_border_color(ctx, ring);
 
 	if (hs) {
-		debug_assert(hs->image_mapping.num_ibo == 0);
-		debug_assert(ds->image_mapping.num_ibo == 0);
+		debug_assert(ir3_shader_nibo(hs) == 0);
+		debug_assert(ir3_shader_nibo(ds) == 0);
 	}
 	if (gs) {
-		debug_assert(gs->image_mapping.num_ibo == 0);
+		debug_assert(ir3_shader_nibo(gs) == 0);
 	}
 
 #define DIRTY_IBO (FD_DIRTY_SHADER_SSBO | FD_DIRTY_SHADER_IMAGE | \
@@ -1170,14 +1124,13 @@ fd6_emit_state(struct fd_ringbuffer *ring, struct fd6_emit *emit)
 			fd6_build_ibo_state(ctx, fs, PIPE_SHADER_FRAGMENT);
 		struct fd_ringbuffer *obj = fd_submit_new_ringbuffer(
 			ctx->batch->submit, 0x100, FD_RINGBUFFER_STREAMING);
-		const struct ir3_ibo_mapping *mapping = &fs->image_mapping;
 
 		OUT_PKT7(obj, CP_LOAD_STATE6, 3);
 		OUT_RING(obj, CP_LOAD_STATE6_0_DST_OFF(0) |
 			CP_LOAD_STATE6_0_STATE_TYPE(ST6_SHADER) |
 			CP_LOAD_STATE6_0_STATE_SRC(SS6_INDIRECT) |
 			CP_LOAD_STATE6_0_STATE_BLOCK(SB6_IBO) |
-			CP_LOAD_STATE6_0_NUM_UNIT(mapping->num_ibo));
+			CP_LOAD_STATE6_0_NUM_UNIT(ir3_shader_nibo(fs)));
 		OUT_RB(obj, state);
 
 		OUT_PKT4(obj, REG_A6XX_SP_IBO_LO, 2);
@@ -1187,7 +1140,7 @@ fd6_emit_state(struct fd_ringbuffer *ring, struct fd6_emit *emit)
 		 * de-duplicate this from program->config_stateobj
 		 */
 		OUT_PKT4(obj, REG_A6XX_SP_IBO_COUNT, 1);
-		OUT_RING(obj, mapping->num_ibo);
+		OUT_RING(obj, ir3_shader_nibo(fs));
 
 		ir3_emit_ssbo_sizes(ctx->screen, fs, obj,
 				&ctx->shaderbuf[PIPE_SHADER_FRAGMENT]);
@@ -1264,21 +1217,20 @@ fd6_emit_cs_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 	if (dirty & (FD_DIRTY_SHADER_SSBO | FD_DIRTY_SHADER_IMAGE)) {
 		struct fd_ringbuffer *state =
 			fd6_build_ibo_state(ctx, cp, PIPE_SHADER_COMPUTE);
-		const struct ir3_ibo_mapping *mapping = &cp->image_mapping;
 
 		OUT_PKT7(ring, CP_LOAD_STATE6_FRAG, 3);
 		OUT_RING(ring, CP_LOAD_STATE6_0_DST_OFF(0) |
 			CP_LOAD_STATE6_0_STATE_TYPE(ST6_IBO) |
 			CP_LOAD_STATE6_0_STATE_SRC(SS6_INDIRECT) |
 			CP_LOAD_STATE6_0_STATE_BLOCK(SB6_CS_SHADER) |
-			CP_LOAD_STATE6_0_NUM_UNIT(mapping->num_ibo));
+			CP_LOAD_STATE6_0_NUM_UNIT(ir3_shader_nibo(cp)));
 		OUT_RB(ring, state);
 
 		OUT_PKT4(ring, REG_A6XX_SP_CS_IBO_LO, 2);
 		OUT_RB(ring, state);
 
 		OUT_PKT4(ring, REG_A6XX_SP_CS_IBO_COUNT, 1);
-		OUT_RING(ring, mapping->num_ibo);
+		OUT_RING(ring, ir3_shader_nibo(cp));
 
 		fd_ringbuffer_del(state);
 	}
@@ -1347,6 +1299,7 @@ fd6_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
 	WRITE(REG_A6XX_VPC_SO_OVERRIDE, A6XX_VPC_SO_OVERRIDE_SO_DISABLE);
 
 	WRITE(REG_A6XX_PC_UNKNOWN_9806, 0);
+	WRITE(REG_A6XX_PC_UNKNOWN_9990, 0);
 	WRITE(REG_A6XX_PC_UNKNOWN_9980, 0);
 
 	WRITE(REG_A6XX_PC_UNKNOWN_9B07, 0);
@@ -1451,8 +1404,8 @@ fd6_framebuffer_barrier(struct fd_context *ctx)
 	OUT_RING(ring, CP_WAIT_REG_MEM_4_MASK(~0));
 	OUT_RING(ring, CP_WAIT_REG_MEM_5_DELAY_LOOP_CYCLES(16));
 
-	fd6_event_write(batch, ring, UNK_1D, true);
-	fd6_event_write(batch, ring, UNK_1C, true);
+	fd6_event_write(batch, ring, PC_CCU_FLUSH_COLOR_TS, true);
+	fd6_event_write(batch, ring, PC_CCU_FLUSH_DEPTH_TS, true);
 
 	seqno = fd6_event_write(batch, ring, CACHE_FLUSH_TS, true);
 

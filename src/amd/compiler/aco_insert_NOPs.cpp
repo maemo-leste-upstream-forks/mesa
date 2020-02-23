@@ -325,16 +325,16 @@ int handle_instruction_gfx8_9(NOP_ctx_gfx8_9& ctx, aco_ptr<Instruction>& instr,
                              pred->operands[2].physReg() >= 128;
          /* MIMG store with a 128-bit T# with more than two bits set in dmask (making it a >64-bit store) */
          bool consider_mimg = pred->format == Format::MIMG &&
-                              pred->operands.size() == 4 &&
-                              pred->operands[3].size() > 2 &&
-                              pred->operands[1].size() != 8;
+                              pred->operands[1].regClass().type() == RegType::vgpr &&
+                              pred->operands[1].size() > 2 &&
+                              pred->operands[0].size() == 4;
          /* FLAT/GLOBAL/SCRATCH store with >64-bit data */
          bool consider_flat = (pred->isFlatOrGlobal() || pred->format == Format::SCRATCH) &&
                               pred->operands.size() == 3 &&
                               pred->operands[2].size() > 2;
          if (consider_buf || consider_mimg || consider_flat) {
-            PhysReg wrdata = pred->operands[3].physReg();
-            unsigned size = pred->operands[3].size();
+            PhysReg wrdata = pred->operands[consider_flat ? 2 : 3].physReg();
+            unsigned size = pred->operands[consider_flat ? 2 : 3].size();
             assert(wrdata >= 256);
             for (const Definition& def : instr->definitions) {
                if (regs_intersect(def.physReg(), def.size(), wrdata, size))
@@ -353,11 +353,30 @@ int handle_instruction_gfx8_9(NOP_ctx_gfx8_9& ctx, aco_ptr<Instruction>& instr,
                ctx.VALU_wrsgpr = NOPs ? new_idx : new_idx + 1;
          }
       }
+
+      /* It's required to insert 1 wait state if the dst VGPR of any v_interp_*
+       * is followed by a read with v_readfirstlane or v_readlane to fix GPU
+       * hangs on GFX6. Note that v_writelane_* is apparently not affected.
+       * This hazard isn't documented anywhere but AMD confirmed that hazard.
+       */
+      if (ctx.chip_class == GFX6 &&
+          !new_instructions.empty() &&
+          (instr->opcode == aco_opcode::v_readfirstlane_b32 ||
+           instr->opcode == aco_opcode::v_readlane_b32)) {
+         aco_ptr<Instruction>& pred = new_instructions.back();
+         if (pred->format == Format::VINTRP) {
+            Definition pred_def = pred->definitions[0];
+            Operand& op = instr->operands[0];
+            if (regs_intersect(pred_def.physReg(), pred_def.size(), op.physReg(), op.size()))
+               NOPs = std::max(NOPs, 1);
+         }
+      }
       return NOPs;
    } else if (instr->isVMEM() && ctx.VALU_wrsgpr + 5 >= new_idx) {
       /* If the VALU writes the SGPR that is used by a VMEM, the user must add five wait states. */
       for (int pred_idx = new_idx - 1; pred_idx >= 0 && pred_idx >= new_idx - 5; pred_idx--) {
          aco_ptr<Instruction>& pred = new_instructions[pred_idx];
+         // TODO: break if something else writes the SGPR
          if (!(pred->isVALU() && VALU_writes_sgpr(pred)))
             continue;
 
@@ -365,18 +384,20 @@ int handle_instruction_gfx8_9(NOP_ctx_gfx8_9& ctx, aco_ptr<Instruction>& instr,
             if (def.physReg() > 102)
                continue;
 
-            if (instr->operands.size() > 1 &&
-                regs_intersect(instr->operands[1].physReg(), instr->operands[1].size(),
-                               def.physReg(), def.size())) {
+            for (const Operand& op : instr->operands) {
+               if (regs_intersect(op.physReg(), op.size(), def.physReg(), def.size()))
                   return 5 + pred_idx - new_idx + 1;
-            }
 
-            if (instr->operands.size() > 2 &&
-                regs_intersect(instr->operands[2].physReg(), instr->operands[2].size(),
-                               def.physReg(), def.size())) {
-                  return 5 + pred_idx - new_idx + 1;
             }
          }
+      }
+   } else if (instr->format == Format::SOPP) {
+      if (instr->opcode == aco_opcode::s_sendmsg && new_idx > 0) {
+         aco_ptr<Instruction>& pred = new_instructions.back();
+         if (pred->isSALU() &&
+             !pred->definitions.empty() &&
+             pred->definitions[0].physReg() == m0)
+            return 1;
       }
    }
 
@@ -483,9 +504,9 @@ void handle_instruction_gfx10(Program *program, NOP_ctx_gfx10 &ctx, aco_ptr<Inst
          ctx.has_nonVALU_exec_read = false;
 
          /* Insert s_waitcnt_depctr instruction with magic imm to mitigate the problem */
-         aco_ptr<SOPP_instruction> depctr{create_instruction<SOPP_instruction>(aco_opcode::s_waitcnt_depctr, Format::SOPP, 0, 1)};
+         aco_ptr<SOPP_instruction> depctr{create_instruction<SOPP_instruction>(aco_opcode::s_waitcnt_depctr, Format::SOPP, 0, 0)};
          depctr->imm = 0xfffe;
-         depctr->definitions[0] = Definition(sgpr_null, s1);
+         depctr->block = -1;
          new_instructions.emplace_back(std::move(depctr));
       } else if (instr_writes_sgpr(instr)) {
          /* Any VALU instruction that writes an SGPR mitigates the problem */

@@ -207,4 +207,122 @@ tu_cs_emit_call(struct tu_cs *cs, const struct tu_cs *target)
       tu_cs_emit_ib(cs, target->entries + i);
 }
 
+/* Helpers for bracketing a large sequence of commands of unknown size inside
+ * a CP_COND_REG_EXEC packet.
+ */
+
+struct tu_cond_exec_state {
+   uint32_t *dword_ptr;
+   uint32_t max_dwords;
+};
+
+static inline VkResult
+tu_cond_exec_start(struct tu_device *dev, struct tu_cs *cs,
+                   struct tu_cond_exec_state *state,
+                   uint32_t condition, uint32_t max_dwords)
+{
+   /* Reserve enough space so that both the condition packet and the actual
+    * condition will fit in the same IB.
+    */
+   VkResult result = tu_cs_reserve_space(dev, cs, max_dwords + 3);
+   if (result != VK_SUCCESS)
+      return result;
+
+   state->max_dwords = max_dwords;
+   tu_cs_emit_pkt7(cs, CP_COND_REG_EXEC, 2);
+   tu_cs_emit(cs, condition);
+   state->dword_ptr = cs->cur;
+   /* Emit dummy DWORD field here */
+   tu_cs_emit(cs, CP_COND_REG_EXEC_1_DWORDS(0));
+
+   return VK_SUCCESS;
+}
+
+static inline void
+tu_cond_exec_end(struct tu_cs *cs, struct tu_cond_exec_state *state)
+{
+   /* Subtract one here to account for the DWORD field itself. */
+   uint32_t actual_dwords = cs->cur - state->dword_ptr - 1;
+   assert(actual_dwords <= state->max_dwords);
+   *state->dword_ptr = actual_dwords;
+}
+
+#define fd_reg_pair tu_reg_value
+#define __bo_type struct tu_bo *
+
+#include "a6xx.xml.h"
+#include "a6xx-pack.xml.h"
+
+#define __assert_eq(a, b)                                               \
+   do {                                                                 \
+      if ((a) != (b)) {                                                 \
+         fprintf(stderr, "assert failed: " #a " (0x%x) != " #b " (0x%x)\n", a, b); \
+         assert((a) == (b));                                            \
+      }                                                                 \
+   } while (0)
+
+#define __ONE_REG(i, regs)                                      \
+   do {                                                         \
+      if (i < ARRAY_SIZE(regs) && regs[i].reg > 0) {            \
+         __assert_eq(regs[0].reg + i, regs[i].reg);             \
+         if (regs[i].bo) {                                      \
+            uint64_t v = regs[i].bo->iova + regs[i].bo_offset;  \
+            v >>= regs[i].bo_shift;                             \
+            v |= regs[i].value;                                 \
+                                                                \
+            *p++ = v;                                           \
+            *p++ = v >> 32;                                     \
+         } else {                                               \
+            *p++ = regs[i].value;                               \
+            if (regs[i].is_address)                             \
+               *p++ = regs[i].value >> 32;                      \
+         }                                                      \
+      }                                                         \
+   } while (0)
+
+/* Emits a sequence of register writes in order using a pkt4.  This will check
+ * (at runtime on a !NDEBUG build) that the registers were actually set up in
+ * order in the code.
+ *
+ * Note that references to buffers aren't automatically added to the CS,
+ * unlike in freedreno.  We are clever in various places to avoid duplicating
+ * the reference add work.
+ *
+ * Also, 64-bit address registers don't have a way (currently) to set a 64-bit
+ * address without having a reference to a BO, since the .dword field in the
+ * register's struct is only 32-bit wide.  We should fix this in the pack
+ * codegen later.
+ */
+#define tu_cs_emit_regs(cs, ...) do {                   \
+   const struct fd_reg_pair regs[] = { __VA_ARGS__ };   \
+   unsigned count = ARRAY_SIZE(regs);                   \
+                                                        \
+   STATIC_ASSERT(count > 0);                            \
+   STATIC_ASSERT(count <= 16);                          \
+                                                        \
+   uint32_t *p = cs->cur;                               \
+   *p++ = CP_TYPE4_PKT | count |                        \
+      (tu_odd_parity_bit(count) << 7) |                 \
+      ((regs[0].reg & 0x3ffff) << 8) |                  \
+      ((tu_odd_parity_bit(regs[0].reg) << 27));         \
+                                                        \
+   __ONE_REG( 0, regs);                                 \
+   __ONE_REG( 1, regs);                                 \
+   __ONE_REG( 2, regs);                                 \
+   __ONE_REG( 3, regs);                                 \
+   __ONE_REG( 4, regs);                                 \
+   __ONE_REG( 5, regs);                                 \
+   __ONE_REG( 6, regs);                                 \
+   __ONE_REG( 7, regs);                                 \
+   __ONE_REG( 8, regs);                                 \
+   __ONE_REG( 9, regs);                                 \
+   __ONE_REG(10, regs);                                 \
+   __ONE_REG(11, regs);                                 \
+   __ONE_REG(12, regs);                                 \
+   __ONE_REG(13, regs);                                 \
+   __ONE_REG(14, regs);                                 \
+   __ONE_REG(15, regs);                                 \
+   cs->cur = p;                                         \
+   } while (0)
+
 #endif /* TU_CS_H */

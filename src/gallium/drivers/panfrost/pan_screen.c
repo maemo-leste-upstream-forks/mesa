@@ -125,7 +125,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
 
         case PIPE_CAP_TGSI_INSTANCEID:
         case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
-                return is_deqp ? 1 : 0;
+                return 1;
 
         case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
                 return is_deqp ? 4 : 0;
@@ -136,7 +136,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
                 return 1;
 
         case PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS:
-                return is_deqp ? 256 : 0; /* for GL3 */
+                return 256;
 
         case PIPE_CAP_GLSL_FEATURE_LEVEL:
         case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
@@ -145,7 +145,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
                 return is_deqp ? 300 : 120;
 
         case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
-                return is_deqp ? 16 : 0;
+                return 16;
 
         case PIPE_CAP_CUBE_MAP_ARRAY:
                 return is_deqp;
@@ -244,6 +244,9 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
 
                 return (int)(system_memory >> 20);
         }
+
+        case PIPE_CAP_SHADER_STENCIL_EXPORT:
+                return 1;
 
         case PIPE_CAP_SHADER_BUFFER_OFFSET_ALIGNMENT:
                 return 4;
@@ -357,7 +360,7 @@ panfrost_get_shader_param(struct pipe_screen *screen,
                 return 0;
 
         default:
-                fprintf(stderr, "unknown shader param %d\n", param);
+                DBG("unknown shader param %d\n", param);
                 return 0;
         }
 
@@ -459,10 +462,15 @@ panfrost_is_format_supported( struct pipe_screen *screen,
         if (scanout && renderable && !util_format_is_rgba8_variant(format_desc))
                 return false;
 
-        if (format_desc->layout != UTIL_FORMAT_LAYOUT_PLAIN &&
-            format_desc->layout != UTIL_FORMAT_LAYOUT_OTHER) {
-                /* Compressed formats not yet hooked up. */
-                return false;
+        switch (format_desc->layout) {
+                case UTIL_FORMAT_LAYOUT_PLAIN:
+                case UTIL_FORMAT_LAYOUT_OTHER:
+                        break;
+                case UTIL_FORMAT_LAYOUT_ETC:
+                case UTIL_FORMAT_LAYOUT_ASTC:
+                        return true;
+                default:
+                        return false;
         }
 
         /* Internally, formats that are depth/stencil renderable are limited.
@@ -569,16 +577,6 @@ panfrost_destroy_screen(struct pipe_screen *pscreen)
         pthread_mutex_destroy(&screen->active_bos_lock);
         drmFreeVersion(screen->kernel_version);
         ralloc_free(screen);
-}
-
-static void
-panfrost_flush_frontbuffer(struct pipe_screen *_screen,
-                           struct pipe_resource *resource,
-                           unsigned level, unsigned layer,
-                           void *context_private,
-                           struct pipe_box *sub_box)
-{
-        /* TODO: Display target integration */
 }
 
 static uint64_t
@@ -729,7 +727,7 @@ panfrost_create_screen(int fd, struct renderonly *ro)
         if (ro) {
                 screen->ro = renderonly_dup(ro);
                 if (!screen->ro) {
-                        fprintf(stderr, "Failed to dup renderonly object\n");
+                        DBG("Failed to dup renderonly object\n");
                         free(screen);
                         return NULL;
                 }
@@ -766,8 +764,8 @@ panfrost_create_screen(int fd, struct renderonly *ro)
         for (unsigned i = 0; i < ARRAY_SIZE(screen->bo_cache.buckets); ++i)
                 list_inithead(&screen->bo_cache.buckets[i]);
 
-        if (pan_debug & PAN_DBG_TRACE)
-                pandecode_initialize();
+        if (pan_debug & (PAN_DBG_TRACE | PAN_DBG_SYNC))
+                pandecode_initialize(!(pan_debug & PAN_DBG_TRACE));
 
         screen->base.destroy = panfrost_destroy_screen;
 
@@ -781,7 +779,6 @@ panfrost_create_screen(int fd, struct renderonly *ro)
         screen->base.get_timestamp = panfrost_get_timestamp;
         screen->base.is_format_supported = panfrost_is_format_supported;
         screen->base.context_create = panfrost_create_context;
-        screen->base.flush_frontbuffer = panfrost_flush_frontbuffer;
         screen->base.get_compiler_options = panfrost_screen_get_compiler_options;
         screen->base.fence_reference = panfrost_fence_reference;
         screen->base.fence_finish = panfrost_fence_finish;

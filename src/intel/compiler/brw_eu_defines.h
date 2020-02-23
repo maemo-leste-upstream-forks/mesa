@@ -462,6 +462,11 @@ enum opcode {
     */
    SHADER_OPCODE_MEMORY_FENCE,
 
+   /**
+    * Scheduling-only fence.
+    */
+   FS_OPCODE_SCHEDULING_FENCE,
+
    SHADER_OPCODE_GEN4_SCRATCH_READ,
    SHADER_OPCODE_GEN4_SCRATCH_WRITE,
    SHADER_OPCODE_GEN7_SCRATCH_READ,
@@ -484,6 +489,12 @@ enum opcode {
     * BROADCAST pseudo-opcode.
     */
    SHADER_OPCODE_FIND_LIVE_CHANNEL,
+
+   /**
+    * Return the current execution mask in the specified flag subregister.
+    * Can be CSE'ed more easily than a plain MOV from the ce0 ARF register.
+    */
+   FS_OPCODE_LOAD_LIVE_CHANNELS,
 
    /**
     * Pick the channel from its first source register given by the index
@@ -736,6 +747,12 @@ enum opcode {
     * Calculate the high 32-bits of a 32x32 multiply.
     */
    SHADER_OPCODE_MULH,
+
+   /** Signed subtraction with saturation. */
+   SHADER_OPCODE_ISUB_SAT,
+
+   /** Unsigned subtraction with saturation. */
+   SHADER_OPCODE_USUB_SAT,
 
    /**
     * A MOV that uses VxH indirect addressing.
@@ -1137,11 +1154,14 @@ tgl_swsb_encode(struct tgl_swsb swsb)
  * tgl_swsb.
  */
 static inline struct tgl_swsb
-tgl_swsb_decode(uint8_t x)
+tgl_swsb_decode(enum opcode opcode, uint8_t x)
 {
    if (x & 0x80) {
       const struct tgl_swsb swsb = { (x & 0x70u) >> 4, x & 0xfu,
-                                     TGL_SBID_DST | TGL_SBID_SET };
+                                     (opcode == BRW_OPCODE_SEND ||
+                                      opcode == BRW_OPCODE_SENDC ||
+                                      opcode == BRW_OPCODE_MATH) ?
+                                     TGL_SBID_SET : TGL_SBID_DST };
       return swsb;
    } else if ((x & 0x70) == 0x20) {
       return tgl_swsb_sbid(TGL_SBID_DST, x & 0xfu);

@@ -30,6 +30,8 @@
 #include "amdgpu_cs.h"
 #include "amdgpu_public.h"
 
+#include "util/os_file.h"
+#include "util/os_misc.h"
 #include "util/u_cpu_detect.h"
 #include "util/u_hash_table.h"
 #include "util/hash_table.h"
@@ -138,6 +140,7 @@ static void do_winsys_deinit(struct amdgpu_winsys *ws)
    }
    pb_cache_deinit(&ws->bo_cache);
    util_hash_table_destroy(ws->bo_export_table);
+   simple_mtx_destroy(&ws->sws_list_lock);
    simple_mtx_destroy(&ws->global_bo_list_lock);
    simple_mtx_destroy(&ws->bo_export_table_lock);
 
@@ -278,11 +281,41 @@ static int compare_pointers(void *key1, void *key2)
 
 static bool amdgpu_winsys_unref(struct radeon_winsys *rws)
 {
-   /* radeon_winsys corresponds to amdgpu_screen_winsys, which is never
-    * referenced multiple times, so amdgpu_winsys_destroy always needs to be
-    * called. It handles reference counting for amdgpu_winsys.
-    */
-   return true;
+   struct amdgpu_screen_winsys *sws = amdgpu_screen_winsys(rws);
+   struct amdgpu_winsys *aws = sws->aws;
+   bool ret;
+
+   simple_mtx_lock(&aws->sws_list_lock);
+
+   ret = pipe_reference(&sws->reference, NULL);
+   if (ret) {
+      struct amdgpu_screen_winsys **sws_iter;
+      struct amdgpu_winsys *aws = sws->aws;
+
+      /* Remove this amdgpu_screen_winsys from amdgpu_winsys' list, so that
+       * amdgpu_winsys_create can't re-use it anymore
+       */
+      for (sws_iter = &aws->sws_list; *sws_iter; sws_iter = &(*sws_iter)->next) {
+         if (*sws_iter == sws) {
+            *sws_iter = sws->next;
+            break;
+         }
+      }
+   }
+
+   simple_mtx_unlock(&aws->sws_list_lock);
+
+   if (ret && sws->kms_handles) {
+      struct drm_gem_close args;
+
+      hash_table_foreach(sws->kms_handles, entry) {
+         args.handle = (uintptr_t)entry->data;
+         drmIoctl(sws->fd, DRM_IOCTL_GEM_CLOSE, &args);
+      }
+      _mesa_hash_table_destroy(sws->kms_handles, NULL);
+   }
+
+   return ret;
 }
 
 static void amdgpu_pin_threads_to_L3_cache(struct radeon_winsys *rws,
@@ -294,6 +327,18 @@ static void amdgpu_pin_threads_to_L3_cache(struct radeon_winsys *rws,
                          util_cpu_caps.cores_per_L3);
 }
 
+static uint32_t kms_handle_hash(const void *key)
+{
+   const struct amdgpu_winsys_bo *bo = key;
+
+   return bo->u.real.kms_handle;
+}
+
+static bool kms_handle_equals(const void *a, const void *b)
+{
+   return a == b;
+}
+
 PUBLIC struct radeon_winsys *
 amdgpu_winsys_create(int fd, const struct pipe_screen_config *config,
 		     radeon_screen_create_t screen_create)
@@ -301,12 +346,14 @@ amdgpu_winsys_create(int fd, const struct pipe_screen_config *config,
    struct amdgpu_screen_winsys *ws;
    struct amdgpu_winsys *aws;
    amdgpu_device_handle dev;
-   uint32_t drm_major, drm_minor, r;
+   uint32_t drm_major, drm_minor;
+   int r;
 
    ws = CALLOC_STRUCT(amdgpu_screen_winsys);
    if (!ws)
       return NULL;
 
+   pipe_reference_init(&ws->reference, 1);
    ws->fd = fcntl(fd, F_DUPFD_CLOEXEC, 0);
 
    /* Look up the winsys from the dev table. */
@@ -316,7 +363,7 @@ amdgpu_winsys_create(int fd, const struct pipe_screen_config *config,
 
    /* Initialize the amdgpu device. This should always return the same pointer
     * for the same fd. */
-   r = amdgpu_device_initialize(fd, &drm_major, &drm_minor, &dev);
+   r = amdgpu_device_initialize(ws->fd, &drm_major, &drm_minor, &dev);
    if (r) {
       fprintf(stderr, "amdgpu: amdgpu_device_initialize failed.\n");
       goto fail;
@@ -325,13 +372,45 @@ amdgpu_winsys_create(int fd, const struct pipe_screen_config *config,
    /* Lookup a winsys if we have already created one for this device. */
    aws = util_hash_table_get(dev_tab, dev);
    if (aws) {
-      pipe_reference(NULL, &aws->reference);
+      struct amdgpu_screen_winsys *sws_iter;
 
       /* Release the device handle, because we don't need it anymore.
        * This function is returning an existing winsys instance, which
        * has its own device handle.
        */
       amdgpu_device_deinitialize(dev);
+
+      simple_mtx_lock(&aws->sws_list_lock);
+      for (sws_iter = aws->sws_list; sws_iter; sws_iter = sws_iter->next) {
+         r = os_same_file_description(sws_iter->fd, ws->fd);
+
+         if (r == 0) {
+            close(ws->fd);
+            FREE(ws);
+            ws = sws_iter;
+            pipe_reference(NULL, &ws->reference);
+            simple_mtx_unlock(&aws->sws_list_lock);
+            goto unlock;
+         } else if (r < 0) {
+            static bool logged;
+
+            if (!logged) {
+               os_log_message("amdgpu: os_same_file_description couldn't "
+                              "determine if two DRM fds reference the same "
+                              "file description.\n"
+                              "If they do, bad things may happen!\n");
+               logged = true;
+            }
+         }
+      }
+      simple_mtx_unlock(&aws->sws_list_lock);
+
+      ws->kms_handles = _mesa_hash_table_create(NULL, kms_handle_hash,
+                                                kms_handle_equals);
+      if (!ws->kms_handles)
+         goto fail;
+
+      pipe_reference(NULL, &aws->reference);
    } else {
       /* Create a new winsys. */
       aws = CALLOC_STRUCT(amdgpu_winsys);
@@ -339,6 +418,7 @@ amdgpu_winsys_create(int fd, const struct pipe_screen_config *config,
          goto fail;
 
       aws->dev = dev;
+      aws->fd = ws->fd;
       aws->info.drm_major = drm_major;
       aws->info.drm_minor = drm_minor;
 
@@ -385,6 +465,7 @@ amdgpu_winsys_create(int fd, const struct pipe_screen_config *config,
       list_inithead(&aws->global_bo_list);
       aws->bo_export_table = util_hash_table_create(hash_pointer, compare_pointers);
 
+      (void) simple_mtx_init(&aws->sws_list_lock, mtx_plain);
       (void) simple_mtx_init(&aws->global_bo_list_lock, mtx_plain);
       (void) simple_mtx_init(&aws->bo_fence_lock, mtx_plain);
       (void) simple_mtx_init(&aws->bo_export_table_lock, mtx_plain);
@@ -435,6 +516,12 @@ amdgpu_winsys_create(int fd, const struct pipe_screen_config *config,
       return NULL;
    }
 
+   simple_mtx_lock(&aws->sws_list_lock);
+   ws->next = aws->sws_list;
+   aws->sws_list = ws;
+   simple_mtx_unlock(&aws->sws_list_lock);
+
+unlock:
    /* We must unlock the mutex once the winsys is fully initialized, so that
     * other threads attempting to create the winsys from the same fd will
     * get a fully initialized winsys and not just half-way initialized. */
@@ -445,6 +532,8 @@ amdgpu_winsys_create(int fd, const struct pipe_screen_config *config,
 fail_alloc:
    FREE(aws);
 fail:
+   if (ws->kms_handles)
+      _mesa_hash_table_destroy(ws->kms_handles, NULL);
    close(ws->fd);
    FREE(ws);
    simple_mtx_unlock(&dev_tab_mutex);

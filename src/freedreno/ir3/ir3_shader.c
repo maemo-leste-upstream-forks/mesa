@@ -470,11 +470,11 @@ ir3_shader_disasm(struct ir3_shader_variant *so, uint32_t *bin, FILE *out)
 		break;
 	case MESA_SHADER_FRAGMENT:
 		dump_reg(out, "pos (ij_pixel)",
-			ir3_find_sysval_regid(so, SYSTEM_VALUE_BARYCENTRIC_PIXEL));
+			ir3_find_sysval_regid(so, SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL));
 		dump_reg(out, "pos (ij_centroid)",
-			ir3_find_sysval_regid(so, SYSTEM_VALUE_BARYCENTRIC_CENTROID));
+			ir3_find_sysval_regid(so, SYSTEM_VALUE_BARYCENTRIC_PERSP_CENTROID));
 		dump_reg(out, "pos (ij_size)",
-			ir3_find_sysval_regid(so, SYSTEM_VALUE_BARYCENTRIC_SIZE));
+			ir3_find_sysval_regid(so, SYSTEM_VALUE_BARYCENTRIC_PERSP_SIZE));
 		dump_output(out, so, FRAG_RESULT_DEPTH, "posz");
 		if (so->color0_mrt) {
 			dump_output(out, so, FRAG_RESULT_COLOR, "color");
@@ -488,13 +488,10 @@ ir3_shader_disasm(struct ir3_shader_variant *so, uint32_t *bin, FILE *out)
 			dump_output(out, so, FRAG_RESULT_DATA6, "data6");
 			dump_output(out, so, FRAG_RESULT_DATA7, "data7");
 		}
-		/* these two are hard-coded since we don't know how to
-		 * program them to anything but all 0's...
-		 */
-		if (so->frag_coord)
-			fprintf(out, "; fragcoord: r0.x\n");
-		if (so->frag_face)
-			fprintf(out, "; fragface: hr0.x\n");
+		dump_reg(out, "fragcoord",
+			ir3_find_sysval_regid(so, SYSTEM_VALUE_FRAG_COORD));
+		dump_reg(out, "fragface",
+			ir3_find_sysval_regid(so, SYSTEM_VALUE_FRONT_FACE));
 		break;
 	default:
 		/* TODO */

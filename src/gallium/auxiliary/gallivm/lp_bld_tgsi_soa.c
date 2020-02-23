@@ -1548,6 +1548,7 @@ emit_fetch_system_value(
 
    case TGSI_SEMANTIC_FACE:
       res = lp_build_broadcast_scalar(&bld_base->uint_bld, bld->system_values.front_facing);
+      atype = TGSI_TYPE_UNSIGNED;
       break;
 
   case TGSI_SEMANTIC_DRAWID:
@@ -3482,7 +3483,7 @@ load_emit(
 
       scalar_ptr = is_shared ? bld->shared_ptr : bld->ssbos[buf];
 
-      LLVMValueRef ssbo_limit;
+      LLVMValueRef ssbo_limit = NULL;
 
       if (!is_shared) {
          ssbo_limit = LLVMBuildAShr(gallivm->builder, bld->ssbo_sizes[buf], lp_build_const_int32(gallivm, 2), "");
@@ -3601,7 +3602,7 @@ store_emit(
 
       scalar_ptr = is_shared ? bld->shared_ptr : bld->ssbos[buf];
 
-      LLVMValueRef ssbo_limit;
+      LLVMValueRef ssbo_limit = NULL;
 
       if (!is_shared) {
          ssbo_limit = LLVMBuildAShr(gallivm->builder, bld->ssbo_sizes[buf], lp_build_const_int32(gallivm, 2), "");
@@ -4371,7 +4372,7 @@ static void emit_epilogue(struct lp_build_tgsi_context * bld_base)
 
       bld->gs_iface->gs_epilogue(bld->gs_iface,
                                  total_emitted_vertices_vec,
-                                 emitted_prims_vec);
+                                 emitted_prims_vec, 0);
    } else {
       gather_outputs(bld);
    }

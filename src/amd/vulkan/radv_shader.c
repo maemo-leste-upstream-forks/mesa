@@ -152,29 +152,6 @@ radv_can_dump_shader_stats(struct radv_device *device,
 	       module && !module->nir;
 }
 
-unsigned shader_io_get_unique_index(gl_varying_slot slot)
-{
-	/* handle patch indices separate */
-	if (slot == VARYING_SLOT_TESS_LEVEL_OUTER)
-		return 0;
-	if (slot == VARYING_SLOT_TESS_LEVEL_INNER)
-		return 1;
-	if (slot >= VARYING_SLOT_PATCH0 && slot <= VARYING_SLOT_TESS_MAX)
-		return 2 + (slot - VARYING_SLOT_PATCH0);
-	if (slot == VARYING_SLOT_POS)
-		return 0;
-	if (slot == VARYING_SLOT_PSIZ)
-		return 1;
-	if (slot == VARYING_SLOT_CLIP_DIST0)
-		return 2;
-	if (slot == VARYING_SLOT_CLIP_DIST1)
-		return 3;
-	/* 3 is reserved for clip dist as well */
-	if (slot >= VARYING_SLOT_VAR0 && slot <= VARYING_SLOT_VAR31)
-		return 4 + (slot - VARYING_SLOT_VAR0);
-	unreachable("illegal slot in get unique index\n");
-}
-
 VkResult radv_CreateShaderModule(
 	VkDevice                                    _device,
 	const VkShaderModuleCreateInfo*             pCreateInfo,
@@ -361,8 +338,11 @@ radv_shader_compile_to_nir(struct radv_device *device,
 		const struct spirv_to_nir_options spirv_options = {
 			.lower_ubo_ssbo_access_to_offsets = true,
 			.caps = {
+				.amd_fragment_mask = true,
 				.amd_gcn_shader = true,
+				.amd_image_read_write_lod = true,
 				.amd_shader_ballot = device->physical_device->use_shader_ballot,
+				.amd_shader_explicit_vertex_parameter = true,
 				.amd_trinary_minmax = true,
 				.demote_to_helper_invocation = device->physical_device->use_aco,
 				.derivative_group = true,
@@ -422,7 +402,7 @@ radv_shader_compile_to_nir(struct radv_device *device,
 		 * inline functions.  That way they get properly initialized at the top
 		 * of the function and not at the top of its caller.
 		 */
-		NIR_PASS_V(nir, nir_lower_constant_initializers, nir_var_function_temp);
+		NIR_PASS_V(nir, nir_lower_variable_initializers, nir_var_function_temp);
 		NIR_PASS_V(nir, nir_lower_returns);
 		NIR_PASS_V(nir, nir_inline_functions);
 		NIR_PASS_V(nir, nir_opt_deref);
@@ -439,12 +419,12 @@ radv_shader_compile_to_nir(struct radv_device *device,
 		/* Make sure we lower constant initializers on output variables so that
 		 * nir_remove_dead_variables below sees the corresponding stores
 		 */
-		NIR_PASS_V(nir, nir_lower_constant_initializers, nir_var_shader_out);
+		NIR_PASS_V(nir, nir_lower_variable_initializers, nir_var_shader_out);
 
 		/* Now that we've deleted all but the main function, we can go ahead and
 		 * lower the rest of the constant initializers.
 		 */
-		NIR_PASS_V(nir, nir_lower_constant_initializers, ~0);
+		NIR_PASS_V(nir, nir_lower_variable_initializers, ~0);
 
 		/* Split member structs.  We do this before lower_io_to_temporaries so that
 		 * it doesn't lower system values to temporaries by accident.
@@ -471,6 +451,9 @@ radv_shader_compile_to_nir(struct radv_device *device,
 	nir->info.separate_shader = true;
 
 	nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+
+	if (nir->info.stage == MESA_SHADER_GEOMETRY && use_aco)
+		nir_lower_gs_intrinsics(nir, true);
 
 	static const nir_lower_tex_options tex_options = {
 	  .lower_txp = ~0,
@@ -1139,8 +1122,6 @@ shader_variant_compile(struct radv_device *device,
 		bool thread_compiler;
 
 		tm_options |= AC_TM_SUPPORTS_SPILL;
-		if (device->instance->perftest_flags & RADV_PERFTEST_SISCHED)
-			tm_options |= AC_TM_SISCHED;
 		if (options->check_ir)
 			tm_options |= AC_TM_CHECK_IR;
 		if (device->instance->debug_flags & RADV_DEBUG_NO_LOAD_STORE_OPT)
@@ -1232,14 +1213,15 @@ radv_create_gs_copy_shader(struct radv_device *device,
 			   struct radv_shader_info *info,
 			   struct radv_shader_binary **binary_out,
 			   bool keep_shader_info,
-			   bool multiview)
+			   bool multiview, bool use_aco)
 {
 	struct radv_nir_compiler_options options = {0};
 
+	options.explicit_scratch_args = use_aco;
 	options.key.has_multiview_view_index = multiview;
 
 	return shader_variant_compile(device, NULL, &shader, 1, MESA_SHADER_VERTEX,
-				      info, &options, true, keep_shader_info, false, binary_out);
+				      info, &options, true, keep_shader_info, use_aco, binary_out);
 }
 
 void

@@ -37,6 +37,7 @@
 #include "util/bitscan.h"
 #include "util/bitset.h"
 #include "util/macros.h"
+#include "util/format/u_format.h"
 #include "compiler/nir_types.h"
 #include "compiler/shader_enums.h"
 #include "compiler/shader_info.h"
@@ -378,7 +379,7 @@ typedef struct nir_variable {
        *
        * \sa glsl_interp_mode
        */
-      unsigned interpolation:2;
+      unsigned interpolation:3;
 
       /**
        * If non-zero, then this variable may be packed along with other variables
@@ -525,8 +526,8 @@ typedef struct nir_variable {
 
       union {
          struct {
-            /** Image internal format if specified explicitly, otherwise GL_NONE. */
-            uint16_t format; /* GLenum */
+            /** Image internal format if specified explicitly, otherwise PIPE_FORMAT_NONE. */
+            enum pipe_format format;
          } image;
 
          struct {
@@ -576,6 +577,14 @@ typedef struct nir_variable {
     * Most of the rest of NIR ignores this field or asserts that it's NULL.
     */
    nir_constant *constant_initializer;
+
+   /**
+    * Global variable assigned in the initializer of the variable
+    * This field should only be used temporarily by creators of NIR shaders
+    * and then lower_constant_initializers can be used to get rid of them.
+    * Most of the rest of NIR ignores this field or asserts that it's NULL.
+    */
+   struct nir_variable *pointer_initializer;
 
    /**
     * For variables that are in an interface block or are an instance of an
@@ -1719,7 +1728,7 @@ INTRINSIC_IDX_ACCESSORS(image_array, IMAGE_ARRAY, bool)
 INTRINSIC_IDX_ACCESSORS(access, ACCESS, enum gl_access_qualifier)
 INTRINSIC_IDX_ACCESSORS(src_access, SRC_ACCESS, enum gl_access_qualifier)
 INTRINSIC_IDX_ACCESSORS(dst_access, DST_ACCESS, enum gl_access_qualifier)
-INTRINSIC_IDX_ACCESSORS(format, FORMAT, unsigned)
+INTRINSIC_IDX_ACCESSORS(format, FORMAT, enum pipe_format)
 INTRINSIC_IDX_ACCESSORS(align_mul, ALIGN_MUL, unsigned)
 INTRINSIC_IDX_ACCESSORS(align_offset, ALIGN_OFFSET, unsigned)
 INTRINSIC_IDX_ACCESSORS(desc_type, DESC_TYPE, unsigned)
@@ -1830,6 +1839,8 @@ typedef enum {
                                   * identical.
                                   */
    nir_texop_tex_prefetch,       /**< Regular texture look-up, eligible for pre-dispatch */
+   nir_texop_fragment_fetch,     /**< Multisample fragment color texture fetch */
+   nir_texop_fragment_mask_fetch,/**< Multisample fragment mask texture fetch */
 } nir_texop;
 
 typedef struct {
@@ -1926,6 +1937,7 @@ nir_tex_instr_dest_size(const nir_tex_instr *instr)
    case nir_texop_texture_samples:
    case nir_texop_query_levels:
    case nir_texop_samples_identical:
+   case nir_texop_fragment_mask_fetch:
       return 1;
 
    default:
@@ -2829,8 +2841,46 @@ typedef struct nir_shader_compiler_options {
    /* Set if nir_lower_wpos_ytransform() should also invert gl_PointCoord. */
    bool lower_wpos_pntc;
 
+   /**
+    * Set if nir_op_[iu]hadd and nir_op_[iu]rhadd instructions should be
+    * lowered to simple arithmetic.
+    *
+    * If this flag is set, the lowering will be applied to all bit-sizes of
+    * these instructions.
+    *
+    * \sa ::lower_hadd64
+    */
    bool lower_hadd;
+
+   /**
+    * Set if only 64-bit nir_op_[iu]hadd and nir_op_[iu]rhadd instructions
+    * should be lowered to simple arithmetic.
+    *
+    * If this flag is set, the lowering will be applied to only 64-bit
+    * versions of these instructions.
+    *
+    * \sa ::lower_hadd
+    */
+   bool lower_hadd64;
+
+   /**
+    * Set if nir_op_add_sat and nir_op_usub_sat should be lowered to simple
+    * arithmetic.
+    *
+    * If this flag is set, the lowering will be applied to all bit-sizes of
+    * these instructions.
+    *
+    * \sa ::lower_usub_sat64
+    */
    bool lower_add_sat;
+
+   /**
+    * Set if only 64-bit nir_op_usub_sat should be lowered to simple
+    * arithmetic.
+    *
+    * \sa ::lower_add_sat
+    */
+   bool lower_usub_sat64;
 
    /**
     * Should IO be re-vectorized?  Some scalar ISAs still operate on vec4's
@@ -3798,7 +3848,7 @@ bool nir_lower_vars_to_ssa(nir_shader *shader);
 bool nir_remove_dead_derefs(nir_shader *shader);
 bool nir_remove_dead_derefs_impl(nir_function_impl *impl);
 bool nir_remove_dead_variables(nir_shader *shader, nir_variable_mode modes);
-bool nir_lower_constant_initializers(nir_shader *shader,
+bool nir_lower_variable_initializers(nir_shader *shader,
                                      nir_variable_mode modes);
 
 bool nir_move_vec_src_uses_to_dest(nir_shader *shader);
@@ -3839,6 +3889,7 @@ typedef struct nir_lower_subgroups_options {
    bool lower_shuffle:1;
    bool lower_shuffle_to_32bit:1;
    bool lower_quad:1;
+   bool lower_quad_broadcast_dynamic:1;
 } nir_lower_subgroups_options;
 
 bool nir_lower_subgroups(nir_shader *shader,
@@ -4099,7 +4150,7 @@ typedef struct nir_lower_bitmap_options {
 
 void nir_lower_bitmap(nir_shader *shader, const nir_lower_bitmap_options *options);
 
-bool nir_lower_atomics_to_ssbo(nir_shader *shader, unsigned ssbo_offset);
+bool nir_lower_atomics_to_ssbo(nir_shader *shader);
 
 typedef enum  {
    nir_lower_int_source_mods = 1 << 0,
@@ -4111,7 +4162,7 @@ typedef enum  {
 
 bool nir_lower_to_source_mods(nir_shader *shader, nir_lower_to_source_mods_flags options);
 
-bool nir_lower_gs_intrinsics(nir_shader *shader);
+bool nir_lower_gs_intrinsics(nir_shader *shader, bool per_stream);
 
 typedef unsigned (*nir_lower_bit_size_callback)(const nir_alu_instr *, void *);
 
@@ -4167,6 +4218,7 @@ bool nir_lower_ssa_defs_to_regs_block(nir_block *block);
 bool nir_rematerialize_derefs_in_use_blocks_impl(nir_function_impl *impl);
 
 bool nir_lower_samplers(nir_shader *shader);
+bool nir_lower_ssbo(nir_shader *shader);
 
 /* This is here for unit tests. */
 bool nir_opt_comparison_pre_impl(nir_function_impl *impl);
@@ -4217,6 +4269,7 @@ typedef enum {
     nir_move_load_ubo    = (1 << 1),
     nir_move_load_input  = (1 << 2),
     nir_move_comparisons = (1 << 3),
+    nir_move_copies      = (1 << 4),
 } nir_move_options;
 
 bool nir_can_move_instr(nir_instr *instr, nir_move_options options);

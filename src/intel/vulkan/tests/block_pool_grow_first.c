@@ -27,13 +27,11 @@
 
 int main(int argc, char **argv)
 {
-   struct anv_instance instance = {
-      .physicalDevice = {
-         .use_softpin = true,
-      },
+   struct anv_physical_device physical_device = {
+      .use_softpin = true,
    };
    struct anv_device device = {
-      .instance = &instance,
+      .physical = &physical_device,
    };
    struct anv_block_pool pool;
 
@@ -62,7 +60,7 @@ int main(int argc, char **argv)
    assert(offset == initial_size);
 
    /* Use the memory to ensure it is valid. */
-   void *map = anv_block_pool_map(&pool, offset);
+   void *map = anv_block_pool_map(&pool, offset, block_size);
    memset(map, 22, block_size);
 
    anv_block_pool_finish(&pool);

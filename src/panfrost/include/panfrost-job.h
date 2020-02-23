@@ -29,6 +29,7 @@
 #define __PANFROST_JOB_H__
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <panfrost-misc.h>
 
 enum mali_job_type {
@@ -228,6 +229,9 @@ struct mali_channel_swizzle {
 
 /* The top 3 bits specify how the bits of each component are interpreted. */
 
+/* e.g. ETC2_RGB8 */
+#define MALI_FORMAT_COMPRESSED (0 << 5)
+
 /* e.g. R11F_G11F_B10F */
 #define MALI_FORMAT_SPECIAL (2 << 5)
 
@@ -272,6 +276,16 @@ struct mali_channel_swizzle {
 #define MALI_CHANNEL_FLOAT 7
 
 enum mali_format {
+	MALI_ETC2_RGB8       = MALI_FORMAT_COMPRESSED | 0x1,
+	MALI_ETC2_R11_UNORM  = MALI_FORMAT_COMPRESSED | 0x2,
+	MALI_ETC2_RGBA8      = MALI_FORMAT_COMPRESSED | 0x3,
+	MALI_ETC2_RG11_UNORM = MALI_FORMAT_COMPRESSED | 0x4,
+	MALI_ETC2_R11_SNORM  = MALI_FORMAT_COMPRESSED | 0x11,
+	MALI_ETC2_RG11_SNORM = MALI_FORMAT_COMPRESSED | 0x12,
+	MALI_ETC2_RGB8A1     = MALI_FORMAT_COMPRESSED | 0x13,
+	MALI_ASTC_SRGB_SUPP  = MALI_FORMAT_COMPRESSED | 0x16,
+	MALI_ASTC_HDR_SUPP   = MALI_FORMAT_COMPRESSED | 0x17,
+
 	MALI_RGB565         = MALI_FORMAT_SPECIAL | 0x0,
 	MALI_RGB5_A1_UNORM  = MALI_FORMAT_SPECIAL | 0x2,
 	MALI_RGB10_A2_UNORM = MALI_FORMAT_SPECIAL | 0x3,
@@ -370,7 +384,10 @@ enum mali_format {
 #define MALI_ALPHA_COVERAGE(clampf) ((uint16_t) (int) (clampf * 15.0f))
 #define MALI_GET_ALPHA_COVERAGE(nibble) ((float) nibble / 15.0f)
 
-/* Applies to midgard1.flags */
+/* Applies to midgard1.flags_lo */
+
+/* Should be set when the fragment shader updates the depth value. */
+#define MALI_WRITES_Z (1 << 4)
 
 /* Should the hardware perform early-Z testing? Normally should be set
  * for performance reasons. Clear if you use: discard,
@@ -391,6 +408,11 @@ enum mali_format {
 
 #define MALI_READS_ZS (1 << 8)
 #define MALI_READS_TILEBUFFER (1 << 12)
+
+/* Applies to midgard1.flags_hi */
+
+/* Should be set when the fragment shader updates the stencil value. */
+#define MALI_WRITES_S (1 << 2)
 
 /* The raw Midgard blend payload can either be an equation or a shader
  * address, depending on the context */
@@ -520,12 +542,12 @@ struct mali_shader_meta {
                 } bifrost1;
                 struct {
                         unsigned uniform_buffer_count : 4;
-                        unsigned flags : 12;
+                        unsigned flags_lo : 12;
 
                         /* vec4 units */
                         unsigned work_count : 5;
                         unsigned uniform_count : 5;
-                        unsigned unknown2 : 6;
+                        unsigned flags_hi : 6;
                 } midgard1;
         };
 
@@ -592,8 +614,7 @@ struct mali_shader_meta {
                 } midgard2;
         };
 
-        /* zero on bifrost */
-        u32 unknown2_8;
+        u32 padding;
 
         /* Blending information for the older non-MRT Midgard HW. Check for
          * MALI_HAS_BLEND_SHADER to decide how to interpret.
@@ -855,20 +876,23 @@ struct mali_attr_meta {
 /* ORed into an MFBD address to specify the fbx section is included */
 #define MALI_MFBD_TAG_EXTRA (0x2)
 
-struct mali_uniform_buffer_meta {
-        /* This is actually the size minus 1 (MALI_POSITIVE), in units of 16
-         * bytes. This gives a maximum of 2^14 bytes, which just so happens to
-         * be the GL minimum-maximum for GL_MAX_UNIFORM_BLOCK_SIZE.
-         */
-        u64 size : 10;
+/* Uniform buffer objects are 64-bit fields divided as:
+ *
+ *      u64 size : 10;
+ *      mali_ptr ptr : 64 - 10;
+ *
+ * The size is actually the size minus 1 (MALI_POSITIVE), in units of 16 bytes.
+ * This gives a maximum of 2^14 bytes, which just so happens to be the GL
+ * minimum-maximum for GL_MAX_UNIFORM_BLOCK_SIZE.
+ *
+ * The pointer is missing the bottom 2 bits and top 8 bits. The top 8 bits
+ * should be 0 for userspace pointers, according to
+ * https://lwn.net/Articles/718895/. By reusing these bits, we can make each
+ * entry in the table only 64 bits.
+ */
 
-        /* This is missing the bottom 2 bits and top 8 bits. The top 8 bits
-         * should be 0 for userspace pointers, according to
-         * https://lwn.net/Articles/718895/. By reusing these bits, we can make
-         * each entry in the table only 64 bits.
-         */
-        mali_ptr ptr : 64 - 10;
-};
+#define MALI_MAKE_UBO(elements, ptr) \
+        (MALI_POSITIVE((elements)) | (((ptr) >> 2) << 10))
 
 /* On Bifrost, these fields are the same between the vertex and tiler payloads.
  * They also seem to be the same between Bifrost and Midgard. They're shared in
@@ -1034,17 +1058,6 @@ struct bifrost_tiler_only {
         u64 zero8;
 } __attribute__((packed));
 
-struct bifrost_scratchpad {
-        u32 zero;
-        u32 flags; // = 0x1f
-        /* This is a pointer to a CPU-inaccessible buffer, 16 pages, allocated
-         * during startup. It seems to serve the same purpose as the
-         * gpu_scratchpad in the SFBD for Midgard, although it's slightly
-         * larger.
-         */
-        mali_ptr gpu_scratchpad;
-} __attribute__((packed));
-
 struct mali_vertex_tiler_postfix {
         /* Zero for vertex jobs. Pointer to the position (gl_Position) varying
          * output from the vertex shader for tiler jobs.
@@ -1078,11 +1091,10 @@ struct mali_vertex_tiler_postfix {
         u64 viewport;
         u64 occlusion_counter; /* A single bit as far as I can tell */
 
-        /* Note: on Bifrost, this isn't actually the FBD. It points to
-         * bifrost_scratchpad instead. However, it does point to the same thing
-         * in vertex and tiler jobs.
-         */
-        mali_ptr framebuffer;
+        /* On Bifrost, this points directly to a mali_shared_memory structure.
+         * On Midgard, this points to a framebuffer (either SFBD or MFBD as
+         * tagged), which embeds a mali_shared_memory structure */
+        mali_ptr shared_memory;
 } __attribute__((packed));
 
 struct midgard_payload_vertex_tiler {
@@ -1253,13 +1265,14 @@ struct mali_texture_descriptor {
 
 #define DECODE_FIXED_16(x) ((float) (x / 256.0))
 
-static inline uint16_t
-FIXED_16(float x)
+static inline int16_t
+FIXED_16(float x, bool allow_negative)
 {
         /* Clamp inputs, accounting for float error */
         float max_lod = (32.0 - (1.0 / 512.0));
+        float min_lod = allow_negative ? -max_lod : 0.0;
 
-        x = ((x > max_lod) ? max_lod : ((x < 0.0) ? 0.0 : x));
+        x = ((x > max_lod) ? max_lod : ((x < min_lod) ? min_lod : x));
 
         return (int) (x * 256.0);
 }
@@ -1267,13 +1280,13 @@ FIXED_16(float x)
 struct mali_sampler_descriptor {
         uint16_t filter_mode;
 
-        /* Fixed point. Upper 8-bits is before the decimal point, although it
-         * caps [0-31]. Lower 8-bits is after the decimal point: int(round(x *
-         * 256)) */
+        /* Fixed point, signed.
+         * Upper 7 bits before the decimal point, although it caps [0-31].
+         * Lower 8 bits after the decimal point: int(round(x * 256)) */
 
-        uint16_t lod_bias;
-        uint16_t min_lod;
-        uint16_t max_lod;
+        int16_t lod_bias;
+        int16_t min_lod;
+        int16_t max_lod;
 
         /* All one word in reality, but packed a bit. Comparisons are flipped
          * from OpenGL. */
@@ -1447,14 +1460,41 @@ struct mali_sfbd_format {
         unsigned unk3 : 4;
 };
 
-struct mali_single_framebuffer {
-        u32 unknown1;
-        u32 unknown2;
+/* Shared structure at the start of framebuffer descriptors, or used bare for
+ * compute jobs, configuring stack and shared memory */
+
+struct mali_shared_memory {
+        u32 stack_shift : 4;
+        u32 unk0 : 28;
+
+        /* Configuration for shared memory for compute shaders.
+         * shared_workgroup_count is logarithmic and may be computed for a
+         * compute shader using shared memory as:
+         *
+         *  shared_workgroup_count = MAX2(ceil(log2(count_x)) + ... + ceil(log2(count_z), 10)
+         *
+         * For compute shaders that don't use shared memory, or non-compute
+         * shaders, this is set to ~0
+         */
+
+        u32 shared_workgroup_count : 5;
+        u32 shared_unk1 : 3;
+        u32 shared_shift : 4;
+        u32 shared_zero : 20;
+
         mali_ptr scratchpad;
 
-        u64 zero1;
-        u64 zero0;
+        /* For compute shaders, the RAM backing of workgroup-shared memory. For
+         * fragment shaders on Bifrost, apparently multisampling locations */
 
+        mali_ptr shared_memory;
+        mali_ptr unknown1;
+} __attribute__((packed));
+
+
+
+struct mali_single_framebuffer {
+        struct mali_shared_memory shared_memory;
         struct mali_sfbd_format format;
 
         u32 clear_flags;
@@ -1517,13 +1557,6 @@ struct mali_single_framebuffer {
         /* More below this, maybe */
 } __attribute__((packed));
 
-/* On Midgard, this "framebuffer descriptor" is used for the framebuffer field
- * of compute jobs. Superficially resembles a single framebuffer descriptor */
-
-struct mali_compute_fbd {
-        u32 unknown1[8];
-} __attribute__((packed));
-
 /* Format bits for the render target flags */
 
 #define MALI_MFBD_FORMAT_MSAA 	  (1 << 1)
@@ -1553,7 +1586,7 @@ struct mali_rt_format {
         unsigned no_preload : 1;
 } __attribute__((packed));
 
-struct bifrost_render_target {
+struct mali_render_target {
         struct mali_rt_format format;
 
         u64 zero1;
@@ -1586,7 +1619,7 @@ struct bifrost_render_target {
         u32 clear_color_4; // always equal, but unclear function?
 } __attribute__((packed));
 
-/* An optional part of bifrost_framebuffer. It comes between the main structure
+/* An optional part of mali_framebuffer. It comes between the main structure
  * and the array of render targets. It must be included if any of these are
  * enabled:
  *
@@ -1595,19 +1628,20 @@ struct bifrost_render_target {
  * - TODO: Anything else?
  */
 
-/* Flags field: note, these are guesses */
+/* flags_hi */
+#define MALI_EXTRA_PRESENT      (0x10)
 
-#define MALI_EXTRA_PRESENT      (0x400)
-#define MALI_EXTRA_AFBC         (0x20)
-#define MALI_EXTRA_AFBC_ZS      (0x10)
+/* flags_lo */
 #define MALI_EXTRA_ZS           (0x4)
 
-struct bifrost_fb_extra {
+struct mali_framebuffer_extra  {
         mali_ptr checksum;
         /* Each tile has an 8 byte checksum, so the stride is "width in tiles * 8" */
         u32 checksum_stride;
 
-        u32 flags;
+        unsigned flags_lo : 4;
+        enum mali_block_format zs_block : 2;
+        unsigned flags_hi : 26;
 
         union {
                 /* Note: AFBC is only allowed for 24/8 combined depth/stencil. */
@@ -1646,20 +1680,13 @@ struct bifrost_fb_extra {
 
 #define MALI_MFBD_DEPTH_WRITE (1 << 10)
 
-/* The MFBD contains the extra bifrost_fb_extra section */
+/* The MFBD contains the extra mali_framebuffer_extra  section */
 
 #define MALI_MFBD_EXTRA (1 << 13)
 
-struct bifrost_framebuffer {
-        u32 stack_shift : 4;
-        u32 unk0 : 28;
+struct mali_framebuffer {
+        struct mali_shared_memory shared_memory;
 
-        u32 unknown2; // = 0x1f, same as SFBD
-        mali_ptr scratchpad;
-
-        /* 0x10 */
-        mali_ptr sample_locations;
-        mali_ptr unknown1;
         /* 0x20 */
         u16 width1, height1;
         u32 zero3;
@@ -1676,8 +1703,8 @@ struct bifrost_framebuffer {
 
         struct midgard_tiler_descriptor tiler;
 
-        /* optional: struct bifrost_fb_extra extra */
-        /* struct bifrost_render_target rts[] */
+        /* optional: struct mali_framebuffer_extra  extra */
+        /* struct mali_render_target rts[] */
 } __attribute__((packed));
 
 #endif /* __PANFROST_JOB_H__ */

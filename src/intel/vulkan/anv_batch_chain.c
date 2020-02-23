@@ -465,7 +465,7 @@ anv_batch_bo_link(struct anv_cmd_buffer *cmd_buffer,
    assert(((*bb_start >> 29) & 0x07) == 0);
    assert(((*bb_start >> 23) & 0x3f) == 49);
 
-   if (cmd_buffer->device->instance->physicalDevice.use_softpin) {
+   if (cmd_buffer->device->physical->use_softpin) {
       assert(prev_bbo->bo->flags & EXEC_OBJECT_PINNED);
       assert(next_bbo->bo->flags & EXEC_OBJECT_PINNED);
 
@@ -722,7 +722,7 @@ anv_cmd_buffer_alloc_binding_table(struct anv_cmd_buffer *cmd_buffer,
    cmd_buffer->bt_next.map += bt_size;
    cmd_buffer->bt_next.alloc_size -= bt_size;
 
-   if (device->instance->physicalDevice.use_softpin) {
+   if (device->physical->use_softpin) {
       assert(bt_block->offset >= 0);
       *state_offset = device->surface_state_pool.block_pool.start_address -
          device->binding_table_pool.block_pool.start_address - bt_block->offset;
@@ -874,7 +874,8 @@ anv_cmd_buffer_reset_batch_bo_chain(struct anv_cmd_buffer *cmd_buffer)
       anv_binding_table_pool_free(cmd_buffer->device, *bt_block);
    }
    assert(u_vector_length(&cmd_buffer->bt_block_states) == 1);
-   cmd_buffer->bt_next = ANV_STATE_NULL;
+   cmd_buffer->bt_next = *(struct anv_state *)u_vector_head(&cmd_buffer->bt_block_states);
+   cmd_buffer->bt_next.offset = 0;
 
    anv_reloc_list_clear(&cmd_buffer->surface_relocs);
    cmd_buffer->last_ss_pool_center = 0;
@@ -1383,7 +1384,7 @@ setup_execbuf_for_cmd_buffer(struct anv_execbuf *execbuf,
    adjust_relocations_from_state_pool(ss_pool, &cmd_buffer->surface_relocs,
                                       cmd_buffer->last_ss_pool_center);
    VkResult result;
-   if (cmd_buffer->device->instance->physicalDevice.use_softpin) {
+   if (cmd_buffer->device->physical->use_softpin) {
       anv_block_pool_foreach_bo(bo, &ss_pool->block_pool) {
          result = anv_execbuf_add_bo(cmd_buffer->device, execbuf,
                                      bo, NULL, 0);
@@ -1486,7 +1487,7 @@ setup_execbuf_for_cmd_buffer(struct anv_execbuf *execbuf,
    }
 
    /* If we are pinning our BOs, we shouldn't have to relocate anything */
-   if (cmd_buffer->device->instance->physicalDevice.use_softpin)
+   if (cmd_buffer->device->physical->use_softpin)
       assert(!execbuf->has_relocs);
 
    /* Now we go through and fixup all of the relocation lists to point to
@@ -1676,7 +1677,7 @@ anv_queue_execbuf_locked(struct anv_queue *queue,
    }
 
    if (submit->fence_count > 0) {
-      assert(device->instance->physicalDevice.has_syncobj);
+      assert(device->physical->has_syncobj);
       execbuf.execbuf.flags |= I915_EXEC_FENCE_ARRAY;
       execbuf.execbuf.num_cliprects = submit->fence_count;
       execbuf.execbuf.cliprects_ptr = (uintptr_t)submit->fences;

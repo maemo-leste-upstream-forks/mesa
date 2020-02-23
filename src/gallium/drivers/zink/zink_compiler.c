@@ -164,6 +164,7 @@ lower_discard_if(nir_shader *shader)
 static const struct nir_shader_compiler_options nir_options = {
    .lower_all_io_to_temps = true,
    .lower_ffma = true,
+   .lower_fdph = true,
    .lower_flrp32 = true,
    .lower_fpow = true,
    .lower_fsat = true,
@@ -209,30 +210,6 @@ optimize_nir(struct nir_shader *s)
    } while (progress);
 }
 
-static uint32_t
-zink_binding(enum pipe_shader_type stage, VkDescriptorType type, int index)
-{
-   if (stage == PIPE_SHADER_COMPUTE) {
-      unreachable("not supported");
-   } else {
-      uint32_t stage_offset = (uint32_t)stage * (PIPE_MAX_CONSTANT_BUFFERS +
-                                                 PIPE_MAX_SHADER_SAMPLER_VIEWS);
-
-      switch (type) {
-      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
-         assert(index < PIPE_MAX_CONSTANT_BUFFERS);
-         return stage_offset + index;
-
-      case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-         assert(index < PIPE_MAX_SHADER_SAMPLER_VIEWS);
-         return stage_offset + PIPE_MAX_CONSTANT_BUFFERS + index;
-
-      default:
-         unreachable("unexpected type");
-      }
-   }
-}
-
 struct zink_shader *
 zink_compile_nir(struct zink_screen *screen, struct nir_shader *nir)
 {
@@ -252,22 +229,38 @@ zink_compile_nir(struct zink_screen *screen, struct nir_shader *nir)
       fprintf(stderr, "---8<---\n");
    }
 
-   enum pipe_shader_type stage = pipe_shader_type_from_mesa(nir->info.stage);
-
    ret->num_bindings = 0;
    nir_foreach_variable(var, &nir->uniforms) {
-      if (glsl_type_is_sampler(var->type)) {
-         ret->bindings[ret->num_bindings].index = var->data.driver_location;
-         var->data.binding = zink_binding(stage, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, var->data.driver_location);
-         ret->bindings[ret->num_bindings].binding = var->data.binding;
-         ret->bindings[ret->num_bindings].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-         ret->num_bindings++;
-      } else if (var->interface_type) {
+      if (var->data.mode == nir_var_mem_ubo) {
+         int binding = zink_binding(nir->info.stage,
+                                    VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                    var->data.binding);
          ret->bindings[ret->num_bindings].index = var->data.binding;
-         var->data.binding = zink_binding(stage, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, var->data.binding);
-         ret->bindings[ret->num_bindings].binding = var->data.binding;
+         ret->bindings[ret->num_bindings].binding = binding;
          ret->bindings[ret->num_bindings].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
          ret->num_bindings++;
+      } else {
+         assert(var->data.mode == nir_var_uniform);
+         if (glsl_type_is_array(var->type) &&
+             glsl_type_is_sampler(glsl_get_array_element(var->type))) {
+            for (int i = 0; i < glsl_get_length(var->type); ++i) {
+               int binding = zink_binding(nir->info.stage,
+                                          VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                          var->data.binding + i);
+               ret->bindings[ret->num_bindings].index = var->data.binding + i;
+               ret->bindings[ret->num_bindings].binding = binding;
+               ret->bindings[ret->num_bindings].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+               ret->num_bindings++;
+            }
+         } else if (glsl_type_is_sampler(var->type)) {
+            int binding = zink_binding(nir->info.stage,
+                                       VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                       var->data.binding);
+            ret->bindings[ret->num_bindings].index = var->data.binding;
+            ret->bindings[ret->num_bindings].binding = binding;
+            ret->bindings[ret->num_bindings].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            ret->num_bindings++;
+         }
       }
    }
 

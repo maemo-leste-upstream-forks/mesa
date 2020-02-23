@@ -22,7 +22,6 @@ glx/glx-swap-event_event: skip
 glx/glx-swap-event_interval: skip
 glx/glx-swap-exchange: skip
 glx/glx-swap-pixmap-bad: fail
-glx/glx-swap-singlebuffer: fail
 glx/glx-visuals-depth: fail
 glx/glx-visuals-depth -pixmap: fail
 glx/glx-visuals-stencil: fail
@@ -498,9 +497,6 @@ spec/arb_get_program_binary/xfb-varyings: skip
 spec/arb_gpu_shader_fp64/execution/arb_gpu_shader_fp64-dlist-uniforms: skip
 spec/arb_gpu_shader_fp64/execution/arb_gpu_shader_fp64-fs-non-uniform-control-flow-ssbo: skip
 spec/arb_gpu_shader_fp64/execution/arb_gpu_shader_fp64-vs-non-uniform-control-flow-ssbo: skip
-spec/arb_indirect_parameters/conditional-render: skip
-spec/arb_indirect_parameters/tf-count-arrays: skip
-spec/arb_indirect_parameters/tf-count-elements: skip
 spec/arb_internalformat_query/minmax: skip
 spec/arb_internalformat_query/misc. api error checks: skip
 spec/arb_pipeline_statistics_query/arb_pipeline_statistics_query-frag: fail
@@ -539,17 +535,6 @@ spec/arb_query_buffer_object/coherency/indirect-dispatch-gl_tess_evaluation_shad
 spec/arb_query_buffer_object/coherency/indirect-dispatch-gl_transform_feedback_primitives_written: skip
 spec/arb_query_buffer_object/coherency/indirect-dispatch-gl_vertex_shader_invocations: skip
 spec/arb_query_buffer_object/coherency/indirect-dispatch-gl_vertices_submitted: skip
-spec/arb_query_buffer_object/coherency/indirect-draw-count-gl_any_samples_passed: skip
-spec/arb_query_buffer_object/coherency/indirect-draw-count-gl_any_samples_passed_conservative: skip
-spec/arb_query_buffer_object/coherency/indirect-draw-count-gl_clipping_input_primitives: skip
-spec/arb_query_buffer_object/coherency/indirect-draw-count-gl_clipping_output_primitives: skip
-spec/arb_query_buffer_object/coherency/indirect-draw-count-gl_compute_shader_invocations: skip
-spec/arb_query_buffer_object/coherency/indirect-draw-count-gl_fragment_shader_invocations: skip
-spec/arb_query_buffer_object/coherency/indirect-draw-count-gl_geometry_shader_invocations: skip
-spec/arb_query_buffer_object/coherency/indirect-draw-count-gl_geometry_shader_primitives_emitted: skip
-spec/arb_query_buffer_object/coherency/indirect-draw-count-gl_primitives_generated: skip
-spec/arb_query_buffer_object/coherency/indirect-draw-count-gl_primitives_submitted: skip
-spec/arb_query_buffer_object/coherency/indirect-draw-count-gl_samples_passed: skip
 spec/arb_query_buffer_object/coherency/indirect-draw-count-gl_tess_control_shader_patches: skip
 spec/arb_query_buffer_object/coherency/indirect-draw-count-gl_tess_evaluation_shader_invocations: skip
 spec/arb_query_buffer_object/coherency/indirect-draw-count-gl_time_elapsed: skip
@@ -990,8 +975,6 @@ spec/arb_texture_barrier/arb_texture_barrier-blending-in-shader 512 42 8 8 8: sk
 spec/arb_texture_buffer_object/indexed: skip
 spec/arb_texture_buffer_object/negative-unsupported: skip
 spec/arb_texture_compression_bptc/bptc-float-modes: fail
-spec/arb_texture_compression_bptc/texwrap formats bordercolor: crash
-spec/arb_texture_compression_bptc/texwrap formats bordercolor-swizzled: crash
 spec/arb_texture_cube_map/copyteximage cube samples=16: skip
 spec/arb_texture_cube_map/copyteximage cube samples=2: skip
 spec/arb_texture_cube_map/copyteximage cube samples=32: skip
@@ -2026,7 +2009,6 @@ spec/ext_texture_srgb/multisample-formats 32 gl_ext_texture_srgb: skip
 spec/ext_texture_srgb/multisample-formats 4 gl_ext_texture_srgb: skip
 spec/ext_texture_srgb/multisample-formats 6 gl_ext_texture_srgb: skip
 spec/ext_texture_srgb/multisample-formats 8 gl_ext_texture_srgb: skip
-spec/ext_timer_query/time-elapsed: fail
 spec/ext_transform_feedback/tessellation quad_strip flat_first: warn
 spec/ext_transform_feedback/tessellation quads flat_first: warn
 spec/ext_window_rectangles/dlist/call: skip
@@ -2221,10 +2203,10 @@ wgl/wgl-sanity: skip
 summary:
        name:  results
        ----  --------
-       pass:    19302
-       fail:      236
-      crash:        2
-       skip:     1962
+       pass:    19328
+       fail:      234
+      crash:        0
+       skip:     1948
     timeout:        0
        warn:        2
  incomplete:        0
@@ -2233,4 +2215,4 @@ summary:
     changes:        0
       fixes:        0
 regressions:        0
-      total:    21522
+      total:    21530

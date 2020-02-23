@@ -60,7 +60,7 @@ fd6_emit_flag_reference(struct fd_ringbuffer *ring, struct fd_resource *rsc,
 		OUT_RELOCW(ring, rsc->bo, fd_resource_ubwc_offset(rsc, level, layer), 0, 0);
 		OUT_RING(ring,
 				A6XX_RB_MRT_FLAG_BUFFER_PITCH_PITCH(rsc->layout.ubwc_slices[level].pitch) |
-				A6XX_RB_MRT_FLAG_BUFFER_PITCH_ARRAY_PITCH(rsc->layout.ubwc_size));
+				A6XX_RB_MRT_FLAG_BUFFER_PITCH_ARRAY_PITCH(rsc->layout.ubwc_layer_size >> 2));
 	} else {
 		OUT_RING(ring, 0x00000000);    /* RB_MRT_FLAG_BUFFER[i].ADDR_LO */
 		OUT_RING(ring, 0x00000000);    /* RB_MRT_FLAG_BUFFER[i].ADDR_HI */
@@ -70,7 +70,7 @@ fd6_emit_flag_reference(struct fd_ringbuffer *ring, struct fd_resource *rsc,
 
 static void
 emit_mrt(struct fd_ringbuffer *ring, struct pipe_framebuffer_state *pfb,
-		struct fd_gmem_stateobj *gmem)
+		const struct fd_gmem_stateobj *gmem)
 {
 	unsigned char mrt_comp[A6XX_MAX_RENDER_TARGETS] = {0};
 	unsigned srgb_cntl = 0;
@@ -80,7 +80,7 @@ emit_mrt(struct fd_ringbuffer *ring, struct pipe_framebuffer_state *pfb,
 	unsigned type = 0;
 
 	for (i = 0; i < pfb->nr_cbufs; i++) {
-		enum a6xx_color_fmt format = 0;
+		enum a6xx_format format = 0;
 		enum a3xx_color_swap swap = WZYX;
 		bool sint = false, uint = false;
 		struct fd_resource *rsc = NULL;
@@ -178,7 +178,7 @@ emit_mrt(struct fd_ringbuffer *ring, struct pipe_framebuffer_state *pfb,
 
 static void
 emit_zs(struct fd_ringbuffer *ring, struct pipe_surface *zsbuf,
-		struct fd_gmem_stateobj *gmem)
+		const struct fd_gmem_stateobj *gmem)
 {
 	if (zsbuf) {
 		struct fd_resource *rsc = fd_resource(zsbuf->texture);
@@ -265,7 +265,7 @@ emit_zs(struct fd_ringbuffer *ring, struct pipe_surface *zsbuf,
 static bool
 use_hw_binning(struct fd_batch *batch)
 {
-	struct fd_gmem_stateobj *gmem = &batch->ctx->gmem;
+	const struct fd_gmem_stateobj *gmem = batch->gmem_state;
 
 	// TODO figure out hw limits for binning
 
@@ -276,7 +276,7 @@ use_hw_binning(struct fd_batch *batch)
 static void
 patch_fb_read(struct fd_batch *batch)
 {
-	struct fd_gmem_stateobj *gmem = &batch->ctx->gmem;
+	const struct fd_gmem_stateobj *gmem = batch->gmem_state;
 
 	for (unsigned i = 0; i < fd_patch_num_elements(&batch->fb_read_patches); i++) {
 		struct fd_cs_patch *patch = fd_patch_element(&batch->fb_read_patches, i);
@@ -317,7 +317,7 @@ update_render_cntl(struct fd_batch *batch, struct pipe_framebuffer_state *pfb, b
 		cntl |= A6XX_RB_RENDER_CNTL_BINNING;
 
 	OUT_PKT7(ring, CP_REG_WRITE, 3);
-	OUT_RING(ring, 0x2);
+	OUT_RING(ring, CP_REG_WRITE_0_TRACKER(TRACK_RENDER_CNTL));
 	OUT_RING(ring, REG_A6XX_RB_RENDER_CNTL);
 	OUT_RING(ring, cntl |
 		COND(depth_ubwc_enable, A6XX_RB_RENDER_CNTL_FLAG_DEPTH) |
@@ -332,7 +332,7 @@ update_vsc_pipe(struct fd_batch *batch)
 {
 	struct fd_context *ctx = batch->ctx;
 	struct fd6_context *fd6_ctx = fd6_context(ctx);
-	struct fd_gmem_stateobj *gmem = &ctx->gmem;
+	const struct fd_gmem_stateobj *gmem = batch->gmem_state;
 	struct fd_ringbuffer *ring = batch->gmem;
 	int i;
 
@@ -358,7 +358,7 @@ update_vsc_pipe(struct fd_batch *batch)
 
 	OUT_PKT4(ring, REG_A6XX_VSC_PIPE_CONFIG_REG(0), 32);
 	for (i = 0; i < 32; i++) {
-		struct fd_vsc_pipe *pipe = &ctx->vsc_pipe[i];
+		const struct fd_vsc_pipe *pipe = &gmem->vsc_pipe[i];
 		OUT_RING(ring, A6XX_VSC_PIPE_CONFIG_REG_X(pipe->x) |
 				A6XX_VSC_PIPE_CONFIG_REG_Y(pipe->y) |
 				A6XX_VSC_PIPE_CONFIG_REG_W(pipe->w) |
@@ -400,7 +400,7 @@ static void
 emit_vsc_overflow_test(struct fd_batch *batch)
 {
 	struct fd_ringbuffer *ring = batch->gmem;
-	struct fd_gmem_stateobj *gmem = &batch->ctx->gmem;
+	const struct fd_gmem_stateobj *gmem = batch->gmem_state;
 	struct fd6_context *fd6_ctx = fd6_context(batch->ctx);
 
 	debug_assert((fd6_ctx->vsc_data_pitch & 0x3) == 0);
@@ -462,8 +462,8 @@ emit_vsc_overflow_test(struct fd_batch *batch)
 			A6XX_CP_REG_TEST_0_WAIT_FOR_ME);
 
 	OUT_PKT7(ring, CP_COND_REG_EXEC, 2);
-	OUT_RING(ring, 0x10000000);
-	OUT_RING(ring, 7);  /* conditionally execute next 7 dwords */
+	OUT_RING(ring, CP_COND_REG_EXEC_0_MODE(PRED_TEST));
+	OUT_RING(ring, CP_COND_REG_EXEC_1_DWORDS(7));
 
 	/* if (b0 set) */ {
 		/*
@@ -549,7 +549,7 @@ check_vsc_overflow(struct fd_context *ctx)
  * is skipped for tiles that have no visible geometry.
  */
 static void
-emit_conditional_ib(struct fd_batch *batch, struct fd_tile *tile,
+emit_conditional_ib(struct fd_batch *batch, const struct fd_tile *tile,
 		struct fd_ringbuffer *target)
 {
 	struct fd_ringbuffer *ring = batch->gmem;
@@ -569,8 +569,8 @@ emit_conditional_ib(struct fd_batch *batch, struct fd_tile *tile,
 			A6XX_CP_REG_TEST_0_WAIT_FOR_ME);
 
 	OUT_PKT7(ring, CP_COND_REG_EXEC, 2);
-	OUT_RING(ring, 0x10000000);
-	OUT_RING(ring, 4 * count);  /* conditionally execute next 4*count dwords */
+	OUT_RING(ring, CP_COND_REG_EXEC_0_MODE(PRED_TEST));
+	OUT_RING(ring, CP_COND_REG_EXEC_1_DWORDS(4 * count));
 
 	for (unsigned i = 0; i < count; i++) {
 		uint32_t dwords;
@@ -608,7 +608,7 @@ static void
 emit_binning_pass(struct fd_batch *batch)
 {
 	struct fd_ringbuffer *ring = batch->gmem;
-	struct fd_gmem_stateobj *gmem = &batch->ctx->gmem;
+	const struct fd_gmem_stateobj *gmem = batch->gmem_state;
 	struct fd6_context *fd6_ctx = fd6_context(batch->ctx);
 
 	uint32_t x1 = gmem->minx;
@@ -723,7 +723,7 @@ fd6_emit_tile_init(struct fd_batch *batch)
 	struct fd_context *ctx = batch->ctx;
 	struct fd_ringbuffer *ring = batch->gmem;
 	struct pipe_framebuffer_state *pfb = &batch->framebuffer;
-	struct fd_gmem_stateobj *gmem = &batch->ctx->gmem;
+	const struct fd_gmem_stateobj *gmem = batch->gmem_state;
 
 	fd6_emit_restore(batch, ring);
 
@@ -744,8 +744,8 @@ fd6_emit_tile_init(struct fd_batch *batch)
 	OUT_PKT4(ring, REG_A6XX_RB_CCU_CNTL, 1);
 	OUT_RING(ring, fd6_context(ctx)->magic.RB_CCU_CNTL_gmem);
 
-	emit_zs(ring, pfb->zsbuf, &ctx->gmem);
-	emit_mrt(ring, pfb, &ctx->gmem);
+	emit_zs(ring, pfb->zsbuf, batch->gmem_state);
+	emit_mrt(ring, pfb, batch->gmem_state);
 	emit_msaa(ring, pfb->samples);
 	patch_fb_read(batch);
 
@@ -819,15 +819,16 @@ set_window_offset(struct fd_ringbuffer *ring, uint32_t x1, uint32_t y1)
 
 /* before mem2gmem */
 static void
-fd6_emit_tile_prep(struct fd_batch *batch, struct fd_tile *tile)
+fd6_emit_tile_prep(struct fd_batch *batch, const struct fd_tile *tile)
 {
 	struct fd_context *ctx = batch->ctx;
+	const struct fd_gmem_stateobj *gmem = batch->gmem_state;
 	struct fd6_context *fd6_ctx = fd6_context(ctx);
 	struct fd_ringbuffer *ring = batch->gmem;
 
 	emit_marker6(ring, 7);
 	OUT_PKT7(ring, CP_SET_MARKER, 1);
-	OUT_RING(ring, A6XX_CP_SET_MARKER_0_MODE(RM6_GMEM) | 0x10);
+	OUT_RING(ring, A6XX_CP_SET_MARKER_0_MODE(RM6_GMEM));
 	emit_marker6(ring, 7);
 
 	uint32_t x1 = tile->xoff;
@@ -838,7 +839,7 @@ fd6_emit_tile_prep(struct fd_batch *batch, struct fd_tile *tile)
 	set_scissor(ring, x1, y1, x2, y2);
 
 	if (use_hw_binning(batch)) {
-		struct fd_vsc_pipe *pipe = &ctx->vsc_pipe[tile->p];
+		const struct fd_vsc_pipe *pipe = &gmem->vsc_pipe[tile->p];
 
 		OUT_PKT7(ring, CP_WAIT_FOR_ME, 0);
 
@@ -857,8 +858,8 @@ fd6_emit_tile_prep(struct fd_batch *batch, struct fd_tile *tile)
 				A6XX_CP_REG_TEST_0_WAIT_FOR_ME);
 
 		OUT_PKT7(ring, CP_COND_REG_EXEC, 2);
-		OUT_RING(ring, 0x10000000);
-		OUT_RING(ring, 11);  /* conditionally execute next 11 dwords */
+		OUT_RING(ring, CP_COND_REG_EXEC_0_MODE(PRED_TEST));
+		OUT_RING(ring, CP_COND_REG_EXEC_1_DWORDS(11));
 
 		/* if (no overflow) */ {
 			OUT_PKT7(ring, CP_SET_BIN_DATA5, 7);
@@ -883,7 +884,7 @@ fd6_emit_tile_prep(struct fd_batch *batch, struct fd_tile *tile)
 
 		set_window_offset(ring, x1, y1);
 
-		struct fd_gmem_stateobj *gmem = &batch->ctx->gmem;
+		const struct fd_gmem_stateobj *gmem = batch->gmem_state;
 		set_bin_size(ring, gmem->bin_w, gmem->bin_h, 0x6000000);
 
 		OUT_PKT7(ring, CP_SET_MODE, 1);
@@ -956,7 +957,7 @@ emit_blit(struct fd_batch *batch,
 
 	debug_assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
 
-	enum a6xx_color_fmt format = fd6_pipe2color(pfmt);
+	enum a6xx_format format = fd6_pipe2color(pfmt);
 	uint32_t stride = slice->pitch * rsc->layout.cpp;
 	uint32_t size = slice->size0;
 	enum a3xx_color_swap swap = fd6_resource_swap(rsc, pfmt);
@@ -1003,7 +1004,7 @@ static void
 emit_clears(struct fd_batch *batch, struct fd_ringbuffer *ring)
 {
 	struct pipe_framebuffer_state *pfb = &batch->framebuffer;
-	struct fd_gmem_stateobj *gmem = &batch->ctx->gmem;
+	const struct fd_gmem_stateobj *gmem = batch->gmem_state;
 	enum a3xx_msaa_samples samples = fd_msaa_samples(pfb->samples);
 
 	uint32_t buffers = batch->fast_cleared;
@@ -1051,13 +1052,7 @@ emit_clears(struct fd_batch *batch, struct fd_ringbuffer *ring)
 				break;
 			}
 
-			if (util_format_is_pure_uint(pfmt)) {
-				util_format_write_4ui(pfmt, swapped.ui, 0, &uc, 0, 0, 0, 1, 1);
-			} else if (util_format_is_pure_sint(pfmt)) {
-				util_format_write_4i(pfmt, swapped.i, 0, &uc, 0, 0, 0, 1, 1);
-			} else {
-				util_pack_color(swapped.f, pfmt, &uc);
-			}
+			util_pack_color_union(pfmt, &uc, &swapped);
 
 			OUT_PKT4(ring, REG_A6XX_RB_BLIT_DST_INFO, 1);
 			OUT_RING(ring, A6XX_RB_BLIT_DST_INFO_TILE_MODE(TILE6_LINEAR) |
@@ -1139,7 +1134,7 @@ emit_clears(struct fd_batch *batch, struct fd_ringbuffer *ring)
 		OUT_PKT4(ring, REG_A6XX_RB_BLIT_DST_INFO, 1);
 		OUT_RING(ring, A6XX_RB_BLIT_DST_INFO_TILE_MODE(TILE6_LINEAR) |
 				 A6XX_RB_BLIT_DST_INFO_SAMPLES(samples) |
-				 A6XX_RB_BLIT_DST_INFO_COLOR_FORMAT(RB6_R8_UINT));
+				 A6XX_RB_BLIT_DST_INFO_COLOR_FORMAT(FMT6_8_UINT));
 
 		OUT_PKT4(ring, REG_A6XX_RB_BLIT_INFO, 1);
 		OUT_RING(ring, A6XX_RB_BLIT_INFO_GMEM |
@@ -1166,8 +1161,7 @@ emit_clears(struct fd_batch *batch, struct fd_ringbuffer *ring)
 static void
 emit_restore_blits(struct fd_batch *batch, struct fd_ringbuffer *ring)
 {
-	struct fd_context *ctx = batch->ctx;
-	struct fd_gmem_stateobj *gmem = &ctx->gmem;
+	const struct fd_gmem_stateobj *gmem = batch->gmem_state;
 	struct pipe_framebuffer_state *pfb = &batch->framebuffer;
 
 	if (batch->restore & FD_BUFFER_COLOR) {
@@ -1212,13 +1206,13 @@ prepare_tile_setup_ib(struct fd_batch *batch)
  * transfer from system memory to gmem
  */
 static void
-fd6_emit_tile_mem2gmem(struct fd_batch *batch, struct fd_tile *tile)
+fd6_emit_tile_mem2gmem(struct fd_batch *batch, const struct fd_tile *tile)
 {
 }
 
 /* before IB to rendering cmds: */
 static void
-fd6_emit_tile_renderprep(struct fd_batch *batch, struct fd_tile *tile)
+fd6_emit_tile_renderprep(struct fd_batch *batch, const struct fd_tile *tile)
 {
 	if (batch->fast_cleared || !use_hw_binning(batch)) {
 		fd6_emit_ib(batch->gmem, batch->tile_setup);
@@ -1268,8 +1262,7 @@ emit_resolve_blit(struct fd_batch *batch,
 static void
 prepare_tile_fini_ib(struct fd_batch *batch)
 {
-	struct fd_context *ctx = batch->ctx;
-	struct fd_gmem_stateobj *gmem = &ctx->gmem;
+	const struct fd_gmem_stateobj *gmem = batch->gmem_state;
 	struct pipe_framebuffer_state *pfb = &batch->framebuffer;
 	struct fd_ringbuffer *ring;
 
@@ -1308,7 +1301,7 @@ prepare_tile_fini_ib(struct fd_batch *batch)
 }
 
 static void
-fd6_emit_tile(struct fd_batch *batch, struct fd_tile *tile)
+fd6_emit_tile(struct fd_batch *batch, const struct fd_tile *tile)
 {
 	if (!use_hw_binning(batch)) {
 		fd6_emit_ib(batch->gmem, batch->draw);
@@ -1318,7 +1311,7 @@ fd6_emit_tile(struct fd_batch *batch, struct fd_tile *tile)
 }
 
 static void
-fd6_emit_tile_gmem2mem(struct fd_batch *batch, struct fd_tile *tile)
+fd6_emit_tile_gmem2mem(struct fd_batch *batch, const struct fd_tile *tile)
 {
 	struct fd_ringbuffer *ring = batch->gmem;
 
@@ -1333,12 +1326,12 @@ fd6_emit_tile_gmem2mem(struct fd_batch *batch, struct fd_tile *tile)
 				A6XX_CP_REG_TEST_0_WAIT_FOR_ME);
 
 		OUT_PKT7(ring, CP_COND_REG_EXEC, 2);
-		OUT_RING(ring, 0x10000000);
-		OUT_RING(ring, 2);  /* conditionally execute next 2 dwords */
+		OUT_RING(ring, CP_COND_REG_EXEC_0_MODE(PRED_TEST));
+		OUT_RING(ring, CP_COND_REG_EXEC_1_DWORDS(2));
 
 		/* if (no overflow) */ {
 			OUT_PKT7(ring, CP_SET_MARKER, 1);
-			OUT_RING(ring, A6XX_CP_SET_MARKER_0_MODE(0x5) | 0x10);
+			OUT_RING(ring, A6XX_CP_SET_MARKER_0_MODE(RM6_ENDVIS));
 		}
 	}
 
@@ -1354,7 +1347,7 @@ fd6_emit_tile_gmem2mem(struct fd_batch *batch, struct fd_tile *tile)
 
 	emit_marker6(ring, 7);
 	OUT_PKT7(ring, CP_SET_MARKER, 1);
-	OUT_RING(ring, A6XX_CP_SET_MARKER_0_MODE(RM6_RESOLVE) | 0x10);
+	OUT_RING(ring, A6XX_CP_SET_MARKER_0_MODE(RM6_RESOLVE));
 	emit_marker6(ring, 7);
 
 	if (batch->fast_cleared || !use_hw_binning(batch)) {
@@ -1364,7 +1357,7 @@ fd6_emit_tile_gmem2mem(struct fd_batch *batch, struct fd_tile *tile)
 	}
 
 	OUT_PKT7(ring, CP_SET_MARKER, 1);
-	OUT_RING(ring, A6XX_CP_SET_MARKER_0_MODE(0x7));
+	OUT_RING(ring, A6XX_CP_SET_MARKER_0_MODE(RM6_YIELD));
 }
 
 static void
@@ -1433,7 +1426,7 @@ emit_sysmem_clears(struct fd_batch *batch, struct fd_ringbuffer *ring)
 		}
 	}
 
-	fd6_event_write(batch, ring, 0x1d, true);
+	fd6_event_write(batch, ring, PC_CCU_FLUSH_COLOR_TS, true);
 }
 
 static void
@@ -1480,7 +1473,7 @@ fd6_emit_sysmem_prep(struct fd_batch *batch)
 
 	emit_marker6(ring, 7);
 	OUT_PKT7(ring, CP_SET_MARKER, 1);
-	OUT_RING(ring, A6XX_CP_SET_MARKER_0_MODE(RM6_BYPASS) | 0x10); /* | 0x10 ? */
+	OUT_RING(ring, A6XX_CP_SET_MARKER_0_MODE(RM6_BYPASS));
 	emit_marker6(ring, 7);
 
 	if (batch->tessellation)
@@ -1520,7 +1513,7 @@ fd6_emit_sysmem_fini(struct fd_batch *batch)
 
 	fd6_emit_lrz_flush(ring);
 
-	fd6_event_write(batch, ring, UNK_1D, true);
+	fd6_event_write(batch, ring, PC_CCU_FLUSH_COLOR_TS, true);
 }
 
 void

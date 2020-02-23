@@ -42,12 +42,22 @@ struct gl_context;
 
 struct _mesa_prim
 {
-   GLuint mode:8;    /**< GL_POINTS, GL_LINES, GL_QUAD_STRIP, etc */
-   GLuint indexed:1;
-   GLuint begin:1;
-   GLuint end:1;
-   GLuint is_indirect:1;
-   GLuint pad:20;
+   GLubyte mode;    /**< GL_POINTS, GL_LINES, GL_QUAD_STRIP, etc */
+   bool indexed;
+
+   /**
+    * tnl: If true, line stipple emulation will reset the pattern walker.
+    * vbo: If false and the primitive is a line loop, the first vertex is
+    *      the beginning of the line loop and it won't be drawn.
+    *      Instead, it will be moved to the end.
+    */
+   bool begin;
+
+   /**
+    * tnl: If true and the primitive is a line loop, it will be closed.
+    * vbo: Same as tnl.
+    */
+   bool end;
 
    GLuint start;
    GLuint count;
@@ -75,16 +85,6 @@ struct _mesa_index_buffer
 void
 _mesa_initialize_exec_dispatch(const struct gl_context *ctx,
                                struct _glapi_table *exec);
-
-
-void
-_mesa_draw_indirect(struct gl_context *ctx, GLuint mode,
-                    struct gl_buffer_object *indirect_data,
-                    GLsizeiptr indirect_offset, unsigned draw_count,
-                    unsigned stride,
-                    struct gl_buffer_object *indirect_draw_count_buffer,
-                    GLsizeiptr indirect_draw_count_offset,
-                    const struct _mesa_index_buffer *ib);
 
 
 void GLAPIENTRY

@@ -114,9 +114,6 @@ panfrost_create_batch(struct panfrost_context *ctx,
         batch->maxx = batch->maxy = 0;
         batch->transient_offset = 0;
 
-        util_dynarray_init(&batch->headers, batch);
-        util_dynarray_init(&batch->gpu_headers, batch);
-        util_dynarray_init(&batch->dependencies, batch);
         batch->out_sync = panfrost_create_batch_fence(batch);
         util_copy_framebuffer_state(&batch->key, key);
 
@@ -305,7 +302,7 @@ panfrost_get_fresh_batch_for_fbo(struct panfrost_context *ctx)
          * Note that it's perfectly fine to re-use a batch with an
          * existing clear, we'll just update it with the new clear request.
          */
-        if (!batch->last_job.gpu)
+        if (!batch->first_job)
                 return batch;
 
         /* Otherwise, we need to freeze the existing one and instantiate a new
@@ -343,7 +340,9 @@ panfrost_bo_access_gc_fences(struct panfrost_context *ctx,
                 access->writer = NULL;
         }
 
-        unsigned nreaders = 0;
+        struct panfrost_batch_fence **readers_array = util_dynarray_begin(&access->readers);
+        struct panfrost_batch_fence **new_readers = readers_array;
+
         util_dynarray_foreach(&access->readers, struct panfrost_batch_fence *,
                               reader) {
                 if (!(*reader))
@@ -353,12 +352,15 @@ panfrost_bo_access_gc_fences(struct panfrost_context *ctx,
                         panfrost_batch_fence_unreference(*reader);
                         *reader = NULL;
                 } else {
-                        nreaders++;
+                        /* Build a new array of only unsignaled fences in-place */
+                        *(new_readers++) = *reader;
                 }
         }
 
-        if (!nreaders)
-                util_dynarray_clear(&access->readers);
+        if (!util_dynarray_resize(&access->readers, struct panfrost_batch_fence *,
+                                  new_readers - readers_array) &&
+            new_readers != readers_array)
+                unreachable("Invalid dynarray access->readers");
 }
 
 /* Collect signaled fences to keep the kernel-side syncobj-map small. The
@@ -380,8 +382,10 @@ panfrost_gc_fences(struct panfrost_context *ctx)
                 panfrost_bo_access_gc_fences(ctx, access, entry->key);
                 if (!util_dynarray_num_elements(&access->readers,
                                                 struct panfrost_batch_fence *) &&
-                    !access->writer)
+                    !access->writer) {
+                        ralloc_free(access);
                         _mesa_hash_table_remove(ctx->accessed_bos, entry);
+                }
         }
 }
 
@@ -661,6 +665,24 @@ panfrost_batch_get_scratchpad(struct panfrost_batch *batch,
 }
 
 struct panfrost_bo *
+panfrost_batch_get_shared_memory(struct panfrost_batch *batch,
+                unsigned size,
+                unsigned workgroup_count)
+{
+        if (batch->shared_memory) {
+                assert(batch->shared_memory->size >= size);
+        } else {
+                batch->shared_memory = panfrost_batch_create_bo(batch, size,
+                                             PAN_BO_INVISIBLE,
+                                             PAN_BO_ACCESS_PRIVATE |
+                                             PAN_BO_ACCESS_RW |
+                                             PAN_BO_ACCESS_VERTEX_TILER);
+        }
+
+        return batch->shared_memory;
+}
+
+struct panfrost_bo *
 panfrost_batch_get_tiler_heap(struct panfrost_batch *batch)
 {
         if (batch->tiler_heap)
@@ -716,7 +738,7 @@ panfrost_batch_draw_wallpaper(struct panfrost_batch *batch)
         /* No draw calls, and no clear on the depth/stencil bufs.
          * Drawing the wallpaper would be useless.
          */
-        if (!batch->last_tiler.gpu &&
+        if (!batch->tiler_dep &&
             !(batch->clear & PIPE_CLEAR_DEPTHSTENCIL))
                 return;
 
@@ -767,9 +789,11 @@ panfrost_batch_draw_wallpaper(struct panfrost_batch *batch)
         damage.maxx = MIN2(batch->maxx,
                            rsrc->damage.biggest_rect.x +
                            rsrc->damage.biggest_rect.width);
+        damage.maxx = MAX2(damage.maxx, damage.minx);
         damage.maxy = MIN2(batch->maxy,
                            rsrc->damage.biggest_rect.y +
                            rsrc->damage.biggest_rect.height);
+        damage.maxy = MAX2(damage.maxy, damage.miny);
 
         /* One damage rectangle means we can end up with at most 4 reload
          * regions:
@@ -816,8 +840,7 @@ panfrost_batch_draw_wallpaper(struct panfrost_batch *batch)
 static int
 panfrost_batch_submit_ioctl(struct panfrost_batch *batch,
                             mali_ptr first_job_desc,
-                            uint32_t reqs,
-                            struct mali_job_descriptor_header *header)
+                            uint32_t reqs)
 {
         struct panfrost_context *ctx = batch->ctx;
         struct pipe_context *gallium = (struct pipe_context *) ctx;
@@ -827,7 +850,7 @@ panfrost_batch_submit_ioctl(struct panfrost_batch *batch,
         bool is_fragment_shader;
         int ret;
 
-        is_fragment_shader = (reqs & PANFROST_JD_REQ_FS) && batch->first_job.gpu;
+        is_fragment_shader = (reqs & PANFROST_JD_REQ_FS) && batch->first_job;
         if (is_fragment_shader)
                 submit.in_sync_count = 1;
         else
@@ -883,36 +906,19 @@ panfrost_batch_submit_ioctl(struct panfrost_batch *batch,
         free(in_syncs);
 
         if (ret) {
-                fprintf(stderr, "Error submitting: %m\n");
+                DBG("Error submitting: %m\n");
                 return errno;
         }
 
-        if (pan_debug & PAN_DBG_SYNC) {
-                u32 status;
-
-                /* Wait so we can get errors reported back */
-                drmSyncobjWait(screen->fd, &batch->out_sync->syncobj, 1,
-                               INT64_MAX, 0, NULL);
-
-                status = header->exception_status;
-
-                if (status && status != 0x1) {
-                        fprintf(stderr, "Job %" PRIx64 " failed: source ID: 0x%x access: %s exception: 0x%x (exception_status 0x%x) fault_pointer 0x%" PRIx64 " \n",
-                               first_job_desc,
-                               (status >> 16) & 0xFFFF,
-                               pandecode_exception_access((status >> 8) & 0x3),
-                               status  & 0xFF,
-                               status,
-                               header->fault_pointer);
-                }
-        }
-
         /* Trace the job if we're doing that */
-        if (pan_debug & PAN_DBG_TRACE) {
+        if (pan_debug & (PAN_DBG_TRACE | PAN_DBG_SYNC)) {
                 /* Wait so we can get errors reported back */
                 drmSyncobjWait(screen->fd, &batch->out_sync->syncobj, 1,
                                INT64_MAX, 0, NULL);
-                pandecode_jc(submit.jc, FALSE, screen->gpu_id);
+
+                /* Trace gets priority over sync */
+                bool minimal = !(pan_debug & PAN_DBG_TRACE);
+                pandecode_jc(submit.jc, FALSE, screen->gpu_id, minimal);
         }
 
         return 0;
@@ -921,20 +927,17 @@ panfrost_batch_submit_ioctl(struct panfrost_batch *batch,
 static int
 panfrost_batch_submit_jobs(struct panfrost_batch *batch)
 {
-        bool has_draws = batch->first_job.gpu;
-        struct mali_job_descriptor_header *header;
+        bool has_draws = batch->first_job;
         int ret = 0;
 
         if (has_draws) {
-                header = (struct mali_job_descriptor_header *)batch->first_job.cpu;
-                ret = panfrost_batch_submit_ioctl(batch, batch->first_job.gpu, 0, header);
+                ret = panfrost_batch_submit_ioctl(batch, batch->first_job, 0);
                 assert(!ret);
         }
 
-        if (batch->first_tiler.gpu || batch->clear) {
-                mali_ptr fragjob = panfrost_fragment_job(batch, has_draws, &header);
-
-                ret = panfrost_batch_submit_ioctl(batch, fragjob, PANFROST_JD_REQ_FS, header);
+        if (batch->tiler_dep || batch->clear) {
+                mali_ptr fragjob = panfrost_fragment_job(batch, has_draws);
+                ret = panfrost_batch_submit_ioctl(batch, fragjob, PANFROST_JD_REQ_FS);
                 assert(!ret);
         }
 
@@ -956,7 +959,7 @@ panfrost_batch_submit(struct panfrost_batch *batch)
         int ret;
 
         /* Nothing to do! */
-        if (!batch->last_job.gpu && !batch->clear) {
+        if (!batch->first_job && !batch->clear) {
                 /* Mark the fence as signaled so the fence logic does not try
                  * to wait on it.
                  */
@@ -969,7 +972,7 @@ panfrost_batch_submit(struct panfrost_batch *batch)
         /* Now that all draws are in, we can finally prepare the
          * FBD for the batch */
 
-        if (batch->framebuffer.gpu && batch->first_job.gpu) {
+        if (batch->framebuffer.gpu && batch->first_job) {
                 struct panfrost_context *ctx = batch->ctx;
                 struct pipe_context *gallium = (struct pipe_context *) ctx;
                 struct panfrost_screen *screen = pan_screen(gallium->screen);
@@ -980,12 +983,12 @@ panfrost_batch_submit(struct panfrost_batch *batch)
                         panfrost_attach_mfbd(batch, ~0);
         }
 
-        panfrost_scoreboard_link_batch(batch);
+        panfrost_scoreboard_initialize_tiler(batch);
 
         ret = panfrost_batch_submit_jobs(batch);
 
         if (ret)
-                fprintf(stderr, "panfrost_batch_submit failed: %d\n", ret);
+                DBG("panfrost_batch_submit failed: %d\n", ret);
 
         /* We must reset the damage info of our render targets here even
          * though a damage reset normally happens when the DRI layer swaps

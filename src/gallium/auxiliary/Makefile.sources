@@ -224,7 +224,6 @@ C_SOURCES := \
 	util/u_debug_flush.h \
 	util/u_debug_image.c \
 	util/u_debug_image.h \
-	util/u_debug_memory.c \
 	util/u_debug_refcnt.c \
 	util/u_debug_refcnt.h \
 	util/u_debug_stack.c \
@@ -262,6 +261,8 @@ C_SOURCES := \
 	util/u_inlines.h \
 	util/u_linear.c \
 	util/u_linear.h \
+	util/u_live_shader_cache.c \
+	util/u_live_shader_cache.h \
 	util/u_log.c \
 	util/u_log.h \
 	util/u_network.c \
@@ -293,8 +294,6 @@ C_SOURCES := \
 	util/u_suballoc.h \
 	util/u_surface.c \
 	util/u_surface.h \
-	util/u_surfaces.c \
-	util/u_surfaces.h \
 	util/u_tests.c \
 	util/u_tests.h \
 	util/u_texture.c \

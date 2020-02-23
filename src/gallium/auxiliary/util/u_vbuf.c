@@ -255,11 +255,11 @@ static const struct {
    { PIPE_FORMAT_R8G8B8A8_SSCALED,     PIPE_FORMAT_R32G32B32A32_FLOAT },
 };
 
-boolean u_vbuf_get_caps(struct pipe_screen *screen, struct u_vbuf_caps *caps,
-                        unsigned flags)
+void u_vbuf_get_caps(struct pipe_screen *screen, struct u_vbuf_caps *caps)
 {
    unsigned i;
-   boolean fallback = FALSE;
+
+   memset(caps, 0, sizeof(*caps));
 
    /* I'd rather have a bitfield of which formats are supported and a static
     * table of the translations indexed by format, but since we don't have C99
@@ -275,7 +275,7 @@ boolean u_vbuf_get_caps(struct pipe_screen *screen, struct u_vbuf_caps *caps,
       if (!screen->is_format_supported(screen, format, PIPE_BUFFER, 0, 0,
                                        PIPE_BIND_VERTEX_BUFFER)) {
          caps->format_translation[format] = vbuf_format_fallbacks[i].to;
-         fallback = TRUE;
+         caps->fallback_always = true;
       }
    }
 
@@ -295,16 +295,15 @@ boolean u_vbuf_get_caps(struct pipe_screen *screen, struct u_vbuf_caps *caps,
 
    /* OpenGL 2.0 requires a minimum of 16 vertex buffers */
    if (caps->max_vertex_buffers < 16)
-      fallback = TRUE;
+      caps->fallback_always = true;
 
    if (!caps->buffer_offset_unaligned ||
        !caps->buffer_stride_unaligned ||
-       !caps->velem_src_offset_unaligned ||
-       (!(flags & U_VBUF_FLAG_NO_USER_VBOS) && !caps->user_vertex_buffers)) {
-      fallback = TRUE;
-   }
+       !caps->velem_src_offset_unaligned)
+      caps->fallback_always = true;
 
-   return fallback;
+   if (!caps->fallback_always && !caps->user_vertex_buffers)
+      caps->fallback_only_for_user_vbuffers = true;
 }
 
 struct u_vbuf *
@@ -372,6 +371,11 @@ void u_vbuf_set_vertex_elements(struct u_vbuf *mgr, unsigned count,
                                const struct pipe_vertex_element *states)
 {
    mgr->ve = u_vbuf_set_vertex_elements_internal(mgr, count, states);
+}
+
+void u_vbuf_unset_vertex_elements(struct u_vbuf *mgr)
+{
+   mgr->ve = NULL;
 }
 
 void u_vbuf_destroy(struct u_vbuf *mgr)
@@ -1428,8 +1432,8 @@ void u_vbuf_draw_vbo(struct u_vbuf *mgr, const struct pipe_draw_info *info)
           * performance. */
          if (!info->indirect &&
              !new_info.primitive_restart &&
-             num_vertices > new_info.count*2 &&
-             num_vertices - new_info.count > 32 &&
+             num_vertices > new_info.count * 4 &&
+             new_info.count > 32 &&
              !u_vbuf_mapping_vertex_buffer_blocks(mgr)) {
             unroll_indices = TRUE;
             user_vb_mask &= ~(mgr->nonzero_stride_vb_mask &

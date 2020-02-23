@@ -1361,11 +1361,22 @@ isl_calc_phys_total_extent_el(const struct isl_device *dev,
 }
 
 static uint32_t
-isl_calc_row_pitch_alignment(const struct isl_surf_init_info *surf_info,
+isl_calc_row_pitch_alignment(const struct isl_device *dev,
+                             const struct isl_surf_init_info *surf_info,
                              const struct isl_tile_info *tile_info)
 {
-   if (tile_info->tiling != ISL_TILING_LINEAR)
+   if (tile_info->tiling != ISL_TILING_LINEAR) {
+      /* According to BSpec: 44930, Gen12's CCS-compressed surface pitches must
+       * be 512B-aligned. CCS is only support on Y tilings.
+       */
+      if (ISL_DEV_GEN(dev) >= 12 &&
+          isl_format_supports_ccs_e(dev->info, surf_info->format) &&
+          tile_info->tiling != ISL_TILING_X) {
+         return isl_align(tile_info->phys_extent_B.width, 512);
+      }
+
       return tile_info->phys_extent_B.width;
+   }
 
    /* From the Broadwel PRM >> Volume 2d: Command Reference: Structures >>
     * RENDER_SURFACE_STATE Surface Pitch (p349):
@@ -1423,8 +1434,12 @@ isl_calc_tiled_min_row_pitch(const struct isl_device *dev,
       isl_align_div(phys_total_el->w * tile_el_scale,
                     tile_info->logical_extent_el.width);
 
-   assert(alignment_B == tile_info->phys_extent_B.width);
-   return total_w_tl * tile_info->phys_extent_B.width;
+   /* In some cases the alignment of the pitch might be > to the tile size
+    * (for example Gen12 CCS requires 512B alignment while the tile's width
+    * can be 128B), so align the row pitch to the alignment.
+    */
+   assert(alignment_B >= tile_info->phys_extent_B.width);
+   return isl_align(total_w_tl * tile_info->phys_extent_B.width, alignment_B);
 }
 
 static uint32_t
@@ -1468,7 +1483,7 @@ isl_calc_row_pitch(const struct isl_device *dev,
                    uint32_t *out_row_pitch_B)
 {
    uint32_t alignment_B =
-      isl_calc_row_pitch_alignment(surf_info, tile_info);
+      isl_calc_row_pitch_alignment(dev, surf_info, tile_info);
 
    const uint32_t min_row_pitch_B =
       isl_calc_min_row_pitch(dev, surf_info, tile_info, phys_total_el,
@@ -1483,16 +1498,7 @@ isl_calc_row_pitch(const struct isl_device *dev,
    }
 
    const uint32_t row_pitch_B =
-      surf_info->row_pitch_B != 0 ?
-         surf_info->row_pitch_B :
-      /* According to BSpec: 44930, Gen12's CCS-compressed surface pitches
-       * must be 512B-aligned.
-       */
-      ISL_DEV_GEN(dev) >= 12 &&
-      isl_format_supports_ccs_e(dev->info, surf_info->format) ?
-         isl_align(min_row_pitch_B, 512) :
-      /* Else */
-         min_row_pitch_B;
+      surf_info->row_pitch_B != 0 ? surf_info->row_pitch_B : min_row_pitch_B;
 
    const uint32_t row_pitch_tl = row_pitch_B / tile_info->phys_extent_B.width;
 
@@ -1980,6 +1986,19 @@ isl_surf_get_ccs_surf(const struct isl_device *dev,
       return false;
    }
 
+   /* GEN:BUG:1207137018
+    *
+    * TODO: implement following workaround currently covered by the restriction
+    * above. If following conditions are met:
+    *
+    *    - RENDER_SURFACE_STATE.Surface Type == 3D
+    *    - RENDER_SURFACE_STATE.Auxiliary Surface Mode != AUX_NONE
+    *    - RENDER_SURFACE_STATE.Tiled ResourceMode is TYF or TYS
+    *
+    * Set the value of RENDER_SURFACE_STATE.Mip Tail Start LOD to a mip that
+    * larger than those present in the surface (i.e. 15)
+    */
+
    /* TODO: More conditions where it can fail. */
 
    /* From the Ivy Bridge PRM, Vol2 Part1 11.7 "MCS Buffer for Render
@@ -2000,6 +2019,16 @@ isl_surf_get_ccs_surf(const struct isl_device *dev,
       /* TODO: Handle the other tiling formats */
       if (surf->tiling != ISL_TILING_Y0)
          return false;
+
+      /* BSpec 44930:
+       *
+       *    Linear CCS is only allowed for Untyped Buffers but only via HDC
+       *    Data-Port messages.
+       *
+       * We probably want to limit linear CCS to storage usage and check that
+       * the shaders actually use only untyped messages.
+       */
+      assert(surf->tiling != ISL_TILING_LINEAR);
 
       switch (isl_format_get_layout(surf->format)->bpb) {
       case 8:     ccs_format = ISL_FORMAT_GEN12_CCS_8BPP_Y0;    break;
@@ -2150,7 +2179,7 @@ void
 isl_buffer_fill_state_s(const struct isl_device *dev, void *state,
                         const struct isl_buffer_fill_state_info *restrict info)
 {
-   isl_genX_call(dev, buffer_fill_state_s, state, info);
+   isl_genX_call(dev, buffer_fill_state_s, dev, state, info);
 }
 
 void
@@ -2501,6 +2530,56 @@ isl_surf_get_image_offset_B_tile_sa(const struct isl_surf *surf,
 }
 
 void
+isl_surf_get_image_range_B_tile(const struct isl_surf *surf,
+                                uint32_t level,
+                                uint32_t logical_array_layer,
+                                uint32_t logical_z_offset_px,
+                                uint32_t *start_tile_B,
+                                uint32_t *end_tile_B)
+{
+   uint32_t start_x_offset_el, start_y_offset_el;
+   isl_surf_get_image_offset_el(surf, level, logical_array_layer,
+                                logical_z_offset_px,
+                                &start_x_offset_el,
+                                &start_y_offset_el);
+
+   /* Compute the size of the subimage in surface elements */
+   const uint32_t subimage_w_sa = isl_minify(surf->phys_level0_sa.w, level);
+   const uint32_t subimage_h_sa = isl_minify(surf->phys_level0_sa.h, level);
+   const struct isl_format_layout *fmtl = isl_format_get_layout(surf->format);
+   const uint32_t subimage_w_el = isl_align_div_npot(subimage_w_sa, fmtl->bw);
+   const uint32_t subimage_h_el = isl_align_div_npot(subimage_h_sa, fmtl->bh);
+
+   /* Find the last pixel */
+   uint32_t end_x_offset_el = start_x_offset_el + subimage_w_el - 1;
+   uint32_t end_y_offset_el = start_y_offset_el + subimage_h_el - 1;
+
+   UNUSED uint32_t x_offset_el, y_offset_el;
+   isl_tiling_get_intratile_offset_el(surf->tiling, fmtl->bpb,
+                                      surf->row_pitch_B,
+                                      start_x_offset_el,
+                                      start_y_offset_el,
+                                      start_tile_B,
+                                      &x_offset_el,
+                                      &y_offset_el);
+
+   isl_tiling_get_intratile_offset_el(surf->tiling, fmtl->bpb,
+                                      surf->row_pitch_B,
+                                      end_x_offset_el,
+                                      end_y_offset_el,
+                                      end_tile_B,
+                                      &x_offset_el,
+                                      &y_offset_el);
+
+   /* We want the range we return to be exclusive but the tile containing the
+    * last pixel (what we just calculated) is inclusive.  Add one.
+    */
+   (*end_tile_B)++;
+
+   assert(*end_tile_B <= surf->size_B);
+}
+
+void
 isl_surf_get_image_surf(const struct isl_device *dev,
                         const struct isl_surf *surf,
                         uint32_t level,
@@ -2760,4 +2839,76 @@ isl_swizzle_invert(struct isl_swizzle swizzle)
       chans[swizzle.r - ISL_CHANNEL_SELECT_RED] = ISL_CHANNEL_SELECT_RED;
 
    return (struct isl_swizzle) { chans[0], chans[1], chans[2], chans[3] };
+}
+
+uint8_t
+isl_format_get_aux_map_encoding(enum isl_format format)
+{
+   switch(format) {
+   case ISL_FORMAT_R32G32B32A32_FLOAT: return 0x11;
+   case ISL_FORMAT_R32G32B32X32_FLOAT: return 0x11;
+   case ISL_FORMAT_R32G32B32A32_SINT: return 0x12;
+   case ISL_FORMAT_R32G32B32A32_UINT: return 0x13;
+   case ISL_FORMAT_R16G16B16A16_UNORM: return 0x14;
+   case ISL_FORMAT_R16G16B16A16_SNORM: return 0x15;
+   case ISL_FORMAT_R16G16B16A16_SINT: return 0x16;
+   case ISL_FORMAT_R16G16B16A16_UINT: return 0x17;
+   case ISL_FORMAT_R16G16B16A16_FLOAT: return 0x10;
+   case ISL_FORMAT_R16G16B16X16_FLOAT: return 0x10;
+   case ISL_FORMAT_R32G32_FLOAT: return 0x11;
+   case ISL_FORMAT_R32G32_SINT: return 0x12;
+   case ISL_FORMAT_R32G32_UINT: return 0x13;
+   case ISL_FORMAT_B8G8R8A8_UNORM: return 0xA;
+   case ISL_FORMAT_B8G8R8X8_UNORM: return 0xA;
+   case ISL_FORMAT_B8G8R8A8_UNORM_SRGB: return 0xA;
+   case ISL_FORMAT_B8G8R8X8_UNORM_SRGB: return 0xA;
+   case ISL_FORMAT_R10G10B10A2_UNORM: return 0x18;
+   case ISL_FORMAT_R10G10B10A2_UNORM_SRGB: return 0x18;
+   case ISL_FORMAT_R10G10B10_FLOAT_A2_UNORM: return 0x19;
+   case ISL_FORMAT_R10G10B10A2_UINT: return 0x1A;
+   case ISL_FORMAT_R8G8B8A8_UNORM: return 0xA;
+   case ISL_FORMAT_R8G8B8A8_UNORM_SRGB: return 0xA;
+   case ISL_FORMAT_R8G8B8A8_SNORM: return 0x1B;
+   case ISL_FORMAT_R8G8B8A8_SINT: return 0x1C;
+   case ISL_FORMAT_R8G8B8A8_UINT: return 0x1D;
+   case ISL_FORMAT_R16G16_UNORM: return 0x14;
+   case ISL_FORMAT_R16G16_SNORM: return 0x15;
+   case ISL_FORMAT_R16G16_SINT: return 0x16;
+   case ISL_FORMAT_R16G16_UINT: return 0x17;
+   case ISL_FORMAT_R16G16_FLOAT: return 0x10;
+   case ISL_FORMAT_B10G10R10A2_UNORM: return 0x18;
+   case ISL_FORMAT_B10G10R10A2_UNORM_SRGB: return 0x18;
+   case ISL_FORMAT_R11G11B10_FLOAT: return 0x1E;
+   case ISL_FORMAT_R32_SINT: return 0x12;
+   case ISL_FORMAT_R32_UINT: return 0x13;
+   case ISL_FORMAT_R32_FLOAT: return 0x11;
+   case ISL_FORMAT_R24_UNORM_X8_TYPELESS: return 0x11;
+   case ISL_FORMAT_B5G6R5_UNORM: return 0xA;
+   case ISL_FORMAT_B5G6R5_UNORM_SRGB: return 0xA;
+   case ISL_FORMAT_B5G5R5A1_UNORM: return 0xA;
+   case ISL_FORMAT_B5G5R5A1_UNORM_SRGB: return 0xA;
+   case ISL_FORMAT_B4G4R4A4_UNORM: return 0xA;
+   case ISL_FORMAT_B4G4R4A4_UNORM_SRGB: return 0xA;
+   case ISL_FORMAT_R8G8_UNORM: return 0xA;
+   case ISL_FORMAT_R8G8_SNORM: return 0x1B;
+   case ISL_FORMAT_R8G8_SINT: return 0x1C;
+   case ISL_FORMAT_R8G8_UINT: return 0x1D;
+   case ISL_FORMAT_R16_UNORM: return 0x14;
+   case ISL_FORMAT_R16_SNORM: return 0x15;
+   case ISL_FORMAT_R16_SINT: return 0x16;
+   case ISL_FORMAT_R16_UINT: return 0x17;
+   case ISL_FORMAT_R16_FLOAT: return 0x10;
+   case ISL_FORMAT_B5G5R5X1_UNORM: return 0xA;
+   case ISL_FORMAT_B5G5R5X1_UNORM_SRGB: return 0xA;
+   case ISL_FORMAT_A1B5G5R5_UNORM: return 0xA;
+   case ISL_FORMAT_A4B4G4R4_UNORM: return 0xA;
+   case ISL_FORMAT_R8_UNORM: return 0xA;
+   case ISL_FORMAT_R8_SNORM: return 0x1B;
+   case ISL_FORMAT_R8_SINT: return 0x1C;
+   case ISL_FORMAT_R8_UINT: return 0x1D;
+   case ISL_FORMAT_A8_UNORM: return 0xA;
+   default:
+      unreachable("Unsupported aux-map format!");
+      return 0;
+   }
 }

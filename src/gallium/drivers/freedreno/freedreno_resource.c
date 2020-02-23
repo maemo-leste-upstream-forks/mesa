@@ -223,11 +223,7 @@ fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
 	/* TODO valid_buffer_range?? */
 	swap(rsc->bo,        shadow->bo);
 	swap(rsc->write_batch,   shadow->write_batch);
-	for (int level = 0; level <= prsc->last_level; level++) {
-		swap(rsc->layout.slices[level], shadow->layout.slices[level]);
-		swap(rsc->layout.ubwc_slices[level], shadow->layout.ubwc_slices[level]);
-	}
-	swap(rsc->layout.ubwc_size, shadow->layout.ubwc_size);
+	swap(rsc->layout, shadow->layout);
 	rsc->seqno = p_atomic_inc_return(&ctx->screen->rsc_seqno);
 
 	/* at this point, the newly created shadow buffer is not referenced
@@ -269,7 +265,10 @@ fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
 		set_box(box.height, u_minify(prsc->height0, l));
 		set_box(box.depth,  u_minify(prsc->depth0, l));
 
-		do_blit(ctx, &blit, fallback);
+		for (int i = 0; i < prsc->array_size; i++) {
+			set_box(box.z, i);
+			do_blit(ctx, &blit, fallback);
+		}
 	}
 
 	/* deal w/ current level specially, since we might need to split
@@ -450,15 +449,14 @@ flush_resource(struct fd_context *ctx, struct fd_resource *rsc, unsigned usage)
 		mtx_unlock(&ctx->screen->lock);
 
 		foreach_batch(batch, &ctx->screen->batch_cache, batch_mask)
-			fd_batch_flush(batch, false);
+			fd_batch_flush(batch);
 
 		foreach_batch(batch, &ctx->screen->batch_cache, batch_mask) {
-			fd_batch_sync(batch);
 			fd_batch_reference(&batches[batch->idx], NULL);
 		}
 		assert(rsc->batch_mask == 0);
 	} else if (write_batch) {
-		fd_batch_flush(write_batch, true);
+		fd_batch_flush(write_batch);
 	}
 
 	fd_batch_reference(&write_batch, NULL);
@@ -559,21 +557,6 @@ fd_resource_transfer_map(struct pipe_context *pctx,
 
 			if (usage & PIPE_TRANSFER_READ) {
 				fd_blit_to_staging(ctx, trans);
-
-				struct fd_batch *batch = NULL;
-
-				fd_context_lock(ctx);
-				fd_batch_reference_locked(&batch, staging_rsc->write_batch);
-				fd_context_unlock(ctx);
-
-				/* we can't fd_bo_cpu_prep() until the blit to staging
-				 * is submitted to kernel.. in that case write_batch
-				 * wouldn't be NULL yet:
-				 */
-				if (batch) {
-					fd_batch_sync(batch);
-					fd_batch_reference(&batch, NULL);
-				}
 
 				fd_bo_cpu_prep(staging_rsc->bo, ctx->pipe,
 						DRM_FREEDRENO_PREP_READ);
@@ -744,7 +727,7 @@ fd_resource_modifier(struct fd_resource *rsc)
 	if (!rsc->layout.tile_mode)
 		return DRM_FORMAT_MOD_LINEAR;
 
-	if (rsc->layout.ubwc_size)
+	if (rsc->layout.ubwc_layer_size)
 		return DRM_FORMAT_MOD_QCOM_COMPRESSED;
 
 	/* TODO invent a modifier for tiled but not UBWC buffers: */
@@ -994,6 +977,8 @@ fd_resource_create_with_modifiers(struct pipe_screen *pscreen,
 
 	rsc->internal_format = format;
 
+	rsc->layout.ubwc = rsc->layout.tile_mode && is_a6xx(screen) && allow_ubwc;
+
 	if (prsc->target == PIPE_BUFFER) {
 		assert(prsc->format == PIPE_FORMAT_R8_UNORM);
 		size = prsc->width0;
@@ -1001,9 +986,6 @@ fd_resource_create_with_modifiers(struct pipe_screen *pscreen,
 	} else {
 		size = screen->setup_slices(rsc);
 	}
-
-	if (allow_ubwc && screen->fill_ubwc_buffer_sizes && rsc->layout.tile_mode)
-		size += screen->fill_ubwc_buffer_sizes(rsc);
 
 	/* special case for hw-query buffer, which we need to allocate before we
 	 * know the size:
@@ -1014,10 +996,14 @@ fd_resource_create_with_modifiers(struct pipe_screen *pscreen,
 		return prsc;
 	}
 
-	if (rsc->layout.layer_first) {
+	/* Set the layer size if the (non-a6xx) backend hasn't done so. */
+	if (rsc->layout.layer_first && !rsc->layout.layer_size) {
 		rsc->layout.layer_size = align(size, 4096);
 		size = rsc->layout.layer_size * prsc->array_size;
 	}
+
+	if (fd_mesa_debug & FD_DBG_LAYOUT)
+		fdl_dump_layout(&rsc->layout);
 
 	realloc_bo(rsc, size);
 	if (!rsc->bo)
@@ -1035,26 +1021,6 @@ fd_resource_create(struct pipe_screen *pscreen,
 {
 	const uint64_t mod = DRM_FORMAT_MOD_INVALID;
 	return fd_resource_create_with_modifiers(pscreen, tmpl, &mod, 1);
-}
-
-static bool
-is_supported_modifier(struct pipe_screen *pscreen, enum pipe_format pfmt,
-		uint64_t mod)
-{
-	int count;
-
-	/* Get the count of supported modifiers: */
-	pscreen->query_dmabuf_modifiers(pscreen, pfmt, 0, NULL, NULL, &count);
-
-	/* Get the supported modifiers: */
-	uint64_t modifiers[count];
-	pscreen->query_dmabuf_modifiers(pscreen, pfmt, count, modifiers, NULL, &count);
-
-	for (int i = 0; i < count; i++)
-		if (modifiers[i] == mod)
-			return true;
-
-	return false;
 }
 
 /**
@@ -1105,20 +1071,10 @@ fd_resource_from_handle(struct pipe_screen *pscreen,
 			(slice->pitch & (pitchalign - 1)))
 		goto fail;
 
-	if (handle->modifier == DRM_FORMAT_MOD_QCOM_COMPRESSED) {
-		if (!is_supported_modifier(pscreen, tmpl->format,
-				DRM_FORMAT_MOD_QCOM_COMPRESSED)) {
-			DBG("bad modifier: %"PRIx64, handle->modifier);
-			goto fail;
-		}
-		debug_assert(screen->fill_ubwc_buffer_sizes);
-		screen->fill_ubwc_buffer_sizes(rsc);
-	} else if (handle->modifier &&
-			(handle->modifier != DRM_FORMAT_MOD_INVALID)) {
-		goto fail;
-	}
-
 	assert(rsc->layout.cpp);
+
+	if (screen->layout_resource_for_modifier(rsc, handle->modifier) < 0)
+		goto fail;
 
 	if (screen->ro) {
 		rsc->scanout =
@@ -1221,6 +1177,21 @@ static const struct u_transfer_vtbl transfer_vtbl = {
 		.get_stencil              = fd_resource_get_stencil,
 };
 
+static const uint64_t supported_modifiers[] = {
+	DRM_FORMAT_MOD_LINEAR,
+};
+
+static int
+fd_layout_resource_for_modifier(struct fd_resource *rsc, uint64_t modifier)
+{
+	switch (modifier) {
+	case DRM_FORMAT_MOD_LINEAR:
+		return 0;
+	default:
+		return -1;
+	}
+}
+
 void
 fd_resource_screen_init(struct pipe_screen *pscreen)
 {
@@ -1241,6 +1212,12 @@ fd_resource_screen_init(struct pipe_screen *pscreen)
 
 	if (!screen->setup_slices)
 		screen->setup_slices = fd_setup_slices;
+	if (!screen->layout_resource_for_modifier)
+		screen->layout_resource_for_modifier = fd_layout_resource_for_modifier;
+	if (!screen->supported_modifiers) {
+		screen->supported_modifiers = supported_modifiers;
+		screen->num_supported_modifiers = ARRAY_SIZE(supported_modifiers);
+	}
 }
 
 static void

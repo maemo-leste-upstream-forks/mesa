@@ -256,10 +256,22 @@ tu_physical_device_init(struct tu_physical_device *device,
    sprintf(device->name, "FD%d", device->gpu_id);
 
    switch (device->gpu_id) {
+   case 618:
+      device->tile_align_w = 64;
+      device->tile_align_h = 16;
+      device->magic.RB_UNKNOWN_8E04_blit = 0x00100000;
+      device->magic.RB_CCU_CNTL_gmem     = 0x3e400004;
+      device->magic.PC_UNKNOWN_9805 = 0x0;
+      device->magic.SP_UNKNOWN_A0F8 = 0x0;
+      break;
    case 630:
    case 640:
       device->tile_align_w = 64;
       device->tile_align_h = 16;
+      device->magic.RB_UNKNOWN_8E04_blit = 0x01000000;
+      device->magic.RB_CCU_CNTL_gmem     = 0x7c400004;
+      device->magic.PC_UNKNOWN_9805 = 0x1;
+      device->magic.SP_UNKNOWN_A0F8 = 0x1;
       break;
    default:
       result = vk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
@@ -355,6 +367,8 @@ static const struct debug_control tu_debug_options[] = {
    { "nir", TU_DEBUG_NIR },
    { "ir3", TU_DEBUG_IR3 },
    { "nobin", TU_DEBUG_NOBIN },
+   { "sysmem", TU_DEBUG_SYSMEM },
+   { "forcebin", TU_DEBUG_FORCEBIN },
    { NULL, 0 }
 };
 
@@ -585,7 +599,7 @@ tu_GetPhysicalDeviceFeatures(VkPhysicalDevice physicalDevice,
       .textureCompressionETC2 = true,
       .textureCompressionASTC_LDR = true,
       .textureCompressionBC = true,
-      .occlusionQueryPrecise = false,
+      .occlusionQueryPrecise = true,
       .pipelineStatisticsQuery = false,
       .vertexPipelineStoresAndAtomics = false,
       .fragmentStoresAndAtomics = false,
@@ -786,7 +800,7 @@ tu_GetPhysicalDeviceProperties(VkPhysicalDevice physicalDevice,
       .viewportBoundsRange = { INT16_MIN, INT16_MAX },
       .viewportSubPixelBits = 8,
       .minMemoryMapAlignment = 4096, /* A page */
-      .minTexelBufferOffsetAlignment = 1,
+      .minTexelBufferOffsetAlignment = 64,
       .minUniformBufferOffsetAlignment = 4,
       .minStorageBufferOffsetAlignment = 4,
       .minTexelOffset = -32,
@@ -1074,7 +1088,7 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
          8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
       if (!device->queues[qfi]) {
          result = VK_ERROR_OUT_OF_HOST_MEMORY;
-         goto fail;
+         goto fail_queues;
       }
 
       memset(device->queues[qfi], 0,
@@ -1086,13 +1100,27 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
          result = tu_queue_init(device, &device->queues[qfi][q], qfi, q,
                                 queue_create->flags);
          if (result != VK_SUCCESS)
-            goto fail;
+            goto fail_queues;
       }
    }
 
    device->compiler = ir3_compiler_create(NULL, physical_device->gpu_id);
    if (!device->compiler)
-      goto fail;
+      goto fail_queues;
+
+#define VSC_DATA_SIZE(pitch)  ((pitch) * 32 + 0x100)  /* extra size to store VSC_SIZE */
+#define VSC_DATA2_SIZE(pitch) ((pitch) * 32)
+
+   device->vsc_data_pitch = 0x440 * 4;
+   device->vsc_data2_pitch = 0x1040 * 4;
+
+   result = tu_bo_init_new(device, &device->vsc_data, VSC_DATA_SIZE(device->vsc_data_pitch));
+   if (result != VK_SUCCESS)
+      goto fail_vsc_data;
+
+   result = tu_bo_init_new(device, &device->vsc_data2, VSC_DATA2_SIZE(device->vsc_data2_pitch));
+   if (result != VK_SUCCESS)
+      goto fail_vsc_data2;
 
    VkPipelineCacheCreateInfo ci;
    ci.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
@@ -1104,23 +1132,29 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
    result =
       tu_CreatePipelineCache(tu_device_to_handle(device), &ci, NULL, &pc);
    if (result != VK_SUCCESS)
-      goto fail;
+      goto fail_pipeline_cache;
 
    device->mem_cache = tu_pipeline_cache_from_handle(pc);
 
    *pDevice = tu_device_to_handle(device);
    return VK_SUCCESS;
 
-fail:
+fail_pipeline_cache:
+   tu_bo_finish(device, &device->vsc_data2);
+
+fail_vsc_data2:
+   tu_bo_finish(device, &device->vsc_data);
+
+fail_vsc_data:
+   ralloc_free(device->compiler);
+
+fail_queues:
    for (unsigned i = 0; i < TU_MAX_QUEUE_FAMILIES; i++) {
       for (unsigned q = 0; q < device->queue_count[i]; q++)
          tu_queue_finish(&device->queues[i][q]);
       if (device->queue_count[i])
          vk_free(&device->alloc, device->queues[i]);
    }
-
-   if (device->compiler)
-      ralloc_free(device->compiler);
 
    vk_free(&device->alloc, device);
    return result;
@@ -1133,6 +1167,9 @@ tu_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
 
    if (!device)
       return;
+
+   tu_bo_finish(device, &device->vsc_data);
+   tu_bo_finish(device, &device->vsc_data2);
 
    for (unsigned i = 0; i < TU_MAX_QUEUE_FAMILIES; i++) {
       for (unsigned q = 0; q < device->queue_count[i]; q++)
@@ -1761,6 +1798,8 @@ tu_DestroyEvent(VkDevice _device,
 
    if (!event)
       return;
+
+   tu_bo_finish(device, &event->bo);
    vk_free2(&device->alloc, pAllocator, event);
 }
 
@@ -1926,6 +1965,12 @@ tu6_tex_filter(VkFilter filter, unsigned aniso)
    }
 }
 
+static inline enum adreno_compare_func
+tu6_compare_func(VkCompareOp op)
+{
+   return (enum adreno_compare_func) op;
+}
+
 static void
 tu_init_sampler(struct tu_device *device,
                 struct tu_sampler *sampler,
@@ -1950,7 +1995,8 @@ tu_init_sampler(struct tu_device *device,
       COND(pCreateInfo->unnormalizedCoordinates, A6XX_TEX_SAMP_1_UNNORM_COORDS) |
       A6XX_TEX_SAMP_1_MIN_LOD(pCreateInfo->minLod) |
       A6XX_TEX_SAMP_1_MAX_LOD(pCreateInfo->maxLod) |
-      COND(pCreateInfo->compareEnable, A6XX_TEX_SAMP_1_COMPARE_FUNC(pCreateInfo->compareOp));
+      COND(pCreateInfo->compareEnable,
+           A6XX_TEX_SAMP_1_COMPARE_FUNC(tu6_compare_func(pCreateInfo->compareOp)));
    sampler->state[2] = 0;
    sampler->state[3] = 0;
 

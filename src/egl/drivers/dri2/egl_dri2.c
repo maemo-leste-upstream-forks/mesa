@@ -66,6 +66,7 @@
 #include "util/u_vector.h"
 #include "mapi/glapi/glapi.h"
 #include "util/bitscan.h"
+#include "util/u_math.h"
 
 /* Additional definitions not yet in the drm_fourcc.h.
  */
@@ -162,15 +163,96 @@ dri2_get_pbuffer_drawable_info(__DRIdrawable * draw,
    *h = dri2_surf->base.Height;
 }
 
-/* HACK: technically we should have swrast_null, instead of these. We
- * get away since only pbuffers are supported, thus the callbacks are
- * unused.
+static int
+dri2_get_bytes_per_pixel(struct dri2_egl_surface *dri2_surf)
+{
+   const int depth = dri2_surf->base.Config->BufferSize;
+   return depth ? util_next_power_of_two(depth / 8) : 0;
+}
+
+static void
+dri2_put_image(__DRIdrawable * draw, int op,
+               int x, int y, int w, int h,
+               char *data, void *loaderPrivate)
+{
+   struct dri2_egl_surface *dri2_surf = loaderPrivate;
+   const int bpp = dri2_get_bytes_per_pixel(dri2_surf);
+   const int width = dri2_surf->base.Width;
+   const int height = dri2_surf->base.Height;
+   const int dst_stride = width*bpp;
+   const int src_stride = w*bpp;
+   const int x_offset = x*bpp;
+   int copy_width = src_stride;
+
+   if (!dri2_surf->swrast_device_buffer)
+      dri2_surf->swrast_device_buffer = malloc(height*dst_stride);
+
+   if (dri2_surf->swrast_device_buffer) {
+      const char *src = data;
+      char *dst = dri2_surf->swrast_device_buffer;
+
+      dst += x_offset;
+      dst += y*dst_stride;
+
+      /* Drivers are allowed to submit OOB PutImage requests, so clip here. */
+      if (copy_width > dst_stride - x_offset)
+         copy_width = dst_stride - x_offset;
+      if (h > height - y)
+         h = height - y;
+
+      for (; 0 < h; --h) {
+         memcpy(dst, src, copy_width);
+         dst += dst_stride;
+         src += src_stride;
+      }
+   }
+}
+
+static void
+dri2_get_image(__DRIdrawable * read,
+               int x, int y, int w, int h,
+               char *data, void *loaderPrivate)
+{
+   struct dri2_egl_surface *dri2_surf = loaderPrivate;
+   const int bpp = dri2_get_bytes_per_pixel(dri2_surf);
+   const int width = dri2_surf->base.Width;
+   const int height = dri2_surf->base.Height;
+   const int src_stride = width*bpp;
+   const int dst_stride = w*bpp;
+   const int x_offset = x*bpp;
+   int copy_width = dst_stride;
+   const char *src = dri2_surf->swrast_device_buffer;
+   char *dst = data;
+
+   if (!src) {
+      memset(data, 0, copy_width * h);
+      return;
+   }
+
+   src += x_offset;
+   src += y*src_stride;
+
+   /* Drivers are allowed to submit OOB GetImage requests, so clip here. */
+   if (copy_width > src_stride - x_offset)
+      copy_width = src_stride - x_offset;
+   if (h > height - y)
+      h = height - y;
+
+   for (; 0 < h; --h) {
+      memcpy(dst, src, copy_width);
+      src += src_stride;
+      dst += dst_stride;
+   }
+
+}
+
+/* HACK: technically we should have swrast_null, instead of these.
  */
 const __DRIswrastLoaderExtension swrast_pbuffer_loader_extension = {
    .base            = { __DRI_SWRAST_LOADER, 1 },
    .getDrawableInfo = dri2_get_pbuffer_drawable_info,
-   .putImage        = NULL,
-   .getImage        = NULL,
+   .putImage        = dri2_put_image,
+   .getImage        = dri2_get_image,
 };
 
 static const EGLint dri2_to_egl_attribute_map[__DRI_ATTRIB_MAX] = {
@@ -281,15 +363,14 @@ dri2_add_config(_EGLDisplay *disp, const __DRIconfig *dri_config, int id,
       switch (attrib) {
       case __DRI_ATTRIB_RENDER_TYPE:
          if (value & __DRI_ATTRIB_FLOAT_BIT)
-            _eglSetConfigKey(&base, EGL_COLOR_COMPONENT_TYPE_EXT,
-                             EGL_COLOR_COMPONENT_TYPE_FLOAT_EXT);
+            base.ComponentType = EGL_COLOR_COMPONENT_TYPE_FLOAT_EXT;
          if (value & __DRI_ATTRIB_RGBA_BIT)
             value = EGL_RGB_BUFFER;
          else if (value & __DRI_ATTRIB_LUMINANCE_BIT)
             value = EGL_LUMINANCE_BUFFER;
          else
             return NULL;
-         _eglSetConfigKey(&base, EGL_COLOR_BUFFER_TYPE, value);
+         base.ColorBufferType = value;
          break;
 
       case __DRI_ATTRIB_CONFIG_CAVEAT:
@@ -299,7 +380,7 @@ dri2_add_config(_EGLDisplay *disp, const __DRIconfig *dri_config, int id,
             value = EGL_SLOW_CONFIG;
          else
             value = EGL_NONE;
-         _eglSetConfigKey(&base, EGL_CONFIG_CAVEAT, value);
+         base.ConfigCaveat = value;
          break;
 
       case __DRI_ATTRIB_BIND_TO_TEXTURE_RGB:
@@ -316,7 +397,7 @@ dri2_add_config(_EGLDisplay *disp, const __DRIconfig *dri_config, int id,
 
       case __DRI_ATTRIB_RED_SIZE:
          dri_sizes[0] = value;
-         _eglSetConfigKey(&base, EGL_RED_SIZE, value);
+         base.RedSize = value;
          break;
 
       case __DRI_ATTRIB_RED_MASK:
@@ -329,7 +410,7 @@ dri2_add_config(_EGLDisplay *disp, const __DRIconfig *dri_config, int id,
 
       case __DRI_ATTRIB_GREEN_SIZE:
          dri_sizes[1] = value;
-         _eglSetConfigKey(&base, EGL_GREEN_SIZE, value);
+         base.GreenSize = value;
          break;
 
       case __DRI_ATTRIB_GREEN_MASK:
@@ -342,7 +423,7 @@ dri2_add_config(_EGLDisplay *disp, const __DRIconfig *dri_config, int id,
 
       case __DRI_ATTRIB_BLUE_SIZE:
          dri_sizes[2] = value;
-         _eglSetConfigKey(&base, EGL_BLUE_SIZE, value);
+         base.BlueSize = value;
          break;
 
       case __DRI_ATTRIB_BLUE_MASK:
@@ -355,7 +436,7 @@ dri2_add_config(_EGLDisplay *disp, const __DRIconfig *dri_config, int id,
 
      case __DRI_ATTRIB_ALPHA_SIZE:
          dri_sizes[3] = value;
-         _eglSetConfigKey(&base, EGL_ALPHA_SIZE, value);
+         base.AlphaSize = value;
          break;
 
       case __DRI_ATTRIB_ALPHA_MASK:
@@ -382,12 +463,10 @@ dri2_add_config(_EGLDisplay *disp, const __DRIconfig *dri_config, int id,
          break;
 
       case __DRI_ATTRIB_MAX_PBUFFER_WIDTH:
-         _eglSetConfigKey(&base, EGL_MAX_PBUFFER_WIDTH,
-                          _EGL_MAX_PBUFFER_WIDTH);
+         base.MaxPbufferWidth = _EGL_MAX_PBUFFER_WIDTH;
          break;
       case __DRI_ATTRIB_MAX_PBUFFER_HEIGHT:
-         _eglSetConfigKey(&base, EGL_MAX_PBUFFER_HEIGHT,
-                          _EGL_MAX_PBUFFER_HEIGHT);
+         base.MaxPbufferHeight = _EGL_MAX_PBUFFER_HEIGHT;
          break;
       case __DRI_ATTRIB_MUTABLE_RENDER_BUFFER:
          if (disp->Extensions.KHR_mutable_render_buffer)

@@ -24,7 +24,6 @@
 
 #include "pan_context.h"
 #include "pan_util.h"
-#include "pan_format.h"
 #include "panfrost-quirks.h"
 
 #include "util/format/u_format.h"
@@ -49,8 +48,7 @@ panfrost_initialize_surface(
  * presentations, this is supposed to correspond to eglSwapBuffers) */
 
 mali_ptr
-panfrost_fragment_job(struct panfrost_batch *batch, bool has_draws,
-                      struct mali_job_descriptor_header **header_cpu)
+panfrost_fragment_job(struct panfrost_batch *batch, bool has_draws)
 {
         struct panfrost_screen *screen = pan_screen(batch->ctx->base.screen);
 
@@ -105,6 +103,5 @@ panfrost_fragment_job(struct panfrost_batch *batch, bool has_draws,
         struct panfrost_transfer transfer = panfrost_allocate_transient(batch, sizeof(header) + sizeof(payload));
         memcpy(transfer.cpu, &header, sizeof(header));
         memcpy(transfer.cpu + sizeof(header), &payload, sizeof(payload));
-        *header_cpu = (struct mali_job_descriptor_header *)transfer.cpu;
         return transfer.gpu;
 }

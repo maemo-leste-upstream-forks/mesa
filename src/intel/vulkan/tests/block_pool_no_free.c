@@ -49,13 +49,13 @@ static void *alloc_blocks(void *_job)
 
    for (unsigned i = 0; i < BLOCKS_PER_THREAD; i++) {
       block = anv_block_pool_alloc(job->pool, block_size, NULL);
-      data = anv_block_pool_map(job->pool, block);
+      data = anv_block_pool_map(job->pool, block, block_size);
       *data = block;
       assert(block >= 0);
       job->blocks[i] = block;
 
       block = anv_block_pool_alloc_back(job->pool, block_size);
-      data = anv_block_pool_map(job->pool, block);
+      data = anv_block_pool_map(job->pool, block, block_size);
       *data = block;
       assert(block < 0);
       job->back_blocks[i] = -block;
@@ -63,11 +63,11 @@ static void *alloc_blocks(void *_job)
 
    for (unsigned i = 0; i < BLOCKS_PER_THREAD; i++) {
       block = job->blocks[i];
-      data = anv_block_pool_map(job->pool, block);
+      data = anv_block_pool_map(job->pool, block, block_size);
       assert(*data == block);
 
       block = -job->back_blocks[i];
-      data = anv_block_pool_map(job->pool, block);
+      data = anv_block_pool_map(job->pool, block, block_size);
       assert(*data == block);
    }
 
@@ -111,9 +111,9 @@ static void validate_monotonic(int32_t **blocks)
 
 static void run_test()
 {
-   struct anv_instance instance = { };
+   struct anv_physical_device physical_device = { };
    struct anv_device device = {
-      .instance = &instance,
+      .physical = &physical_device,
    };
    struct anv_block_pool pool;
 

@@ -31,6 +31,7 @@
 #include "util/u_transfer.h"
 #include "util/u_surface.h"
 #include "util/hash_table.h"
+#include "util/ralloc.h"
 #include "util/u_drm.h"
 #include "renderonly/renderonly.h"
 
@@ -178,7 +179,7 @@ _lima_resource_create_with_modifiers(struct pipe_screen *pscreen,
                                      int count)
 {
    struct lima_screen *screen = lima_screen(pscreen);
-   bool should_tile = true;
+   bool should_tile = lima_debug & LIMA_DEBUG_NO_TILING ? false : true;
    unsigned width, height;
    bool should_align_dimensions;
    bool has_user_modifiers = true;
@@ -191,6 +192,10 @@ _lima_resource_create_with_modifiers(struct pipe_screen *pscreen,
       should_tile = false;
 
    if (templat->bind & (PIPE_BIND_LINEAR | PIPE_BIND_SCANOUT))
+      should_tile = false;
+
+   /* If there's no user modifiers and buffer is shared we use linear */
+   if (!has_user_modifiers && (templat->bind & PIPE_BIND_SHARED))
       should_tile = false;
 
    if (drm_find_modifier(DRM_FORMAT_MOD_LINEAR, modifiers, count))
@@ -330,7 +335,10 @@ lima_resource_from_handle(struct pipe_screen *pscreen,
       res->tiled = true;
       break;
    case DRM_FORMAT_MOD_INVALID:
-      res->tiled = screen->ro == NULL;
+      /* Modifier wasn't specified and it's shared buffer. We create these
+       * as linear, so disable tiling.
+       */
+      res->tiled = false;
       break;
    default:
       fprintf(stderr, "Attempted to import unsupported modifier 0x%llx\n",
@@ -499,35 +507,6 @@ lima_surface_create(struct pipe_context *pctx,
 
    surf->reload = true;
 
-   struct lima_context *ctx = lima_context(pctx);
-   if (ctx->plb_pp_stream) {
-      struct lima_ctx_plb_pp_stream_key key = {
-         .tiled_w = surf->tiled_w,
-         .tiled_h = surf->tiled_h,
-      };
-
-      for (int i = 0; i < lima_ctx_num_plb; i++) {
-         key.plb_index = i;
-
-         struct hash_entry *entry =
-            _mesa_hash_table_search(ctx->plb_pp_stream, &key);
-         if (entry) {
-            struct lima_ctx_plb_pp_stream *s = entry->data;
-            s->refcnt++;
-         }
-         else {
-            struct lima_ctx_plb_pp_stream *s =
-               ralloc(ctx->plb_pp_stream, struct lima_ctx_plb_pp_stream);
-            s->key.plb_index = i;
-            s->key.tiled_w = surf->tiled_w;
-            s->key.tiled_h = surf->tiled_h;
-            s->refcnt = 1;
-            s->bo = NULL;
-            _mesa_hash_table_insert(ctx->plb_pp_stream, &s->key, s);
-         }
-      }
-   }
-
    return &surf->base;
 }
 
@@ -535,29 +514,6 @@ static void
 lima_surface_destroy(struct pipe_context *pctx, struct pipe_surface *psurf)
 {
    struct lima_surface *surf = lima_surface(psurf);
-   /* psurf->context may be not equal with pctx (i.e. glxinfo) */
-   struct lima_context *ctx = lima_context(psurf->context);
-
-   if (ctx->plb_pp_stream) {
-      struct lima_ctx_plb_pp_stream_key key = {
-         .tiled_w = surf->tiled_w,
-         .tiled_h = surf->tiled_h,
-      };
-
-      for (int i = 0; i < lima_ctx_num_plb; i++) {
-         key.plb_index = i;
-
-         struct hash_entry *entry =
-            _mesa_hash_table_search(ctx->plb_pp_stream, &key);
-         struct lima_ctx_plb_pp_stream *s = entry->data;
-         if (--s->refcnt == 0) {
-            if (s->bo)
-               lima_bo_unreference(s->bo);
-            _mesa_hash_table_remove(ctx->plb_pp_stream, entry);
-            ralloc_free(s);
-         }
-      }
-   }
 
    pipe_resource_reference(&psurf->texture, NULL);
    FREE(surf);
@@ -587,8 +543,7 @@ lima_transfer_map(struct pipe_context *pctx,
     * range, so no need to sync */
    if (pres->usage != PIPE_USAGE_STREAM) {
       if (usage & PIPE_TRANSFER_READ_WRITE) {
-         if (lima_need_flush(ctx, bo, usage & PIPE_TRANSFER_WRITE))
-            lima_flush(ctx);
+         lima_flush_job_accessing_bo(ctx, bo, usage & PIPE_TRANSFER_WRITE);
 
          unsigned op = usage & PIPE_TRANSFER_WRITE ?
             LIMA_GEM_WAIT_WRITE : LIMA_GEM_WAIT_READ;
@@ -625,10 +580,11 @@ lima_transfer_map(struct pipe_context *pctx,
             panfrost_load_tiled_image(
                trans->staging + i * ptrans->stride * ptrans->box.height,
                bo->map + res->levels[level].offset + (i + box->z) * res->levels[level].layer_stride,
-               &ptrans->box,
+               ptrans->box.x, ptrans->box.y,
+               ptrans->box.width, ptrans->box.height,
                ptrans->stride,
                res->levels[level].stride,
-               util_format_get_blocksize(pres->format));
+               pres->format);
       }
 
       return trans->staging;
@@ -670,10 +626,11 @@ lima_transfer_unmap(struct pipe_context *pctx,
             panfrost_store_tiled_image(
                bo->map + res->levels[ptrans->level].offset + (i + ptrans->box.z) * res->levels[ptrans->level].layer_stride,
                trans->staging + i * ptrans->stride * ptrans->box.height,
-               &ptrans->box,
+               ptrans->box.x, ptrans->box.y,
+               ptrans->box.width, ptrans->box.height,
                res->levels[ptrans->level].stride,
                ptrans->stride,
-               util_format_get_blocksize(pres->format));
+               pres->format);
       }
       free(trans->staging);
    }

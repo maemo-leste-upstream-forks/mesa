@@ -46,6 +46,8 @@ enum fd6_state_id {
 	FD6_GROUP_PROG_CONFIG,
 	FD6_GROUP_PROG,
 	FD6_GROUP_PROG_BINNING,
+	FD6_GROUP_PROG_INTERP,
+	FD6_GROUP_PROG_FB_RAST,
 	FD6_GROUP_LRZ,
 	FD6_GROUP_LRZ_BINNING,
 	FD6_GROUP_VBO,
@@ -64,6 +66,7 @@ enum fd6_state_id {
 	FD6_GROUP_IBO,
 	FD6_GROUP_RASTERIZER,
 	FD6_GROUP_ZSA,
+	FD6_GROUP_BLEND,
 };
 
 #define ENABLE_ALL (CP_SET_DRAW_STATE__0_BINNING | CP_SET_DRAW_STATE__0_GMEM | CP_SET_DRAW_STATE__0_SYSMEM)
@@ -90,6 +93,7 @@ struct fd6_emit {
 	bool sprite_coord_mode;
 	bool rasterflat;
 	bool no_decode_srgb;
+	bool primitive_restart;
 
 	/* in binning pass, we don't have real frag shader, so we
 	 * don't know if real draw disqualifies lrz write.  So just

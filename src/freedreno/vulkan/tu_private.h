@@ -316,6 +316,13 @@ struct tu_physical_device
    uint32_t tile_align_w;
    uint32_t tile_align_h;
 
+   struct {
+      uint32_t RB_UNKNOWN_8E04_blit;    /* for CP_BLIT's */
+      uint32_t RB_CCU_CNTL_gmem;        /* for GMEM */
+      uint32_t PC_UNKNOWN_9805;
+      uint32_t SP_UNKNOWN_A0F8;
+   } magic;
+
    /* This is the drivers on-disk cache used as a fallback as opposed to
     * the pipeline cache defined by apps.
     */
@@ -330,6 +337,8 @@ enum tu_debug_flags
    TU_DEBUG_NIR = 1 << 1,
    TU_DEBUG_IR3 = 1 << 2,
    TU_DEBUG_NOBIN = 1 << 3,
+   TU_DEBUG_SYSMEM = 1 << 4,
+   TU_DEBUG_FORCEBIN = 1 << 5,
 };
 
 struct tu_instance
@@ -453,6 +462,14 @@ struct tu_queue
    struct tu_fence submit_fence;
 };
 
+struct tu_bo
+{
+   uint32_t gem_handle;
+   uint64_t size;
+   uint64_t iova;
+   void *map;
+};
+
 struct tu_device
 {
    VK_LOADER_DATA _loader_data;
@@ -473,18 +490,15 @@ struct tu_device
    /* Backup in-memory cache to be used if the app doesn't provide one */
    struct tu_pipeline_cache *mem_cache;
 
+   struct tu_bo vsc_data;
+   struct tu_bo vsc_data2;
+   uint32_t vsc_data_pitch;
+   uint32_t vsc_data2_pitch;
+
    struct list_head shader_slabs;
    mtx_t shader_slab_mutex;
 
    struct tu_device_extension_table enabled_extensions;
-};
-
-struct tu_bo
-{
-   uint32_t gem_handle;
-   uint64_t size;
-   uint64_t iova;
-   void *map;
 };
 
 VkResult
@@ -778,7 +792,6 @@ tu_get_perftest_option_name(int id);
 struct tu_descriptor_state
 {
    struct tu_descriptor_set *sets[MAX_SETS];
-   uint32_t dirty;
    uint32_t valid;
    struct tu_push_descriptor_set push_set;
    bool push_dirty;
@@ -810,6 +823,9 @@ struct tu_tiling_config
    /* pipe register values */
    uint32_t pipe_config[MAX_VSC_PIPES];
    uint32_t pipe_sizes[MAX_VSC_PIPES];
+
+   /* Whether sysmem rendering must be used */
+   bool force_sysmem;
 };
 
 enum tu_cmd_dirty_bits
@@ -857,6 +873,7 @@ struct tu_cmd_state
 
    struct tu_cs_entry tile_load_ib;
    struct tu_cs_entry tile_store_ib;
+   struct tu_cs_entry sysmem_clear_ib;
 };
 
 struct tu_cmd_pool
@@ -936,6 +953,7 @@ struct tu_cmd_buffer
    struct tu_bo_list bo_list;
    struct tu_cs cs;
    struct tu_cs draw_cs;
+   struct tu_cs draw_epilogue_cs;
    struct tu_cs sub_cs;
 
    uint16_t marker_reg;
@@ -953,6 +971,19 @@ struct tu_cmd_buffer
    bool use_vsc_data;
 
    bool wait_for_idle;
+};
+
+/* Temporary struct for tracking a register state to be written, used by
+ * a6xx-pack.h and tu_cs_emit_regs()
+ */
+struct tu_reg_value {
+   uint32_t reg;
+   uint64_t value;
+   bool is_address;
+   struct tu_bo *bo;
+   bool bo_write;
+   uint32_t bo_offset;
+   uint32_t bo_shift;
 };
 
 unsigned
@@ -1058,6 +1089,7 @@ struct tu_shader
    struct tu_descriptor_map sampler_map;
    struct tu_descriptor_map ubo_map;
    struct tu_descriptor_map ssbo_map;
+   struct tu_descriptor_map image_map;
 
    /* This may be true for vertex shaders.  When true, variants[1] is the
     * binning variant and binning_binary is non-NULL.
@@ -1105,7 +1137,7 @@ struct tu_program_descriptor_linkage
    struct tu_descriptor_map sampler_map;
    struct tu_descriptor_map ubo_map;
    struct tu_descriptor_map ssbo_map;
-   struct ir3_ibo_mapping image_mapping;
+   struct tu_descriptor_map image_map;
 };
 
 struct tu_pipeline
@@ -1252,7 +1284,7 @@ tu_2d_clear_color(const VkClearColorValue *val, VkFormat format, uint32_t buf[4]
 void
 tu_2d_clear_zs(const VkClearDepthStencilValue *val, VkFormat format, uint32_t buf[4]);
 
-enum a6xx_2d_ifmt tu6_rb_fmt_to_ifmt(enum a6xx_color_fmt fmt);
+enum a6xx_2d_ifmt tu6_fmt_to_ifmt(enum a6xx_format fmt);
 enum a6xx_depth_format tu6_pipe2depth(VkFormat format);
 
 struct tu_image_level
@@ -1337,10 +1369,18 @@ tu_image_base(struct tu_image *image, int level, int layer)
       fdl_surface_offset(&image->layout, level, layer);
 }
 
+#define tu_image_base_ref(image, level, layer)                          \
+   .bo = image->bo,                                                     \
+   .bo_offset = (image->bo_offset + fdl_surface_offset(&image->layout,  \
+                                                       level, layer))
+
+#define tu_image_view_base_ref(iview)                                   \
+   tu_image_base_ref(iview->image, iview->base_mip, iview->base_layer)
+
 static inline VkDeviceSize
 tu_image_ubwc_size(struct tu_image *image, int level)
 {
-   return image->layout.ubwc_size;
+   return image->layout.ubwc_layer_size;
 }
 
 static inline uint32_t
@@ -1350,12 +1390,26 @@ tu_image_ubwc_pitch(struct tu_image *image, int level)
 }
 
 static inline uint64_t
+tu_image_ubwc_surface_offset(struct tu_image *image, int level, int layer)
+{
+   return image->layout.ubwc_slices[level].offset +
+      layer * tu_image_ubwc_size(image, level);
+}
+
+static inline uint64_t
 tu_image_ubwc_base(struct tu_image *image, int level, int layer)
 {
    return image->bo->iova + image->bo_offset +
-          image->layout.ubwc_slices[level].offset +
-          layer * tu_image_ubwc_size(image, level);
+      tu_image_ubwc_surface_offset(image, level, layer);
 }
+
+#define tu_image_ubwc_base_ref(image, level, layer)                     \
+   .bo = image->bo,                                                     \
+   .bo_offset = (image->bo_offset + tu_image_ubwc_surface_offset(image, \
+                                                                 level, layer))
+
+#define tu_image_view_ubwc_base_ref(iview) \
+   tu_image_ubwc_base_ref(iview->image, iview->base_mip, iview->base_layer)
 
 enum a6xx_tile_mode
 tu6_get_image_tile_mode(struct tu_image *image, int level);
@@ -1412,9 +1466,9 @@ tu_image_view_init(struct tu_image_view *view,
 
 struct tu_buffer_view
 {
-   VkFormat vk_format;
-   uint64_t range; /**< VkBufferViewCreateInfo::range */
-   uint32_t state[4];
+   uint32_t descriptor[A6XX_TEX_CONST_DWORDS];
+
+   struct tu_buffer *buffer;
 };
 void
 tu_buffer_view_init(struct tu_buffer_view *view,
@@ -1513,12 +1567,11 @@ tu_device_finish_meta(struct tu_device *device);
 
 struct tu_query_pool
 {
-   uint32_t stride;
-   uint32_t availability_offset;
-   uint64_t size;
-   char *ptr;
    VkQueryType type;
-   uint32_t pipeline_stats_mask;
+   uint32_t stride;
+   uint64_t size;
+   uint32_t pipeline_statistics;
+   struct tu_bo bo;
 };
 
 struct tu_semaphore
@@ -1586,6 +1639,21 @@ uint64_t
 tu_gem_info_offset(const struct tu_device *dev, uint32_t gem_handle);
 uint64_t
 tu_gem_info_iova(const struct tu_device *dev, uint32_t gem_handle);
+
+
+void
+tu_clear_sysmem_attachment(struct tu_cmd_buffer *cmd,
+                           struct tu_cs *cs,
+                           uint32_t attachment,
+                           const VkClearValue *value,
+                           const VkClearRect *rect);
+
+void
+tu_clear_gmem_attachment(struct tu_cmd_buffer *cmd,
+                         struct tu_cs *cs,
+                         uint32_t attachment,
+                         uint8_t component_mask,
+                         const VkClearValue *value);
 
 #define TU_DEFINE_HANDLE_CASTS(__tu_type, __VkType)                          \
                                                                              \

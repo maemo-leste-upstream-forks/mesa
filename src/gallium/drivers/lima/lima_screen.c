@@ -39,19 +39,17 @@
 #include "lima_bo.h"
 #include "lima_fence.h"
 #include "lima_format.h"
-#include "lima_util.h"
 #include "ir/lima_ir.h"
 
 #include "xf86drm.h"
 
 int lima_plb_max_blk = 0;
+int lima_plb_pp_stream_cache_size = 0;
 
 static void
 lima_screen_destroy(struct pipe_screen *pscreen)
 {
    struct lima_screen *screen = lima_screen(pscreen);
-
-   lima_dump_file_close();
 
    slab_destroy_parent(&screen->transfer_pool);
 
@@ -143,6 +141,12 @@ lima_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
       return 0;
 
+   case PIPE_CAP_ALPHA_TEST:
+   case PIPE_CAP_FLATSHADE:
+   case PIPE_CAP_TWO_SIDED_COLOR:
+   case PIPE_CAP_CLIP_PLANES:
+      return 0;
+
    default:
       return u_pipe_screen_get_param_defaults(pscreen, param);
    }
@@ -160,7 +164,7 @@ lima_screen_get_paramf(struct pipe_screen *pscreen, enum pipe_capf param)
    case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
       return 16.0f;
    case PIPE_CAPF_MAX_TEXTURE_LOD_BIAS:
-      return 16.0f;
+      return 15.0f;
 
    default:
       return 0.0f;
@@ -382,6 +386,18 @@ lima_screen_set_plb_max_blk(struct lima_screen *screen)
 static bool
 lima_screen_query_info(struct lima_screen *screen)
 {
+   drmVersionPtr version = drmGetVersion(screen->fd);
+   if (!version)
+      return false;
+
+   if (version->version_major > 1 || version->version_minor > 0)
+      screen->has_growable_heap_buffer = true;
+
+   drmFreeVersion(version);
+
+   if (lima_debug & LIMA_DEBUG_NO_GROW_HEAP)
+      screen->has_growable_heap_buffer = false;
+
    struct drm_lima_get_param param;
 
    memset(&param, 0, sizeof(param));
@@ -447,6 +463,12 @@ static const struct debug_named_value debug_options[] = {
           "disable BO cache" },
         { "bocache", LIMA_DEBUG_BO_CACHE,
           "print debug info for BO cache" },
+        { "notiling", LIMA_DEBUG_NO_TILING,
+          "don't use tiled buffers" },
+        { "nogrowheap",   LIMA_DEBUG_NO_GROW_HEAP,
+          "disable growable heap buffer" },
+        { "singlejob", LIMA_DEBUG_SINGLE_JOB,
+          "disable multi job optimization" },
         { NULL }
 };
 
@@ -457,9 +479,6 @@ static void
 lima_screen_parse_env(void)
 {
    lima_debug = debug_get_option_lima_debug();
-
-   if (lima_debug & LIMA_DEBUG_DUMP)
-      lima_dump_file_open();
 
    lima_ctx_num_plb = debug_get_num_option("LIMA_CTX_NUM_PLB", LIMA_CTX_PLB_DEF_NUM);
    if (lima_ctx_num_plb > LIMA_CTX_PLB_MAX_NUM ||
@@ -483,11 +502,19 @@ lima_screen_parse_env(void)
               "reset to default 0\n", lima_ppir_force_spilling);
       lima_ppir_force_spilling = 0;
    }
+
+   lima_plb_pp_stream_cache_size = debug_get_num_option("LIMA_PLB_PP_STREAM_CACHE_SIZE", 0);
+   if (lima_plb_pp_stream_cache_size < 0) {
+      fprintf(stderr, "lima: LIMA_PLB_PP_STREAM_CACHE_SIZE %d less than 0, "
+              "reset to default 0\n", lima_plb_pp_stream_cache_size);
+      lima_plb_pp_stream_cache_size = 0;
+   }
 }
 
 struct pipe_screen *
 lima_screen_create(int fd, struct renderonly *ro)
 {
+   uint64_t system_memory;
    struct lima_screen *screen;
 
    screen = rzalloc(NULL, struct lima_screen);
@@ -497,6 +524,15 @@ lima_screen_create(int fd, struct renderonly *ro)
    screen->fd = fd;
 
    lima_screen_parse_env();
+
+   /* Limit PP PLB stream cache size to 0.1% of system memory */
+   if (!lima_plb_pp_stream_cache_size &&
+       os_get_total_physical_memory(&system_memory))
+      lima_plb_pp_stream_cache_size = system_memory >> 10;
+
+   /* Set lower limit on PP PLB cache size */
+   lima_plb_pp_stream_cache_size = MAX2(128 * 1024 * lima_ctx_num_plb,
+                                        lima_plb_pp_stream_cache_size);
 
    if (!lima_screen_query_info(screen))
       goto err_out0;

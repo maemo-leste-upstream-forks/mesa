@@ -87,15 +87,6 @@ void anv_DestroyShaderModule(
 
 #define SPIR_V_MAGIC_NUMBER 0x07230203
 
-static const uint64_t stage_to_debug[] = {
-   [MESA_SHADER_VERTEX] = DEBUG_VS,
-   [MESA_SHADER_TESS_CTRL] = DEBUG_TCS,
-   [MESA_SHADER_TESS_EVAL] = DEBUG_TES,
-   [MESA_SHADER_GEOMETRY] = DEBUG_GS,
-   [MESA_SHADER_FRAGMENT] = DEBUG_WM,
-   [MESA_SHADER_COMPUTE] = DEBUG_CS,
-};
-
 struct anv_spirv_debug_data {
    struct anv_device *device;
    const struct anv_shader_module *module;
@@ -107,6 +98,8 @@ static void anv_spirv_nir_debug(void *private_data,
                                 const char *message)
 {
    struct anv_spirv_debug_data *debug_data = private_data;
+   struct anv_instance *instance = debug_data->device->physical->instance;
+
    static const VkDebugReportFlagsEXT vk_flags[] = {
       [NIR_SPIRV_DEBUG_LEVEL_INFO] = VK_DEBUG_REPORT_INFORMATION_BIT_EXT,
       [NIR_SPIRV_DEBUG_LEVEL_WARNING] = VK_DEBUG_REPORT_WARNING_BIT_EXT,
@@ -116,7 +109,7 @@ static void anv_spirv_nir_debug(void *private_data,
 
    snprintf(buffer, sizeof(buffer), "SPIR-V offset %lu: %s", (unsigned long) spirv_offset, message);
 
-   vk_debug_report(&debug_data->device->instance->debug_report_callbacks,
+   vk_debug_report(&instance->debug_report_callbacks,
                    vk_flags[level],
                    VK_DEBUG_REPORT_OBJECT_TYPE_SHADER_MODULE_EXT,
                    (uint64_t) (uintptr_t) debug_data->module,
@@ -134,8 +127,7 @@ anv_shader_compile_to_nir(struct anv_device *device,
                           gl_shader_stage stage,
                           const VkSpecializationInfo *spec_info)
 {
-   const struct anv_physical_device *pdevice =
-      &device->instance->physicalDevice;
+   const struct anv_physical_device *pdevice = device->physical;
    const struct brw_compiler *compiler = pdevice->compiler;
    const nir_shader_compiler_options *nir_options =
       compiler->glsl_compiler_options[stage].NirOptions;
@@ -187,6 +179,7 @@ anv_shader_compile_to_nir(struct anv_device *device,
          .int16 = pdevice->info.gen >= 8,
          .int64 = pdevice->info.gen >= 8,
          .int64_atomics = pdevice->info.gen >= 9 && pdevice->use_softpin,
+         .integer_functions2 = pdevice->info.gen >= 8,
          .min_lod = true,
          .multiview = true,
          .physical_storage_buffer_address = pdevice->has_a64_buffer_access,
@@ -238,7 +231,7 @@ anv_shader_compile_to_nir(struct anv_device *device,
 
    free(spec_entries);
 
-   if (unlikely(INTEL_DEBUG & stage_to_debug[stage])) {
+   if (unlikely(INTEL_DEBUG & intel_debug_flag_for_shader_stage(stage))) {
       fprintf(stderr, "NIR (from SPIR-V) for %s shader:\n",
               gl_shader_stage_name(stage));
       nir_print_shader(nir, stderr);
@@ -248,7 +241,7 @@ anv_shader_compile_to_nir(struct anv_device *device,
     * inline functions.  That way they get properly initialized at the top
     * of the function and not at the top of its caller.
     */
-   NIR_PASS_V(nir, nir_lower_constant_initializers, nir_var_function_temp);
+   NIR_PASS_V(nir, nir_lower_variable_initializers, nir_var_function_temp);
    NIR_PASS_V(nir, nir_lower_returns);
    NIR_PASS_V(nir, nir_inline_functions);
    NIR_PASS_V(nir, nir_opt_deref);
@@ -265,7 +258,7 @@ anv_shader_compile_to_nir(struct anv_device *device,
     * nir_remove_dead_variables and split_per_member_structs below see the
     * corresponding stores.
     */
-   NIR_PASS_V(nir, nir_lower_constant_initializers, ~0);
+   NIR_PASS_V(nir, nir_lower_variable_initializers, ~0);
 
    /* Split member structs.  We do this before lower_io_to_temporaries so that
     * it doesn't lower system values to temporaries by accident.
@@ -624,7 +617,7 @@ anv_pipeline_stage_get_nir(struct anv_pipeline *pipeline,
                            struct anv_pipeline_stage *stage)
 {
    const struct brw_compiler *compiler =
-      pipeline->device->instance->physicalDevice.compiler;
+      pipeline->device->physical->compiler;
    const nir_shader_compiler_options *nir_options =
       compiler->glsl_compiler_options[stage->stage].NirOptions;
    nir_shader *nir;
@@ -658,8 +651,7 @@ anv_pipeline_lower_nir(struct anv_pipeline *pipeline,
                        struct anv_pipeline_stage *stage,
                        struct anv_pipeline_layout *layout)
 {
-   const struct anv_physical_device *pdevice =
-      &pipeline->device->instance->physicalDevice;
+   const struct anv_physical_device *pdevice = pipeline->device->physical;
    const struct brw_compiler *compiler = pdevice->compiler;
 
    struct brw_stage_prog_data *prog_data = &stage->prog_data.base;
@@ -1114,8 +1106,7 @@ anv_pipeline_compile_graphics(struct anv_pipeline *pipeline,
    };
    int64_t pipeline_start = os_time_get_nano();
 
-   const struct brw_compiler *compiler =
-      pipeline->device->instance->physicalDevice.compiler;
+   const struct brw_compiler *compiler = pipeline->device->physical->compiler;
    struct anv_pipeline_stage stages[MESA_SHADER_STAGES] = {};
 
    pipeline->active_stages = 0;
@@ -1241,7 +1232,7 @@ anv_pipeline_compile_graphics(struct anv_pipeline *pipeline,
           */
          assert(found < __builtin_popcount(pipeline->active_stages));
 
-         vk_debug_report(&pipeline->device->instance->debug_report_callbacks,
+         vk_debug_report(&pipeline->device->physical->instance->debug_report_callbacks,
                          VK_DEBUG_REPORT_WARNING_BIT_EXT |
                          VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT,
                          VK_DEBUG_REPORT_OBJECT_TYPE_PIPELINE_CACHE_EXT,
@@ -1466,8 +1457,7 @@ anv_pipeline_compile_cs(struct anv_pipeline *pipeline,
    };
    int64_t pipeline_start = os_time_get_nano();
 
-   const struct brw_compiler *compiler =
-      pipeline->device->instance->physicalDevice.compiler;
+   const struct brw_compiler *compiler = pipeline->device->physical->compiler;
 
    struct anv_pipeline_stage stage = {
       .stage = MESA_SHADER_COMPUTE,

@@ -29,34 +29,9 @@
 #include <panfrost-job.h>
 #include "pan_screen.h"
 #include "pan_allocate.h"
+#include "pan_texture.h"
 #include "drm-uapi/drm.h"
 #include "util/u_range.h"
-
-/* Describes the memory layout of a BO */
-
-enum panfrost_memory_layout {
-        PAN_LINEAR,
-        PAN_TILED,
-        PAN_AFBC
-};
-
-struct panfrost_slice {
-        unsigned offset;
-        unsigned stride;
-        unsigned size0;
-
-        /* If there is a header preceding each slice, how big is
-         * that header?  Used for AFBC */
-        unsigned header_size;
-
-        /* If checksumming is enabled following the slice, what
-         * is its offset/stride? */
-        unsigned checksum_offset;
-        unsigned checksum_stride;
-
-        /* Has anything been written to this slice? */
-        bool initialized;
-};
 
 struct panfrost_resource {
         struct pipe_resource base;
@@ -79,7 +54,7 @@ struct panfrost_resource {
         unsigned cubemap_stride;
 
         /* Internal layout (tiled?) */
-        enum panfrost_memory_layout layout;
+        enum mali_texture_layout layout;
 
         /* Is transaciton elimination enabled? */
         bool checksummed;
@@ -117,16 +92,8 @@ void
 panfrost_resource_hint_layout(
                 struct panfrost_screen *screen,
                 struct panfrost_resource *rsrc,
-                enum panfrost_memory_layout layout,
+                enum mali_texture_layout layout,
                 signed weight);
-
-/* AFBC */
-
-bool
-panfrost_format_supports_afbc(enum pipe_format format);
-
-unsigned
-panfrost_afbc_header_size(unsigned width, unsigned height);
 
 /* Blitting */
 

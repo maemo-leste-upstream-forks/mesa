@@ -67,22 +67,28 @@ struct iris_batch {
    struct iris_bo *bo;
    void *map;
    void *map_next;
-   /** Size of the primary batch if we've moved on to a secondary. */
+
+   /** Size of the primary batch being submitted to execbuf (in bytes). */
    unsigned primary_batch_size;
+
+   /** Total size of all chained batches (in bytes). */
+   unsigned total_chained_batch_size;
 
    /** Last Surface State Base Address set in this hardware context. */
    uint64_t last_surface_base_address;
 
    uint32_t hw_ctx_id;
 
-   /** Which engine this batch targets - a I915_EXEC_RING_MASK value */
-   uint8_t engine;
-
    /** The validation list */
    struct drm_i915_gem_exec_object2 *validation_list;
    struct iris_bo **exec_bos;
    int exec_count;
    int exec_array_size;
+
+   /** Whether INTEL_BLACKHOLE_RENDER is enabled in the batch (aka first
+    * instruction is a MI_BATCH_BUFFER_END).
+    */
+   bool noop_enabled;
 
    /**
     * A list of iris_syncpts associated with this batch.
@@ -138,7 +144,6 @@ void iris_init_batch(struct iris_batch *batch,
                      struct hash_table_u64 *state_sizes,
                      struct iris_batch *all_batches,
                      enum iris_batch_name name,
-                     uint8_t ring,
                      int priority);
 void iris_chain_to_new_batch(struct iris_batch *batch);
 void iris_batch_free(struct iris_batch *batch);
@@ -148,6 +153,10 @@ void _iris_batch_flush(struct iris_batch *batch, const char *file, int line);
 #define iris_batch_flush(batch) _iris_batch_flush((batch), __FILE__, __LINE__)
 
 bool iris_batch_references(struct iris_batch *batch, struct iris_bo *bo);
+
+uint64_t iris_batch_prepare_noop(struct iris_batch *batch,
+                                 bool noop_enable,
+                                 uint64_t dirty_flags);
 
 #define RELOC_WRITE EXEC_OBJECT_WRITE
 

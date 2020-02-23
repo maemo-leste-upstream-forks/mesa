@@ -53,7 +53,7 @@ bool si_prepare_for_dma_blit(struct si_context *sctx,
 			     unsigned src_level,
 			     const struct pipe_box *src_box)
 {
-	if (!sctx->dma_cs)
+	if (!sctx->sdma_cs)
 		return false;
 
 	if (dst->surface.bpe != src->surface.bpe)
@@ -329,6 +329,12 @@ static int si_init_surface(struct si_screen *sscreen,
 		flags |= RADEON_SURF_OPTIMIZE_FOR_SPACE;
 	if (sscreen->debug_flags & DBG(NO_FMASK))
 		flags |= RADEON_SURF_NO_FMASK;
+
+	if (sscreen->info.chip_class == GFX9 &&
+	    (ptex->flags & SI_RESOURCE_FLAG_FORCE_MICRO_TILE_MODE)) {
+		flags |= RADEON_SURF_FORCE_MICRO_TILE_MODE;
+		surface->micro_tile_mode = SI_RESOURCE_FLAG_MICRO_TILE_MODE_GET(ptex->flags);
+	}
 
 	if (sscreen->info.chip_class >= GFX10 &&
 	    (ptex->flags & SI_RESOURCE_FLAG_FORCE_MSAA_TILING)) {
@@ -1513,14 +1519,12 @@ si_texture_create_object(struct pipe_screen *screen,
 
 			/* Copy the staging buffer to the buffer backing the texture. */
 			struct si_context *sctx = (struct si_context*)sscreen->aux_context;
-			struct pipe_box box;
-			u_box_1d(0, buf->b.b.width0, &box);
 
 			assert(tex->surface.dcc_retile_map_offset <= UINT_MAX);
 			simple_mtx_lock(&sscreen->aux_context_lock);
-			sctx->dma_copy(&sctx->b, &tex->buffer.b.b, 0,
-				       tex->surface.dcc_retile_map_offset, 0, 0,
-				       &buf->b.b, 0, &box);
+			si_sdma_copy_buffer(sctx, &tex->buffer.b.b, &buf->b.b,
+					    tex->surface.dcc_retile_map_offset,
+					    0, buf->b.b.width0);
 			sscreen->aux_context->flush(sscreen->aux_context, NULL, 0);
 			simple_mtx_unlock(&sscreen->aux_context_lock);
 

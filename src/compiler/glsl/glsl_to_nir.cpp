@@ -219,7 +219,7 @@ glsl_to_nir(struct gl_context *ctx,
     * inline functions.  That way they get properly initialized at the top
     * of the function and not at the top of its caller.
     */
-   nir_lower_constant_initializers(shader, (nir_variable_mode)~0);
+   nir_lower_variable_initializers(shader, (nir_variable_mode)~0);
    nir_lower_returns(shader);
    nir_inline_functions(shader);
    nir_opt_deref(shader);
@@ -539,10 +539,14 @@ nir_visitor::visit(ir_variable *ir)
    if (ir->data.memory_restrict)
       mem_access |= ACCESS_RESTRICT;
 
+   var->interface_type = ir->get_interface_type();
+
    /* For UBO and SSBO variables, we need explicit types */
    if (var->data.mode & (nir_var_mem_ubo | nir_var_mem_ssbo)) {
       const glsl_type *explicit_ifc_type =
          ir->get_interface_type()->get_explicit_interface_type(supports_std430);
+
+      var->interface_type = explicit_ifc_type;
 
       if (ir->type->without_array()->is_interface()) {
          /* If the type contains the interface, wrap the explicit type in the
@@ -635,8 +639,6 @@ nir_visitor::visit(ir_variable *ir)
    }
 
    var->constant_initializer = constant_copy(ir->constant_initializer, var);
-
-   var->interface_type = ir->get_interface_type();
 
    if (var->data.mode == nir_var_function_temp)
       nir_function_impl_add_variable(impl, var);
@@ -1373,13 +1375,18 @@ nir_visitor::visit(ir_call *ir)
             instr->src[3] =
                nir_src_for_ssa(evaluate_rvalue((ir_dereference *)param));
             param = param->get_next();
+         } else if (op == nir_intrinsic_image_deref_load) {
+            instr->src[3] = nir_src_for_ssa(nir_imm_int(&b, 0)); /* LOD */
          }
 
          if (!param->is_tail_sentinel()) {
             instr->src[4] =
                nir_src_for_ssa(evaluate_rvalue((ir_dereference *)param));
             param = param->get_next();
+         } else if (op == nir_intrinsic_image_deref_store) {
+            instr->src[4] = nir_src_for_ssa(nir_imm_int(&b, 0)); /* LOD */
          }
+
          nir_builder_instr_insert(&b, &instr->instr);
          break;
       }
@@ -1990,6 +1997,9 @@ nir_visitor::visit(ir_expression *ir)
       result = type_is_float(types[0]) ? nir_fabs(&b, srcs[0])
                                        : nir_iabs(&b, srcs[0]);
       break;
+   case ir_unop_clz:
+      result = nir_uclz(&b, srcs[0]);
+      break;
    case ir_unop_saturate:
       assert(type_is_float(types[0]));
       result = nir_fsat(&b, srcs[0]);
@@ -2208,9 +2218,36 @@ nir_visitor::visit(ir_expression *ir)
       result = type_is_float(out_type) ? nir_fadd(&b, srcs[0], srcs[1])
                                        : nir_iadd(&b, srcs[0], srcs[1]);
       break;
+   case ir_binop_add_sat:
+      result = type_is_signed(out_type) ? nir_iadd_sat(&b, srcs[0], srcs[1])
+                                        : nir_uadd_sat(&b, srcs[0], srcs[1]);
+      break;
    case ir_binop_sub:
       result = type_is_float(out_type) ? nir_fsub(&b, srcs[0], srcs[1])
                                        : nir_isub(&b, srcs[0], srcs[1]);
+      break;
+   case ir_binop_sub_sat:
+      result = type_is_signed(out_type) ? nir_isub_sat(&b, srcs[0], srcs[1])
+                                        : nir_usub_sat(&b, srcs[0], srcs[1]);
+      break;
+   case ir_binop_abs_sub:
+      /* out_type is always unsigned for ir_binop_abs_sub, so we have to key
+       * on the type of the sources.
+       */
+      result = type_is_signed(types[0]) ? nir_uabs_isub(&b, srcs[0], srcs[1])
+                                        : nir_uabs_usub(&b, srcs[0], srcs[1]);
+      break;
+   case ir_binop_avg:
+      result = type_is_signed(out_type) ? nir_ihadd(&b, srcs[0], srcs[1])
+                                        : nir_uhadd(&b, srcs[0], srcs[1]);
+      break;
+   case ir_binop_avg_round:
+      result = type_is_signed(out_type) ? nir_irhadd(&b, srcs[0], srcs[1])
+                                        : nir_urhadd(&b, srcs[0], srcs[1]);
+      break;
+   case ir_binop_mul_32x16:
+      result = type_is_signed(out_type) ? nir_imul_32x16(&b, srcs[0], srcs[1])
+                                        : nir_umul_32x16(&b, srcs[0], srcs[1]);
       break;
    case ir_binop_mul:
       if (type_is_float(out_type))
@@ -2696,8 +2733,20 @@ nir_visitor::visit(ir_dereference_array *ir)
 void
 nir_visitor::visit(ir_barrier *)
 {
+   if (shader->info.stage == MESA_SHADER_COMPUTE) {
+      nir_intrinsic_instr *shared_barrier =
+         nir_intrinsic_instr_create(this->shader,
+                                    nir_intrinsic_memory_barrier_shared);
+      nir_builder_instr_insert(&b, &shared_barrier->instr);
+   } else if (shader->info.stage == MESA_SHADER_TESS_CTRL) {
+      nir_intrinsic_instr *patch_barrier =
+         nir_intrinsic_instr_create(this->shader,
+                                    nir_intrinsic_memory_barrier_tcs_patch);
+      nir_builder_instr_insert(&b, &patch_barrier->instr);
+   }
+
    nir_intrinsic_instr *instr =
-      nir_intrinsic_instr_create(this->shader, nir_intrinsic_barrier);
+      nir_intrinsic_instr_create(this->shader, nir_intrinsic_control_barrier);
    nir_builder_instr_insert(&b, &instr->instr);
 }
 
@@ -2735,7 +2784,7 @@ glsl_float64_funcs_to_nir(struct gl_context *ctx,
 
    nir_validate_shader(nir, "float64_funcs_to_nir");
 
-   NIR_PASS_V(nir, nir_lower_constant_initializers, nir_var_function_temp);
+   NIR_PASS_V(nir, nir_lower_variable_initializers, nir_var_function_temp);
    NIR_PASS_V(nir, nir_lower_returns);
    NIR_PASS_V(nir, nir_inline_functions);
    NIR_PASS_V(nir, nir_opt_deref);

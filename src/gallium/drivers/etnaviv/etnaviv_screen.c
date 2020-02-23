@@ -73,6 +73,7 @@ static const struct debug_named_value debug_options[] = {
    {"shaderdb",       ETNA_DBG_SHADERDB, "Enable shaderdb output"},
    {"no_singlebuffer",ETNA_DBG_NO_SINGLEBUF, "Disable single buffer feature"},
    {"nir",            ETNA_DBG_NIR, "use new NIR compiler"},
+   {"deqp",           ETNA_DBG_DEQP, "Hacks to run dEQP GLES3 tests"}, /* needs MESA_GLES_VERSION_OVERRIDE=3.0 */
    DEBUG_NAMED_VALUE_END
 };
 
@@ -180,6 +181,8 @@ etna_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 0;
 
    /* Stream output. */
+   case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
+      return DBG_ENABLED(ETNA_DBG_DEQP) ? 4 : 0;
    case PIPE_CAP_MAX_STREAM_OUTPUT_SEPARATE_COMPONENTS:
    case PIPE_CAP_MAX_STREAM_OUTPUT_INTERLEAVED_COMPONENTS:
       return 0;
@@ -190,6 +193,9 @@ etna_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 255;
    case PIPE_CAP_MAX_VERTEX_BUFFERS:
       return screen->specs.stream_count;
+   case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
+      return VIV_FEATURE(screen, chipMinorFeatures4, HALTI2);
+
 
    /* Texturing. */
    case PIPE_CAP_TEXTURE_SHADOW_MAP:
@@ -223,6 +229,22 @@ etna_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    /* Preferences */
    case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
       return 0;
+   case PIPE_CAP_MAX_TEXTURE_UPLOAD_MEMORY_BUDGET: {
+      /* etnaviv is being run on systems as small as 256MB total RAM so
+       * we need to provide a sane value for such a device. Limit the
+       * memory budget to min(~3% of pyhiscal memory, 64MB).
+       *
+       * a simple divison by 32 provides the numbers we want.
+       *    256MB / 32 =  8MB
+       *   2048MB / 32 = 64MB
+       */
+      uint64_t system_memory;
+
+      if (!os_get_total_physical_memory(&system_memory))
+         system_memory = 4096 << 20;
+
+      return MIN2(system_memory / 32, 64 * 1024 * 1024);
+   }
 
    case PIPE_CAP_MAX_VARYINGS:
       return screen->specs.max_varyings;
@@ -274,6 +296,10 @@ etna_screen_get_shader_param(struct pipe_screen *pscreen,
                              enum pipe_shader_cap param)
 {
    struct etna_screen *screen = etna_screen(pscreen);
+   bool ubo_enable = screen->specs.halti >= 2 && DBG_ENABLED(ETNA_DBG_NIR);
+
+   if (DBG_ENABLED(ETNA_DBG_DEQP))
+      ubo_enable = true;
 
    switch (shader) {
    case PIPE_SHADER_FRAGMENT:
@@ -309,7 +335,7 @@ etna_screen_get_shader_param(struct pipe_screen *pscreen,
    case PIPE_SHADER_CAP_MAX_TEMPS:
       return 64; /* Max native temporaries. */
    case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
-      return 1;
+      return ubo_enable ? ETNA_MAX_CONST_BUF : 1;
    case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
       return 1;
    case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
@@ -334,6 +360,8 @@ etna_screen_get_shader_param(struct pipe_screen *pscreen,
    case PIPE_SHADER_CAP_PREFERRED_IR:
       return DBG_ENABLED(ETNA_DBG_NIR) ? PIPE_SHADER_IR_NIR : PIPE_SHADER_IR_TGSI;
    case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
+      if (ubo_enable)
+         return 16384; /* 16384 so state tracker enables UBOs */
       return shader == PIPE_SHADER_FRAGMENT
                 ? screen->specs.max_ps_uniforms * sizeof(float[4])
                 : screen->specs.max_vs_uniforms * sizeof(float[4]);

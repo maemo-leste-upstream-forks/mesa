@@ -59,18 +59,24 @@ unsigned si_get_flush_flags(struct si_context *sctx, enum si_coherency coher,
 	}
 }
 
-static void si_compute_internal_begin(struct si_context *sctx)
+static void si_launch_grid_internal(struct si_context *sctx,
+				    struct pipe_grid_info *info)
 {
+	/* Set settings for driver-internal compute dispatches. */
 	sctx->flags &= ~SI_CONTEXT_START_PIPELINE_STATS;
 	sctx->flags |= SI_CONTEXT_STOP_PIPELINE_STATS;
 	sctx->render_cond_force_off = true;
-}
+	/* Skip decompression to prevent infinite recursion. */
+	sctx->blitter->running = true;
 
-static void si_compute_internal_end(struct si_context *sctx)
-{
+	/* Dispatch compute. */
+	sctx->b.launch_grid(&sctx->b, info);
+
+	/* Restore default settings. */
 	sctx->flags &= ~SI_CONTEXT_STOP_PIPELINE_STATS;
 	sctx->flags |= SI_CONTEXT_START_PIPELINE_STATS;
 	sctx->render_cond_force_off = false;
+	sctx->blitter->running = false;
 }
 
 static void si_compute_clear_12bytes_buffer(struct si_context *sctx,
@@ -88,8 +94,6 @@ static void si_compute_clear_12bytes_buffer(struct si_context *sctx,
 
 	unsigned data[4] = {0};
 	memcpy(data, clear_value, 12);
-
-	si_compute_internal_begin(sctx);
 
 	sctx->flags |= SI_CONTEXT_PS_PARTIAL_FLUSH |
 		       SI_CONTEXT_CS_PARTIAL_FLUSH |
@@ -134,13 +138,14 @@ static void si_compute_clear_12bytes_buffer(struct si_context *sctx,
 	info.grid[1] = 1;
 	info.grid[2] = 1;
 
-	ctx->launch_grid(ctx, &info);
+	si_launch_grid_internal(sctx, &info);
 
 	ctx->bind_compute_state(ctx, saved_cs);
 	ctx->set_shader_buffers(ctx, PIPE_SHADER_COMPUTE, 0, 1, &saved_sb, saved_writable_mask);
 	ctx->set_constant_buffer(ctx, PIPE_SHADER_COMPUTE, 0, &saved_cb);
 
-	si_compute_internal_end(sctx);
+	pipe_resource_reference(&saved_sb.buffer, NULL);
+	pipe_resource_reference(&saved_cb.buffer, NULL);
 }
 
 static void si_compute_do_clear_or_copy(struct si_context *sctx,
@@ -162,7 +167,6 @@ static void si_compute_do_clear_or_copy(struct si_context *sctx,
 	assert(dst->target != PIPE_BUFFER || dst_offset + size <= dst->width0);
 	assert(!src || src_offset + size <= src->width0);
 
-	si_compute_internal_begin(sctx);
 	sctx->flags |= SI_CONTEXT_PS_PARTIAL_FLUSH |
 		       SI_CONTEXT_CS_PARTIAL_FLUSH |
 		       si_get_flush_flags(sctx, coher, SI_COMPUTE_DST_CACHE_POLICY);
@@ -239,7 +243,7 @@ static void si_compute_do_clear_or_copy(struct si_context *sctx,
 		ctx->bind_compute_state(ctx, sctx->cs_clear_buffer);
 	}
 
-	ctx->launch_grid(ctx, &info);
+	si_launch_grid_internal(sctx, &info);
 
 	enum si_cache_policy cache_policy = get_cache_policy(sctx, coher, size);
 	sctx->flags |= SI_CONTEXT_CS_PARTIAL_FLUSH |
@@ -252,7 +256,8 @@ static void si_compute_do_clear_or_copy(struct si_context *sctx,
 	ctx->bind_compute_state(ctx, saved_cs);
 	ctx->set_shader_buffers(ctx, PIPE_SHADER_COMPUTE, 0, src ? 2 : 1, saved_sb,
 				saved_writable_mask);
-	si_compute_internal_end(sctx);
+	for (int i = 0; i < 2; i++)
+		pipe_resource_reference(&saved_sb[i].buffer, NULL);
 }
 
 void si_clear_buffer(struct si_context *sctx, struct pipe_resource *dst,
@@ -316,7 +321,7 @@ void si_clear_buffer(struct si_context *sctx, struct pipe_resource *dst,
 		    (!force_cpdma &&
 		     clear_value_size == 4 &&
 		     offset % 4 == 0 &&
-		     (size > 32*1024 || sctx->chip_class <= GFX8))) {
+		     (size > 32*1024 || sctx->chip_class <= GFX9))) {
 			si_compute_do_clear_or_copy(sctx, dst, offset, NULL, 0,
 						    aligned_size, clear_value,
 						    clear_value_size, coher);
@@ -387,15 +392,35 @@ void si_compute_copy_image(struct si_context *sctx,
 	unsigned width = src_box->width;
 	unsigned height = src_box->height;
 	unsigned depth = src_box->depth;
+	enum pipe_format src_format = util_format_linear(src->format);
+	enum pipe_format dst_format = util_format_linear(dst->format);
 
-	unsigned data[] = {src_box->x, src_box->y, src_box->z, 0, dstx, dsty, dstz, 0};
+	assert(util_format_is_subsampled_422(src_format) ==
+	       util_format_is_subsampled_422(dst_format));
+
+	if (util_format_is_subsampled_422(src_format))
+		src_format = dst_format = PIPE_FORMAT_R32_UINT;
+
+	unsigned x_div = util_format_get_blockwidth(src->format) /
+	                 util_format_get_blockwidth(src_format);
+	assert(src_box->x % x_div == 0);
+	assert(width % x_div == 0);
+
+	unsigned data[] = {src_box->x / x_div, src_box->y, src_box->z, 0,
+	                   dstx / x_div, dsty, dstz, 0};
+	width /= x_div;
 
 	if (width == 0 || height == 0)
 		return;
 
-	si_compute_internal_begin(sctx);
 	sctx->flags |= SI_CONTEXT_CS_PARTIAL_FLUSH |
 		       si_get_flush_flags(sctx, SI_COHERENCY_SHADER, L2_STREAM);
+
+	/* The driver doesn't decompress resources automatically here. */
+	si_decompress_subresource(ctx, dst, PIPE_MASK_RGBAZS, dst_level,
+				  dstz, dstz + src_box->depth - 1);
+	si_decompress_subresource(ctx, src, PIPE_MASK_RGBAZS, src_level,
+				  src_box->z, src_box->z + src_box->depth - 1);
 
 	/* src and dst have the same number of samples. */
 	si_make_CB_shader_coherent(sctx, src->nr_samples, true,
@@ -420,7 +445,7 @@ void si_compute_copy_image(struct si_context *sctx,
 	struct pipe_image_view image[2] = {0};
 	image[0].resource = src;
 	image[0].shader_access = image[0].access = PIPE_IMAGE_ACCESS_READ;
-	image[0].format = util_format_linear(src->format);
+	image[0].format = src_format;
 	image[0].u.tex.level = src_level;
 	image[0].u.tex.first_layer = 0;
 	image[0].u.tex.last_layer =
@@ -428,7 +453,7 @@ void si_compute_copy_image(struct si_context *sctx,
 						: (unsigned)(src->array_size - 1);
 	image[1].resource = dst;
 	image[1].shader_access = image[1].access = PIPE_IMAGE_ACCESS_WRITE;
-	image[1].format = util_format_linear(dst->format);
+	image[1].format = dst_format;
 	image[1].u.tex.level = dst_level;
 	image[1].u.tex.first_layer = 0;
 	image[1].u.tex.last_layer =
@@ -477,7 +502,7 @@ void si_compute_copy_image(struct si_context *sctx,
 		info.grid[2] = depth;
 	}
 
-	ctx->launch_grid(ctx, &info);
+	si_launch_grid_internal(sctx, &info);
 
 	sctx->flags |= SI_CONTEXT_CS_PARTIAL_FLUSH |
 		       (sctx->chip_class <= GFX8 ? SI_CONTEXT_WB_L2 : 0) |
@@ -485,7 +510,9 @@ void si_compute_copy_image(struct si_context *sctx,
 	ctx->bind_compute_state(ctx, saved_cs);
 	ctx->set_shader_images(ctx, PIPE_SHADER_COMPUTE, 0, 2, saved_image);
 	ctx->set_constant_buffer(ctx, PIPE_SHADER_COMPUTE, 0, &saved_cb);
-	si_compute_internal_end(sctx);
+	for (int i = 0; i < 2; i++)
+		pipe_resource_reference(&saved_image[i].resource, NULL);
+	pipe_resource_reference(&saved_cb.buffer, NULL);
 }
 
 void si_retile_dcc(struct si_context *sctx, struct si_texture *tex)
@@ -555,7 +582,7 @@ void si_retile_dcc(struct si_context *sctx, struct si_texture *tex)
 	info.grid[2] = 1;
 	info.last_block[0] = num_threads % 64;
 
-	ctx->launch_grid(ctx, &info);
+	si_launch_grid_internal(sctx, &info);
 
 	/* Don't flush caches or wait. The driver will wait at the end of this IB,
 	 * and L2 will be flushed by the kernel fence.
@@ -564,6 +591,10 @@ void si_retile_dcc(struct si_context *sctx, struct si_texture *tex)
 	/* Restore states. */
 	ctx->bind_compute_state(ctx, saved_cs);
 	ctx->set_shader_images(ctx, PIPE_SHADER_COMPUTE, 0, 3, saved_img);
+
+	for (unsigned i = 0; i < 3; i++) {
+		pipe_resource_reference(&saved_img[i].resource, NULL);
+	}
 }
 
 /* Expand FMASK to make it identity, so that image stores can ignore it. */
@@ -578,8 +609,6 @@ void si_compute_expand_fmask(struct pipe_context *ctx, struct pipe_resource *tex
 	/* EQAA FMASK expansion is unimplemented. */
 	if (tex->nr_samples != tex->nr_storage_samples)
 		return;
-
-	si_compute_internal_begin(sctx);
 
 	/* Flush caches and sync engines. */
 	sctx->flags |= SI_CONTEXT_CS_PARTIAL_FLUSH |
@@ -621,7 +650,7 @@ void si_compute_expand_fmask(struct pipe_context *ctx, struct pipe_resource *tex
 	info.grid[1] = DIV_ROUND_UP(tex->height0, 8);
 	info.grid[2] = is_array ? tex->array_size : 1;
 
-	ctx->launch_grid(ctx, &info);
+	si_launch_grid_internal(sctx, &info);
 
 	/* Flush caches and sync engines. */
 	sctx->flags |= SI_CONTEXT_CS_PARTIAL_FLUSH |
@@ -631,7 +660,7 @@ void si_compute_expand_fmask(struct pipe_context *ctx, struct pipe_resource *tex
 	/* Restore previous states. */
 	ctx->bind_compute_state(ctx, saved_cs);
 	ctx->set_shader_images(ctx, PIPE_SHADER_COMPUTE, 0, 1, &saved_image);
-	si_compute_internal_end(sctx);
+	pipe_resource_reference(&saved_image.resource, NULL);
 
 	/* Array of fully expanded FMASK values, arranged by [log2(fragments)][log2(samples)-1]. */
 #define INVALID 0 /* never used */
@@ -671,6 +700,11 @@ void si_compute_clear_render_target(struct pipe_context *ctx,
 	if (width == 0 || height == 0)
 		return;
 
+	/* The driver doesn't decompress resources automatically here. */
+	si_decompress_subresource(ctx, dstsurf->texture, PIPE_MASK_RGBA,
+				  dstsurf->u.tex.level, dstsurf->u.tex.first_layer,
+				  dstsurf->u.tex.last_layer);
+
 	if (util_format_is_srgb(dstsurf->format)) {
 		union pipe_color_union color_srgb;
 		for (int i = 0; i < 3; i++)
@@ -681,7 +715,6 @@ void si_compute_clear_render_target(struct pipe_context *ctx,
 		memcpy(data + 4, color->ui, sizeof(color->ui));
 	}
 
-	si_compute_internal_begin(sctx);
 	sctx->render_cond_force_off = !render_condition_enabled;
 
 	sctx->flags |= SI_CONTEXT_CS_PARTIAL_FLUSH |
@@ -741,7 +774,7 @@ void si_compute_clear_render_target(struct pipe_context *ctx,
 		info.grid[2] = 1;
 	}
 
-	ctx->launch_grid(ctx, &info);
+	si_launch_grid_internal(sctx, &info);
 
 	sctx->flags |= SI_CONTEXT_CS_PARTIAL_FLUSH |
 		       (sctx->chip_class <= GFX8 ? SI_CONTEXT_WB_L2 : 0) |
@@ -749,5 +782,6 @@ void si_compute_clear_render_target(struct pipe_context *ctx,
 	ctx->bind_compute_state(ctx, saved_cs);
 	ctx->set_shader_images(ctx, PIPE_SHADER_COMPUTE, 0, 1, &saved_image);
 	ctx->set_constant_buffer(ctx, PIPE_SHADER_COMPUTE, 0, &saved_cb);
-	si_compute_internal_end(sctx);
+	pipe_resource_reference(&saved_image.resource, NULL);
+	pipe_resource_reference(&saved_cb.buffer, NULL);
 }

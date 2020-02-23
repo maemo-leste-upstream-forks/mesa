@@ -525,6 +525,17 @@ allocate_full_mipmap(const struct st_texture_object *stObj,
    if (stImage->base.Level > 0 || stObj->base.GenerateMipmap)
       return TRUE;
 
+   /* If the application has explicitly called glTextureParameter to set
+    * GL_TEXTURE_MAX_LEVEL, such that (max - base) > 0, then they're trying
+    * to communicate that they will have multiple miplevels.
+    *
+    * Core Mesa will initialize MaxLevel to value much larger than
+    * MAX_TEXTURE_LEVELS, so we check that to see if it's been set at all.
+    */
+   if (stObj->base.MaxLevel < MAX_TEXTURE_LEVELS &&
+       stObj->base.MaxLevel - stObj->base.BaseLevel > 0)
+      return TRUE;
+
    if (stImage->base._BaseFormat == GL_DEPTH_COMPONENT ||
        stImage->base._BaseFormat == GL_DEPTH_STENCIL_EXT)
       /* depth/stencil textures are seldom mipmapped */
@@ -2224,8 +2235,8 @@ st_GetTexSubImage(struct gl_context * ctx,
                                           slice, 0, 0);
 
          /* get float[4] rgba row from surface */
-         pipe_get_tile_rgba_format(tex_xfer, map, 0, 0, width, height,
-                                   dst_format, rgba);
+         pipe_get_tile_rgba(tex_xfer, map, 0, 0, width, height, dst_format,
+                            rgba);
 
          _mesa_format_convert(dest, dstMesaFormat, dstStride,
                               rgba, RGBA32_FLOAT, srcStride,
@@ -2334,20 +2345,19 @@ fallback_copy_texsubimage(struct gl_context *ctx,
       data = malloc(width * sizeof(uint));
 
       if (data) {
+         unsigned dst_stride = (stImage->pt->target == PIPE_TEXTURE_1D_ARRAY ?
+                                transfer->layer_stride : transfer->stride);
          /* To avoid a large temp memory allocation, do copy row by row */
          for (row = 0; row < height; row++, srcY += yStep) {
-            pipe_get_tile_z(src_trans, map, 0, srcY, width, 1, data);
+            util_format_unpack_z_32unorm(strb->texture->format,
+                                         data, (uint8_t *)map + src_trans->stride * srcY,
+                                         width);
             if (scaleOrBias) {
                _mesa_scale_and_bias_depth_uint(ctx, width, data);
             }
 
-            if (stImage->pt->target == PIPE_TEXTURE_1D_ARRAY) {
-               pipe_put_tile_z(transfer, texDest + row*transfer->layer_stride,
-                               0, 0, width, 1, data);
-            }
-            else {
-               pipe_put_tile_z(transfer, texDest, 0, row, width, 1, data);
-            }
+            util_format_pack_z_32unorm(stImage->pt->format,
+                                       texDest + row * dst_stride, data, width);
          }
       }
       else {
@@ -2382,9 +2392,9 @@ fallback_copy_texsubimage(struct gl_context *ctx,
          /* XXX this usually involves a lot of int/float conversion.
           * try to avoid that someday.
           */
-         pipe_get_tile_rgba_format(src_trans, map, 0, 0, width, height,
-                                   util_format_linear(strb->texture->format),
-                                   tempSrc);
+         pipe_get_tile_rgba(src_trans, map, 0, 0, width, height,
+                            util_format_linear(strb->texture->format),
+                            tempSrc);
 
          /* Store into texture memory.
           * Note that this does some special things such as pixel transfer

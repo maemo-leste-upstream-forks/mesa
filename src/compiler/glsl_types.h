@@ -31,6 +31,7 @@
 #include "shader_enums.h"
 #include "c11/threads.h"
 #include "util/blob.h"
+#include "util/format/u_format.h"
 #include "util/macros.h"
 
 #ifdef __cplusplus
@@ -194,6 +195,27 @@ glsl_base_type_get_bit_size(const enum glsl_base_type base_type)
    }
 
    return 0;
+}
+
+static inline enum glsl_base_type
+glsl_unsigned_base_type_of(enum glsl_base_type type)
+{
+   switch (type) {
+   case GLSL_TYPE_INT:
+      return GLSL_TYPE_UINT;
+   case GLSL_TYPE_INT8:
+      return GLSL_TYPE_UINT8;
+   case GLSL_TYPE_INT16:
+      return GLSL_TYPE_UINT16;
+   case GLSL_TYPE_INT64:
+      return GLSL_TYPE_UINT64;
+   default:
+      assert(type == GLSL_TYPE_UINT ||
+             type == GLSL_TYPE_UINT8 ||
+             type == GLSL_TYPE_UINT16 ||
+             type == GLSL_TYPE_UINT64);
+      return type;
+   }
 }
 
 enum glsl_sampler_dim {
@@ -473,6 +495,23 @@ public:
    unsigned varying_count() const;
 
    /**
+    * Calculate the number of vec4 slots required to hold this type.
+    *
+    * This is the underlying recursive type_size function for
+    * count_attribute_slots() (vertex inputs and varyings) but also for
+    * gallium's !PIPE_CAP_PACKED_UNIFORMS case.
+    */
+   unsigned count_vec4_slots(bool is_gl_vertex_input, bool bindless) const;
+
+   /**
+    * Calculate the number of vec4 slots required to hold this type.
+    *
+    * This is the underlying recursive type_size function for
+    * gallium's PIPE_CAP_PACKED_UNIFORMS case.
+    */
+   unsigned count_dword_slots(bool bindless) const;
+
+   /**
     * Calculate the number of attribute slots required to hold this type
     *
     * This implements the language rules of GLSL 1.50 for counting the number
@@ -487,7 +526,9 @@ public:
     * Vulkan doesn’t make this distinction so the argument should always be
     * false.
     */
-   unsigned count_attribute_slots(bool is_gl_vertex_input) const;
+   unsigned count_attribute_slots(bool is_gl_vertex_input) const {
+      return count_vec4_slots(is_gl_vertex_input, true);
+   }
 
    /**
     * Alignment in bytes of the start of this type in a std140 uniform
@@ -1214,7 +1255,7 @@ struct glsl_struct_field {
     * For interface blocks, the interpolation mode (as in
     * ir_variable::interpolation).  0 otherwise.
     */
-   unsigned interpolation:2;
+   unsigned interpolation:3;
 
    /**
     * For interface blocks, 1 if this variable uses centroid interpolation (as
@@ -1257,7 +1298,7 @@ struct glsl_struct_field {
    /**
     * Layout format, applicable to image variables only.
     */
-   unsigned image_format:16;
+   enum pipe_format image_format;
 
    /**
     * Any of the xfb_* qualifiers trigger the shader to be in transform
@@ -1274,7 +1315,8 @@ struct glsl_struct_field {
    sample(0), matrix_layout(GLSL_MATRIX_LAYOUT_INHERITED), patch(0),    \
    precision(_precision), memory_read_only(0),                          \
    memory_write_only(0), memory_coherent(0), memory_volatile(0),        \
-   memory_restrict(0), image_format(0), explicit_xfb_buffer(0),         \
+   memory_restrict(0), image_format(PIPE_FORMAT_NONE),                  \
+   explicit_xfb_buffer(0),                                              \
    implicit_sized_array(0)
 
    glsl_struct_field(const struct glsl_type *_type,

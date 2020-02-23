@@ -66,14 +66,15 @@ LOCAL_SRC_FILES := \
 	lima_screen.c \
 	lima_screen.h \
 	lima_state.c \
-	lima_submit.c \
-	lima_submit.h \
+	lima_job.c \
+	lima_job.h \
 	lima_texture.c \
 	lima_texture.h \
 	lima_util.c \
 	lima_util.h \
 	lima_format.c \
-	lima_format.h
+	lima_format.h \
+	lima_gpu.h
 
 LOCAL_MODULE := libmesa_pipe_lima
 

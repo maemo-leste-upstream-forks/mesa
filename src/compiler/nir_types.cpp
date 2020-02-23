@@ -153,6 +153,19 @@ glsl_get_aoa_size(const struct glsl_type *type)
 }
 
 unsigned
+glsl_count_vec4_slots(const struct glsl_type *type,
+                      bool is_gl_vertex_input, bool is_bindless)
+{
+   return type->count_vec4_slots(is_gl_vertex_input, is_bindless);
+}
+
+unsigned
+glsl_count_dword_slots(const struct glsl_type *type, bool is_bindless)
+{
+   return type->count_dword_slots(is_bindless);
+}
+
+unsigned
 glsl_count_attribute_slots(const struct glsl_type *type,
                            bool is_gl_vertex_input)
 {
@@ -512,6 +525,20 @@ glsl_array_type(const glsl_type *base, unsigned elements,
                 unsigned explicit_stride)
 {
    return glsl_type::get_array_instance(base, elements, explicit_stride);
+}
+
+const glsl_type *
+glsl_replace_vector_type(const glsl_type *t, unsigned components)
+{
+   if (glsl_type_is_array(t)) {
+      return glsl_array_type(
+         glsl_replace_vector_type(t->fields.array, components), t->length,
+                                  t->explicit_stride);
+   } else if (glsl_type_is_vector_or_scalar(t)) {
+      return glsl_vector_type(t->base_type, components);
+   } else {
+      unreachable("Unhandled base type glsl_replace_vector_type()");
+   }
 }
 
 const glsl_type *

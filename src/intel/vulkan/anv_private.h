@@ -46,6 +46,7 @@
 #include "common/gen_clflush.h"
 #include "common/gen_decoder.h"
 #include "common/gen_gem.h"
+#include "common/gen_l3_config.h"
 #include "dev/gen_device_info.h"
 #include "blorp/blorp.h"
 #include "compiler/brw_compiler.h"
@@ -76,7 +77,6 @@ struct anv_image_view;
 struct anv_instance;
 
 struct gen_aux_map_context;
-struct gen_l3_config;
 struct gen_perf_config;
 
 #include <vulkan/vulkan.h>
@@ -237,10 +237,16 @@ align_u32(uint32_t v, uint32_t a)
 }
 
 static inline uint64_t
-align_u64(uint64_t v, uint64_t a)
+align_down_u64(uint64_t v, uint64_t a)
 {
    assert(a != 0 && a == (a & -a));
-   return (v + a - 1) & ~(a - 1);
+   return v & ~(a - 1);
+}
+
+static inline uint64_t
+align_u64(uint64_t v, uint64_t a)
+{
+   return align_down_u64(v + a - 1, a);
 }
 
 static inline int32_t
@@ -448,15 +454,16 @@ VkResult __vk_errorf(struct anv_instance *instance, const void *object,
 #define vk_error(error) __vk_errorf(NULL, NULL,\
                                     VK_DEBUG_REPORT_OBJECT_TYPE_UNKNOWN_EXT,\
                                     error, __FILE__, __LINE__, NULL)
-#define vk_errorv(instance, obj, error, format, args)\
-    __vk_errorv(instance, obj, REPORT_OBJECT_TYPE(obj), error,\
-                __FILE__, __LINE__, format, args)
-#define vk_errorf(instance, obj, error, format, ...)\
+#define vk_errorfi(instance, obj, error, format, ...)\
     __vk_errorf(instance, obj, REPORT_OBJECT_TYPE(obj), error,\
                 __FILE__, __LINE__, format, ## __VA_ARGS__)
+#define vk_errorf(device, obj, error, format, ...)\
+   vk_errorfi(anv_device_instance_or_null(device),\
+              obj, error, format, ## __VA_ARGS__)
 #else
 #define vk_error(error) error
-#define vk_errorf(instance, obj, error, format, ...) error
+#define vk_errorfi(instance, obj, error, format, ...) error
+#define vk_errorf(device, obj, error, format, ...) error
 #endif
 
 /**
@@ -477,7 +484,7 @@ VkResult __vk_errorf(struct anv_instance *instance, const void *object,
 #define anv_debug_ignored_stype(sType) \
    intel_logd("%s: ignored VkStructureType %u\n", __func__, (sType))
 
-void __anv_perf_warn(struct anv_instance *instance, const void *object,
+void __anv_perf_warn(struct anv_device *device, const void *object,
                      VkDebugReportObjectTypeEXT type, const char *file,
                      int line, const char *format, ...)
    anv_printflike(6, 7);
@@ -638,6 +645,7 @@ struct anv_bo {
     */
    uint64_t offset;
 
+   /** Size of the buffer not including implicit aux */
    uint64_t size;
 
    /* Map for internally mapped BOs.
@@ -645,6 +653,30 @@ struct anv_bo {
     * If ANV_BO_WRAPPER is set in flags, map points to the wrapped BO.
     */
    void *map;
+
+   /** Size of the implicit CCS range at the end of the buffer
+    *
+    * On Gen12, CCS data is always a direct 1/256 scale-down.  A single 64K
+    * page of main surface data maps to a 256B chunk of CCS data and that
+    * mapping is provided on TGL-LP by the AUX table which maps virtual memory
+    * addresses in the main surface to virtual memory addresses for CCS data.
+    *
+    * Because we can't change these maps around easily and because Vulkan
+    * allows two VkImages to be bound to overlapping memory regions (as long
+    * as the app is careful), it's not feasible to make this mapping part of
+    * the image.  (On Gen11 and earlier, the mapping was provided via
+    * RENDER_SURFACE_STATE so each image had its own main -> CCS mapping.)
+    * Instead, we attach the CCS data directly to the buffer object and setup
+    * the AUX table mapping at BO creation time.
+    *
+    * This field is for internal tracking use by the BO allocator only and
+    * should not be touched by other parts of the code.  If something wants to
+    * know if a BO has implicit CCS data, it should instead look at the
+    * has_implicit_ccs boolean below.
+    *
+    * This data is not included in maps of this buffer.
+    */
+   uint32_t _ccs_size;
 
    /** Flags to pass to the kernel through drm_i915_exec_object2::flags */
    uint32_t flags;
@@ -669,6 +701,9 @@ struct anv_bo {
 
    /** See also ANV_BO_ALLOC_CLIENT_VISIBLE_ADDRESS */
    bool has_client_visible_address:1;
+
+   /** True if this BO has implicit CCS data attached to it */
+   bool has_implicit_ccs:1;
 };
 
 static inline struct anv_bo *
@@ -871,7 +906,8 @@ int32_t anv_block_pool_alloc(struct anv_block_pool *pool,
                              uint32_t block_size, uint32_t *padding);
 int32_t anv_block_pool_alloc_back(struct anv_block_pool *pool,
                                   uint32_t block_size);
-void* anv_block_pool_map(struct anv_block_pool *pool, int32_t offset);
+void* anv_block_pool_map(struct anv_block_pool *pool, int32_t offset, uint32_t
+size);
 
 VkResult anv_state_pool_init(struct anv_state_pool *pool,
                              struct anv_device *device,
@@ -964,8 +1000,10 @@ struct anv_memory_heap {
 struct anv_physical_device {
     VK_LOADER_DATA                              _loader_data;
 
+    /* Link in anv_instance::physical_devices */
+    struct list_head                            link;
+
     struct anv_instance *                       instance;
-    uint32_t                                    chipset_id;
     bool                                        no_hw;
     char                                        path[20];
     const char *                                name;
@@ -1010,10 +1048,16 @@ struct anv_physical_device {
     /** True if we can use bindless access for samplers */
     bool                                        has_bindless_samplers;
 
+    /** True if this device has implicit AUX
+     *
+     * If true, CCS is handled as an implicit attachment to the BO rather than
+     * as an explicitly bound surface.
+     */
+    bool                                        has_implicit_ccs;
+
     bool                                        always_flush_cache;
 
     struct anv_device_extension_table           supported_extensions;
-    struct anv_physical_device_dispatch_table   dispatch;
 
     uint32_t                                    eu_total;
     uint32_t                                    subslice_total;
@@ -1054,10 +1098,11 @@ struct anv_instance {
 
     struct anv_instance_extension_table         enabled_extensions;
     struct anv_instance_dispatch_table          dispatch;
+    struct anv_physical_device_dispatch_table   physical_device_dispatch;
     struct anv_device_dispatch_table            device_dispatch;
 
-    int                                         physicalDeviceCount;
-    struct anv_physical_device                  physicalDevice;
+    bool                                        physical_devices_enumerated;
+    struct list_head                            physical_devices;
 
     bool                                        pipeline_cache_enabled;
 
@@ -1208,8 +1253,7 @@ struct anv_device {
 
     VkAllocationCallbacks                       alloc;
 
-    struct anv_instance *                       instance;
-    uint32_t                                    chipset_id;
+    struct anv_physical_device *                physical;
     bool                                        no_hw;
     struct gen_device_info                      info;
     struct isl_device                           isl_dev;
@@ -1269,10 +1313,16 @@ struct anv_device {
     struct gen_aux_map_context                  *aux_map_ctx;
 };
 
+static inline struct anv_instance *
+anv_device_instance_or_null(const struct anv_device *device)
+{
+   return device ? device->physical->instance : NULL;
+}
+
 static inline struct anv_state_pool *
 anv_binding_table_pool(struct anv_device *device)
 {
-   if (device->instance->physicalDevice.use_softpin)
+   if (device->physical->use_softpin)
       return &device->binding_table_pool;
    else
       return &device->surface_state_pool;
@@ -1280,7 +1330,7 @@ anv_binding_table_pool(struct anv_device *device)
 
 static inline struct anv_state
 anv_binding_table_pool_alloc(struct anv_device *device) {
-   if (device->instance->physicalDevice.use_softpin)
+   if (device->physical->use_softpin)
       return anv_state_pool_alloc(&device->binding_table_pool,
                                   device->binding_table_pool.block_size, 0);
    else
@@ -1366,6 +1416,9 @@ enum anv_bo_alloc_flags {
 
    /** Has an address which is visible to the client */
    ANV_BO_ALLOC_CLIENT_VISIBLE_ADDRESS = (1 << 8),
+
+   /** This buffer has implicit CCS data attached to it */
+   ANV_BO_ALLOC_IMPLICIT_CCS = (1 << 9),
 };
 
 VkResult anv_device_alloc_bo(struct anv_device *device, uint64_t size,
@@ -1453,9 +1506,12 @@ int anv_gem_syncobj_wait(struct anv_device *device,
                          uint32_t *handles, uint32_t num_handles,
                          int64_t abs_timeout_ns, bool wait_all);
 
-bool anv_vma_alloc(struct anv_device *device, struct anv_bo *bo,
-                   uint64_t client_address);
-void anv_vma_free(struct anv_device *device, struct anv_bo *bo);
+uint64_t anv_vma_alloc(struct anv_device *device,
+                       uint64_t size, uint64_t align,
+                       enum anv_bo_alloc_flags alloc_flags,
+                       uint64_t client_address);
+void anv_vma_free(struct anv_device *device,
+                  uint64_t address, uint64_t size);
 
 struct anv_reloc_list {
    uint32_t                                     num_relocs;
@@ -2210,6 +2266,18 @@ enum anv_pipe_bits {
     * before they can proceed with the copy.
     */
    ANV_PIPE_RENDER_TARGET_BUFFER_WRITES      = (1 << 22),
+
+   /* This bit does not exist directly in PIPE_CONTROL. It means that Gen12
+    * AUX-TT data has changed and we need to invalidate AUX-TT data.  This is
+    * done by writing the AUX-TT register.
+    */
+   ANV_PIPE_AUX_TABLE_INVALIDATE_BIT         = (1 << 23),
+
+   /* This bit does not exist directly in PIPE_CONTROL. It means that a
+    * PIPE_CONTROL with a post-sync operation will follow. This is used to
+    * implement a workaround for Gen9.
+    */
+   ANV_PIPE_POST_SYNC_BIT                    = (1 << 24),
 };
 
 #define ANV_PIPE_FLUSH_BITS ( \
@@ -2229,7 +2297,8 @@ enum anv_pipe_bits {
    ANV_PIPE_VF_CACHE_INVALIDATE_BIT | \
    ANV_PIPE_DATA_CACHE_FLUSH_BIT | \
    ANV_PIPE_TEXTURE_CACHE_INVALIDATE_BIT | \
-   ANV_PIPE_INSTRUCTION_CACHE_INVALIDATE_BIT)
+   ANV_PIPE_INSTRUCTION_CACHE_INVALIDATE_BIT | \
+   ANV_PIPE_AUX_TABLE_INVALIDATE_BIT)
 
 static inline enum anv_pipe_bits
 anv_pipe_flush_bits_for_access_flags(VkAccessFlags flags)
@@ -3224,6 +3293,12 @@ struct anv_format {
    bool can_ycbcr;
 };
 
+/**
+ * Return the aspect's _format_ plane, not its _memory_ plane (using the
+ * vocabulary of VK_EXT_image_drm_format_modifier). As a consequence, \a
+ * aspect_mask may contain VK_IMAGE_ASPECT_PLANE_*, but must not contain
+ * VK_IMAGE_ASPECT_MEMORY_PLANE_* .
+ */
 static inline uint32_t
 anv_image_aspect_to_plane(VkImageAspectFlags image_aspects,
                           VkImageAspectFlags aspect_mask)
@@ -3286,6 +3361,12 @@ anv_get_isl_format(const struct gen_device_info *devinfo, VkFormat vk_format,
 {
    return anv_get_format_plane(devinfo, vk_format, aspect, tiling).isl_format;
 }
+
+bool anv_formats_ccs_e_compatible(const struct gen_device_info *devinfo,
+                                  VkImageCreateFlags create_flags,
+                                  VkFormat vk_format,
+                                  VkImageTiling vk_tiling,
+                                  const VkImageFormatListCreateInfoKHR *fmt_list);
 
 static inline struct isl_swizzle
 anv_swizzle_for_render(struct isl_swizzle swizzle)
@@ -3360,11 +3441,6 @@ struct anv_image {
     */
    bool disjoint;
 
-   /* All the formats that can be used when creating views of this image
-    * are CCS_E compatible.
-    */
-   bool ccs_e_compatible;
-
    /* Image was created with external format. */
    bool external_format;
 
@@ -3424,11 +3500,9 @@ struct anv_image {
       struct anv_surface shadow_surface;
 
       /**
-       * For color images, this is the aux usage for this image when not used
-       * as a color attachment.
-       *
-       * For depth/stencil images, this is set to ISL_AUX_USAGE_HIZ if the
-       * image has a HiZ buffer.
+       * The base aux usage for this image.  For color images, this can be
+       * either CCS_E or CCS_D depending on whether or not we can reliably
+       * leave CCS on all the time.
        */
       enum isl_aux_usage aux_usage;
 
@@ -3444,13 +3518,6 @@ struct anv_image {
        * BO associated with this plane, set when bound.
        */
       struct anv_address address;
-
-      /**
-       * Address of the main surface used to fill the aux map table. This is
-       * used at destruction of the image since the Vulkan spec does not
-       * guarantee that the address.bo field we still be valid at destruction.
-       */
-      uint64_t aux_map_surface_address;
 
       /**
        * When destroying the image, also free the bo.
@@ -3475,15 +3542,13 @@ anv_image_aux_levels(const struct anv_image * const image,
                      VkImageAspectFlagBits aspect)
 {
    uint32_t plane = anv_image_aspect_to_plane(image->aspects, aspect);
+   if (image->planes[plane].aux_usage == ISL_AUX_USAGE_NONE)
+      return 0;
 
    /* The Gen12 CCS aux surface is represented with only one level. */
-   const uint8_t aux_logical_levels =
-      image->planes[plane].aux_surface.isl.tiling == ISL_TILING_GEN12_CCS ?
-      image->planes[plane].surface.isl.levels :
-      image->planes[plane].aux_surface.isl.levels;
-
-   return image->planes[plane].aux_surface.isl.size_B > 0 ?
-          aux_logical_levels : 0;
+   return image->planes[plane].aux_surface.isl.tiling == ISL_TILING_GEN12_CCS ?
+          image->planes[plane].surface.isl.levels :
+          image->planes[plane].aux_surface.isl.levels;
 }
 
 /* Returns the number of auxiliary buffer layers attached to an image. */
@@ -3676,10 +3741,17 @@ anv_image_copy_to_shadow(struct anv_cmd_buffer *cmd_buffer,
                          uint32_t base_level, uint32_t level_count,
                          uint32_t base_layer, uint32_t layer_count);
 
+enum isl_aux_state
+anv_layout_to_aux_state(const struct gen_device_info * const devinfo,
+                        const struct anv_image *image,
+                        const VkImageAspectFlagBits aspect,
+                        const VkImageLayout layout);
+
 enum isl_aux_usage
 anv_layout_to_aux_usage(const struct gen_device_info * const devinfo,
                         const struct anv_image *image,
                         const VkImageAspectFlagBits aspect,
+                        const VkImageUsageFlagBits usage,
                         const VkImageLayout layout);
 
 enum anv_fast_clear_type
@@ -3804,10 +3876,6 @@ VkResult anv_image_create(VkDevice _device,
                           const struct anv_image_create_info *info,
                           const VkAllocationCallbacks* alloc,
                           VkImage *pImage);
-
-const struct anv_surface *
-anv_image_get_surface_for_aspect_mask(const struct anv_image *image,
-                                      VkImageAspectFlags aspect_mask);
 
 enum isl_format
 anv_isl_format_for_descriptor_type(VkDescriptorType type);

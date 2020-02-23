@@ -147,7 +147,6 @@ struct st_context
    boolean has_indep_blend_func;
    boolean needs_rgb_dst_alpha_override;
    boolean can_bind_const_buffer_as_vertex;
-   boolean has_signed_vertex_buffer_offset;
    boolean lower_flatshade;
    boolean lower_alpha_test;
    boolean lower_point_size;
@@ -336,6 +335,9 @@ struct st_context
 
    /* The number of vertex buffers from the last call of validate_arrays. */
    unsigned last_num_vbuffers;
+
+   unsigned last_used_atomic_bindings[PIPE_SHADER_TYPES];
+   unsigned last_num_ssbos[PIPE_SHADER_TYPES];
 
    int32_t draw_stamp;
    int32_t read_stamp;

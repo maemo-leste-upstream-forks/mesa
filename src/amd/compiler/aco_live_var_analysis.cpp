@@ -111,6 +111,12 @@ void process_live_temps_per_block(Program *program, live& lives, Block* block,
       if (insn->opcode == aco_opcode::p_logical_end) {
          new_demand.sgpr += phi_sgpr_ops[block->index];
       } else {
+         /* we need to do this in a separate loop because the next one can
+          * setKill() for several operands at once and we don't want to
+          * overwrite that in a later iteration */
+         for (Operand& op : insn->operands)
+            op.setKill(false);
+
          for (unsigned i = 0; i < insn->operands.size(); ++i)
          {
             Operand& operand = insn->operands[i];
@@ -130,8 +136,6 @@ void process_live_temps_per_block(Program *program, live& lives, Block* block,
                   }
                }
                new_demand += temp;
-            } else {
-               operand.setKill(false);
             }
 
             if (operand.isFixed() && operand.physReg() == exec)
@@ -216,7 +220,8 @@ void process_live_temps_per_block(Program *program, live& lives, Block* block,
       phi_idx--;
    }
 
-   if (!(block->index != 0 || (live_vgprs.empty() && live_sgprs.empty()))) {
+   if ((block->logical_preds.empty() && !live_vgprs.empty()) ||
+       (block->linear_preds.empty() && !live_sgprs.empty())) {
       aco_print_program(program, stderr);
       fprintf(stderr, "These temporaries are never defined or are defined after use:\n");
       for (Temp vgpr : live_vgprs)
@@ -227,6 +232,16 @@ void process_live_temps_per_block(Program *program, live& lives, Block* block,
    }
 
    assert(block->index != 0 || new_demand == RegisterDemand());
+}
+
+unsigned calc_waves_per_workgroup(Program *program)
+{
+   unsigned workgroup_size = program->wave_size;
+   if (program->stage == compute_cs) {
+      unsigned* bsize = program->info->cs.block_size;
+      workgroup_size = bsize[0] * bsize[1] * bsize[2];
+   }
+   return align(workgroup_size, program->wave_size) / program->wave_size;
 }
 } /* end namespace */
 
@@ -284,6 +299,20 @@ uint16_t get_addr_vgpr_from_waves(Program *program, uint16_t max_waves)
     return std::min(vgprs, program->vgpr_limit);
 }
 
+void calc_min_waves(Program* program)
+{
+   unsigned waves_per_workgroup = calc_waves_per_workgroup(program);
+   /* currently min_waves is in wave64 waves */
+   if (program->wave_size == 32)
+      waves_per_workgroup = DIV_ROUND_UP(waves_per_workgroup, 2);
+
+   unsigned simd_per_cu = 4; /* TODO: different on Navi */
+   bool wgp = program->chip_class >= GFX10; /* assume WGP is used on Navi */
+   unsigned simd_per_cu_wgp = wgp ? simd_per_cu * 2 : simd_per_cu;
+
+   program->min_waves = DIV_ROUND_UP(waves_per_workgroup, simd_per_cu_wgp);
+}
+
 void update_vgpr_sgpr_demand(Program* program, const RegisterDemand new_demand)
 {
    /* TODO: max_waves_per_simd, simd_per_cu and the number of physical vgprs for Navi */
@@ -304,13 +333,7 @@ void update_vgpr_sgpr_demand(Program* program, const RegisterDemand new_demand)
       program->max_waves = max_waves_per_simd;
 
       /* adjust max_waves for workgroup and LDS limits */
-      unsigned workgroup_size = program->wave_size;
-      if (program->stage == compute_cs) {
-         unsigned* bsize = program->info->cs.block_size;
-         workgroup_size = bsize[0] * bsize[1] * bsize[2];
-      }
-      unsigned waves_per_workgroup = align(workgroup_size, program->wave_size) / program->wave_size;
-
+      unsigned waves_per_workgroup = calc_waves_per_workgroup(program);
       unsigned workgroups_per_cu_wgp = max_waves_per_simd * simd_per_cu_wgp / waves_per_workgroup;
       if (program->config->lds_size) {
          unsigned lds = program->config->lds_size * program->lds_alloc_granule;

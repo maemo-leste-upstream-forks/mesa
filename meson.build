@@ -22,7 +22,7 @@ project(
   'mesa',
   ['c', 'cpp'],
   version : run_command(
-    [find_program('python', 'python2', 'python3'), 'bin/meson_get_version.py']
+    [find_program('python', 'python3'), 'bin/meson_get_version.py']
   ).stdout(),
   license : 'MIT',
   meson_version : '>= 0.46',
@@ -33,6 +33,10 @@ cc = meson.get_compiler('c')
 cpp = meson.get_compiler('cpp')
 
 null_dep = dependency('', required : false)
+
+if get_option('layout') != 'mirror'
+  error('`mirror` is the only build directory layout supported')
+endif
 
 # Arguments for the preprocessor, put these in a separate array from the C and
 # C++ (cpp in meson terminology) arguments since they need to be added to the
@@ -244,10 +248,6 @@ with_amd_vk = _vulkan_drivers.contains('amd')
 with_freedreno_vk = _vulkan_drivers.contains('freedreno')
 with_any_vk = _vulkan_drivers.length() != 0 and _vulkan_drivers != ['']
 
-if with_freedreno_vk and get_option('I-love-half-baked-turnips') != true
-  error('Cannot enable freedreno vulkan driver')
-endif
-
 if with_dri_swrast and (with_gallium_softpipe or with_gallium_swr)
   error('Only one swrast provider can be built')
 endif
@@ -436,6 +436,7 @@ if with_vulkan_icd_dir == ''
   with_vulkan_icd_dir = join_paths(get_option('datadir'), 'vulkan/icd.d')
 endif
 
+# GNU/Hurd includes egl_dri2, without drm.
 with_dri2 = (with_dri or with_any_vk) and (with_dri_platform == 'drm' or
   host_machine.system() == 'gnu')
 _dri3 = get_option('dri3')
@@ -1178,6 +1179,11 @@ if host_machine.system() != 'windows'
   endif
 endif
 
+if cc.has_member('struct dirent', 'd_type', prefix: '''#include <sys/types.h>
+   #include <dirent.h>''')
+   pre_args += '-DHAVE_DIRENT_D_TYPE'
+endif
+
 # strtod locale support
 if cc.links('''
     #define _GNU_SOURCE
@@ -1353,7 +1359,8 @@ endforeach
 with_gallium_drisw_kms = false
 dep_libdrm = dependency(
   'libdrm', version : '>=' + _drm_ver,
-  required : with_dri2 or with_dri3
+  # GNU/Hurd includes egl_dri2, without drm.
+  required : (with_dri2 and host_machine.system() != 'gnu') or with_dri3
 )
 if dep_libdrm.found()
   pre_args += '-DHAVE_LIBDRM'

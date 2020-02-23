@@ -83,10 +83,10 @@ struct brw_compiler {
       uint8_t *ra_reg_to_grf;
 
       /**
-       * ra class for the aligned pairs we use for PLN, which doesn't
+       * ra class for the aligned barycentrics we use for PLN, which doesn't
        * appear in *classes.
        */
-      int aligned_pairs_class;
+      int aligned_bary_class;
    } fs_reg_sets[3];
 
    void (*shader_debug_log)(void *, const char *str, ...) PRINTFLIKE(2, 3);
@@ -751,7 +751,6 @@ struct brw_wm_prog_data {
    bool dispatch_16;
    bool dispatch_32;
    bool dual_src_blend;
-   bool replicate_alpha;
    bool persample_dispatch;
    bool uses_pos_offset;
    bool uses_omask;

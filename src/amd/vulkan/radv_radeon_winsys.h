@@ -61,6 +61,7 @@ enum radeon_bo_flag { /* bitfield */
 	RADEON_FLAG_READ_ONLY =     (1 << 7),
 	RADEON_FLAG_32BIT =         (1 << 8),
 	RADEON_FLAG_PREFER_LOCAL_BO = (1 << 9),
+	RADEON_FLAG_ZERO_VRAM = (1 << 10),
 };
 
 enum radeon_bo_usage { /* bitfield */
@@ -144,6 +145,7 @@ struct radeon_bo_metadata {
 		struct {
 			/* surface flags */
 			unsigned swizzle_mode:5;
+			bool scanout;
 		} gfx9;
 	} u;
 
@@ -155,7 +157,6 @@ struct radeon_bo_metadata {
 	uint32_t                metadata[64];
 };
 
-uint32_t syncobj_handle;
 struct radeon_winsys_fence;
 
 struct radeon_winsys_bo {

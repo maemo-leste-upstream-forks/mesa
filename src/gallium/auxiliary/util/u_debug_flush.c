@@ -51,7 +51,7 @@
 #include <stdio.h>
 
 /* Future improvement: Use realloc instead? */
-#define DEBUG_FLUSH_MAP_DEPTH 16
+#define DEBUG_FLUSH_MAP_DEPTH 32
 
 struct debug_map_item {
    struct debug_stack_frame *frame;
@@ -111,7 +111,7 @@ debug_flush_pointer_compare(void *key1, void *key2)
 static unsigned
 debug_flush_pointer_hash(void *key)
 {
-   return (unsigned) (unsigned long) key;
+   return (unsigned) (uintptr_t) key;
 }
 
 struct debug_flush_buf *

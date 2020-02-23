@@ -61,12 +61,12 @@ static uint32_t
 blit_image_info(const struct tu_blit_surf *img, bool src, bool stencil_read)
 {
    const struct tu_native_format *fmt = tu6_get_native_format(img->fmt);
-   enum a6xx_color_fmt rb = fmt->rb;
+   enum a6xx_format rb = fmt->rb;
    enum a3xx_color_swap swap = img->tiled ? WZYX : fmt->swap;
-   if (rb == RB6_R10G10B10A2_UNORM && src)
-      rb = RB6_R10G10B10A2_FLOAT16;
-   if (rb == RB6_Z24_UNORM_S8_UINT)
-      rb = RB6_Z24_UNORM_S8_UINT_AS_R8G8B8A8;
+   if (rb == FMT6_10_10_10_2_UNORM_DEST && src)
+      rb = FMT6_10_10_10_2_UNORM;
+   if (rb == FMT6_Z24_UNORM_S8_UINT)
+      rb = FMT6_Z24_UNORM_S8_UINT_AS_R8G8B8A8;
 
    if (stencil_read)
       swap = XYZW;
@@ -79,17 +79,18 @@ blit_image_info(const struct tu_blit_surf *img, bool src, bool stencil_read)
 }
 
 static void
-emit_blit_step(struct tu_cmd_buffer *cmdbuf, const struct tu_blit *blt)
+emit_blit_step(struct tu_cmd_buffer *cmdbuf, struct tu_cs *cs,
+               const struct tu_blit *blt)
 {
-   struct tu_cs *cs = &cmdbuf->cs;
+   struct tu_physical_device *phys_dev = cmdbuf->device->physical_device;
 
    tu_cs_reserve_space(cmdbuf->device, cs, 66);
 
-   enum a6xx_color_fmt fmt = tu6_get_native_format(blt->dst.fmt)->rb;
-   if (fmt == RB6_Z24_UNORM_S8_UINT)
-      fmt = RB6_Z24_UNORM_S8_UINT_AS_R8G8B8A8;
+   enum a6xx_format fmt = tu6_get_native_format(blt->dst.fmt)->rb;
+   if (fmt == FMT6_Z24_UNORM_S8_UINT)
+      fmt = FMT6_Z24_UNORM_S8_UINT_AS_R8G8B8A8;
 
-   enum a6xx_2d_ifmt ifmt = tu6_rb_fmt_to_ifmt(fmt);
+   enum a6xx_2d_ifmt ifmt = tu6_fmt_to_ifmt(fmt);
 
    if (vk_format_is_srgb(blt->dst.fmt)) {
       assert(ifmt == R2D_UNORM8);
@@ -99,15 +100,15 @@ emit_blit_step(struct tu_cmd_buffer *cmdbuf, const struct tu_blit *blt)
    uint32_t blit_cntl = A6XX_RB_2D_BLIT_CNTL_ROTATE(blt->rotation) |
                         COND(blt->type == TU_BLIT_CLEAR, A6XX_RB_2D_BLIT_CNTL_SOLID_COLOR) |
                         A6XX_RB_2D_BLIT_CNTL_COLOR_FORMAT(fmt) | /* not required? */
-                        COND(fmt == RB6_Z24_UNORM_S8_UINT_AS_R8G8B8A8, A6XX_RB_2D_BLIT_CNTL_D24S8) |
+                        COND(fmt == FMT6_Z24_UNORM_S8_UINT_AS_R8G8B8A8, A6XX_RB_2D_BLIT_CNTL_D24S8) |
                         A6XX_RB_2D_BLIT_CNTL_MASK(0xf) |
                         A6XX_RB_2D_BLIT_CNTL_IFMT(ifmt);
 
-   tu_cs_emit_pkt4(&cmdbuf->cs, REG_A6XX_RB_2D_BLIT_CNTL, 1);
-   tu_cs_emit(&cmdbuf->cs, blit_cntl);
+   tu_cs_emit_pkt4(cs, REG_A6XX_RB_2D_BLIT_CNTL, 1);
+   tu_cs_emit(cs, blit_cntl);
 
-   tu_cs_emit_pkt4(&cmdbuf->cs, REG_A6XX_GRAS_2D_BLIT_CNTL, 1);
-   tu_cs_emit(&cmdbuf->cs, blit_cntl);
+   tu_cs_emit_pkt4(cs, REG_A6XX_GRAS_2D_BLIT_CNTL, 1);
+   tu_cs_emit(cs, blit_cntl);
 
    /*
     * Emit source:
@@ -190,8 +191,8 @@ emit_blit_step(struct tu_cmd_buffer *cmdbuf, const struct tu_blit *blt)
    tu_cs_emit_pkt4(cs, REG_A6XX_RB_UNKNOWN_8C01, 1);
    tu_cs_emit(cs, 0);
 
-   if (fmt == RB6_R10G10B10A2_UNORM)
-      fmt = RB6_R16G16B16A16_FLOAT;
+   if (fmt == FMT6_10_10_10_2_UNORM_DEST)
+      fmt = FMT6_16_16_16_16_FLOAT;
 
    tu_cs_emit_pkt4(cs, REG_A6XX_SP_2D_SRC_FORMAT, 1);
    tu_cs_emit(cs, COND(vk_format_is_sint(blt->src.fmt), A6XX_SP_2D_SRC_FORMAT_SINT) |
@@ -201,7 +202,7 @@ emit_blit_step(struct tu_cmd_buffer *cmdbuf, const struct tu_blit *blt)
                   A6XX_SP_2D_SRC_FORMAT_MASK(0xf));
 
    tu_cs_emit_pkt4(cs, REG_A6XX_RB_UNKNOWN_8E04, 1);
-   tu_cs_emit(cs, 0x01000000);
+   tu_cs_emit(cs, phys_dev->magic.RB_UNKNOWN_8E04_blit);
 
    tu_cs_emit_pkt7(cs, CP_BLIT, 1);
    tu_cs_emit(cs, CP_BLIT_0_OP(BLIT_OP_SCALE));
@@ -212,7 +213,8 @@ emit_blit_step(struct tu_cmd_buffer *cmdbuf, const struct tu_blit *blt)
    tu_cs_emit(cs, 0);
 }
 
-void tu_blit(struct tu_cmd_buffer *cmdbuf, struct tu_blit *blt)
+void tu_blit(struct tu_cmd_buffer *cmdbuf, struct tu_cs *cs,
+             struct tu_blit *blt)
 {
    switch (blt->type) {
    case TU_BLIT_COPY:
@@ -266,24 +268,29 @@ void tu_blit(struct tu_cmd_buffer *cmdbuf, struct tu_blit *blt)
       /* unsupported format cleared as UINT32 */
       if (blt->dst.fmt == VK_FORMAT_E5B9G9R9_UFLOAT_PACK32)
          blt->dst.fmt = VK_FORMAT_R32_UINT;
-      assert(blt->dst.samples == 1); /* TODO */
+      /* TODO: multisample image clearing also seems not to work with certain
+       * formats. The blob uses a shader-based clear in these cases.
+       */
+      blt->dst.x *= blt->dst.samples;
+      blt->dst.width *= blt->dst.samples;
+      blt->dst.samples = 1;
       blt->src = blt->dst;
       break;
    default:
       assert(blt->dst.samples == 1);
    }
 
-   tu_cs_reserve_space(cmdbuf->device, &cmdbuf->cs, 18);
+   tu_cs_reserve_space(cmdbuf->device, cs, 18);
 
-   tu6_emit_event_write(cmdbuf, &cmdbuf->cs, LRZ_FLUSH, false);
-   tu6_emit_event_write(cmdbuf, &cmdbuf->cs, 0x1d, true);
-   tu6_emit_event_write(cmdbuf, &cmdbuf->cs, FACENESS_FLUSH, true);
-   tu6_emit_event_write(cmdbuf, &cmdbuf->cs, PC_CCU_INVALIDATE_COLOR, false);
-   tu6_emit_event_write(cmdbuf, &cmdbuf->cs, PC_CCU_INVALIDATE_DEPTH, false);
+   tu6_emit_event_write(cmdbuf, cs, LRZ_FLUSH, false);
+   tu6_emit_event_write(cmdbuf, cs, PC_CCU_FLUSH_COLOR_TS, true);
+   tu6_emit_event_write(cmdbuf, cs, PC_CCU_FLUSH_DEPTH_TS, true);
+   tu6_emit_event_write(cmdbuf, cs, PC_CCU_INVALIDATE_COLOR, false);
+   tu6_emit_event_write(cmdbuf, cs, PC_CCU_INVALIDATE_DEPTH, false);
 
    /* buffer copy setup */
-   tu_cs_emit_pkt7(&cmdbuf->cs, CP_SET_MARKER, 1);
-   tu_cs_emit(&cmdbuf->cs, A6XX_CP_SET_MARKER_0_MODE(RM6_BLIT2DSCALE));
+   tu_cs_emit_pkt7(cs, CP_SET_MARKER, 1);
+   tu_cs_emit(cs, A6XX_CP_SET_MARKER_0_MODE(RM6_BLIT2DSCALE));
 
    for (unsigned layer = 0; layer < blt->layers; layer++) {
       if (blt->buffer) {
@@ -303,7 +310,7 @@ void tu_blit(struct tu_cmd_buffer *cmdbuf, struct tu_blit *blt)
 
             line_blt.src.width = line_blt.dst.width = tmp;
 
-            emit_blit_step(cmdbuf, &line_blt);
+            emit_blit_step(cmdbuf, cs, &line_blt);
 
             src_va += tmp * blocksize;
             dst_va += tmp * blocksize;
@@ -324,7 +331,7 @@ void tu_blit(struct tu_cmd_buffer *cmdbuf, struct tu_blit *blt)
             line_blt.src.x = blt->src.x + (src_va & 63) / vk_format_get_blocksize(blt->src.fmt);
             line_blt.src.va = src_va & ~63;
 
-            emit_blit_step(cmdbuf, &line_blt);
+            emit_blit_step(cmdbuf, cs, &line_blt);
 
             line_blt.dst.y++;
             src_va += blt->src.pitch;
@@ -344,13 +351,13 @@ void tu_blit(struct tu_cmd_buffer *cmdbuf, struct tu_blit *blt)
             line_blt.dst.x = blt->dst.x + (dst_va & 63) / vk_format_get_blocksize(blt->dst.fmt);
             line_blt.dst.va = dst_va & ~63;
 
-            emit_blit_step(cmdbuf, &line_blt);
+            emit_blit_step(cmdbuf, cs, &line_blt);
 
             line_blt.src.y++;
             dst_va += blt->dst.pitch;
          }
       } else {
-         emit_blit_step(cmdbuf, blt);
+         emit_blit_step(cmdbuf, cs, blt);
       }
       blt->dst.va += blt->dst.layer_size;
       blt->src.va += blt->src.layer_size;
@@ -358,10 +365,10 @@ void tu_blit(struct tu_cmd_buffer *cmdbuf, struct tu_blit *blt)
       blt->src.ubwc_va += blt->src.ubwc_size;
    }
 
-   tu_cs_reserve_space(cmdbuf->device, &cmdbuf->cs, 17);
+   tu_cs_reserve_space(cmdbuf->device, cs, 17);
 
-   tu6_emit_event_write(cmdbuf, &cmdbuf->cs, 0x1d, true);
-   tu6_emit_event_write(cmdbuf, &cmdbuf->cs, FACENESS_FLUSH, true);
-   tu6_emit_event_write(cmdbuf, &cmdbuf->cs, CACHE_FLUSH_TS, true);
-   tu6_emit_event_write(cmdbuf, &cmdbuf->cs, CACHE_INVALIDATE, false);
+   tu6_emit_event_write(cmdbuf, cs, PC_CCU_FLUSH_COLOR_TS, true);
+   tu6_emit_event_write(cmdbuf, cs, PC_CCU_FLUSH_DEPTH_TS, true);
+   tu6_emit_event_write(cmdbuf, cs, CACHE_FLUSH_TS, true);
+   tu6_emit_event_write(cmdbuf, cs, CACHE_INVALIDATE, false);
 }

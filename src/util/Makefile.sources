@@ -21,6 +21,7 @@ MESA_UTIL_FILES := \
 	double.h \
 	fast_idiv_by_const.c \
 	fast_idiv_by_const.h \
+	fnv1a.h \
 	format/u_format.c \
 	format/u_format.h \
 	format/u_format_bptc.c \
@@ -107,6 +108,7 @@ MESA_UTIL_FILES := \
 	u_vector.h \
 	u_debug.c \
 	u_debug.h \
+	u_debug_memory.c \
 	u_cpu_detect.c \
 	u_cpu_detect.h \
 	os_memory_aligned.h \
@@ -117,7 +119,9 @@ MESA_UTIL_FILES := \
 	u_mm.h \
 	u_mm.c \
 	vma.c \
-	vma.h
+	vma.h \
+	xxhash.h
+
 
 MESA_UTIL_GENERATED_FILES = \
 	format_srgb.c \

@@ -446,6 +446,103 @@ midgard_nir_lower_fdot2(nir_shader *shader)
         return progress;
 }
 
+/* Midgard can't write depth and stencil separately. It has to happen in a
+ * single store operation containing both. Let's add a panfrost specific
+ * intrinsic and turn all depth/stencil stores into a packed depth+stencil
+ * one.
+ */
+static bool
+midgard_nir_lower_zs_store(nir_shader *nir)
+{
+        if (nir->info.stage != MESA_SHADER_FRAGMENT)
+                return false;
+
+        nir_variable *z_var = NULL, *s_var = NULL;
+
+        nir_foreach_variable(var, &nir->outputs) {
+                if (var->data.location == FRAG_RESULT_DEPTH)
+                        z_var = var;
+                else if (var->data.location == FRAG_RESULT_STENCIL)
+                        s_var = var;
+        }
+
+        if (!z_var && !s_var)
+                return false;
+
+        bool progress = false;
+
+        nir_foreach_function(function, nir) {
+                if (!function->impl) continue;
+
+                nir_intrinsic_instr *z_store = NULL, *s_store = NULL, *last_store = NULL;
+
+                nir_foreach_block(block, function->impl) {
+                        nir_foreach_instr_safe(instr, block) {
+                                if (instr->type != nir_instr_type_intrinsic)
+                                        continue;
+
+                                nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+                                if (intr->intrinsic != nir_intrinsic_store_output)
+                                        continue;
+
+                                if (z_var && nir_intrinsic_base(intr) == z_var->data.driver_location) {
+                                        assert(!z_store);
+                                        z_store = intr;
+                                        last_store = intr;
+                                }
+
+                                if (s_var && nir_intrinsic_base(intr) == s_var->data.driver_location) {
+                                        assert(!s_store);
+                                        s_store = intr;
+                                        last_store = intr;
+                                }
+                        }
+                }
+
+                if (!z_store && !s_store) continue;
+
+                nir_builder b;
+                nir_builder_init(&b, function->impl);
+
+                b.cursor = nir_before_instr(&last_store->instr);
+
+		nir_ssa_def *zs_store_src;
+
+                if (z_store && s_store) {
+                        nir_ssa_def *srcs[2] = {
+                                nir_ssa_for_src(&b, z_store->src[0], 1),
+                                nir_ssa_for_src(&b, s_store->src[0], 1),
+                        };
+
+                        zs_store_src = nir_vec(&b, srcs, 2);
+                } else {
+                        zs_store_src = nir_ssa_for_src(&b, last_store->src[0], 1);
+                }
+
+                nir_intrinsic_instr *zs_store;
+
+                zs_store = nir_intrinsic_instr_create(b.shader,
+                                                      nir_intrinsic_store_zs_output_pan);
+                zs_store->src[0] = nir_src_for_ssa(zs_store_src);
+                zs_store->num_components = z_store && s_store ? 2 : 1;
+                nir_intrinsic_set_component(zs_store, z_store ? 0 : 1);
+
+                /* Replace the Z and S store by a ZS store */
+                nir_builder_instr_insert(&b, &zs_store->instr);
+
+                if (z_store)
+                        nir_instr_remove(&z_store->instr);
+
+                if (s_store)
+                        nir_instr_remove(&s_store->instr);
+
+                nir_metadata_preserve(function->impl, nir_metadata_block_index | nir_metadata_dominance);
+                progress = true;
+        }
+
+        return progress;
+}
+
 /* Flushes undefined values to zero */
 
 static void
@@ -487,6 +584,7 @@ optimise_nir(nir_shader *nir, unsigned quirks)
                 NIR_PASS(progress, nir, nir_lower_vars_to_ssa);
 
                 NIR_PASS(progress, nir, nir_copy_prop);
+                NIR_PASS(progress, nir, nir_opt_remove_phis);
                 NIR_PASS(progress, nir, nir_opt_dce);
                 NIR_PASS(progress, nir, nir_opt_dead_cf);
                 NIR_PASS(progress, nir, nir_opt_cse);
@@ -571,11 +669,33 @@ emit_load_const(compiler_context *ctx, nir_load_const_instr *instr)
 {
         nir_ssa_def def = instr->def;
 
-        float *v = rzalloc_array(NULL, float, 4);
-        nir_const_value_to_array(v, instr->value, instr->def.num_components, f32);
+        midgard_constants *consts = rzalloc(NULL, midgard_constants);
+
+        assert(instr->def.num_components * instr->def.bit_size <= sizeof(*consts) * 8);
+
+#define RAW_CONST_COPY(bits)                                         \
+        nir_const_value_to_array(consts->u##bits, instr->value,      \
+                                 instr->def.num_components, u##bits)
+
+        switch (instr->def.bit_size) {
+        case 64:
+                RAW_CONST_COPY(64);
+                break;
+        case 32:
+                RAW_CONST_COPY(32);
+                break;
+        case 16:
+                RAW_CONST_COPY(16);
+                break;
+        case 8:
+                RAW_CONST_COPY(8);
+                break;
+        default:
+                unreachable("Invalid bit_size for load_const instruction\n");
+        }
 
         /* Shifted for SSA, +1 for off-by-one */
-        _mesa_hash_table_u64_insert(ctx->ssa_constants, (def.index << 1) + 1, v);
+        _mesa_hash_table_u64_insert(ctx->ssa_constants, (def.index << 1) + 1, consts);
 }
 
 /* Normally constants are embedded implicitly, but for I/O and such we have to
@@ -763,6 +883,11 @@ emit_alu(compiler_context *ctx, nir_alu_instr *instr)
                 ALU_CASE(fexp2, fexp2);
                 ALU_CASE(flog2, flog2);
 
+                ALU_CASE(f2i64, f2i_rtz);
+                ALU_CASE(f2u64, f2u_rtz);
+                ALU_CASE(i2f64, i2f_rtz);
+                ALU_CASE(u2f64, u2f_rtz);
+
                 ALU_CASE(f2i32, f2i_rtz);
                 ALU_CASE(f2u32, f2u_rtz);
                 ALU_CASE(i2f32, i2f_rtz);
@@ -825,8 +950,15 @@ emit_alu(compiler_context *ctx, nir_alu_instr *instr)
         case nir_op_u2u8:
         case nir_op_u2u16:
         case nir_op_u2u32:
-        case nir_op_u2u64: {
-                op = midgard_alu_op_imov;
+        case nir_op_u2u64:
+        case nir_op_f2f16:
+        case nir_op_f2f32:
+        case nir_op_f2f64: {
+                if (instr->op == nir_op_f2f16 || instr->op == nir_op_f2f32 ||
+                    instr->op == nir_op_f2f64)
+                        op = midgard_alu_op_fmov;
+                else
+                        op = midgard_alu_op_imov;
 
                 if (dst_bitsize == (src_bitsize * 2)) {
                         /* Converting up */
@@ -841,24 +973,6 @@ emit_alu(compiler_context *ctx, nir_alu_instr *instr)
 
                 break;
         }
-
-        case nir_op_f2f16: {
-                assert(src_bitsize == 32);
-
-                op = midgard_alu_op_fmov;
-                dest_override = midgard_dest_override_lower;
-                break;
-        }
-
-        case nir_op_f2f32: {
-                assert(src_bitsize == 16);
-
-                op = midgard_alu_op_fmov;
-                half_2 = true;
-                reg_mode++;
-                break;
-        }
-
 
         /* For greater-or-equal, we lower to less-or-equal and flip the
          * arguments */
@@ -1043,13 +1157,10 @@ emit_alu(compiler_context *ctx, nir_alu_instr *instr)
                 ins.src[1] = SSA_FIXED_REGISTER(REGISTER_CONSTANT);
                 ins.has_constants = true;
 
-                if (instr->op == nir_op_b2f32) {
-                        float f = 1.0f;
-                        memcpy(&ins.constants, &f, sizeof(float));
-                } else {
-                        ins.constants[0] = 1;
-                }
-
+                if (instr->op == nir_op_b2f32)
+                        ins.constants.f32[0] = 1.0f;
+                else
+                        ins.constants.i32[0] = 1;
 
                 for (unsigned c = 0; c < 16; ++c)
                         ins.swizzle[1][c] = 0;
@@ -1058,7 +1169,7 @@ emit_alu(compiler_context *ctx, nir_alu_instr *instr)
                 ins.has_inline_constant = false;
                 ins.src[1] = SSA_FIXED_REGISTER(REGISTER_CONSTANT);
                 ins.has_constants = true;
-                ins.constants[0] = 0;
+                ins.constants.u32[0] = 0;
 
                 for (unsigned c = 0; c < 16; ++c)
                         ins.swizzle[1][c] = 0;
@@ -1121,26 +1232,27 @@ mir_set_intr_mask(nir_instr *instr, midgard_instruction *ins, bool is_read)
 /* Uniforms and UBOs use a shared code path, as uniforms are just (slightly
  * optimized) versions of UBO #0 */
 
-midgard_instruction *
+static midgard_instruction *
 emit_ubo_read(
         compiler_context *ctx,
         nir_instr *instr,
         unsigned dest,
         unsigned offset,
         nir_src *indirect_offset,
+        unsigned indirect_shift,
         unsigned index)
 {
         /* TODO: half-floats */
 
         midgard_instruction ins = m_ld_ubo_int4(dest, 0);
-        ins.constants[0] = offset;
+        ins.constants.u32[0] = offset;
 
         if (instr->type == nir_instr_type_intrinsic)
                 mir_set_intr_mask(instr, &ins, true);
 
         if (indirect_offset) {
                 ins.src[2] = nir_src_index(ctx, indirect_offset);
-                ins.load_store.arg_2 = 0x80;
+                ins.load_store.arg_2 = (indirect_shift << 5);
         } else {
                 ins.load_store.arg_2 = 0x1E;
         }
@@ -1313,7 +1425,7 @@ emit_sysval_read(compiler_context *ctx, nir_instr *instr, signed dest_override,
 
         /* Emit the read itself -- this is never indirect */
         midgard_instruction *ins =
-                emit_ubo_read(ctx, instr, dest, uniform * 16, NULL, 0);
+                emit_ubo_read(ctx, instr, dest, uniform * 16, NULL, 0, 0);
 
         ins->mask = mask_of(nr_components);
 }
@@ -1332,8 +1444,14 @@ compute_builtin_arg(nir_op op)
 }
 
 static void
-emit_fragment_store(compiler_context *ctx, unsigned src, unsigned rt)
+emit_fragment_store(compiler_context *ctx, unsigned src, enum midgard_rt_id rt)
 {
+        assert(rt < ARRAY_SIZE(ctx->writeout_branch));
+
+        midgard_instruction *br = ctx->writeout_branch[rt];
+
+        assert(!br);
+
         emit_explicit_constant(ctx, src, src);
 
         struct midgard_instruction ins =
@@ -1343,14 +1461,12 @@ emit_fragment_store(compiler_context *ctx, unsigned src, unsigned rt)
 
         /* Add dependencies */
         ins.src[0] = src;
-        ins.constants[0] = rt * 0x100;
+        ins.constants.u32[0] = rt == MIDGARD_ZS_RT ?
+                               0xFF : (rt - MIDGARD_COLOR_RT0) * 0x100;
 
         /* Emit the branch */
-        midgard_instruction *br = emit_mir_instruction(ctx, ins);
+        br = emit_mir_instruction(ctx, ins);
         schedule_barrier(ctx);
-
-        assert(rt < ARRAY_SIZE(ctx->writeout_branch));
-        assert(!ctx->writeout_branch[rt]);
         ctx->writeout_branch[rt] = br;
 
         /* Push our current location = current block count - 1 = where we'll
@@ -1365,6 +1481,7 @@ emit_compute_builtin(compiler_context *ctx, nir_intrinsic_instr *instr)
         unsigned reg = nir_dest_index(ctx, &instr->dest);
         midgard_instruction ins = m_ld_compute_id(reg, 0);
         ins.mask = mask_of(3);
+        ins.swizzle[0][3] = COMPONENT_X; /* xyzx */
         ins.load_store.arg_1 = compute_builtin_arg(instr->intrinsic);
         emit_mir_instruction(ctx, ins);
 }
@@ -1387,6 +1504,35 @@ emit_vertex_builtin(compiler_context *ctx, nir_intrinsic_instr *instr)
 {
         unsigned reg = nir_dest_index(ctx, &instr->dest);
         emit_attr_read(ctx, reg, vertex_builtin_arg(instr->intrinsic), 1, nir_type_int);
+}
+
+static void
+emit_control_barrier(compiler_context *ctx)
+{
+        midgard_instruction ins = {
+                .type = TAG_TEXTURE_4,
+                .src = { ~0, ~0, ~0, ~0 },
+                .texture = {
+                        .op = TEXTURE_OP_BARRIER,
+
+                        /* TODO: optimize */
+                        .barrier_buffer = 1,
+                        .barrier_shared = 1
+                }
+        };
+
+        emit_mir_instruction(ctx, ins);
+}
+
+static const nir_variable *
+search_var(struct exec_list *vars, unsigned driver_loc)
+{
+        nir_foreach_variable(var, vars) {
+                if (var->data.driver_location == driver_loc)
+                        return var;
+        }
+
+        return NULL;
 }
 
 static void
@@ -1450,22 +1596,15 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
                 reg = nir_dest_index(ctx, &instr->dest);
 
                 if (is_uniform && !ctx->is_blend) {
-                        emit_ubo_read(ctx, &instr->instr, reg, (ctx->sysval_count + offset) * 16, indirect_offset, 0);
+                        emit_ubo_read(ctx, &instr->instr, reg, (ctx->sysval_count + offset) * 16, indirect_offset, 4, 0);
                 } else if (is_ubo) {
                         nir_src index = instr->src[0];
 
-                        /* We don't yet support indirect UBOs. For indirect
-                         * block numbers (if that's possible), we don't know
-                         * enough about the hardware yet. For indirect sources,
-                         * we know what we need but we need to add some NIR
-                         * support for lowering correctly with respect to
-                         * 128-bit reads */
-
+                        /* TODO: Is indirect block number possible? */
                         assert(nir_src_is_const(index));
-                        assert(nir_src_is_const(*src_offset));
 
                         uint32_t uindex = nir_src_as_uint(index) + 1;
-                        emit_ubo_read(ctx, &instr->instr, reg, offset, NULL, uindex);
+                        emit_ubo_read(ctx, &instr->instr, reg, offset, indirect_offset, 0, uindex);
                 } else if (is_ssbo) {
                         nir_src index = instr->src[0];
                         assert(nir_src_is_const(index));
@@ -1493,6 +1632,7 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
 
         /* Artefact of load_interpolated_input. TODO: other barycentric modes */
         case nir_intrinsic_load_barycentric_pixel:
+        case nir_intrinsic_load_barycentric_centroid:
                 break;
 
         /* Reads 128-bit value raw off the tilebuffer during blending, tasty */
@@ -1539,6 +1679,22 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
                 break;
         }
 
+        case nir_intrinsic_store_zs_output_pan: {
+                assert(ctx->stage == MESA_SHADER_FRAGMENT);
+                emit_fragment_store(ctx, nir_src_index(ctx, &instr->src[0]),
+                                    MIDGARD_ZS_RT);
+
+                midgard_instruction *br = ctx->writeout_branch[MIDGARD_ZS_RT];
+
+                if (!nir_intrinsic_component(instr))
+                        br->writeout_depth = true;
+                if (nir_intrinsic_component(instr) ||
+                    instr->num_components)
+                        br->writeout_stencil = true;
+                assert(br->writeout_depth | br->writeout_stencil);
+                break;
+        }
+
         case nir_intrinsic_store_output:
                 assert(nir_src_is_const(instr->src[1]) && "no indirect outputs");
 
@@ -1547,7 +1703,21 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
                 reg = nir_src_index(ctx, &instr->src[0]);
 
                 if (ctx->stage == MESA_SHADER_FRAGMENT) {
-                        emit_fragment_store(ctx, reg, offset);
+                        const nir_variable *var;
+                        enum midgard_rt_id rt;
+
+                        var = search_var(&ctx->nir->outputs,
+                                         nir_intrinsic_base(instr));
+                        assert(var);
+                        if (var->data.location == FRAG_RESULT_COLOR)
+                                rt = MIDGARD_COLOR_RT0;
+                        else if (var->data.location >= FRAG_RESULT_DATA0)
+                                rt = MIDGARD_COLOR_RT0 + var->data.location -
+                                     FRAG_RESULT_DATA0;
+                        else
+                                assert(0);
+
+                        emit_fragment_store(ctx, reg, rt);
                 } else if (ctx->stage == MESA_SHADER_VERTEX) {
                         /* We should have been vectorized, though we don't
                          * currently check that st_vary is emitted only once
@@ -1559,7 +1729,7 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
 
                         emit_explicit_constant(ctx, reg, reg);
 
-                        unsigned component = nir_intrinsic_component(instr);
+                        unsigned dst_component = nir_intrinsic_component(instr);
                         unsigned nr_comp = nir_src_num_components(instr->src[0]);
 
                         midgard_instruction st = m_st_vary_32(reg, offset);
@@ -1582,8 +1752,20 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
                                 break;
                         }
 
-                        for (unsigned i = 0; i < ARRAY_SIZE(st.swizzle[0]); ++i)
-                                st.swizzle[0][i] = MIN2(i + component, nr_comp);
+                        /* nir_intrinsic_component(store_intr) encodes the
+                         * destination component start. Source component offset
+                         * adjustment is taken care of in
+                         * install_registers_instr(), when offset_swizzle() is
+                         * called.
+                         */
+                        unsigned src_component = COMPONENT_X;
+
+                        assert(nr_comp > 0);
+                        for (unsigned i = 0; i < ARRAY_SIZE(st.swizzle); ++i) {
+                                st.swizzle[0][i] = src_component;
+                                if (i >= dst_component && i < dst_component + nr_comp - 1)
+                                        src_component++;
+                        }
 
                         emit_mir_instruction(ctx, st);
                 } else {
@@ -1651,8 +1833,18 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
                 emit_vertex_builtin(ctx, instr);
                 break;
 
+        case nir_intrinsic_memory_barrier_buffer:
+        case nir_intrinsic_memory_barrier_shared:
+                break;
+
+        case nir_intrinsic_control_barrier:
+                schedule_barrier(ctx);
+                emit_control_barrier(ctx);
+                schedule_barrier(ctx);
+                break;
+
         default:
-                printf ("Unhandled intrinsic\n");
+                printf ("Unhandled intrinsic %s\n", nir_intrinsic_infos[instr->intrinsic].name);
                 assert(0);
                 break;
         }
@@ -1784,6 +1976,11 @@ emit_texop_native(compiler_context *ctx, nir_tex_instr *instr,
 
                         unsigned coord_mask = mask_of(instr->coord_components);
 
+                        bool flip_zw = (instr->sampler_dim == GLSL_SAMPLER_DIM_2D) && (coord_mask & (1 << COMPONENT_Z));
+
+                        if (flip_zw)
+                                coord_mask ^= ((1 << COMPONENT_Z) | (1 << COMPONENT_W));
+
                         if (instr->sampler_dim == GLSL_SAMPLER_DIM_CUBE) {
                                 /* texelFetch is undefined on samplerCube */
                                 assert(midgard_texop != TEXTURE_OP_TEXEL_FETCH);
@@ -1806,6 +2003,10 @@ emit_texop_native(compiler_context *ctx, nir_tex_instr *instr,
                                 /* mov coord_temp, coords */
                                 midgard_instruction mov = v_mov(index, coords);
                                 mov.mask = coord_mask;
+
+                                if (flip_zw)
+                                        mov.swizzle[1][COMPONENT_W] = COMPONENT_Z;
+
                                 emit_mir_instruction(ctx, mov);
                         } else {
                                 coords = index;
@@ -1828,10 +2029,13 @@ emit_texop_native(compiler_context *ctx, nir_tex_instr *instr,
                         }
 
                         if (instr->sampler_dim == GLSL_SAMPLER_DIM_2D) {
-                                /* Array component in w but NIR wants it in z */
+                                /* Array component in w but NIR wants it in z,
+                                 * but if we have a temp coord we already fixed
+                                 * that up */
+
                                 if (nr_components == 3) {
                                         ins.swizzle[1][2] = COMPONENT_Z;
-                                        ins.swizzle[1][3] = COMPONENT_Z;
+                                        ins.swizzle[1][3] = needs_temp_coord ? COMPONENT_W : COMPONENT_Z;
                                 } else if (nr_components == 2) {
                                         ins.swizzle[1][2] =
                                                 instr->is_shadow ? COMPONENT_Z : COMPONENT_X;
@@ -1893,8 +2097,10 @@ emit_texop_native(compiler_context *ctx, nir_tex_instr *instr,
                         break;
                 }
 
-                default:
-                        unreachable("Unknown texture source type\n");
+                default: {
+                        printf ("Unknown texture source type: %d\n", instr->src[i].src_type);
+                        assert(0);
+                }
                 }
         }
 
@@ -1921,8 +2127,10 @@ emit_tex(compiler_context *ctx, nir_tex_instr *instr)
         case nir_texop_txs:
                 emit_sysval_read(ctx, &instr->instr, ~0, 4);
                 break;
-        default:
-                unreachable("Unhanlded texture op");
+        default: {
+                printf ("Unhandled texture op: %d\n", instr->op);
+                assert(0);
+        }
         }
 }
 
@@ -2139,16 +2347,16 @@ embedded_to_inline_constant(compiler_context *ctx, midgard_block *block)
                         /* Scale constant appropriately, if we can legally */
                         uint16_t scaled_constant = 0;
 
-                        if (midgard_is_integer_op(op) || is_16) {
-                                unsigned int *iconstants = (unsigned int *) ins->constants;
-                                scaled_constant = (uint16_t) iconstants[component];
+                        if (is_16) {
+                                scaled_constant = ins->constants.u16[component];
+                        } else if (midgard_is_integer_op(op)) {
+                                scaled_constant = ins->constants.u32[component];
 
                                 /* Constant overflow after resize */
-                                if (scaled_constant != iconstants[component])
+                                if (scaled_constant != ins->constants.u32[component])
                                         continue;
                         } else {
-                                float *f = (float *) ins->constants;
-                                float original = f[component];
+                                float original = ins->constants.f32[component];
                                 scaled_constant = _mesa_float_to_half(original);
 
                                 /* Check for loss of precision. If this is
@@ -2174,8 +2382,8 @@ embedded_to_inline_constant(compiler_context *ctx, midgard_block *block)
                         /* Make sure that the constant is not itself a vector
                          * by checking if all accessed values are the same. */
 
-                        uint32_t *cons = ins->constants;
-                        uint32_t value = cons[component];
+                        const midgard_constants *cons = &ins->constants;
+                        uint32_t value = is_16 ? cons->u16[component] : cons->u32[component];
 
                         bool is_vector = false;
                         unsigned mask = effective_writemask(&ins->alu, ins->mask);
@@ -2185,7 +2393,9 @@ embedded_to_inline_constant(compiler_context *ctx, midgard_block *block)
                                 if (!(mask & (1 << c)))
                                         continue;
 
-                                uint32_t test = cons[ins->swizzle[1][c]];
+                                uint32_t test = is_16 ?
+                                                cons->u16[ins->swizzle[1][c]] :
+                                                cons->u32[ins->swizzle[1][c]];
 
                                 if (test != value) {
                                         is_vector = true;
@@ -2288,11 +2498,13 @@ static unsigned
 emit_fragment_epilogue(compiler_context *ctx, unsigned rt)
 {
         /* Loop to ourselves */
-
+        midgard_instruction *br = ctx->writeout_branch[rt];
         struct midgard_instruction ins = v_branch(false, false);
         ins.writeout = true;
+        ins.writeout_depth = br->writeout_depth;
+        ins.writeout_stencil = br->writeout_stencil;
         ins.branch.target_block = ctx->block_count - 1;
-        ins.constants[0] = rt * 0x100;
+        ins.constants.u32[0] = br->constants.u32[0];
         emit_mir_instruction(ctx, ins);
 
         ctx->current_block->epilogue = true;
@@ -2482,19 +2694,19 @@ midgard_get_first_tag_from_block(compiler_context *ctx, unsigned block_idx)
 {
         midgard_block *initial_block = mir_get_block(ctx, block_idx);
 
-        unsigned first_tag = 0;
-
         mir_foreach_block_from(ctx, initial_block, v) {
                 if (v->quadword_count) {
                         midgard_bundle *initial_bundle =
                                 util_dynarray_element(&v->bundles, midgard_bundle, 0);
 
-                        first_tag = initial_bundle->tag;
-                        break;
+                        return initial_bundle->tag;
                 }
         }
 
-        return first_tag;
+        /* Default to a tag 1 which will break from the shader, in case we jump
+         * to the exit block (i.e. `return` in a compute shader) */
+
+        return 1;
 }
 
 static unsigned
@@ -2593,7 +2805,7 @@ midgard_compile_shader_nir(nir_shader *nir, midgard_program *program, bool is_bl
         ctx->stage = nir->info.stage;
         ctx->is_blend = is_blend;
         ctx->alpha_ref = program->alpha_ref;
-        ctx->blend_rt = blend_rt;
+        ctx->blend_rt = MIDGARD_COLOR_RT0 + blend_rt;
         ctx->quirks = midgard_get_quirks(gpu_id);
 
         /* Start off with a safe cutoff, allowing usage of all 16 work
@@ -2644,6 +2856,7 @@ midgard_compile_shader_nir(nir_shader *nir, midgard_program *program, bool is_bl
         NIR_PASS_V(nir, nir_lower_vars_to_ssa);
 
         NIR_PASS_V(nir, nir_lower_io, nir_var_all, glsl_type_size, 0);
+        NIR_PASS_V(nir, midgard_nir_lower_zs_store);
 
         /* Optimisation passes */
 
@@ -2726,7 +2939,7 @@ midgard_compile_shader_nir(nir_shader *nir, midgard_program *program, bool is_bl
                 mir_add_writeout_loops(ctx);
 
         /* Schedule! */
-        schedule_program(ctx);
+        midgard_schedule_program(ctx);
         mir_ra(ctx);
 
         /* Now that all the bundles are scheduled and we can calculate block
@@ -2891,7 +3104,7 @@ midgard_compile_shader_nir(nir_shader *nir, midgard_program *program, bool is_bl
         program->tls_size = ctx->tls_size;
 
         if (midgard_debug & MIDGARD_DBG_SHADERS)
-                disassemble_midgard(program->compiled.data, program->compiled.size, gpu_id, ctx->stage);
+                disassemble_midgard(stdout, program->compiled.data, program->compiled.size, gpu_id, ctx->stage);
 
         if (midgard_debug & MIDGARD_DBG_SHADERDB || shaderdb) {
                 unsigned nr_bundles = 0, nr_ins = 0;

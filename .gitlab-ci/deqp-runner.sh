@@ -133,7 +133,8 @@ extract_xml_result() {
                         /deqp/executor/testlog-to-xml $dst "$RESULTS/$testcase.xml"
                         # copy the stylesheets here so they only end up in artifacts
                         # if we have one or more result xml in artifacts
-                        cp /deqp/testlog.{css,xsl} "$RESULTS/"
+                        cp /deqp/testlog.css "$RESULTS/"
+                        cp /deqp/testlog.xsl "$RESULTS/"
                         return 0
                     fi
                     echo $line >> $dst
@@ -187,22 +188,27 @@ quiet() {
 run_cts $DEQP /tmp/case-list.txt $RESULTS/cts-runner-results.txt
 DEQP_EXITCODE=$?
 
-quiet generate_junit $RESULTS/cts-runner-results.txt > $RESULTS/results.xml
+# junit is disabled, because it overloads gitlab.freedesktop.org to parse it.
+#quiet generate_junit $RESULTS/cts-runner-results.txt > $RESULTS/results.xml
 
 if [ $DEQP_EXITCODE -ne 0 ]; then
     # preserve caselist files in case of failures:
     cp /tmp/deqp_runner.*.txt $RESULTS/
-    echo "Some unexpected results found (see cts-runner-results.txt in artifacts for full results):"
     cat $RESULTS/cts-runner-results.txt | \
         grep -v ",Pass" | \
         grep -v ",Skip" | \
         grep -v ",ExpectedFail" > \
         $RESULTS/cts-runner-unexpected-results.txt
-    head -n 50 $RESULTS/cts-runner-unexpected-results.txt
 
     if [ -z "$DEQP_NO_SAVE_RESULTS" ]; then
+        echo "Some unexpected results found (see cts-runner-results.txt in artifacts for full results):"
+        head -n 50 $RESULTS/cts-runner-unexpected-results.txt
+
         # Save the logs for up to the first 50 unexpected results:
         head -n 50 $RESULTS/cts-runner-unexpected-results.txt | quiet extract_xml_results /tmp/*.qpa
+    else
+        echo "Unexpected results found:"
+        cat $RESULTS/cts-runner-unexpected-results.txt
     fi
 
     count=`cat $RESULTS/cts-runner-unexpected-results.txt | wc -l`

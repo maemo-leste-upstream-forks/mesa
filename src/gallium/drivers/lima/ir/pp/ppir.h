@@ -27,6 +27,7 @@
 
 #include "util/u_math.h"
 #include "util/list.h"
+#include "util/set.h"
 
 #include "ir/lima_ir.h"
 
@@ -115,6 +116,7 @@ typedef enum {
    ppir_op_branch,
 
    ppir_op_undef,
+   ppir_op_dummy,
 
    ppir_op_num,
 } ppir_op;
@@ -181,13 +183,11 @@ typedef struct ppir_reg {
    int index;
    int regalloc_index;
    int num_components;
+
    /* whether this reg has to start from the x component
     * of a full physical reg, this is true for reg used
-    * in load/store instr which has no swizzle field
-    */
+    * in load/store instr which has no swizzle field */
    bool is_head;
-   /* instr live range */
-   int live_in, live_out;
    bool spilled;
    bool undef;
 } ppir_reg;
@@ -300,6 +300,11 @@ enum ppir_instr_slot {
    PPIR_INSTR_SLOT_ALU_END = PPIR_INSTR_SLOT_ALU_COMBINE,
 };
 
+struct ppir_liveness {
+   ppir_reg *reg;
+   unsigned mask : 4;
+};
+
 typedef struct ppir_instr {
    struct list_head list;
    int index;
@@ -319,6 +324,12 @@ typedef struct ppir_instr {
    bool scheduled;
    int offset;
    int encode_size;
+
+   /* for liveness analysis */
+   struct ppir_liveness *live_in;
+   struct ppir_liveness *live_out;
+   struct set *live_in_set;
+   struct set *live_out_set;
 } ppir_instr;
 
 typedef struct ppir_block {
@@ -335,11 +346,11 @@ typedef struct ppir_block {
    int sched_instr_base;
    int index;
 
-   /*  for liveness analysis */
-   BITSET_WORD *def;
-   BITSET_WORD *use;
-   BITSET_WORD *live_in;
-   BITSET_WORD *live_out;
+   /* for liveness analysis */
+   struct ppir_liveness *live_in;
+   struct ppir_liveness *live_out;
+   struct set *live_in_set;
+   struct set *live_out_set;
 } ppir_block;
 
 typedef struct {
@@ -396,10 +407,12 @@ void ppir_node_print_prog(ppir_compiler *comp);
 void ppir_node_replace_child(ppir_node *parent, ppir_node *old_child, ppir_node *new_child);
 void ppir_node_replace_all_succ(ppir_node *dst, ppir_node *src);
 void ppir_node_replace_pred(ppir_dep *dep, ppir_node *new_pred);
+void ppir_delete_if_orphan(ppir_block *block, ppir_node *node);
 ppir_dep *ppir_dep_for_pred(ppir_node *node, ppir_node *pred);
 ppir_node *ppir_node_clone(ppir_block *block, ppir_node *node);
 /* Assumes that node successors are in the same block */
 ppir_node *ppir_node_insert_mov(ppir_node *node);
+ppir_node *ppir_node_insert_mov_all_blocks(ppir_node *node);
 
 static inline bool ppir_node_is_root(ppir_node *node)
 {
@@ -612,6 +625,17 @@ static inline int ppir_target_get_dest_reg_index(ppir_dest *dest)
    }
 
    return -1;
+}
+
+static inline int ppir_src_get_mask(ppir_src *src)
+{
+   ppir_reg *reg = ppir_src_get_reg(src);
+   int mask = 0;
+
+   for (int i = 0; i < reg->num_components; i++)
+      mask |= (1 << src->swizzle[i]);
+
+   return mask;
 }
 
 static inline bool ppir_target_is_scaler(ppir_dest *dest)

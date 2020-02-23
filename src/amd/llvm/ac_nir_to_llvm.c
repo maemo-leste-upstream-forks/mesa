@@ -1375,6 +1375,11 @@ static LLVMValueRef build_tex_intrinsic(struct ac_nir_context *ctx,
 	case nir_texop_lod:
 		args->opcode = ac_image_get_lod;
 		break;
+	case nir_texop_fragment_fetch:
+	case nir_texop_fragment_mask_fetch:
+		args->opcode = ac_image_load;
+		args->level_zero = false;
+		break;
 	default:
 		break;
 	}
@@ -2583,10 +2588,14 @@ static LLVMValueRef visit_image_load(struct ac_nir_context *ctx,
 		res = ac_trim_vector(&ctx->ac, res, instr->dest.ssa.num_components);
 		res = ac_to_integer(&ctx->ac, res);
 	} else {
-		args.opcode = ac_image_load;
+		bool level_zero = nir_src_is_const(instr->src[3]) && nir_src_as_uint(instr->src[3]) == 0;
+
+		args.opcode = level_zero ? ac_image_load : ac_image_load_mip;
 		args.resource = get_image_descriptor(ctx, instr, AC_DESC_IMAGE, false);
 		get_image_coords(ctx, instr, &args, dim, is_array);
 		args.dim = ac_get_image_dim(ctx->ac.chip_class, dim, is_array);
+		if (!level_zero)
+			args.lod = get_src(ctx, instr->src[3]);
 		args.dmask = 15;
 		args.attributes = AC_FUNC_ATTR_READONLY;
 
@@ -2639,11 +2648,15 @@ static void visit_image_store(struct ac_nir_context *ctx,
 					     ctx->ac.i32_0, src_channels,
 					     args.cache_policy);
 	} else {
-		args.opcode = ac_image_store;
+		bool level_zero = nir_src_is_const(instr->src[4]) && nir_src_as_uint(instr->src[4]) == 0;
+
+		args.opcode = level_zero ? ac_image_store : ac_image_store_mip;
 		args.data[0] = ac_to_float(&ctx->ac, get_src(ctx, instr->src[3]));
 		args.resource = get_image_descriptor(ctx, instr, AC_DESC_IMAGE, true);
 		get_image_coords(ctx, instr, &args, dim, is_array);
 		args.dim = ac_get_image_dim(ctx->ac.chip_class, dim, is_array);
+		if (!level_zero)
+			args.lod = get_src(ctx, instr->src[4]);
 		args.dmask = 15;
 
 		ac_build_image_opcode(&ctx->ac, &args);
@@ -2868,7 +2881,6 @@ static void emit_membar(struct ac_llvm_context *ac,
 	case nir_intrinsic_group_memory_barrier:
 		wait_flags = AC_WAIT_LGKM | AC_WAIT_VLOAD | AC_WAIT_VSTORE;
 		break;
-	case nir_intrinsic_memory_barrier_atomic_counter:
 	case nir_intrinsic_memory_barrier_buffer:
 	case nir_intrinsic_memory_barrier_image:
 		wait_flags = AC_WAIT_VLOAD | AC_WAIT_VSTORE;
@@ -3216,6 +3228,13 @@ static LLVMValueRef barycentric_sample(struct ac_nir_context *ctx,
 	return LLVMBuildBitCast(ctx->ac.builder, interp_param, ctx->ac.v2i32, "");
 }
 
+static LLVMValueRef barycentric_model(struct ac_nir_context *ctx)
+{
+	return LLVMBuildBitCast(ctx->ac.builder,
+				ac_get_arg(&ctx->ac, ctx->args->pull_model),
+				ctx->ac.v3i32, "");
+}
+
 static LLVMValueRef load_interpolated_input(struct ac_nir_context *ctx,
 					    LLVMValueRef interp_param,
 					    unsigned index, unsigned comp_start,
@@ -3247,25 +3266,53 @@ static LLVMValueRef load_interpolated_input(struct ac_nir_context *ctx,
 	return ac_to_integer(&ctx->ac, ac_build_gather_values(&ctx->ac, values, num_components));
 }
 
-static LLVMValueRef load_flat_input(struct ac_nir_context *ctx,
-				    unsigned index, unsigned comp_start,
-				    unsigned num_components,
-				    unsigned bit_size)
+static LLVMValueRef load_input(struct ac_nir_context *ctx,
+			       nir_intrinsic_instr *instr)
 {
-	LLVMValueRef attr_number = LLVMConstInt(ctx->ac.i32, index, false);
+	unsigned offset_idx = instr->intrinsic == nir_intrinsic_load_input ? 0 : 1;
 
+	/* We only lower inputs for fragment shaders ATM */
+	ASSERTED nir_const_value *offset = nir_src_as_const_value(instr->src[offset_idx]);
+	assert(offset);
+	assert(offset[0].i32 == 0);
+
+	unsigned component = nir_intrinsic_component(instr);
+	unsigned index = nir_intrinsic_base(instr);
+	unsigned vertex_id = 2; /* P0 */
+
+	if (instr->intrinsic == nir_intrinsic_load_input_vertex) {
+		nir_const_value *src0 = nir_src_as_const_value(instr->src[0]);
+
+		switch (src0[0].i32) {
+		case 0:
+			vertex_id = 2;
+			break;
+		case 1:
+			vertex_id = 0;
+			break;
+		case 2:
+			vertex_id = 1;
+			break;
+		default:
+			unreachable("Invalid vertex index");
+		}
+	}
+
+	LLVMValueRef attr_number = LLVMConstInt(ctx->ac.i32, index, false);
 	LLVMValueRef values[8];
 
 	/* Each component of a 64-bit value takes up two GL-level channels. */
+	unsigned num_components = instr->dest.ssa.num_components;
+	unsigned bit_size = instr->dest.ssa.bit_size;
 	unsigned channels =
 		bit_size == 64 ? num_components * 2 : num_components;
 
 	for (unsigned chan = 0; chan < channels; chan++) {
-		if (comp_start + chan > 4)
+		if (component + chan > 4)
 			attr_number = LLVMConstInt(ctx->ac.i32, index + 1, false);
-		LLVMValueRef llvm_chan = LLVMConstInt(ctx->ac.i32, (comp_start + chan) % 4, false);
+		LLVMValueRef llvm_chan = LLVMConstInt(ctx->ac.i32, (component + chan) % 4, false);
 		values[chan] = ac_build_fs_interp_mov(&ctx->ac,
-						      LLVMConstInt(ctx->ac.i32, 2, false),
+						      LLVMConstInt(ctx->ac.i32, vertex_id, false),
 						      llvm_chan,
 						      attr_number,
 						      ac_get_arg(&ctx->ac, ctx->args->prim_mask));
@@ -3539,13 +3586,14 @@ static void visit_intrinsic(struct ac_nir_context *ctx,
 		break;
 	case nir_intrinsic_memory_barrier:
 	case nir_intrinsic_group_memory_barrier:
-	case nir_intrinsic_memory_barrier_atomic_counter:
 	case nir_intrinsic_memory_barrier_buffer:
 	case nir_intrinsic_memory_barrier_image:
 	case nir_intrinsic_memory_barrier_shared:
 		emit_membar(&ctx->ac, instr);
 		break;
-	case nir_intrinsic_barrier:
+	case nir_intrinsic_memory_barrier_tcs_patch:
+		break;
+	case nir_intrinsic_control_barrier:
 		ac_emit_barrier(&ctx->ac, ctx->stage);
 		break;
 	case nir_intrinsic_shared_atomic_add:
@@ -3586,6 +3634,9 @@ static void visit_intrinsic(struct ac_nir_context *ctx,
 	case nir_intrinsic_load_barycentric_sample:
 		result = barycentric_sample(ctx, nir_intrinsic_interp_mode(instr));
 		break;
+	case nir_intrinsic_load_barycentric_model:
+		result = barycentric_model(ctx);
+		break;
 	case nir_intrinsic_load_barycentric_at_offset: {
 		LLVMValueRef offset = ac_to_float(&ctx->ac, get_src(ctx, instr->src[0]));
 		result = barycentric_offset(ctx, nir_intrinsic_interp_mode(instr), offset);
@@ -3611,19 +3662,10 @@ static void visit_intrinsic(struct ac_nir_context *ctx,
 						 instr->dest.ssa.bit_size);
 		break;
 	}
-	case nir_intrinsic_load_input: {
-		/* We only lower inputs for fragment shaders ATM */
-		ASSERTED nir_const_value *offset = nir_src_as_const_value(instr->src[0]);
-		assert(offset);
-		assert(offset[0].i32 == 0);
-
-		unsigned index = nir_intrinsic_base(instr);
-		unsigned component = nir_intrinsic_component(instr);
-		result = load_flat_input(ctx, index, component,
-					 instr->dest.ssa.num_components,
-					 instr->dest.ssa.bit_size);
+	case nir_intrinsic_load_input:
+	case nir_intrinsic_load_input_vertex:
+		result = load_input(ctx, instr);
 		break;
-	}
 	case nir_intrinsic_emit_vertex:
 		ctx->abi->emit_vertex(ctx->abi, nir_intrinsic_stream_id(instr), ctx->abi->outputs);
 		break;
@@ -3970,6 +4012,13 @@ static void tex_fetch_ptrs(struct ac_nir_context *ctx,
 		main_descriptor = AC_DESC_PLANE_0 + plane;
 	}
 
+	if (instr->op == nir_texop_fragment_mask_fetch) {
+		/* The fragment mask is fetched from the compressed
+		 * multisampled surface.
+		 */
+		main_descriptor = AC_DESC_FMASK;
+	}
+
 	*res_ptr = get_sampler_desc(ctx, texture_deref_instr, main_descriptor, &instr->instr, false, false);
 
 	if (samp_ptr) {
@@ -4187,7 +4236,10 @@ static void visit_tex(struct ac_nir_context *ctx, nir_tex_instr *instr)
 	     instr->sampler_dim == GLSL_SAMPLER_DIM_SUBPASS ||
 	     instr->sampler_dim == GLSL_SAMPLER_DIM_SUBPASS_MS) &&
 	    instr->is_array &&
-	    instr->op != nir_texop_txf && instr->op != nir_texop_txf_ms) {
+	    instr->op != nir_texop_txf &&
+	    instr->op != nir_texop_txf_ms &&
+	    instr->op != nir_texop_fragment_fetch &&
+	    instr->op != nir_texop_fragment_mask_fetch) {
 		args.coords[2] = apply_round_slice(&ctx->ac, args.coords[2]);
 	}
 
@@ -4206,7 +4258,8 @@ static void visit_tex(struct ac_nir_context *ctx, nir_tex_instr *instr)
 	}
 
 	/* Pack sample index */
-	if (instr->op == nir_texop_txf_ms && sample_index)
+	if (sample_index && (instr->op == nir_texop_txf_ms ||
+			     instr->op == nir_texop_fragment_fetch))
 		args.coords[instr->coord_components] = sample_index;
 
 	if (instr->op == nir_texop_samples_identical) {
@@ -4225,7 +4278,9 @@ static void visit_tex(struct ac_nir_context *ctx, nir_tex_instr *instr)
 
 	if ((instr->sampler_dim == GLSL_SAMPLER_DIM_SUBPASS_MS ||
 	     instr->sampler_dim == GLSL_SAMPLER_DIM_MS) &&
-	    instr->op != nir_texop_txs) {
+	    instr->op != nir_texop_txs &&
+	    instr->op != nir_texop_fragment_fetch &&
+	    instr->op != nir_texop_fragment_mask_fetch) {
 		unsigned sample_chan = instr->is_array ? 3 : 2;
 		args.coords[sample_chan] = adjust_sample_index_using_fmask(
 			&ctx->ac, args.coords[0], args.coords[1],
@@ -4263,6 +4318,20 @@ static void visit_tex(struct ac_nir_context *ctx, nir_tex_instr *instr)
 		args.dim = ac_get_sampler_dim(ctx->ac.chip_class, instr->sampler_dim, instr->is_array);
 		args.unorm = instr->sampler_dim == GLSL_SAMPLER_DIM_RECT;
 	}
+
+	/* Adjust the number of coordinates because we only need (x,y) for 2D
+	 * multisampled images and (x,y,layer) for 2D multisampled layered
+	 * images or for multisampled input attachments.
+	 */
+	if (instr->op == nir_texop_fragment_mask_fetch) {
+		if (args.dim == ac_image_2dmsaa) {
+			args.dim = ac_image_2d;
+		} else {
+			assert(args.dim == ac_image_2darraymsaa);
+			args.dim = ac_image_2darray;
+		}
+	}
+
 	result = build_tex_intrinsic(ctx, instr, &args);
 
 	if (instr->op == nir_texop_query_levels)
@@ -4909,7 +4978,7 @@ scan_tess_ctrl(nir_cf_node *cf_node, unsigned *upper_block_tf_writemask,
 				continue;
 
 			nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
-			if (intrin->intrinsic == nir_intrinsic_barrier) {
+			if (intrin->intrinsic == nir_intrinsic_control_barrier) {
 
 				/* If we find a barrier in nested control flow put this in the
 				 * too hard basket. In GLSL this is not possible but it is in

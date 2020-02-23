@@ -595,7 +595,7 @@ static bool radv_is_filter_minmax_format_supported(VkFormat format)
 	/* From the Vulkan spec 1.1.71:
 	 *
 	 * "The following formats must support the
-	 *  VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT_EXT feature with
+	 *  VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT feature with
 	 *  VK_IMAGE_TILING_OPTIMAL, if they support
 	 *  VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT."
 	 */
@@ -694,7 +694,7 @@ radv_physical_device_get_format_properties(struct radv_physical_device *physical
 			         VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
 
 			if (radv_is_filter_minmax_format_supported(format))
-				 tiled |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT_EXT;
+				 tiled |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT;
 
 			/* Don't support blitting surfaces with depth/stencil. */
 			if (vk_format_is_depth(format) && vk_format_is_stencil(format))
@@ -712,7 +712,7 @@ radv_physical_device_get_format_properties(struct radv_physical_device *physical
 				VK_FORMAT_FEATURE_BLIT_SRC_BIT;
 
 			if (radv_is_filter_minmax_format_supported(format))
-				 tiled |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT_EXT;
+				 tiled |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT;
 
 			if (linear_sampling) {
 				linear |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
@@ -1248,6 +1248,12 @@ static VkResult radv_get_image_format_properties(struct radv_physical_device *ph
 		}
 	}
 
+	/* Sparse resources with multi-planar formats are unsupported. */
+	if (info->flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT) {
+		if (desc->plane_count > 1)
+			goto unsupported;
+	}
+
 	*pImageFormatProperties = (VkImageFormatProperties) {
 		.maxExtent = maxExtent,
 		.maxMipLevels = maxMipLevels,
@@ -1317,7 +1323,10 @@ get_external_image_format_properties(struct radv_physical_device *physical_devic
 	case VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT:
 		switch (pImageFormatInfo->type) {
 		case VK_IMAGE_TYPE_2D:
-			flags = VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT|VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT|VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
+			flags = VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT|VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
+			if (pImageFormatInfo->tiling != VK_IMAGE_TILING_LINEAR)
+				flags |= VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT;
+
 			compat_flags = export_flags = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT |
 						      VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
 			break;
@@ -1340,7 +1349,10 @@ get_external_image_format_properties(struct radv_physical_device *physical_devic
 		format_properties->maxArrayLayers = MIN2(1, format_properties->maxArrayLayers);
 		format_properties->sampleCounts &= VK_SAMPLE_COUNT_1_BIT;
 
-		flags = VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT|VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT|VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
+		flags = VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT|VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
+		if (pImageFormatInfo->tiling != VK_IMAGE_TILING_LINEAR)
+			flags |= VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT;
+
 		compat_flags = VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID;
 		break;
 	case VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT:

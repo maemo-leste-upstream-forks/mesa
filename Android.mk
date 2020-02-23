@@ -43,6 +43,7 @@ MESA_DRI_LDFLAGS := -Wl,--build-id=sha1
 
 MESA_COMMON_MK := $(MESA_TOP)/Android.common.mk
 MESA_PYTHON2 := python
+MESA_PYTHON3 := python3
 
 # Lists to convert driver names to boolean variables
 # in form of <driver name>.<boolean make variable>
@@ -97,6 +98,7 @@ endef
 
 # add subdirectories
 SUBDIRS := \
+	src/etnaviv \
 	src/freedreno \
 	src/gbm \
 	src/loader \

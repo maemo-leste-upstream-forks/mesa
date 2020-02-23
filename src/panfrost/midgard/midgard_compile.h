@@ -26,6 +26,7 @@
 
 #include "compiler/nir/nir.h"
 #include "util/u_dynarray.h"
+#include "panfrost-job.h"
 
 /* Define the general compiler entry point */
 
@@ -48,7 +49,7 @@ enum {
         PAN_SYSVAL_SSBO = 4,
         PAN_SYSVAL_NUM_WORK_GROUPS = 5,
         PAN_SYSVAL_SAMPLER = 7,
-} pan_sysval;
+};
 
 #define PAN_TXS_SYSVAL_ID(texidx, dim, is_array)          \
 	((texidx) | ((dim) << 7) | ((is_array) ? (1 << 9) : 0))
@@ -64,7 +65,7 @@ enum {
         PAN_VERTEX_ID   = 16,
         PAN_INSTANCE_ID = 17,
         PAN_MAX_ATTRIBUTE
-} pan_special_attributes;
+};
 
 typedef struct {
         int work_register_count;
@@ -147,6 +148,7 @@ static const nir_shader_compiler_options midgard_nir_options = {
 
         .lower_doubles_options = nir_lower_dmod,
 
+        .lower_bitfield_extract_to_shifts = true,
         .vectorize_io = true,
         .use_interpolated_input_intrinsics = true
 };

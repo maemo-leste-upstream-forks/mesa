@@ -124,7 +124,7 @@ files_libnir = files(
   'nir_lower_clip.c',
   'nir_lower_clip_cull_distance_arrays.c',
   'nir_lower_clip_halfz.c',
-  'nir_lower_constant_initializers.c',
+  'nir_lower_variable_initializers.c',
   'nir_lower_double_ops.c',
   'nir_lower_drawpixels.c',
   'nir_lower_fb_read.c',
@@ -158,6 +158,7 @@ files_libnir = files(
   'nir_lower_returns.c',
   'nir_lower_samplers.c',
   'nir_lower_scratch.c',
+  'nir_lower_ssbo.c',
   'nir_lower_subgroups.c',
   'nir_lower_system_values.c',
   'nir_lower_tex.c',
@@ -349,6 +350,7 @@ if with_tests
       dependencies : [dep_thread, idep_gtest, idep_nir, idep_mesautil],
     ),
     suite : ['compiler', 'nir'],
+    should_fail : meson.get_cross_property('xfail', '').contains('load_store_vectorizer'),
   )
 
   test(

@@ -55,8 +55,10 @@ LOCAL_SHARED_LIBRARIES += \
 endif
 
 LOCAL_STATIC_LIBRARIES += \
+	libetnaviv_drm \
 	libfreedreno_drm \
 	libfreedreno_ir3 \
+	libfreedreno_perfcntrs \
 	libmesa_gallium \
 	libpanfrost_bifrost \
 	libpanfrost_decode \

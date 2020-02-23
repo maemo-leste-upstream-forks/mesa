@@ -27,6 +27,7 @@
  */
 
 #include "pan_context.h"
+#include "pan_bo.h"
 #include "util/u_memory.h"
 #include "nir_serialize.h"
 
@@ -46,12 +47,14 @@ panfrost_create_compute_state(
         so->cbase = *cso;
         so->is_compute = true;
 
-        struct panfrost_shader_state *v = &so->variants[0];
+        struct panfrost_shader_state *v = calloc(1, sizeof(*v));
+        so->variants = v;
 
         so->variant_count = 1;
         so->active_variant = 0;
 
-        v->tripipe = malloc(sizeof(struct mali_shader_meta));
+        /* calloc, instead of malloc - to zero unused fields */
+        v->tripipe = CALLOC_STRUCT(mali_shader_meta);
 
         if (cso->ir_type == PIPE_SHADER_IR_NIR_SERIALIZED) {
                 struct blob_reader reader;
@@ -101,14 +104,10 @@ panfrost_launch_grid(struct pipe_context *pipe,
 
         ctx->compute_grid = info;
 
-        struct mali_job_descriptor_header job = {
-                .job_type = JOB_TYPE_COMPUTE,
-                .job_descriptor_size = 1,
-                .job_barrier = 1
-        };
-
         /* TODO: Stub */
         struct midgard_payload_vertex_tiler *payload = &ctx->payloads[PIPE_SHADER_COMPUTE];
+        struct panfrost_shader_variants *all = ctx->shader[PIPE_SHADER_COMPUTE];
+        struct panfrost_shader_state *ss = &all->variants[all->active_variant];
 
         /* We implement OpenCL inputs as uniforms (or a UBO -- same thing), so
          * reuse the graphics path for this by lowering to Gallium */
@@ -125,20 +124,21 @@ panfrost_launch_grid(struct pipe_context *pipe,
 
         panfrost_emit_for_draw(ctx, false);
 
-        /* Compute jobs have a "compute FBD". It's not a real framebuffer
-         * descriptor - there is no framebuffer - but it takes the place of
-         * one. As far as I can tell, it's actually the beginning of a
-         * single-render-target framebuffer descriptor with almost everything
-         * zeroed out.
-         */
-        struct mali_compute_fbd compute_fbd = {
-                .unknown1 = {
-                        0, 0x1F, 0, 0, 0, 0, 0, 0
-                }
+        unsigned single_size = util_next_power_of_two(MAX2(ss->shared_size, 128));
+        unsigned shared_size = single_size * info->grid[0] * info->grid[1] * info->grid[2] * 4;
+
+        struct mali_shared_memory shared = {
+                .shared_memory = panfrost_batch_get_shared_memory(batch, shared_size, 1)->gpu,
+                .shared_workgroup_count =
+                        util_logbase2_ceil(info->grid[0]) +
+                        util_logbase2_ceil(info->grid[1]) +
+                        util_logbase2_ceil(info->grid[2]),
+                .shared_unk1 = 0x2,
+                .shared_shift = util_logbase2(single_size) - 1
         };
 
-        payload->postfix.framebuffer =
-                panfrost_upload_transient(batch, &compute_fbd, sizeof(compute_fbd));
+        payload->postfix.shared_memory =
+                panfrost_upload_transient(batch, &shared, sizeof(shared));
 
         /* Invoke according to the grid info */
 
@@ -146,15 +146,7 @@ panfrost_launch_grid(struct pipe_context *pipe,
                         info->grid[0], info->grid[1], info->grid[2],
                         info->block[0], info->block[1], info->block[2], false);
 
-        /* Upload the payload */
-
-        struct panfrost_transfer transfer = panfrost_allocate_transient(batch, sizeof(job) + sizeof(*payload));
-        memcpy(transfer.cpu, &job, sizeof(job));
-        memcpy(transfer.cpu + sizeof(job), payload, sizeof(*payload));
-
-        /* Queue the job */
-        panfrost_scoreboard_queue_compute_job(batch, transfer);
-
+        panfrost_new_job(batch, JOB_TYPE_COMPUTE, true, 0, payload, sizeof(*payload), false);
         panfrost_flush_all_batches(ctx, true);
 }
 

@@ -46,7 +46,7 @@
 #endif
 #include <llvm-c/BitWriter.h>
 #if GALLIVM_HAVE_CORO
-#if LLVM_VERSION_MAJOR <= 8 && defined(PIPE_ARCH_AARCH64)
+#if LLVM_VERSION_MAJOR <= 8 && (defined(PIPE_ARCH_AARCH64) || defined (PIPE_ARCH_ARM) || defined(PIPE_ARCH_S390))
 #include <llvm-c/Transforms/IPO.h>
 #endif
 #include <llvm-c/Transforms/Coroutines.h>
@@ -137,7 +137,8 @@ create_pass_manager(struct gallivm_state *gallivm)
    }
 
 #if GALLIVM_HAVE_CORO
-#if LLVM_VERSION_MAJOR <= 8 && defined(PIPE_ARCH_AARCH64)
+#if LLVM_VERSION_MAJOR <= 8 && (defined(PIPE_ARCH_AARCH64) || defined (PIPE_ARCH_ARM) || defined(PIPE_ARCH_S390))
+   LLVMAddArgumentPromotionPass(gallivm->cgpassmgr);
    LLVMAddFunctionAttrsPass(gallivm->cgpassmgr);
 #endif
    LLVMAddCoroEarlyPass(gallivm->cgpassmgr);
@@ -450,7 +451,7 @@ lp_build_init(void)
        */
       lp_native_vector_width = 128;
    }
- 
+
    lp_native_vector_width = debug_get_num_option("LP_NATIVE_VECTOR_WIDTH",
                                                  lp_native_vector_width);
 
@@ -513,6 +514,7 @@ gallivm_create(const char *name, LLVMContextRef context)
       }
    }
 
+   assert(gallivm != NULL);
    return gallivm;
 }
 

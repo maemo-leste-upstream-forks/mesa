@@ -29,6 +29,10 @@
 #include <unistd.h>
 #include <errno.h>
 
+#ifndef HAVE_DIRENT_D_TYPE
+#include <limits.h> // PATH_MAX
+#endif
+
 #include <drm-uapi/i915_drm.h>
 
 #include "common/gen_gem.h"
@@ -396,6 +400,20 @@ static inline uint64_t to_user_pointer(void *ptr)
 }
 
 static bool
+is_dir_or_link(const struct dirent *entry, const char *parent_dir)
+{
+#ifdef HAVE_DIRENT_D_TYPE
+   return entry->d_type == DT_DIR || entry->d_type == DT_LNK;
+#else
+   struct stat st;
+   char path[PATH_MAX + 1];
+   snprintf(path, sizeof(path), "%s/%s", parent_dir, entry->d_name);
+   lstat(path, &st);
+   return S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode);
+#endif
+}
+
+static bool
 get_sysfs_dev_dir(struct gen_perf_config *perf, int fd)
 {
    struct stat sb;
@@ -434,8 +452,7 @@ get_sysfs_dev_dir(struct gen_perf_config *perf, int fd)
    }
 
    while ((drm_entry = readdir(drmdir))) {
-      if ((drm_entry->d_type == DT_DIR ||
-           drm_entry->d_type == DT_LNK) &&
+      if (is_dir_or_link(drm_entry, perf->sysfs_dev_dir) &&
           strncmp(drm_entry->d_name, "card", 4) == 0)
       {
          len = snprintf(perf->sysfs_dev_dir,
@@ -551,9 +568,7 @@ enumerate_sysfs_metrics(struct gen_perf_config *perf)
 
    while ((metric_entry = readdir(metricsdir))) {
       struct hash_entry *entry;
-
-      if ((metric_entry->d_type != DT_DIR &&
-           metric_entry->d_type != DT_LNK) ||
+      if (!is_dir_or_link(metric_entry, buf) ||
           metric_entry->d_name[0] == '.')
          continue;
 
@@ -952,7 +967,7 @@ load_oa_metrics(struct gen_perf_config *perf, int fd,
       return false;
 
    perf->oa_metrics_table =
-      _mesa_hash_table_create(perf, _mesa_key_hash_string,
+      _mesa_hash_table_create(perf, _mesa_hash_string,
                               _mesa_key_string_equal);
 
    /* Index all the metric sets mesa knows about before looking to see what
@@ -1147,6 +1162,8 @@ gen_perf_query_result_accumulate(struct gen_perf_query_result *result,
    if (result->hw_id == OA_REPORT_INVALID_CTX_ID &&
        start[2] != OA_REPORT_INVALID_CTX_ID)
       result->hw_id = start[2];
+   if (result->reports_accumulated == 0)
+      result->begin_timestamp = start[1];
    result->reports_accumulated++;
 
    switch (query->oa_format) {
@@ -2370,6 +2387,12 @@ accumulate_oa_reports(struct gen_perf_context *perf_ctx,
                gen_perf_query_result_accumulate(&query->oa.result,
                                                 query->queryinfo,
                                                 last, report);
+            } else {
+               /* We're not adding the delta because we've identified it's not
+                * for the context we filter for. We can consider that the
+                * query was split.
+                */
+               query->oa.result.query_disjoint = true;
             }
 
             last = report;

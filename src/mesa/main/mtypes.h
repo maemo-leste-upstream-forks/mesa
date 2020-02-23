@@ -459,6 +459,7 @@ struct gl_vertex_format
 {
    GLenum16 Type;        /**< datatype: GL_FLOAT, GL_INT, etc */
    GLenum16 Format;      /**< default: GL_RGBA, but may be GL_BGRA */
+   enum pipe_format _PipeFormat:16; /**< pipe_format for Gallium */
    GLubyte Size:5;       /**< components per element (1,2,3,4) */
    GLubyte Normalized:1; /**< GL_ARB_vertex_program */
    GLubyte Integer:1;    /**< Integer-valued? */
@@ -1546,6 +1547,9 @@ struct gl_vertex_array_object
    /** Mask indicating which vertex arrays have vertex buffer associated. */
    GLbitfield VertexAttribBufferMask;
 
+   /** Mask indicating which vertex arrays have a non-zero instance divisor. */
+   GLbitfield NonZeroDivisorMask;
+
    /** Mask of VERT_BIT_* values indicating which arrays are enabled */
    GLbitfield Enabled;
 
@@ -1557,6 +1561,9 @@ struct gl_vertex_array_object
     * the VAO to Array._DrawVAO.
     */
    GLbitfield _EffEnabledVBO;
+
+   /** Same as _EffEnabledVBO, but for instance divisors. */
+   GLbitfield _EffEnabledNonZeroDivisor;
 
    /** Denotes the way the position/generic0 attribute is mapped */
    gl_attribute_map_mode _AttributeMapMode;
@@ -2917,6 +2924,9 @@ struct gl_shader_program_data
     */
    union gl_constant_value *UniformDataDefaults;
 
+   /** Hash for quick search by name. */
+   struct hash_table_u64 *ProgramResourceHash;
+
    GLboolean Validated;
 
    /** List of all active resources after linking. */
@@ -4141,8 +4151,14 @@ struct gl_constants
    /** Is the drivers uniform storage packed or padded to 16 bytes. */
    bool PackedDriverUniformStorage;
 
+   /** Does the driver make use of the NIR based GLSL linker */
+   bool UseNIRGLSLLinker;
+
    /** Wether or not glBitmap uses red textures rather than alpha */
    bool BitmapUsesRed;
+
+   /** Whether the vertex buffer offset is a signed 32-bit integer. */
+   bool VertexBufferOffsetIsInt32;
 
    /** GL_ARB_gl_spirv */
    struct spirv_supported_capabilities SpirVCapabilities;
@@ -4289,6 +4305,7 @@ struct gl_extensions
    GLboolean EXT_depth_bounds_test;
    GLboolean EXT_disjoint_timer_query;
    GLboolean EXT_draw_buffers2;
+   GLboolean EXT_EGL_image_storage;
    GLboolean EXT_float_blend;
    GLboolean EXT_framebuffer_multisample;
    GLboolean EXT_framebuffer_multisample_blit_scaled;
@@ -4357,9 +4374,11 @@ struct gl_extensions
    GLboolean ATI_texture_env_combine3;
    GLboolean ATI_fragment_shader;
    GLboolean GREMEDY_string_marker;
+   GLboolean INTEL_blackhole_render;
    GLboolean INTEL_conservative_rasterization;
    GLboolean INTEL_performance_query;
    GLboolean INTEL_shader_atomic_float_minmax;
+   GLboolean INTEL_shader_integer_functions2;
    GLboolean KHR_blend_equation_advanced;
    GLboolean KHR_blend_equation_advanced_coherent;
    GLboolean KHR_robustness;
@@ -5131,6 +5150,8 @@ struct gl_context
    GLboolean ConservativeRasterization; /**< GL_CONSERVATIVE_RASTERIZATION_NV */
    GLfloat ConservativeRasterDilate;
    GLenum16 ConservativeRasterMode;
+
+   GLboolean IntelBlackholeRender; /**< GL_INTEL_blackhole_render */
 
    /** Does glVertexAttrib(0) alias glVertex()? */
    bool _AttribZeroAliasesVertex;

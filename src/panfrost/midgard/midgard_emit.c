@@ -194,8 +194,13 @@ mir_pack_swizzle_alu(midgard_instruction *ins)
                         packed = mir_pack_swizzle_64(ins->swizzle[i], components);
 
                         if (mode == midgard_reg_mode_32) {
-                                src[i].rep_low |= (ins->swizzle[i][0] >= COMPONENT_Z);
-                                src[i].rep_high |= (ins->swizzle[i][1] >= COMPONENT_Z);
+                                bool lo = ins->swizzle[i][0] >= COMPONENT_Z;
+                                bool hi = ins->swizzle[i][1] >= COMPONENT_Z;
+
+                                /* TODO: can we mix halves? */
+                                assert(lo == hi);
+
+                                src[i].rep_low |= lo;
                         } else if (mode < midgard_reg_mode_32) {
                                 unreachable("Cannot encode 8/16 swizzle in 64-bit");
                         }
@@ -369,12 +374,8 @@ emit_alu_bundle(compiler_context *ctx,
 
         /* Tack on constants */
 
-        if (bundle->has_embedded_constants) {
-                util_dynarray_append(emission, float, bundle->constants[0]);
-                util_dynarray_append(emission, float, bundle->constants[1]);
-                util_dynarray_append(emission, float, bundle->constants[2]);
-                util_dynarray_append(emission, float, bundle->constants[3]);
-        }
+        if (bundle->has_embedded_constants)
+                util_dynarray_append(emission, midgard_constants, bundle->constants);
 }
 
 /* Shift applied to the immediate used as an offset. Probably this is papering
@@ -425,7 +426,7 @@ emit_binary_bundle(compiler_context *ctx,
                         mir_pack_swizzle_ldst(bundle->instructions[i]);
 
                         /* Apply a constant offset */
-                        unsigned offset = bundle->instructions[i]->constants[0];
+                        unsigned offset = bundle->instructions[i]->constants.u32[0];
 
                         if (offset) {
                                 unsigned shift = mir_ldst_imm_shift(bundle->instructions[i]->load_store.op);
@@ -454,7 +455,8 @@ emit_binary_bundle(compiler_context *ctx,
         }
 
         case TAG_TEXTURE_4:
-        case TAG_TEXTURE_4_VTX: {
+        case TAG_TEXTURE_4_VTX:
+        case TAG_TEXTURE_4_BARRIER: {
                 /* Texture instructions are easy, since there is no pipelining
                  * nor VLIW to worry about. We may need to set .cont/.last
                  * flags. */

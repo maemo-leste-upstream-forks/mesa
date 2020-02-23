@@ -34,6 +34,7 @@
 
 #include "lima_screen.h"
 #include "lima_context.h"
+#include "lima_job.h"
 #include "lima_program.h"
 #include "lima_bo.h"
 #include "ir/lima_ir.h"
@@ -287,6 +288,8 @@ lima_create_fs_state(struct pipe_context *pctx,
       return NULL;
    }
 
+   so->uses_discard = nir->info.fs.uses_discard;
+
    return so;
 }
 
@@ -347,7 +350,8 @@ lima_update_fs_state(struct lima_context *ctx)
       fs->shader = NULL;
    }
 
-   ctx->pp_max_stack_size = MAX2(ctx->pp_max_stack_size, ctx->fs->stack_size);
+   struct lima_job *job = lima_job_get(ctx);
+   job->pp_max_stack_size = MAX2(job->pp_max_stack_size, ctx->fs->stack_size);
 
    return true;
 }

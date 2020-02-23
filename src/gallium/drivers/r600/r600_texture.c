@@ -1635,11 +1635,11 @@ static void r600_clear_texture(struct pipe_context *pipe,
 
 		/* Depth is always present. */
 		clear = PIPE_CLEAR_DEPTH;
-		desc->unpack_z_float(&depth, 0, data, 0, 1, 1);
+		util_format_unpack_z_float(tex->format, &depth, data, 1);
 
 		if (rtex->surface.has_stencil) {
 			clear |= PIPE_CLEAR_STENCIL;
-			desc->unpack_s_8uint(&stencil, 0, data, 0, 1, 1);
+			util_format_unpack_s_8uint(tex->format, &stencil, data, 1);
 		}
 
 		pipe->clear_depth_stencil(pipe, sf, clear, depth, stencil,
@@ -1648,13 +1648,7 @@ static void r600_clear_texture(struct pipe_context *pipe,
 	} else {
 		union pipe_color_union color;
 
-		/* pipe_color_union requires the full vec4 representation. */
-		if (util_format_is_pure_uint(tex->format))
-			desc->unpack_rgba_uint(color.ui, 0, data, 0, 1, 1);
-		else if (util_format_is_pure_sint(tex->format))
-			desc->unpack_rgba_sint(color.i, 0, data, 0, 1, 1);
-		else
-			desc->unpack_rgba_float(color.f, 0, data, 0, 1, 1);
+		util_format_unpack_rgba(tex->format, color.ui, data, 1);
 
 		if (screen->is_format_supported(screen, tex->format,
 						tex->target, 0, 0,
@@ -1751,12 +1745,8 @@ static void evergreen_set_clear_color(struct r600_texture *rtex,
 		       color->ui[0] == color->ui[2]);
 		uc.ui[0] = color->ui[0];
 		uc.ui[1] = color->ui[3];
-	} else if (util_format_is_pure_uint(surface_format)) {
-		util_format_write_4ui(surface_format, color->ui, 0, &uc, 0, 0, 0, 1, 1);
-	} else if (util_format_is_pure_sint(surface_format)) {
-		util_format_write_4i(surface_format, color->i, 0, &uc, 0, 0, 0, 1, 1);
 	} else {
-		util_pack_color(color->f, surface_format, &uc);
+		util_pack_color_union(surface_format, &uc, color);
 	}
 
 	memcpy(rtex->color_clear_value, &uc, 2 * sizeof(uint32_t));

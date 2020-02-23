@@ -50,7 +50,8 @@ struct ac_arg {
 };
 
 
-#define AC_MAX_ARGS 64
+#define AC_MAX_ARGS 128
+
 struct ac_shader_args {
 	/* Info on how to declare arguments */
 	struct {
@@ -86,6 +87,7 @@ struct ac_shader_args {
 	struct ac_arg persp_sample;
 	struct ac_arg persp_center;
 	struct ac_arg persp_centroid;
+	struct ac_arg pull_model;
 	struct ac_arg linear_sample;
 	struct ac_arg linear_center;
 	struct ac_arg linear_centroid;

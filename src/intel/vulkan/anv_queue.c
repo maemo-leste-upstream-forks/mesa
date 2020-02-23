@@ -564,12 +564,15 @@ VkResult
 anv_queue_submit_simple_batch(struct anv_queue *queue,
                               struct anv_batch *batch)
 {
+   if (queue->device->no_hw)
+      return VK_SUCCESS;
+
    struct anv_device *device = queue->device;
    struct anv_queue_submit *submit = anv_queue_submit_alloc(device);
    if (!submit)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   bool has_syncobj_wait = device->instance->physicalDevice.has_syncobj_wait;
+   bool has_syncobj_wait = device->physical->has_syncobj_wait;
    VkResult result;
    uint32_t syncobj;
    struct anv_bo *batch_bo, *sync_bo;
@@ -720,7 +723,7 @@ anv_queue_submit(struct anv_queue *queue,
 {
    ANV_FROM_HANDLE(anv_fence, fence, _fence);
    struct anv_device *device = queue->device;
-   UNUSED struct anv_physical_device *pdevice = &device->instance->physicalDevice;
+   UNUSED struct anv_physical_device *pdevice = device->physical;
    struct anv_queue_submit *submit = anv_queue_submit_alloc(device);
    if (!submit)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -947,6 +950,9 @@ VkResult anv_QueueSubmit(
 {
    ANV_FROM_HANDLE(anv_queue, queue, _queue);
 
+   if (queue->device->no_hw)
+      return VK_SUCCESS;
+
    /* Query for device status prior to submitting.  Technically, we don't need
     * to do this.  However, if we have a client that's submitting piles of
     * garbage, we would rather break as early as possible to keep the GPU
@@ -1099,7 +1105,7 @@ VkResult anv_CreateFence(
    if (fence == NULL)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   if (device->instance->physicalDevice.has_syncobj_wait) {
+   if (device->physical->has_syncobj_wait) {
       fence->permanent.type = ANV_FENCE_TYPE_SYNCOBJ;
 
       uint32_t create_flags = 0;
@@ -1537,6 +1543,9 @@ VkResult anv_WaitForFences(
 {
    ANV_FROM_HANDLE(anv_device, device, _device);
 
+   if (device->no_hw)
+      return VK_SUCCESS;
+
    if (anv_device_is_lost(device))
       return VK_ERROR_DEVICE_LOST;
 
@@ -1624,8 +1633,7 @@ VkResult anv_ImportFenceFdKHR(
 
       if (anv_gem_syncobj_import_sync_file(device, new_impl.syncobj, fd)) {
          anv_gem_syncobj_destroy(device, new_impl.syncobj);
-         return vk_errorf(device->instance, NULL,
-                          VK_ERROR_INVALID_EXTERNAL_HANDLE,
+         return vk_errorf(device, NULL, VK_ERROR_INVALID_EXTERNAL_HANDLE,
                           "syncobj sync file import failed: %m");
       }
       break;
@@ -1728,7 +1736,7 @@ binary_semaphore_create(struct anv_device *device,
                         struct anv_semaphore_impl *impl,
                         bool exportable)
 {
-   if (device->instance->physicalDevice.has_syncobj) {
+   if (device->physical->has_syncobj) {
       impl->type = ANV_SEMAPHORE_TYPE_DRM_SYNCOBJ;
       impl->syncobj = anv_gem_syncobj_create(device, 0);
       if (!impl->syncobj)
@@ -1807,7 +1815,7 @@ VkResult anv_CreateSemaphore(
    } else if (handleTypes & VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT) {
       assert(handleTypes == VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT);
       assert(sem_type == VK_SEMAPHORE_TYPE_BINARY_KHR);
-      if (device->instance->physicalDevice.has_syncobj) {
+      if (device->physical->has_syncobj) {
          semaphore->permanent.type = ANV_SEMAPHORE_TYPE_DRM_SYNCOBJ;
          semaphore->permanent.syncobj = anv_gem_syncobj_create(device, 0);
          if (!semaphore->permanent.syncobj) {
@@ -1847,7 +1855,8 @@ anv_semaphore_impl_cleanup(struct anv_device *device,
       break;
 
    case ANV_SEMAPHORE_TYPE_SYNC_FILE:
-      close(impl->fd);
+      if (impl->fd >= 0)
+         close(impl->fd);
       break;
 
    case ANV_SEMAPHORE_TYPE_TIMELINE:
@@ -1969,7 +1978,7 @@ VkResult anv_ImportSemaphoreFdKHR(
 
    switch (pImportSemaphoreFdInfo->handleType) {
    case VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT:
-      if (device->instance->physicalDevice.has_syncobj) {
+      if (device->physical->has_syncobj) {
          new_impl.type = ANV_SEMAPHORE_TYPE_DRM_SYNCOBJ;
 
          new_impl.syncobj = anv_gem_syncobj_fd_to_handle(device, fd);
@@ -2010,7 +2019,7 @@ VkResult anv_ImportSemaphoreFdKHR(
       break;
 
    case VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT:
-      if (device->instance->physicalDevice.has_syncobj) {
+      if (device->physical->has_syncobj) {
          new_impl = (struct anv_semaphore_impl) {
             .type = ANV_SEMAPHORE_TYPE_DRM_SYNCOBJ,
             .syncobj = anv_gem_syncobj_create(device, 0),
@@ -2019,8 +2028,7 @@ VkResult anv_ImportSemaphoreFdKHR(
             return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
          if (anv_gem_syncobj_import_sync_file(device, new_impl.syncobj, fd)) {
             anv_gem_syncobj_destroy(device, new_impl.syncobj);
-            return vk_errorf(device->instance, NULL,
-                             VK_ERROR_INVALID_EXTERNAL_HANDLE,
+            return vk_errorf(device, NULL, VK_ERROR_INVALID_EXTERNAL_HANDLE,
                              "syncobj sync file import failed: %m");
          }
          /* Ownership of the FD is transfered to Anv. Since we don't need it
@@ -2144,7 +2152,7 @@ VkResult anv_GetSemaphoreFdKHR(
    return VK_SUCCESS;
 }
 
-VkResult anv_GetSemaphoreCounterValueKHR(
+VkResult anv_GetSemaphoreCounterValue(
     VkDevice                                    _device,
     VkSemaphore                                 _semaphore,
     uint64_t*                                   pValue)
@@ -2276,12 +2284,15 @@ anv_timelines_wait(struct anv_device *device,
    }
 }
 
-VkResult anv_WaitSemaphoresKHR(
+VkResult anv_WaitSemaphores(
     VkDevice                                    _device,
     const VkSemaphoreWaitInfoKHR*               pWaitInfo,
     uint64_t                                    timeout)
 {
    ANV_FROM_HANDLE(anv_device, device, _device);
+
+   if (device->no_hw)
+      return VK_SUCCESS;
 
    struct anv_timeline **timelines =
       vk_alloc(&device->alloc,
@@ -2328,7 +2339,7 @@ VkResult anv_WaitSemaphoresKHR(
    return result;
 }
 
-VkResult anv_SignalSemaphoreKHR(
+VkResult anv_SignalSemaphore(
     VkDevice                                    _device,
     const VkSemaphoreSignalInfoKHR*             pSignalInfo)
 {

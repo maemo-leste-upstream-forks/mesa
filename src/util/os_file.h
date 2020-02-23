@@ -8,6 +8,7 @@
 #ifndef _OS_FILE_H_
 #define _OS_FILE_H_
 
+#include <stdbool.h>
 #include <stdio.h>
 
 #ifdef  __cplusplus
@@ -29,6 +30,17 @@ os_file_create_unique(const char *filename, int filemode);
  */
 char *
 os_read_file(const char *filename);
+
+/*
+ * Try to determine if two file descriptors reference the same file description
+ *
+ * Return values:
+ * - 0:   They reference the same file description
+ * - > 0: They do not reference the same file description
+ * - < 0: Unable to determine whether they reference the same file description
+ */
+int
+os_same_file_description(int fd1, int fd2);
 
 #ifdef __cplusplus
 }

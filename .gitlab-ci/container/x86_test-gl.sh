@@ -5,7 +5,13 @@ set -o xtrace
 
 export DEBIAN_FRONTEND=noninteractive
 
-apt-get install -y ca-certificates
+apt-get install -y \
+        ca-certificates \
+        gnupg \
+
+# Upstream LLVM package repository
+apt-key add .gitlab-ci/container/llvm-snapshot.gpg.key
+echo "deb https://apt.llvm.org/buster/ llvm-toolchain-buster-9 main" >/etc/apt/sources.list.d/llvm9.list
 
 sed -i -e 's/http:\/\/deb/https:\/\/deb/g' /etc/apt/sources.list
 echo 'deb https://deb.debian.org/debian buster-backports main' >/etc/apt/sources.list.d/backports.list
@@ -22,32 +28,49 @@ EOF
 apt-get dist-upgrade -y
 
 apt-get install -y --no-remove \
+      autoconf \
+      automake \
       cmake \
       g++ \
       git \
+      git-lfs \
       gcc \
       libexpat1 \
       libgbm-dev \
       libgles2-mesa-dev \
+      libpcre32-3 \
+      libpcre3-dev \
       libpng16-16 \
       libpng-dev \
+      libpython3.7 \
       libvulkan1 \
       libvulkan-dev \
       libwaffle-dev \
       libwayland-server0 \
+      libxcb-keysyms1 \
+      libxcb-keysyms1-dev \
       libxcb-xfixes0 \
       libxkbcommon0 \
       libxkbcommon-dev \
       libxrender1 \
       libxrender-dev \
-      libllvm8 \
+      libllvm9 \
+      make \
       meson \
       patch \
       pkg-config \
+      python \
+      python3.7 \
+      python3.7-dev \
+      python3-distutils \
       python3-mako \
       python3-numpy \
+      python3-pil \
+      python3-pilkit \
       python3-six \
-      python \
+      python3-yaml \
+      qt5-default \
+      qt5-qmake \
       waffle-utils \
       xauth \
       xvfb \
@@ -66,24 +89,37 @@ apt-get install -y --no-remove \
 
 . .gitlab-ci/build-deqp-gl.sh
 
+############### Build apitrace
+
+. .gitlab-ci/build-apitrace.sh
+
+############### Build renderdoc
+
+. .gitlab-ci/build-renderdoc.sh
 
 ############### Uninstall the build software
 
 apt-get purge -y \
+      autoconf \
+      automake \
       cmake \
       g++ \
       gcc \
-      git \
+      gnupg \
       libc6-dev \
       libgbm-dev \
       libgles2-mesa-dev \
+      libpcre3-dev \
       libpng-dev \
       libwaffle-dev \
+      libxcb-keysyms1-dev \
       libxkbcommon-dev \
       libxrender-dev \
+      make \
       meson \
       patch \
       pkg-config \
-      python
+      python3.7-dev \
+      python3-distutils
 
 apt-get autoremove -y --purge

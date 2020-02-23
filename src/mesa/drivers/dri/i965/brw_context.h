@@ -853,6 +853,9 @@ struct brw_context
    /* The last PMA stall bits programmed. */
    uint32_t pma_stall_bits;
 
+   /* Whether INTEL_black_render is active. */
+   bool frontend_noop;
+
    struct {
       struct {
          /**
@@ -1503,6 +1506,9 @@ gen6_set_sample_maps(struct gl_context *ctx);
 
 /* gen8_multisample_state.c */
 void gen8_emit_3dstate_sample_pattern(struct brw_context *brw);
+
+/* gen7_l3_state.c */
+void brw_emit_l3_state(struct brw_context *brw);
 
 /* gen7_urb.c */
 void

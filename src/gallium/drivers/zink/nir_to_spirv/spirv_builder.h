@@ -94,6 +94,9 @@ spirv_builder_emit_builtin(struct spirv_builder *b, SpvId target,
                            SpvBuiltIn builtin);
 
 void
+spirv_builder_emit_index(struct spirv_builder *b, SpvId target, int index);
+
+void
 spirv_builder_emit_descriptor_set(struct spirv_builder *b, SpvId target,
                                   uint32_t descriptor_set);
 
@@ -215,7 +218,8 @@ spirv_builder_emit_image_sample(struct spirv_builder *b,
                                 SpvId bias,
                                 SpvId dref,
                                 SpvId dx,
-                                SpvId dy);
+                                SpvId dy,
+                                SpvId offset);
 
 SpvId
 spirv_builder_emit_image(struct spirv_builder *b, SpvId result_type,
@@ -227,6 +231,12 @@ spirv_builder_emit_image_fetch(struct spirv_builder *b,
                                SpvId image,
                                SpvId coordinate,
                                SpvId lod);
+
+SpvId
+spirv_builder_emit_image_query_size(struct spirv_builder *b,
+                                    SpvId result_type,
+                                    SpvId image,
+                                    SpvId lod);
 
 SpvId
 spirv_builder_emit_ext_inst(struct spirv_builder *b, SpvId result_type,

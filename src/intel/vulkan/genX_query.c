@@ -49,7 +49,7 @@ VkResult genX(CreateQueryPool)(
     VkQueryPool*                                pQueryPool)
 {
    ANV_FROM_HANDLE(anv_device, device, _device);
-   const struct anv_physical_device *pdevice = &device->instance->physicalDevice;
+   const struct anv_physical_device *pdevice = device->physical;
    struct anv_query_pool *pool;
    VkResult result;
 
@@ -308,8 +308,17 @@ VkResult genX(GetQueryPoolResults)(
       switch (pool->type) {
       case VK_QUERY_TYPE_OCCLUSION: {
          uint64_t *slot = query_slot(pool, firstQuery + i);
-         if (write_results)
-            cpu_write_query_result(pData, flags, idx, slot[2] - slot[1]);
+         if (write_results) {
+            /* From the Vulkan 1.2.132 spec:
+             *
+             *    "If VK_QUERY_RESULT_PARTIAL_BIT is set,
+             *    VK_QUERY_RESULT_WAIT_BIT is not set, and the query’s status
+             *    is unavailable, an intermediate result value between zero and
+             *    the final result value is written to pData for that query."
+             */
+            uint64_t result = available ? slot[2] - slot[1] : 0;
+            cpu_write_query_result(pData, flags, idx, result);
+         }
          idx++;
          break;
       }
@@ -415,6 +424,9 @@ static void
 emit_ps_depth_count(struct anv_cmd_buffer *cmd_buffer,
                     struct anv_address addr)
 {
+   cmd_buffer->state.pending_pipe_bits |= ANV_PIPE_POST_SYNC_BIT;
+   genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
+
    anv_batch_emit(&cmd_buffer->batch, GENX(PIPE_CONTROL), pc) {
       pc.DestinationAddressType  = DAT_PPGTT;
       pc.PostSyncOperation       = WritePSDepthCount;
@@ -439,6 +451,9 @@ emit_query_pc_availability(struct anv_cmd_buffer *cmd_buffer,
                            struct anv_address addr,
                            bool available)
 {
+   cmd_buffer->state.pending_pipe_bits |= ANV_PIPE_POST_SYNC_BIT;
+   genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
+
    anv_batch_emit(&cmd_buffer->batch, GENX(PIPE_CONTROL), pc) {
       pc.DestinationAddressType  = DAT_PPGTT;
       pc.PostSyncOperation       = WriteImmediateData;
@@ -491,9 +506,8 @@ emit_zero_queries(struct anv_cmd_buffer *cmd_buffer,
       for (uint32_t i = 0; i < num_queries; i++) {
          struct anv_address slot_addr =
             anv_query_address(pool, first_index + i);
-         gen_mi_memset(b, slot_addr, 0, pool->stride - 8);
-         emit_query_mi_availability(b, anv_address_add(slot_addr,
-                                                       pool->stride - 8), true);
+         gen_mi_memset(b, anv_address_add(slot_addr, 8), 0, pool->stride - 8);
+         emit_query_mi_availability(b, slot_addr, true);
       }
       break;
 
@@ -535,14 +549,8 @@ void genX(CmdResetQueryPool)(
       struct gen_mi_builder b;
       gen_mi_builder_init(&b, &cmd_buffer->batch);
 
-      for (uint32_t i = 0; i < queryCount; i++) {
-         emit_query_mi_availability(
-            &b,
-            anv_address_add(
-               anv_query_address(pool, firstQuery + i),
-               pool->stride - 8),
-            false);
-      }
+      for (uint32_t i = 0; i < queryCount; i++)
+         emit_query_mi_availability(&b, anv_query_address(pool, firstQuery + i), false);
       break;
    }
 
@@ -551,7 +559,7 @@ void genX(CmdResetQueryPool)(
    }
 }
 
-void genX(ResetQueryPoolEXT)(
+void genX(ResetQueryPool)(
     VkDevice                                    _device,
     VkQueryPool                                 queryPool,
     uint32_t                                    firstQuery,
@@ -781,9 +789,7 @@ void genX(CmdEndQueryIndexedEXT)(
                                              intel_perf_mi_rpc_offset(true));
          rpc.ReportID = 0xdeadbeef; /* This goes in the first dword */
       }
-      emit_query_mi_availability(&b,
-                                 anv_address_add(query_addr, pool->stride - 8),
-                                 true);
+      emit_query_mi_availability(&b, query_addr, true);
       break;
    }
 
@@ -832,6 +838,9 @@ void genX(CmdWriteTimestamp)(
 
    default:
       /* Everything else is bottom-of-pipe */
+      cmd_buffer->state.pending_pipe_bits |= ANV_PIPE_POST_SYNC_BIT;
+      genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
+
       anv_batch_emit(&cmd_buffer->batch, GENX(PIPE_CONTROL), pc) {
          pc.DestinationAddressType  = DAT_PPGTT;
          pc.PostSyncOperation       = WriteTimestamp;
@@ -862,6 +871,45 @@ void genX(CmdWriteTimestamp)(
 }
 
 #if GEN_GEN > 7 || GEN_IS_HASWELL
+
+#if GEN_GEN >= 8 || GEN_IS_HASWELL
+
+#define MI_PREDICATE_SRC0    0x2400
+#define MI_PREDICATE_SRC1    0x2408
+#define MI_PREDICATE_RESULT  0x2418
+
+/**
+ * Writes the results of a query to dst_addr is the value at poll_addr is equal
+ * to the reference value.
+ */
+static void
+gpu_write_query_result_cond(struct anv_cmd_buffer *cmd_buffer,
+                            struct gen_mi_builder *b,
+                            struct anv_address poll_addr,
+                            struct anv_address dst_addr,
+                            uint64_t ref_value,
+                            VkQueryResultFlags flags,
+                            uint32_t value_index,
+                            struct gen_mi_value query_result)
+{
+   gen_mi_store(b, gen_mi_reg64(MI_PREDICATE_SRC0), gen_mi_mem64(poll_addr));
+   gen_mi_store(b, gen_mi_reg64(MI_PREDICATE_SRC1), gen_mi_imm(ref_value));
+   anv_batch_emit(&cmd_buffer->batch, GENX(MI_PREDICATE), mip) {
+      mip.LoadOperation    = LOAD_LOAD;
+      mip.CombineOperation = COMBINE_SET;
+      mip.CompareOperation = COMPARE_SRCS_EQUAL;
+   }
+
+   if (flags & VK_QUERY_RESULT_64_BIT) {
+      struct anv_address res_addr = anv_address_add(dst_addr, value_index * 8);
+      gen_mi_store_if(b, gen_mi_mem64(res_addr), query_result);
+   } else {
+      struct anv_address res_addr = anv_address_add(dst_addr, value_index * 4);
+      gen_mi_store_if(b, gen_mi_mem32(res_addr), query_result);
+   }
+}
+
+#endif /* GEN_GEN >= 8 || GEN_IS_HASWELL */
 
 static void
 gpu_write_query_result(struct gen_mi_builder *b,
@@ -939,7 +987,22 @@ void genX(CmdCopyQueryPoolResults)(
       switch (pool->type) {
       case VK_QUERY_TYPE_OCCLUSION:
          result = compute_query_result(&b, anv_address_add(query_addr, 8));
+#if GEN_GEN >= 8 || GEN_IS_HASWELL
+         /* Like in the case of vkGetQueryPoolResults, if the query is
+          * unavailable and the VK_QUERY_RESULT_PARTIAL_BIT flag is set,
+          * conservatively write 0 as the query result. If the
+          * VK_QUERY_RESULT_PARTIAL_BIT isn't set, don't write any value.
+          */
+         gpu_write_query_result_cond(cmd_buffer, &b, query_addr, dest_addr,
+               1 /* available */, flags, idx, result);
+         if (flags & VK_QUERY_RESULT_PARTIAL_BIT) {
+            gpu_write_query_result_cond(cmd_buffer, &b, query_addr, dest_addr,
+                  0 /* unavailable */, flags, idx, gen_mi_imm(0));
+         }
+         idx++;
+#else /* GEN_GEN < 8 && !GEN_IS_HASWELL */
          gpu_write_query_result(&b, dest_addr, flags, idx++, result);
+#endif
          break;
 
       case VK_QUERY_TYPE_PIPELINE_STATISTICS: {

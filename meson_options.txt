@@ -315,6 +315,13 @@ option(
   description : 'Architectures to build SWR support for.',
 )
 option(
+  'shared-swr',
+  type : 'boolean',
+  value : true,
+  description : 'Whether to link SWR shared or statically.',
+)
+
+option(
   'tools',
   type : 'array',
   value : [],
@@ -342,15 +349,9 @@ option(
   description : 'Enable direct rendering in GLX and EGL for DRI',
 )
 option(
-  'I-love-half-baked-turnips',
-  type : 'boolean',
-  value : false,
-  description : 'Allow work-in-progress freedreno vulkan driver to be enabled',
-)
-option(
   'prefer-iris',
   type : 'boolean',
-  value : false,
+  value : true,
   description : 'Prefer new Intel iris driver over older i965 driver'
 )
 option('egl-lib-suffix',

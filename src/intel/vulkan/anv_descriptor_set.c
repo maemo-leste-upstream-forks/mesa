@@ -245,8 +245,7 @@ void anv_GetDescriptorSetLayoutSupport(
     VkDescriptorSetLayoutSupport*               pSupport)
 {
    ANV_FROM_HANDLE(anv_device, device, _device);
-   const struct anv_physical_device *pdevice =
-      &device->instance->physicalDevice;
+   const struct anv_physical_device *pdevice = device->physical;
 
    uint32_t surface_count[MESA_SHADER_STAGES] = { 0, };
    bool needs_descriptor_buffer = false;
@@ -427,7 +426,7 @@ VkResult anv_CreateDescriptorSetLayout(
       }
 
       set_layout->binding[b].data =
-         anv_descriptor_data_for_type(&device->instance->physicalDevice,
+         anv_descriptor_data_for_type(device->physical,
                                       binding->descriptorType);
       set_layout->binding[b].array_size = binding->descriptorCount;
       set_layout->binding[b].descriptor_index = set_layout->size;
@@ -683,7 +682,7 @@ VkResult anv_CreateDescriptorPool(
    uint32_t descriptor_bo_size = 0;
    for (uint32_t i = 0; i < pCreateInfo->poolSizeCount; i++) {
       enum anv_descriptor_data desc_data =
-         anv_descriptor_data_for_type(&device->instance->physicalDevice,
+         anv_descriptor_data_for_type(device->physical,
                                       pCreateInfo->pPoolSizes[i].type);
 
       if (desc_data & ANV_DESCRIPTOR_BUFFER_VIEW)
@@ -1342,11 +1341,11 @@ anv_descriptor_set_write_buffer(struct anv_device *device,
                     element * anv_descriptor_size(bind_layout);
 
    if (bind_layout->data & ANV_DESCRIPTOR_ADDRESS_RANGE) {
-      struct anv_address_range_descriptor desc = {
+      struct anv_address_range_descriptor desc_data = {
          .address = anv_address_physical(bind_addr),
          .range = bind_range,
       };
-      memcpy(desc_map, &desc, sizeof(desc));
+      memcpy(desc_map, &desc_data, sizeof(desc_data));
    }
 }
 

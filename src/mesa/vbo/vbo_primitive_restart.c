@@ -181,7 +181,7 @@ vbo_sw_primitive_restart(struct gl_context *ctx,
    void *ptr;
 
    /* If there is an indirect buffer, map it and extract the draw params */
-   if (indirect && prims[0].is_indirect) {
+   if (indirect) {
       const uint32_t *indirect_params;
       if (!ctx->Driver.MapBufferRange(ctx, 0, indirect->Size, GL_MAP_READ_BIT,
                                       indirect, MAP_INTERNAL)) {
@@ -198,7 +198,6 @@ vbo_sw_primitive_restart(struct gl_context *ctx,
                         ADD_POINTERS(indirect->Mappings[MAP_INTERNAL].Pointer,
                                      new_prim.indirect_offset);
 
-      new_prim.is_indirect = 0;
       new_prim.count = indirect_params[0];
       new_prim.num_instances = indirect_params[1];
       new_prim.start = indirect_params[2];

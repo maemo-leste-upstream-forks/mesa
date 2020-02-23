@@ -738,7 +738,7 @@ dri2_create_image_from_winsys(__DRIscreen *_screen,
    struct pipe_resource templ;
    unsigned tex_usage = 0;
    int i;
-   bool is_yuv = util_format_is_yuv(map->pipe_format);
+   bool use_lowered = false;
 
    if (pscreen->is_format_supported(pscreen, map->pipe_format, screen->target, 0, 0,
                                     PIPE_BIND_RENDER_TARGET))
@@ -747,17 +747,15 @@ dri2_create_image_from_winsys(__DRIscreen *_screen,
                                     PIPE_BIND_SAMPLER_VIEW))
       tex_usage |= PIPE_BIND_SAMPLER_VIEW;
 
-   if (!tex_usage && is_yuv) {
+   if (!tex_usage && util_format_is_yuv(map->pipe_format)) {
       /* YUV format sampling can be emulated by the Mesa state tracker by
        * using multiple samplers of varying formats.
        * If no tex_usage is set and we detect a YUV format,
-       * test for support of the first plane's sampler format and
+       * test for support of all planes' sampler formats and
        * add sampler view usage.
        */
-      if (pscreen->is_format_supported(pscreen,
-                                       dri2_get_pipe_format_for_dri_format(map->planes[0].dri_format),
-                                       screen->target, 0, 0,
-                                       PIPE_BIND_SAMPLER_VIEW))
+      use_lowered = true;
+      if (dri2_yuv_dma_buf_supported(screen, map))
          tex_usage |= PIPE_BIND_SAMPLER_VIEW;
    }
 
@@ -775,19 +773,20 @@ dri2_create_image_from_winsys(__DRIscreen *_screen,
    templ.depth0 = 1;
    templ.array_size = 1;
 
-   for (i = num_handles - 1; i >= 0; i--) {
+   for (i = (use_lowered ? map->nplanes : num_handles) - 1; i >= 0; i--) {
       struct pipe_resource *tex;
 
       templ.width0 = width >> map->planes[i].width_shift;
       templ.height0 = height >> map->planes[i].height_shift;
-      if (is_yuv)
+      if (use_lowered)
          templ.format = dri2_get_pipe_format_for_dri_format(map->planes[i].dri_format);
       else
          templ.format = map->pipe_format;
       assert(templ.format != PIPE_FORMAT_NONE);
 
       tex = pscreen->resource_from_handle(pscreen,
-            &templ, &whandle[i], PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE);
+               &templ, &whandle[use_lowered ? map->planes[i].buffer_index : i],
+               PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE);
       if (!tex) {
          pipe_resource_reference(&img->texture, NULL);
          FREE(img);
@@ -911,25 +910,23 @@ dri2_create_image_from_fd(__DRIscreen *_screen,
 
    memset(whandles, 0, sizeof(whandles));
 
-   for (i = 0; i < num_handles; i++) {
-      int fdnum = i >= num_fds ? 0 : i;
-      int index = i >= map->nplanes ? i : map->planes[i].buffer_index;
-      if (fds[fdnum] < 0) {
+   for (i = 0; i < num_fds; i++) {
+      if (fds[i] < 0) {
          err = __DRI_IMAGE_ERROR_BAD_ALLOC;
          goto exit;
       }
 
       whandles[i].type = WINSYS_HANDLE_TYPE_FD;
-      whandles[i].handle = (unsigned)fds[fdnum];
-      whandles[i].stride = (unsigned)strides[index];
-      whandles[i].offset = (unsigned)offsets[index];
+      whandles[i].handle = (unsigned)fds[i];
+      whandles[i].stride = (unsigned)strides[i];
+      whandles[i].offset = (unsigned)offsets[i];
       whandles[i].format = map->pipe_format;
       whandles[i].modifier = modifier;
-      whandles[i].plane = index;
+      whandles[i].plane = i;
    }
 
    img = dri2_create_image_from_winsys(_screen, width, height, map,
-                                       num_handles, whandles, loaderPrivate);
+                                       num_fds, whandles, loaderPrivate);
    if(img == NULL) {
       err = __DRI_IMAGE_ERROR_BAD_ALLOC;
       goto exit;
@@ -938,6 +935,7 @@ dri2_create_image_from_fd(__DRIscreen *_screen,
    img->dri_components = map->dri_components;
    img->dri_fourcc = fourcc;
    img->dri_format = map->dri_format;
+   img->imported_dmabuf = TRUE;
 
 exit:
    if (error)
@@ -1397,7 +1395,8 @@ dri2_query_dma_buf_modifiers(__DRIscreen *_screen, int fourcc, int max,
        (pscreen->is_format_supported(pscreen, format, screen->target, 0, 0,
                                      PIPE_BIND_RENDER_TARGET) ||
         pscreen->is_format_supported(pscreen, format, screen->target, 0, 0,
-                                     PIPE_BIND_SAMPLER_VIEW))) {
+                                     PIPE_BIND_SAMPLER_VIEW) ||
+        dri2_yuv_dma_buf_supported(screen, map))) {
       pscreen->query_dmabuf_modifiers(pscreen, format, max, modifiers,
                                       external_only, count);
       return true;

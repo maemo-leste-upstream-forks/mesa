@@ -1557,10 +1557,17 @@ draw_gs_llvm_emit_vertex(const struct lp_build_gs_iface *gs_base,
       indices[i] = LLVMBuildAdd(builder, indices[i], currently_emitted, "");
    }
 
+   LLVMValueRef stream_idx = LLVMBuildExtractElement(builder, stream_id, lp_build_const_int32(gallivm, 0), "");
+   LLVMValueRef cnd = LLVMBuildICmp(builder, LLVMIntULT, stream_idx, lp_build_const_int32(gallivm, variant->shader->base.num_vertex_streams), "");
+   struct lp_build_if_state if_ctx;
+   lp_build_if(&if_ctx, gallivm, cnd);
+   io = lp_build_pointer_get(builder, io, LLVMBuildExtractElement(builder, stream_id, lp_build_const_int32(gallivm, 0), ""));
+
    convert_to_aos(gallivm, io, indices,
                   outputs, clipmask,
                   gs_info->num_outputs, gs_type,
                   FALSE);
+   lp_build_endif(&if_ctx);
 }
 
 static void
@@ -1597,7 +1604,7 @@ draw_gs_llvm_end_primitive(const struct lp_build_gs_iface *gs_base,
 static void
 draw_gs_llvm_epilogue(const struct lp_build_gs_iface *gs_base,
                       LLVMValueRef total_emitted_vertices_vec,
-                      LLVMValueRef emitted_prims_vec)
+                      LLVMValueRef emitted_prims_vec, unsigned stream)
 {
    const struct draw_gs_llvm_iface *gs_iface = draw_gs_llvm_iface(gs_base);
    struct draw_gs_llvm_variant *variant = gs_iface->variant;
@@ -1607,10 +1614,10 @@ draw_gs_llvm_epilogue(const struct lp_build_gs_iface *gs_base,
       draw_gs_jit_emitted_vertices(gallivm, variant->context_ptr);
    LLVMValueRef emitted_prims_ptr =
       draw_gs_jit_emitted_prims(gallivm, variant->context_ptr);
-   LLVMValueRef zero = lp_build_const_int32(gallivm, 0);
+   LLVMValueRef stream_val = lp_build_const_int32(gallivm, stream);
    
-   emitted_verts_ptr = LLVMBuildGEP(builder, emitted_verts_ptr, &zero, 0, "");
-   emitted_prims_ptr = LLVMBuildGEP(builder, emitted_prims_ptr, &zero, 0, "");
+   emitted_verts_ptr = LLVMBuildGEP(builder, emitted_verts_ptr, &stream_val, 1, "");
+   emitted_prims_ptr = LLVMBuildGEP(builder, emitted_prims_ptr, &stream_val, 1, "");
 
    LLVMBuildStore(builder, total_emitted_vertices_vec, emitted_verts_ptr);
    LLVMBuildStore(builder, emitted_prims_vec, emitted_prims_ptr);
@@ -2429,7 +2436,7 @@ draw_gs_llvm_generate(struct draw_llvm *llvm,
 
    arg_types[0] = get_gs_context_ptr_type(variant);    /* context */
    arg_types[1] = variant->input_array_type;           /* input */
-   arg_types[2] = variant->vertex_header_ptr_type;     /* vertex_header */
+   arg_types[2] = LLVMPointerType(variant->vertex_header_ptr_type, 0);     /* vertex_header */
    arg_types[3] = int32_type;                          /* num_prims */
    arg_types[4] = int32_type;                          /* instance_id */
    arg_types[5] = LLVMPointerType(

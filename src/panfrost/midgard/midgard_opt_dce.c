@@ -56,6 +56,10 @@ can_dce(midgard_instruction *ins)
                 if (load_store_opcode_props[ins->load_store.op].props & LDST_SIDE_FX)
                         return false;
 
+        if (ins->type == TAG_TEXTURE_4)
+                if (ins->texture.op == TEXTURE_OP_BARRIER)
+                        return false;
+
         return true;
 }
 
@@ -74,7 +78,7 @@ midgard_opt_dead_code_eliminate(compiler_context *ctx, midgard_block *block)
                         midgard_reg_mode mode = mir_typesize(ins);
                         unsigned oldmask = ins->mask;
 
-                        unsigned rounded = mir_round_bytemask_down(live[ins->dest], mode);
+                        unsigned rounded = mir_round_bytemask_up(live[ins->dest], mode);
                         unsigned cmask = mir_from_bytemask(rounded, mode);
 
                         ins->mask &= cmask;
