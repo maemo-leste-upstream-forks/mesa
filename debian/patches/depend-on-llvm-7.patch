@@ -1,0 +1,13 @@
+diff --git a/meson.build b/meson.build
+index 86824bd8e8b..35ba9177513 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1390,7 +1390,7 @@ if with_gallium_opencl
+ endif
+ 
+ if with_amd_vk or with_gallium_radeonsi
+-  _llvm_version = '>= 8.0.0'
++  _llvm_version = '>= 7.0.0'
+ elif with_gallium_swr
+   _llvm_version = '>= 6.0.0'
+ else
