@@ -1,3 +1,11 @@
+mesa (20.1.0-1) unstable; urgency=medium
+
+  * Merge latest upstream mesa.
+  * Depend on LLVM 7.
+  * Update debian/control versions to what is available in leste beowulf.
+
+ -- Ivan J. <parazyd@dyne.org>  Tue, 31 Mar 2020 17:49:22 +0200
+
 mesa (20.0.1-2) experimental; urgency=medium
 
   * control: Fix clang build-dep to actually use libclang-10-dev.
