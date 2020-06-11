@@ -503,7 +503,7 @@ elif _egl == 'enabled'
     error('EGL requires dri, haiku, or windows')
   elif not with_shared_glapi
     error('EGL requires shared-glapi')
-  elif not ['disabled', 'dri'].contains(with_glx)
+  elif not ['disabled', 'dri', 'null'].contains(with_glx)
     error('EGL requires dri, but a GLX is being built without dri')
   elif host_machine.system() == 'darwin'
     error('EGL is not available on MacOS')
@@ -527,6 +527,10 @@ endif
 
 if with_egl and not _platforms.contains(egl_native_platform)
   error('-Degl-native-platform does not specify an enabled platform')
+endif
+
+if with_egl and with_opengl and with_glx != 'disabled'
+   pre_args += '-DEGL_WITH_OPENGL'
 endif
 
 if 'x11' in _platforms
@@ -580,7 +584,7 @@ if not have_mtls_dialect
   endif
 endif
 
-if with_glx != 'disabled'
+if with_glx != 'disabled' and with_glx != 'null'
   if not (with_platform_x11 and with_any_opengl)
     error('Cannot build GLX support without X11 platform support and at least one OpenGL API')
   elif with_glx == 'xlib'
@@ -638,7 +642,7 @@ if with_any_vk and (with_platform_x11 and not with_dri3)
   error('Vulkan drivers require dri3 for X11 support')
 endif
 if with_dri
-  if with_glx == 'disabled' and not with_egl and not with_gbm
+  if (with_glx == 'disabled' or with_glx == 'null') and not with_egl and not with_gbm
     error('building dri drivers require at least one windowing system')
   endif
 endif

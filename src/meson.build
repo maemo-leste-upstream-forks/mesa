@@ -128,7 +128,7 @@ endif
 if with_gallium
   subdir('mesa')
   subdir('gallium')
-  if with_glx == 'dri'
+  if with_glx == 'dri' or with_glx == 'null'
      subdir('glx')
   endif
   # This has to be here since it requires libgallium, and subdir cannot

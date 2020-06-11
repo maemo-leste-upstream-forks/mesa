@@ -299,7 +299,7 @@ option(
   'glx',
   type : 'combo',
   value : 'auto',
-  choices : ['auto', 'disabled', 'dri', 'xlib'],
+  choices : ['auto', 'disabled', 'dri', 'xlib', 'null'],
   description : 'Build support for GLX platform'
 )
 option(
