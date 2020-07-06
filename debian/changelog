@@ -1,3 +1,9 @@
+mesa (20.2.0-1) unstable; urgency=medium
+
+  * Revert d32144602c1dfd507f07774ce906dc25d2697da0
+
+ -- Ivan J. <parazyd@dyne.org>  Mon, 06 Jul 2020 14:56:04 +0200
+
 mesa (20.1.0-2) unstable; urgency=medium
 
   * Merge latest upstream mesa
