@@ -43,6 +43,8 @@
 #include "fd3_format.h"
 #include "fd3_zsa.h"
 
+#include "ir3_const.h"
+
 static const enum adreno_state_block sb[] = {
 	[MESA_SHADER_VERTEX]   = SB_VERT_SHADER,
 	[MESA_SHADER_FRAGMENT] = SB_FRAG_SHADER,
@@ -91,7 +93,7 @@ fd3_emit_const(struct fd_ringbuffer *ring, gl_shader_stage type,
 }
 
 static void
-fd3_emit_const_bo(struct fd_ringbuffer *ring, gl_shader_stage type, boolean write,
+fd3_emit_const_bo(struct fd_ringbuffer *ring, gl_shader_stage type,
 		uint32_t regid, uint32_t num, struct pipe_resource **prscs, uint32_t *offsets)
 {
 	uint32_t anum = align(num, 4);
@@ -109,11 +111,7 @@ fd3_emit_const_bo(struct fd_ringbuffer *ring, gl_shader_stage type, boolean writ
 
 	for (i = 0; i < num; i++) {
 		if (prscs[i]) {
-			if (write) {
-				OUT_RELOCW(ring, fd_resource(prscs[i])->bo, offsets[i], 0, 0);
-			} else {
-				OUT_RELOC(ring, fd_resource(prscs[i])->bo, offsets[i], 0, 0);
-			}
+			OUT_RELOC(ring, fd_resource(prscs[i])->bo, offsets[i], 0, 0);
 		} else {
 			OUT_RING(ring, 0xbad00000 | (i << 16));
 		}
@@ -121,6 +119,34 @@ fd3_emit_const_bo(struct fd_ringbuffer *ring, gl_shader_stage type, boolean writ
 
 	for (; i < anum; i++)
 		OUT_RING(ring, 0xffffffff);
+}
+
+static bool
+is_stateobj(struct fd_ringbuffer *ring)
+{
+	return false;
+}
+
+void
+emit_const(struct fd_ringbuffer *ring,
+		const struct ir3_shader_variant *v, uint32_t dst_offset,
+		uint32_t offset, uint32_t size, const void *user_buffer,
+		struct pipe_resource *buffer)
+{
+	/* TODO inline this */
+	assert(dst_offset + size <= v->constlen * 4);
+	fd3_emit_const(ring, v->type, dst_offset,
+			offset, size, user_buffer, buffer);
+}
+
+static void
+emit_const_bo(struct fd_ringbuffer *ring,
+		const struct ir3_shader_variant *v, uint32_t dst_offset,
+		uint32_t num, struct pipe_resource **prscs, uint32_t *offsets)
+{
+	/* TODO inline this */
+	assert(dst_offset + num <= v->constlen * 4);
+	fd3_emit_const_bo(ring, v->type, dst_offset, num, prscs, offsets);
 }
 
 #define VERT_TEX_OFF    0
@@ -322,7 +348,7 @@ fd3_emit_gmem_restore_tex(struct fd_ringbuffer *ring,
 		OUT_RING(ring, A3XX_TEX_CONST_1_FETCHSIZE(TFETCH_DISABLE) |
 				 A3XX_TEX_CONST_1_WIDTH(psurf[i]->width) |
 				 A3XX_TEX_CONST_1_HEIGHT(psurf[i]->height));
-		OUT_RING(ring, A3XX_TEX_CONST_2_PITCH(slice->pitch * rsc->layout.cpp) |
+		OUT_RING(ring, A3XX_TEX_CONST_2_PITCH(slice->pitch) |
 				 A3XX_TEX_CONST_2_INDX(BASETABLE_SZ * i));
 		OUT_RING(ring, 0x00000000);
 	}
@@ -415,7 +441,7 @@ fd3_emit_vertex_bufs(struct fd_ringbuffer *ring, struct fd3_emit *emit)
 				continue;
 #endif
 
-			debug_assert(fmt != ~0);
+			debug_assert(fmt != VFMT_NONE);
 
 			OUT_PKT0(ring, REG_A3XX_VFD_FETCH(j), 2);
 			OUT_RING(ring, A3XX_VFD_FETCH_INSTR_0_FETCHSIZE(fs - 1) |
@@ -505,16 +531,16 @@ fd3_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 				A3XX_RB_MSAA_CONTROL_SAMPLE_MASK(ctx->sample_mask));
 	}
 
-	if ((dirty & (FD_DIRTY_ZSA | FD_DIRTY_PROG | FD_DIRTY_BLEND_DUAL)) &&
+	if ((dirty & (FD_DIRTY_ZSA | FD_DIRTY_RASTERIZER | FD_DIRTY_PROG | FD_DIRTY_BLEND_DUAL)) &&
 		!emit->binning_pass) {
 		uint32_t val = fd3_zsa_stateobj(ctx->zsa)->rb_render_control |
 			fd3_blend_stateobj(ctx->blend)->rb_render_control;
 
 		val |= COND(fp->frag_face, A3XX_RB_RENDER_CONTROL_FACENESS);
-		val |= COND(fp->frag_coord, A3XX_RB_RENDER_CONTROL_XCOORD |
-				A3XX_RB_RENDER_CONTROL_YCOORD |
-				A3XX_RB_RENDER_CONTROL_ZCOORD |
-				A3XX_RB_RENDER_CONTROL_WCOORD);
+		val |= COND(fp->fragcoord_compmask != 0,
+				A3XX_RB_RENDER_CONTROL_COORD_MASK(fp->fragcoord_compmask));
+		val |= COND(ctx->rasterizer->rasterizer_discard,
+				A3XX_RB_RENDER_CONTROL_DISABLE_COLOR_PIPE);
 
 		/* I suppose if we needed to (which I don't *think* we need
 		 * to), we could emit this for binning pass too.  But we
@@ -549,7 +575,7 @@ fd3_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 			val |= A3XX_RB_DEPTH_CONTROL_FRAG_WRITES_Z;
 			val |= A3XX_RB_DEPTH_CONTROL_EARLY_Z_DISABLE;
 		}
-		if (fp->no_earlyz) {
+		if (fp->no_earlyz || fp->has_kill) {
 			val |= A3XX_RB_DEPTH_CONTROL_EARLY_Z_DISABLE;
 		}
 		if (!ctx->rasterizer->depth_clip_near) {
@@ -579,8 +605,19 @@ fd3_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 		uint32_t val = fd3_rasterizer_stateobj(ctx->rasterizer)
 				->gras_cl_clip_cntl;
 		uint8_t planes = ctx->rasterizer->clip_plane_enable;
+		val |= CONDREG(ir3_find_sysval_regid(fp, SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL),
+				A3XX_GRAS_CL_CLIP_CNTL_IJ_PERSP_CENTER);
+		val |= CONDREG(ir3_find_sysval_regid(fp, SYSTEM_VALUE_BARYCENTRIC_LINEAR_PIXEL),
+				A3XX_GRAS_CL_CLIP_CNTL_IJ_NON_PERSP_CENTER);
+		val |= CONDREG(ir3_find_sysval_regid(fp, SYSTEM_VALUE_BARYCENTRIC_PERSP_CENTROID),
+				A3XX_GRAS_CL_CLIP_CNTL_IJ_PERSP_CENTROID);
+		val |= CONDREG(ir3_find_sysval_regid(fp, SYSTEM_VALUE_BARYCENTRIC_LINEAR_CENTROID),
+				A3XX_GRAS_CL_CLIP_CNTL_IJ_NON_PERSP_CENTROID);
+		/* docs say enable at least one of IJ_PERSP_CENTER/CENTROID when fragcoord is used */
+		val |= CONDREG(ir3_find_sysval_regid(fp, SYSTEM_VALUE_FRAG_COORD),
+				A3XX_GRAS_CL_CLIP_CNTL_IJ_PERSP_CENTER);
 		val |= COND(fp->writes_pos, A3XX_GRAS_CL_CLIP_CNTL_ZCLIP_DISABLE);
-		val |= COND(fp->frag_coord, A3XX_GRAS_CL_CLIP_CNTL_ZCOORD |
+		val |= COND(fp->fragcoord_compmask != 0, A3XX_GRAS_CL_CLIP_CNTL_ZCOORD |
 				A3XX_GRAS_CL_CLIP_CNTL_WCOORD);
 		if (!emit->key.ucp_enables)
 			val |= A3XX_GRAS_CL_CLIP_CNTL_NUM_USER_CLIP_PLANES(
@@ -942,8 +979,6 @@ void
 fd3_emit_init_screen(struct pipe_screen *pscreen)
 {
 	struct fd_screen *screen = fd_screen(pscreen);
-	screen->emit_const = fd3_emit_const;
-	screen->emit_const_bo = fd3_emit_const_bo;
 	screen->emit_ib = fd3_emit_ib;
 }
 

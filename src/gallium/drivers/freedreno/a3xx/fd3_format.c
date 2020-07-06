@@ -39,8 +39,6 @@ struct fd3_format {
 	boolean present;
 };
 
-#define RB_NONE ~0
-
 /* vertex + texture */
 #define VT(pipe, fmt, rbfmt, swapfmt) \
 	[PIPE_FORMAT_ ## pipe] = { \
@@ -55,7 +53,7 @@ struct fd3_format {
 #define _T(pipe, fmt, rbfmt, swapfmt) \
 	[PIPE_FORMAT_ ## pipe] = { \
 		.present = 1, \
-		.vtx = ~0, \
+		.vtx = VFMT_NONE, \
 		.tex = TFMT_ ## fmt, \
 		.rb = RB_ ## rbfmt, \
 		.swap = swapfmt \
@@ -66,7 +64,7 @@ struct fd3_format {
 	[PIPE_FORMAT_ ## pipe] = { \
 		.present = 1, \
 		.vtx = VFMT_ ## fmt, \
-		.tex = ~0, \
+		.tex = TFMT_NONE, \
 		.rb = RB_ ## rbfmt, \
 		.swap = swapfmt \
 	}
@@ -75,8 +73,8 @@ static struct fd3_format formats[PIPE_FORMAT_COUNT] = {
 	/* 8-bit */
 	VT(R8_UNORM,   8_UNORM, R8_UNORM, WZYX),
 	VT(R8_SNORM,   8_SNORM, NONE,     WZYX),
-	VT(R8_UINT,    8_UINT,  R8_UINT,  WZYX),
-	VT(R8_SINT,    8_SINT,  R8_SINT,  WZYX),
+	VT(R8_UINT,    8_UINT,  NONE,     WZYX),
+	VT(R8_SINT,    8_SINT,  NONE,     WZYX),
 	V_(R8_USCALED, 8_UINT,  NONE,     WZYX),
 	V_(R8_SSCALED, 8_SINT,  NONE,     WZYX),
 
@@ -111,8 +109,8 @@ static struct fd3_format formats[PIPE_FORMAT_COUNT] = {
 
 	VT(R8G8_UNORM,   8_8_UNORM, R8G8_UNORM, WZYX),
 	VT(R8G8_SNORM,   8_8_SNORM, R8G8_SNORM, WZYX),
-	VT(R8G8_UINT,    8_8_UINT,  NONE,       WZYX),
-	VT(R8G8_SINT,    8_8_SINT,  NONE,       WZYX),
+	VT(R8G8_UINT,    8_8_UINT,  R8G8_UINT,  WZYX),
+	VT(R8G8_SINT,    8_8_SINT,  R8G8_SINT,  WZYX),
 	V_(R8G8_USCALED, 8_8_UINT,  NONE,       WZYX),
 	V_(R8G8_SSCALED, 8_8_SINT,  NONE,       WZYX),
 
@@ -189,7 +187,7 @@ static struct fd3_format formats[PIPE_FORMAT_COUNT] = {
 	_T(B10G10R10X2_UNORM,   10_10_10_2_UNORM, R10G10B10A2_UNORM, WXYZ),
 	V_(R10G10B10A2_SNORM,   10_10_10_2_SNORM, NONE,              WZYX),
 	V_(B10G10R10A2_SNORM,   10_10_10_2_SNORM, NONE,              WXYZ),
-	V_(R10G10B10A2_UINT,    10_10_10_2_UINT,  NONE,              WZYX),
+	VT(R10G10B10A2_UINT,    10_10_10_2_UINT,  NONE,              WZYX),
 	V_(B10G10R10A2_UINT,    10_10_10_2_UINT,  NONE,              WXYZ),
 	V_(R10G10B10A2_USCALED, 10_10_10_2_UINT,  NONE,              WZYX),
 	V_(B10G10R10A2_USCALED, 10_10_10_2_UINT,  NONE,              WXYZ),
@@ -295,7 +293,7 @@ enum a3xx_vtx_fmt
 fd3_pipe2vtx(enum pipe_format format)
 {
 	if (!formats[format].present)
-		return ~0;
+		return VFMT_NONE;
 	return formats[format].vtx;
 }
 
@@ -303,7 +301,7 @@ enum a3xx_tex_fmt
 fd3_pipe2tex(enum pipe_format format)
 {
 	if (!formats[format].present)
-		return ~0;
+		return TFMT_NONE;
 	return formats[format].tex;
 }
 
@@ -311,7 +309,7 @@ enum a3xx_color_fmt
 fd3_pipe2color(enum pipe_format format)
 {
 	if (!formats[format].present)
-		return ~0;
+		return RB_NONE;
 	return formats[format].rb;
 }
 
@@ -342,14 +340,6 @@ fd3_pipe2fetchsize(enum pipe_format format)
 					 util_format_get_blocksizebits(format));
 		return TFETCH_DISABLE;
 	}
-}
-
-unsigned
-fd3_pipe2nblocksx(enum pipe_format format, unsigned width)
-{
-	if (util_format_description(format)->layout == UTIL_FORMAT_LAYOUT_RGTC)
-		format = PIPE_FORMAT_R8G8B8A8_UNORM;
-	return util_format_get_nblocksx(format, width);
 }
 
 enum a3xx_color_fmt

@@ -29,6 +29,12 @@
 #ifdef HAVE_SYS_SHM_H
 #include <sys/ipc.h>
 #include <sys/shm.h>
+#ifdef __FreeBSD__
+/* sys/ipc.h -> sys/_types.h -> machine/param.h
+ * - defines ALIGN which clashes with our ALIGN
+ */
+#undef ALIGN
+#endif
 #endif
 
 #include "pipe/p_compiler.h"
@@ -39,7 +45,7 @@
 #include "util/u_math.h"
 #include "util/u_memory.h"
 
-#include "state_tracker/sw_winsys.h"
+#include "frontend/sw_winsys.h"
 #include "dri_sw_winsys.h"
 
 

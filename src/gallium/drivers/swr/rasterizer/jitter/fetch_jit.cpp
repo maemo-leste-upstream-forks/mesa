@@ -874,10 +874,8 @@ void FetchJit::JitGatherVertices(const FETCH_COMPILE_STATE& fetchState,
                             Value* pGatherHi =
                                 GATHERPD(vZeroDouble, pStreamBaseGFX, vOffsetsHi, vMaskHi);
 
-                            pGatherLo = VCVTPD2PS(pGatherLo);
-                            pGatherHi = VCVTPD2PS(pGatherHi);
-
                             Value* pGather = VSHUFFLE(pGatherLo, pGatherHi, vShufAll);
+                            pGather        = FP_TRUNC(pGather, mSimdFP32Ty);
 
                             vVertexElements[currentVertexElement++] = pGather;
                         }
@@ -1584,7 +1582,12 @@ void FetchJit::Shuffle8bpcGatherd(Shuffle8bpcArgs& args)
 
         if (compCtrl[i] == ComponentControl::StoreSrc)
         {
-            std::vector<uint32_t> vShuffleMasks[4] = {
+#if LLVM_VERSION_MAJOR >= 11
+            using MaskType = int32_t;
+#else
+            using MaskType = uint32_t;
+#endif
+            std::vector<MaskType> vShuffleMasks[4] = {
                 {0, 4, 8, 12, 16, 20, 24, 28},  // x
                 {1, 5, 9, 13, 17, 21, 25, 29},  // y
                 {2, 6, 10, 14, 18, 22, 26, 30}, // z

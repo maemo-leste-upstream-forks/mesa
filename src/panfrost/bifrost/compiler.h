@@ -60,7 +60,7 @@ enum bi_class {
         BI_FMA,
         BI_FMOV,
         BI_FREXP,
-        BI_ISUB,
+        BI_IMATH,
         BI_LOAD,
         BI_LOAD_UNIFORM,
         BI_LOAD_ATTR,
@@ -68,11 +68,13 @@ enum bi_class {
         BI_LOAD_VAR_ADDRESS,
         BI_MINMAX,
         BI_MOV,
+        BI_REDUCE_FMA,
+        BI_SELECT,
         BI_SHIFT,
         BI_STORE,
         BI_STORE_VAR,
-        BI_SPECIAL, /* _FAST, _TABLE on supported GPUs */
-        BI_SWIZZLE,
+        BI_SPECIAL, /* _FAST on supported GPUs */
+        BI_TABLE,
         BI_TEX,
         BI_ROUND,
         BI_NUM_CLASSES
@@ -84,10 +86,8 @@ extern unsigned bi_class_props[BI_NUM_CLASSES];
 /* abs/neg/outmod valid for a float op */
 #define BI_MODS (1 << 0)
 
-/* Generic enough that little class-specific information is required. In other
- * words, it acts as a "normal" ALU op, even if the encoding ends up being
- * irregular enough to warrant a separate class */
-#define BI_GENERIC (1 << 1)
+/* Accepts a bi_cond */
+#define BI_CONDITIONAL (1 << 1)
 
 /* Accepts a bifrost_roundmode */
 #define BI_ROUNDMODE (1 << 2)
@@ -112,8 +112,7 @@ extern unsigned bi_class_props[BI_NUM_CLASSES];
  * the end of a clause. Implies ADD */
 #define BI_SCHED_HI_LATENCY (1 << 7)
 
-/* Intrinsic is vectorized and should read 4 components in the first source
- * regardless of writemask */
+/* Intrinsic is vectorized and acts with `vector_channels` components */
 #define BI_VECTOR (1 << 8)
 
 /* Use a data register for src0/dest respectively, bypassing the usual
@@ -156,15 +155,6 @@ enum bi_cond {
         BI_COND_NE,
 };
 
-struct bi_branch {
-        /* Types are specified in src_types and must be compatible (either both
-         * int, or both float, 16/32, and same size or 32/16 if float. Types
-         * ignored if BI_COND_ALWAYS is set for an unconditional branch. */
-
-        enum bi_cond cond;
-        struct bi_block *target;
-};
-
 /* Opcodes within a class */
 enum bi_minmax_op {
         BI_MINMAX_MIN,
@@ -177,30 +167,70 @@ enum bi_bitwise_op {
         BI_BITWISE_XOR
 };
 
-enum bi_round_op {
-        BI_ROUND_MODE, /* use round mode */
-        BI_ROUND_ROUND /* i.e.: fround() */
+enum bi_imath_op {
+        BI_IMATH_ADD,
+        BI_IMATH_SUB,
+};
+
+enum bi_table_op {
+        /* fp32 log2() with low precision, suitable for GL or half_log2() in
+         * CL. In the first argument, takes x. Letting u be such that x =
+         * 2^{-m} u with m integer and 0.75 <= u < 1.5, returns
+         * log2(u) / (u - 1). */
+
+        BI_TABLE_LOG2_U_OVER_U_1_LOW,
+};
+
+enum bi_reduce_op {
+        /* Takes two fp32 arguments and returns x + frexp(y). Used in
+         * low-precision log2 argument reduction on newer models. */
+
+        BI_REDUCE_ADD_FREXPM,
+};
+
+enum bi_frexp_op {
+        BI_FREXPE_LOG,
 };
 
 enum bi_special_op {
         BI_SPECIAL_FRCP,
         BI_SPECIAL_FRSQ,
-        BI_SPECIAL_FATAN,
-        BI_SPECIAL_FSIN,
-        BI_SPECIAL_FCOS,
-        BI_SPECIAL_FEXP,
-        BI_SPECIAL_FLOG2,
-        BI_SPECIAL_FLOGE
+
+        /* fp32 exp2() with low precision, suitable for half_exp2() in CL or
+         * exp2() in GL. In the first argument, it takes f2i_rte(x * 2^24). In
+         * the second, it takes x itself. */
+        BI_SPECIAL_EXP2_LOW,
+};
+
+enum bi_tex_op {
+        BI_TEX_NORMAL,
+        BI_TEX_COMPACT,
+        BI_TEX_DUAL
+};
+
+struct bi_bitwise {
+        bool src_invert[2];
+        bool rshift; /* false for lshift */
+};
+
+struct bi_texture {
+        /* Constant indices. Indirect would need to be in src[..] like normal,
+         * we can reserve some sentinels there for that for future. */
+        unsigned texture_index, sampler_index;
 };
 
 typedef struct {
         struct list_head link; /* Must be first */
         enum bi_class type;
 
-        /* Indices, see bir_ssa_index etc. Note zero is special cased
+        /* Indices, see pan_ssa_index etc. Note zero is special cased
          * to "no argument" */
         unsigned dest;
         unsigned src[BIR_SRC_COUNT];
+
+        /* 32-bit word offset for destination, added to the register number in
+         * RA when lowering combines */
+        unsigned dest_offset;
 
         /* If one of the sources has BIR_INDEX_CONSTANT */
         union {
@@ -219,14 +249,6 @@ typedef struct {
         /* Round mode (requires BI_ROUNDMODE) */
         enum bifrost_roundmode roundmode;
 
-        /* Writemask (bit for each affected byte). This is quite restricted --
-         * ALU ops can only write to a single channel (exception: <32 in which
-         * you can write to 32/N contiguous aligned channels). Load/store can
-         * only write to all channels at once, in a sense. But it's still
-         * better to use this generic form than have synthetic ops flying
-         * about, since we're not essentially vector for RA purposes. */
-        uint16_t writemask;
-
         /* Destination type. Usually the type of the instruction
          * itself, but if sources and destination have different
          * types, the type of the destination wins (so f2i would be
@@ -242,63 +264,90 @@ typedef struct {
          * selection, so we don't have to special case extraction. */
         uint8_t swizzle[BIR_SRC_COUNT][NIR_MAX_VEC_COMPONENTS];
 
+        /* For VECTOR ops, how many channels are written? */
+        unsigned vector_channels;
+
+        /* The comparison op. BI_COND_ALWAYS may not be valid. */
+        enum bi_cond cond;
+
         /* A class-specific op from which the actual opcode can be derived
          * (along with the above information) */
 
         union {
                 enum bi_minmax_op minmax;
                 enum bi_bitwise_op bitwise;
-                enum bi_round_op round;
                 enum bi_special_op special;
-                enum bi_cond compare;
+                enum bi_reduce_op reduce;
+                enum bi_table_op table;
+                enum bi_frexp_op frexp;
+                enum bi_tex_op texture;
+                enum bi_imath_op imath;
+
+                /* For FMA/ADD, should we add a biased exponent? */
+                bool mscale;
         } op;
 
         /* Union for class-specific information */
         union {
                 enum bifrost_minmax_mode minmax;
                 struct bi_load_vary load_vary;
-                struct bi_branch branch;
-
-                /* For CSEL, the comparison op. BI_COND_ALWAYS doesn't make
-                 * sense here but you can always just use a move for that */
-                enum bi_cond csel_cond;
+                struct bi_block *branch_target;
 
                 /* For BLEND -- the location 0-7 */
                 unsigned blend_location;
 
-                /* For STORE, STORE_VAR -- channel count */
-                unsigned store_channels;
+                struct bi_bitwise bitwise;
+                struct bi_texture texture;
         };
 } bi_instruction;
 
-/* Scheduling takes place in two steps. Step 1 groups instructions within a
- * block into distinct clauses (bi_clause). Step 2 schedules instructions
- * within a clause into FMA/ADD pairs (bi_bundle).
- *
- * A bi_bundle contains two paired instruction pointers. If a slot is unfilled,
- * leave it NULL; the emitter will fill in a nop.
+/* Represents the assignment of ports for a given bi_bundle */
+
+typedef struct {
+        /* Register to assign to each port */
+        unsigned port[4];
+
+        /* Read ports can be disabled */
+        bool enabled[2];
+
+        /* Should we write FMA? what about ADD? If only a single port is
+         * enabled it is in port 2, else ADD/FMA is 2/3 respectively */
+        bool write_fma, write_add;
+
+        /* Should we read with port 3? */
+        bool read_port3;
+
+        /* Packed uniform/constant */
+        uint8_t uniform_constant;
+
+        /* Whether writes are actually for the last instruction */
+        bool first_instruction;
+} bi_registers;
+
+/* A bi_bundle contains two paired instruction pointers. If a slot is unfilled,
+ * leave it NULL; the emitter will fill in a nop. Instructions reference
+ * registers via ports which are assigned per bundle.
  */
 
 typedef struct {
+        bi_registers regs;
         bi_instruction *fma;
         bi_instruction *add;
 } bi_bundle;
 
+struct bi_block;
+
 typedef struct {
         struct list_head link;
 
+        /* Link back up for branch calculations */
+        struct bi_block *block;
+
         /* A clause can have 8 instructions in bundled FMA/ADD sense, so there
-         * can be 8 bundles. But each bundle can have both an FMA and an ADD,
-         * so a clause can have up to 16 bi_instructions. Whether bundles or
-         * instructions are used depends on where in scheduling we are. */
+         * can be 8 bundles. */
 
-        unsigned instruction_count;
         unsigned bundle_count;
-
-        union {
-                bi_instruction *instructions[16];
-                bi_bundle bundles[8];
-        };
+        bi_bundle bundles[8];
 
         /* For scoreboarding -- the clause ID (this is not globally unique!)
          * and its dependencies in terms of other clauses, computed during
@@ -322,9 +371,21 @@ typedef struct {
         /* Corresponds to the usual bit but shifted by a clause */
         bool data_register_write_barrier;
 
-        /* Constants read by this clause. ISA limit. */
+        /* Constants read by this clause. ISA limit. Must satisfy:
+         *
+         *      constant_count + bundle_count <= 13
+         *
+         * Also implicitly constant_count <= bundle_count since a bundle only
+         * reads a single constant.
+         */
         uint64_t constants[8];
         unsigned constant_count;
+
+        /* Branches encode a constant offset relative to the program counter
+         * with some magic flags. By convention, if there is a branch, its
+         * constant will be last. Set this flag to indicate this is required.
+         */
+        bool branch_constant;
 
         /* What type of high latency instruction is here, basically */
         unsigned clause_type;
@@ -348,11 +409,11 @@ typedef struct {
        /* During NIR->BIR */
        nir_function_impl *impl;
        bi_block *current_block;
-       unsigned block_name_count;
        bi_block *after_block;
        bi_block *break_block;
        bi_block *continue_block;
        bool emitted_atest;
+       nir_alu_type *blend_types;
 
        /* For creating temporaries */
        unsigned temp_alloc;
@@ -388,10 +449,6 @@ bi_remove_instruction(bi_instruction *ins)
 {
         list_del(&ins->link);
 }
-
-/* So we can distinguish between SSA/reg/sentinel quickly */
-#define BIR_NO_ARG (0)
-#define BIR_IS_REG (1)
 
 /* If high bits are set, instead of SSA/registers, we have specials indexed by
  * the low bits if necessary.
@@ -430,36 +487,7 @@ bi_make_temp(bi_context *ctx)
 static inline unsigned
 bi_make_temp_reg(bi_context *ctx)
 {
-        return ((ctx->impl->reg_alloc + ctx->temp_alloc++) << 1) | BIR_IS_REG;
-}
-
-static inline unsigned
-bir_ssa_index(nir_ssa_def *ssa)
-{
-        /* Off-by-one ensures BIR_NO_ARG is skipped */
-        return ((ssa->index + 1) << 1) | 0;
-}
-
-static inline unsigned
-bir_src_index(nir_src *src)
-{
-        if (src->is_ssa)
-                return bir_ssa_index(src->ssa);
-        else {
-                assert(!src->reg.indirect);
-                return (src->reg.reg->index << 1) | BIR_IS_REG;
-        }
-}
-
-static inline unsigned
-bir_dest_index(nir_dest *dst)
-{
-        if (dst->is_ssa)
-                return bir_ssa_index(&dst->ssa);
-        else {
-                assert(!dst->reg.indirect);
-                return (dst->reg.reg->index << 1) | BIR_IS_REG;
-        }
+        return ((ctx->impl->reg_alloc + ctx->temp_alloc++) << 1) | PAN_IS_REG;
 }
 
 /* Iterators for Bifrost IR */
@@ -469,6 +497,9 @@ bir_dest_index(nir_dest *dst)
 
 #define bi_foreach_block_from(ctx, from, v) \
         list_for_each_entry_from(pan_block, v, from, &ctx->blocks, link)
+
+#define bi_foreach_block_from_rev(ctx, from, v) \
+        list_for_each_entry_from_rev(pan_block, v, from, &ctx->blocks, link)
 
 #define bi_foreach_instr_in_block(block, v) \
         list_for_each_entry(bi_instruction, v, &(block)->base.instructions, link)
@@ -490,6 +521,12 @@ bir_dest_index(nir_dest *dst)
 
 #define bi_foreach_clause_in_block(block, v) \
         list_for_each_entry(bi_clause, v, &(block)->clauses, link)
+
+#define bi_foreach_clause_in_block_from(block, v, from) \
+        list_for_each_entry_from(bi_clause, v, from, &(block)->clauses, link)
+
+#define bi_foreach_clause_in_block_from_rev(block, v, from) \
+        list_for_each_entry_from_rev(bi_clause, v, from, &(block)->clauses, link)
 
 #define bi_foreach_instr_global(ctx, v) \
         bi_foreach_block(ctx, v_block) \
@@ -531,6 +568,11 @@ pan_next_block(pan_block *block)
         return list_first_entry(&(block->link), pan_block, link);
 }
 
+/* Special functions */
+
+void bi_emit_fexp2(bi_context *ctx, nir_alu_instr *instr);
+void bi_emit_flog2(bi_context *ctx, nir_alu_instr *instr);
+
 /* BIR manipulation */
 
 bool bi_has_outmod(bi_instruction *ins);
@@ -538,11 +580,11 @@ bool bi_has_source_mods(bi_instruction *ins);
 bool bi_is_src_swizzled(bi_instruction *ins, unsigned s);
 bool bi_has_arg(bi_instruction *ins, unsigned arg);
 uint16_t bi_from_bytemask(uint16_t bytemask, unsigned bytes);
-unsigned bi_get_component_count(bi_instruction *ins, unsigned s);
-unsigned bi_load32_components(bi_instruction *ins);
+unsigned bi_get_component_count(bi_instruction *ins, signed s);
 uint16_t bi_bytemask_of_read_components(bi_instruction *ins, unsigned node);
 uint64_t bi_get_immediate(bi_instruction *ins, unsigned index);
 bool bi_writes_component(bi_instruction *ins, unsigned comp);
+unsigned bi_writemask(bi_instruction *ins);
 
 /* BIR passes */
 
@@ -557,6 +599,12 @@ void bi_compute_liveness(bi_context *ctx);
 void bi_liveness_ins_update(uint16_t *live, bi_instruction *ins, unsigned max);
 void bi_invalidate_liveness(bi_context *ctx);
 bool bi_is_live_after(bi_context *ctx, bi_block *block, bi_instruction *start, int src);
+
+/* Layout */
+
+bool bi_can_insert_bundle(bi_clause *clause, bool constant);
+unsigned bi_clause_quadwords(bi_clause *clause);
+signed bi_block_offset(bi_context *ctx, bi_clause *start, bi_block *target);
 
 /* Code emit */
 

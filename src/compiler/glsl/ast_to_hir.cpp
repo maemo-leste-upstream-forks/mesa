@@ -250,7 +250,7 @@ get_implicit_conversion_operation(const glsl_type *to, const glsl_type *from,
       }
 
    case GLSL_TYPE_UINT:
-      if (!state->has_implicit_uint_to_int_conversion())
+      if (!state->has_implicit_int_to_uint_conversion())
          return (ir_expression_operation)0;
       switch (from->base_type) {
          case GLSL_TYPE_INT: return ir_unop_i2u;
@@ -962,7 +962,8 @@ do_assignment(exec_list *instructions, struct _mesa_glsl_parse_state *state,
                           lhs_var->name);
          error_emitted = true;
       } else if (lhs->type->is_array() &&
-                 !state->check_version(120, 300, &lhs_loc,
+                 !state->check_version(state->allow_glsl_120_subset_in_110 ? 110 : 120,
+                                       300, &lhs_loc,
                                        "whole array assignment forbidden")) {
          /* From page 32 (page 38 of the PDF) of the GLSL 1.10 spec:
           *
@@ -1690,7 +1691,6 @@ ast_expression::do_hir(exec_list *instructions,
       /* Break out if operand types were not parsed successfully. */
       if ((op[0]->type == glsl_type::error_type ||
            op[1]->type == glsl_type::error_type)) {
-         type = glsl_type::error_type;
          error_emitted = true;
          break;
       }
@@ -3549,6 +3549,16 @@ is_conflicting_fragcoord_redeclaration(struct _mesa_glsl_parse_state *state,
    return false;
 }
 
+static inline bool
+is_conflicting_layer_redeclaration(struct _mesa_glsl_parse_state *state,
+                                   const struct ast_type_qualifier *qual)
+{
+   if (state->redeclares_gl_layer) {
+      return state->layer_viewport_relative != qual->flags.q.viewport_relative;
+   }
+   return false;
+}
+
 static inline void
 validate_array_dimensions(const glsl_type *t,
                           struct _mesa_glsl_parse_state *state,
@@ -3937,6 +3947,21 @@ apply_layout_qualifier_to_variable(const struct ast_type_qualifier *qual,
                        "pixel_interlock_ordered, pixel_interlock_unordered, "
                        "sample_interlock_ordered and sample_interlock_unordered, "
                        "only valid in fragment shader input layout declaration.");
+   }
+
+   if (var->name != NULL && strcmp(var->name, "gl_Layer") == 0) {
+      if (is_conflicting_layer_redeclaration(state, qual)) {
+         _mesa_glsl_error(loc, state, "gl_Layer redeclaration with "
+                          "different viewport_relative setting than earlier");
+      }
+      state->redeclares_gl_layer = 1;
+      if (qual->flags.q.viewport_relative) {
+         state->layer_viewport_relative = 1;
+      }
+   } else if (qual->flags.q.viewport_relative) {
+      _mesa_glsl_error(loc, state,
+                       "viewport_relative qualifier "
+                       "can only be applied to gl_Layer.");
    }
 }
 
@@ -4379,6 +4404,11 @@ get_variable_being_redeclared(ir_variable **var_ptr, YYLTYPE loc,
       earlier->data.precision = var->data.precision;
       earlier->data.memory_coherent = var->data.memory_coherent;
 
+   } else if (state->NV_viewport_array2_enable &&
+              strcmp(var->name, "gl_Layer") == 0 &&
+              earlier->data.how_declared == ir_var_declared_implicitly) {
+      /* No need to do anything, just allow it. Qualifier is stored in state */
+
    } else if ((earlier->data.how_declared == ir_var_declared_implicitly &&
                state->allow_builtin_variable_redeclaration) ||
               allow_all_redeclarations) {
@@ -4601,6 +4631,7 @@ process_initializer(ir_variable *var, ast_declaration *decl,
       if (!error_emitted) {
          var->constant_initializer = rhs->constant_expression_value(mem_ctx);
          var->data.has_initializer = true;
+         var->data.is_implicit_initializer = false;
 
          /* If the declared variable is an unsized array, it must inherrit
          * its full type from the initializer.  A declaration such as
@@ -5236,12 +5267,11 @@ ast_declarator_list::hir(exec_list *instructions,
       apply_layout_qualifier_to_variable(&this->type->qualifier, var, state,
                                          &loc);
 
-      if ((var->data.mode == ir_var_auto || var->data.mode == ir_var_temporary
-           || var->data.mode == ir_var_shader_out)
-          && (var->type->is_numeric() || var->type->is_boolean())
-          && state->zero_init) {
+      if ((state->zero_init & (1u << var->data.mode)) &&
+          (var->type->is_numeric() || var->type->is_boolean())) {
          const ir_constant_data data = { { 0 } };
          var->data.has_initializer = true;
+         var->data.is_implicit_initializer = true;
          var->constant_initializer = new(var) ir_constant(var->type, &data);
       }
 
@@ -5286,8 +5316,6 @@ ast_declarator_list::hir(exec_list *instructions,
          var->data.read_only = true;
 
          if (state->stage == MESA_SHADER_VERTEX) {
-            bool error_emitted = false;
-
             /* From page 31 (page 37 of the PDF) of the GLSL 1.50 spec:
              *
              *    "Vertex shader inputs can only be float, floating-point
@@ -5324,40 +5352,38 @@ ast_declarator_list::hir(exec_list *instructions,
              */
             const glsl_type *check_type = var->type->without_array();
 
+            bool error = false;
             switch (check_type->base_type) {
             case GLSL_TYPE_FLOAT:
-            break;
+               break;
             case GLSL_TYPE_UINT64:
             case GLSL_TYPE_INT64:
                break;
             case GLSL_TYPE_UINT:
             case GLSL_TYPE_INT:
-               if (state->is_version(120, 300) || state->EXT_gpu_shader4_enable)
-                  break;
+               error = !state->is_version(120, 300) && !state->EXT_gpu_shader4_enable;
+               break;
             case GLSL_TYPE_DOUBLE:
-               if (check_type->is_double() && (state->is_version(410, 0) || state->ARB_vertex_attrib_64bit_enable))
-                  break;
+               error = !state->is_version(410, 0) && !state->ARB_vertex_attrib_64bit_enable;
+               break;
             case GLSL_TYPE_SAMPLER:
-               if (check_type->is_sampler() && state->has_bindless())
-                  break;
             case GLSL_TYPE_IMAGE:
-               if (check_type->is_image() && state->has_bindless())
-                  break;
-            /* FALLTHROUGH */
+               error = !state->has_bindless();
+               break;
             default:
+               error = true;
+            }
+
+            if (error) {
                _mesa_glsl_error(& loc, state,
                                 "vertex shader input / attribute cannot have "
                                 "type %s`%s'",
                                 var->type->is_array() ? "array of " : "",
                                 check_type->name);
-               error_emitted = true;
-            }
-
-            if (!error_emitted && var->type->is_array() &&
+            } else if (var->type->is_array() &&
                 !state->check_version(150, 0, &loc,
                                       "vertex shader input / attribute "
                                       "cannot have array type")) {
-               error_emitted = true;
             }
          } else if (state->stage == MESA_SHADER_GEOMETRY) {
             /* From section 4.3.4 (Inputs) of the GLSL 1.50 spec:
@@ -5831,6 +5857,14 @@ ast_parameter_declarator::hir(exec_list *instructions,
     */
    apply_type_qualifier_to_variable(& this->type->qualifier, var, state, & loc,
                                     true);
+
+   if (((1u << var->data.mode) & state->zero_init) &&
+       (var->type->is_numeric() || var->type->is_boolean())) {
+         const ir_constant_data data = { { 0 } };
+         var->data.has_initializer = true;
+         var->data.is_implicit_initializer = true;
+         var->constant_initializer = new(var) ir_constant(var->type, &data);
+   }
 
    /* From section 4.1.7 of the GLSL 4.40 spec:
     *
@@ -8742,6 +8776,7 @@ ast_cs_input_layout::hir(exec_list *instructions,
    var->constant_initializer =
       new(var) ir_constant(glsl_type::uvec3_type, &data);
    var->data.has_initializer = true;
+   var->data.is_implicit_initializer = false;
 
    return NULL;
 }
@@ -8768,8 +8803,15 @@ detect_conflicting_assignments(struct _mesa_glsl_parse_state *state,
       if (!var || !var->data.assigned)
          continue;
 
-      if (strcmp(var->name, "gl_FragColor") == 0)
+      if (strcmp(var->name, "gl_FragColor") == 0) {
          gl_FragColor_assigned = true;
+         if (!var->constant_initializer && state->zero_init) {
+            const ir_constant_data data = { { 0 } };
+            var->data.has_initializer = true;
+            var->data.is_implicit_initializer = true;
+            var->constant_initializer = new(var) ir_constant(var->type, &data);
+         }
+      }
       else if (strcmp(var->name, "gl_FragData") == 0)
          gl_FragData_assigned = true;
         else if (strcmp(var->name, "gl_SecondaryFragColorEXT") == 0)

@@ -96,6 +96,7 @@ struct amdgpu_winsys_bo {
    uint32_t unique_id;
    uint64_t va;
    enum radeon_bo_domain initial_domain;
+   enum radeon_bo_flag flags;
 
    /* how many command streams is this bo referenced in? */
    int num_cs_references;
@@ -136,9 +137,12 @@ void *amdgpu_bo_map(struct pb_buffer *buf,
 void amdgpu_bo_init_functions(struct amdgpu_screen_winsys *ws);
 
 bool amdgpu_bo_can_reclaim_slab(void *priv, struct pb_slab_entry *entry);
-struct pb_slab *amdgpu_bo_slab_alloc(void *priv, unsigned heap,
-                                     unsigned entry_size,
-                                     unsigned group_index);
+struct pb_slab *amdgpu_bo_slab_alloc_encrypted(void *priv, unsigned heap,
+                                               unsigned entry_size,
+                                               unsigned group_index);
+struct pb_slab *amdgpu_bo_slab_alloc_normal(void *priv, unsigned heap,
+                                            unsigned entry_size,
+                                            unsigned group_index);
 void amdgpu_bo_slab_free(void *priv, struct pb_slab *slab);
 
 static inline

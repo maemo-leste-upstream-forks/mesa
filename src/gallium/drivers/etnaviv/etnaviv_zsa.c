@@ -98,7 +98,7 @@ etna_zsa_state_create(struct pipe_context *pctx,
    uint32_t extra_reference = 0;
 
    if (VIV_FEATURE(screen, chipMinorFeatures1, HALF_FLOAT))
-      extra_reference = util_float_to_half(CLAMP(so->alpha.ref_value, 0.0f, 1.0f));
+      extra_reference = util_float_to_half(SATURATE(so->alpha.ref_value));
 
    cs->PE_STENCIL_CONFIG_EXT =
       VIVS_PE_STENCIL_CONFIG_EXT_EXTRA_ALPHA_REF(extra_reference);
@@ -117,8 +117,8 @@ etna_zsa_state_create(struct pipe_context *pctx,
       VIVS_PE_ALPHA_OP_ALPHA_REF(etna_cfloat_to_uint8(so->alpha.ref_value));
 
    for (unsigned i = 0; i < 2; i++) {
-      const struct pipe_stencil_state *stencil_front = so->stencil[1].enabled ? &so->stencil[i] : &so->stencil[0];
-      const struct pipe_stencil_state *stencil_back = so->stencil[1].enabled ? &so->stencil[!i] : &so->stencil[0];
+      const struct pipe_stencil_state *stencil_front = (so->stencil[1].enabled && so->stencil[1].valuemask) ? &so->stencil[i] : &so->stencil[0];
+      const struct pipe_stencil_state *stencil_back = (so->stencil[1].enabled && so->stencil[1].valuemask) ? &so->stencil[!i] : &so->stencil[0];
       cs->PE_STENCIL_OP[i] =
          VIVS_PE_STENCIL_OP_FUNC_FRONT(stencil_front->func) |
          VIVS_PE_STENCIL_OP_FUNC_BACK(stencil_back->func) |

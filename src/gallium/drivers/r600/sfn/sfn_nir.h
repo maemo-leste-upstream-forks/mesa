@@ -28,6 +28,7 @@
 #define SFN_NIR_H
 
 #include "nir.h"
+#include "nir_builder.h"
 
 #ifdef __cplusplus
 #include "sfn_shader_base.h"
@@ -43,7 +44,7 @@ bool r600_lower_ubo_to_align16(nir_shader *shader);
 
 class Shader {
 public:
-   std::vector<PInstruction>& m_ir;
+   std::vector<InstructionBlock>& m_ir;
    ValueMap m_temp;
 };
 
@@ -56,7 +57,7 @@ public:
 
    bool lower(const nir_shader *shader, r600_pipe_shader *sh,
               r600_pipe_shader_selector *sel, r600_shader_key &key,
-              r600_shader *gs_shader);
+              r600_shader *gs_shader, enum chip_class chip_class);
 
    bool process_declaration();
 
@@ -64,7 +65,7 @@ public:
 
    bool emit_instruction(nir_instr *instr);
 
-   const std::vector<Instruction::Pointer>& shader_ir() const;
+   const std::vector<InstructionBlock> &shader_ir() const;
 
    Shader shader() const;
 private:
@@ -78,6 +79,7 @@ private:
    std::unique_ptr<ShaderFromNirProcessor> impl;
    const nir_shader *sh;
 
+   enum chip_class chip_class;
    int m_current_if_id;
    int m_current_loop_id;
    std::stack<int> m_if_stack;
@@ -87,23 +89,41 @@ private:
 class AssemblyFromShader {
 public:
    virtual ~AssemblyFromShader();
-   bool lower(const std::vector<Instruction::Pointer>& ir);
+   bool lower(const std::vector<InstructionBlock> &ir);
 private:
-   virtual bool do_lower(const std::vector<Instruction::Pointer>& ir)  = 0 ;
+   virtual bool do_lower(const std::vector<InstructionBlock>& ir)  = 0 ;
 };
 
 }
 
 #endif
 
+static inline nir_ssa_def *
+r600_imm_ivec3(nir_builder *build, int x, int y, int z)
+{
+   nir_const_value v[3] = {
+      nir_const_value_for_int(x, 32),
+      nir_const_value_for_int(y, 32),
+      nir_const_value_for_int(z, 32),
+   };
+
+   return nir_build_imm(build, 3, 32, v);
+}
+
+bool r600_lower_tess_io(nir_shader *shader, enum pipe_prim_type prim_type);
+bool r600_append_tcs_TF_emission(nir_shader *shader, enum pipe_prim_type prim_type);
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 bool r600_vectorize_vs_inputs(nir_shader *shader);
+
+
 int r600_shader_from_nir(struct r600_context *rctx,
                          struct r600_pipe_shader *pipeshader,
                          union r600_shader_key *key);
+
 
 #ifdef __cplusplus
 }

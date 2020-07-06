@@ -72,7 +72,7 @@ check_array_data(struct gl_context *ctx, struct gl_vertex_array_object *vao,
          &vao->BufferBinding[array->BufferBindingIndex];
       struct gl_buffer_object *bo = binding->BufferObj;
       const void *data = array->Ptr;
-      if (_mesa_is_bufferobj(bo)) {
+      if (bo) {
          data = ADD_POINTERS(_mesa_vertex_attrib_address(array, binding),
                              bo->Mappings[MAP_INTERNAL].Pointer);
       }
@@ -82,7 +82,7 @@ check_array_data(struct gl_context *ctx, struct gl_vertex_array_object *vao,
             GLfloat *f = (GLfloat *) ((GLubyte *) data + binding->Stride * j);
             GLint k;
             for (k = 0; k < array->Format.Size; k++) {
-               if (IS_INF_OR_NAN(f[k]) || f[k] >= 1.0e20F || f[k] <= -1.0e10F) {
+               if (util_is_inf_or_nan(f[k]) || f[k] >= 1.0e20F || f[k] <= -1.0e10F) {
                   printf("Bad array data:\n");
                   printf("  Element[%u].%u = %f\n", j, k, f[k]);
                   printf("  Array %u at %p\n", attrib, (void *) array);
@@ -90,10 +90,10 @@ check_array_data(struct gl_context *ctx, struct gl_vertex_array_object *vao,
                          array->Format.Type, array->Format.Size,
                          binding->Stride);
                   printf("  Address/offset %p in Buffer Object %u\n",
-                         array->Ptr, bo->Name);
+                         array->Ptr, bo ? bo->Name : 0);
                   f[k] = 1.0F;  /* XXX replace the bad value! */
                }
-               /*assert(!IS_INF_OR_NAN(f[k])); */
+               /*assert(!util_is_inf_or_nan(f[k])); */
             }
          }
          break;
@@ -133,7 +133,7 @@ check_draw_elements_data(struct gl_context *ctx, GLsizei count,
 
    _mesa_vao_map(ctx, vao, GL_MAP_READ_BIT);
 
-   if (_mesa_is_bufferobj(vao->IndexBufferObj))
+   if (vao->IndexBufferObj)
        elements =
           ADD_POINTERS(vao->IndexBufferObj->Mappings[MAP_INTERNAL].Pointer, elements);
 
@@ -255,9 +255,9 @@ print_draw_arrays(struct gl_context *ctx,
              "ptr %p  Bufobj %u\n",
              gl_vert_attrib_name((gl_vert_attrib) i),
              array->Format.Size, binding->Stride,
-             array->Ptr, bufObj->Name);
+             array->Ptr, bufObj ? bufObj->Name : 0);
 
-      if (_mesa_is_bufferobj(bufObj)) {
+      if (bufObj) {
          GLubyte *p = bufObj->Mappings[MAP_INTERNAL].Pointer;
          int offset = (int) (GLintptr)
             _mesa_vertex_attrib_address(array, binding);
@@ -392,8 +392,8 @@ _mesa_exec_Rectf(GLfloat x1, GLfloat y1, GLfloat x2, GLfloat y2)
 }
 
 
-static void GLAPIENTRY
-_mesa_exec_EvalMesh1(GLenum mode, GLint i1, GLint i2)
+void GLAPIENTRY
+_mesa_EvalMesh1(GLenum mode, GLint i1, GLint i2)
 {
    GET_CURRENT_CONTEXT(ctx);
    GLint i;
@@ -428,8 +428,8 @@ _mesa_exec_EvalMesh1(GLenum mode, GLint i1, GLint i2)
 }
 
 
-static void GLAPIENTRY
-_mesa_exec_EvalMesh2(GLenum mode, GLint i1, GLint i2, GLint j1, GLint j2)
+void GLAPIENTRY
+_mesa_EvalMesh2(GLenum mode, GLint i1, GLint i2, GLint j1, GLint j2)
 {
    GET_CURRENT_CONTEXT(ctx);
    GLfloat u, du, v, dv, v1, u1;
@@ -534,8 +534,8 @@ _mesa_DrawArrays(GLenum mode, GLint start, GLsizei count)
  * display list mode).
  */
 void GLAPIENTRY
-_mesa_DrawArraysInstanced(GLenum mode, GLint start, GLsizei count,
-                          GLsizei numInstances)
+_mesa_DrawArraysInstancedARB(GLenum mode, GLint start, GLsizei count,
+                             GLsizei numInstances)
 {
    GET_CURRENT_CONTEXT(ctx);
 
@@ -569,10 +569,10 @@ _mesa_DrawArraysInstanced(GLenum mode, GLint start, GLsizei count,
 /**
  * Called from glDrawArraysInstancedBaseInstance when in immediate mode.
  */
-static void GLAPIENTRY
-_mesa_exec_DrawArraysInstancedBaseInstance(GLenum mode, GLint first,
-                                           GLsizei count, GLsizei numInstances,
-                                           GLuint baseInstance)
+void GLAPIENTRY
+_mesa_DrawArraysInstancedBaseInstance(GLenum mode, GLint first,
+                                      GLsizei count, GLsizei numInstances,
+                                      GLuint baseInstance)
 {
    GET_CURRENT_CONTEXT(ctx);
 
@@ -751,7 +751,7 @@ skip_draw_elements(struct gl_context *ctx, GLsizei count,
 
    /* Not using a VBO for indices, so avoid NULL pointer derefs later.
     */
-   if (!_mesa_is_bufferobj(ctx->Array.VAO->IndexBufferObj) && indices == NULL)
+   if (!ctx->Array.VAO->IndexBufferObj && indices == NULL)
       return true;
 
    if (skip_validated_draw(ctx))
@@ -917,7 +917,8 @@ _mesa_DrawRangeElementsBaseVertex(GLenum mode, GLuint start, GLuint end,
              "(start %u, end %u, type 0x%x, count %d) ElemBuf %u, "
              "base %d\n",
              start, end, type, count,
-             ctx->Array.VAO->IndexBufferObj->Name, basevertex);
+             ctx->Array.VAO->IndexBufferObj ?
+                ctx->Array.VAO->IndexBufferObj->Name : 0, basevertex);
    }
 
    if ((int) start + basevertex < 0 || end + basevertex >= max_element)
@@ -1024,9 +1025,9 @@ _mesa_DrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type,
 /**
  * Called by glDrawElementsInstanced() in immediate mode.
  */
-static void GLAPIENTRY
-_mesa_exec_DrawElementsInstanced(GLenum mode, GLsizei count, GLenum type,
-                                 const GLvoid * indices, GLsizei numInstances)
+void GLAPIENTRY
+_mesa_DrawElementsInstancedARB(GLenum mode, GLsizei count, GLenum type,
+                               const GLvoid * indices, GLsizei numInstances)
 {
    GET_CURRENT_CONTEXT(ctx);
 
@@ -1056,11 +1057,11 @@ _mesa_exec_DrawElementsInstanced(GLenum mode, GLsizei count, GLenum type,
 /**
  * Called by glDrawElementsInstancedBaseVertex() in immediate mode.
  */
-static void GLAPIENTRY
-_mesa_exec_DrawElementsInstancedBaseVertex(GLenum mode, GLsizei count,
-                                           GLenum type, const GLvoid * indices,
-                                           GLsizei numInstances,
-                                           GLint basevertex)
+void GLAPIENTRY
+_mesa_DrawElementsInstancedBaseVertex(GLenum mode, GLsizei count,
+                                      GLenum type, const GLvoid * indices,
+                                      GLsizei numInstances,
+                                      GLint basevertex)
 {
    GET_CURRENT_CONTEXT(ctx);
 
@@ -1094,12 +1095,12 @@ _mesa_exec_DrawElementsInstancedBaseVertex(GLenum mode, GLsizei count,
 /**
  * Called by glDrawElementsInstancedBaseInstance() in immediate mode.
  */
-static void GLAPIENTRY
-_mesa_exec_DrawElementsInstancedBaseInstance(GLenum mode, GLsizei count,
-                                             GLenum type,
-                                             const GLvoid *indices,
-                                             GLsizei numInstances,
-                                             GLuint baseInstance)
+void GLAPIENTRY
+_mesa_DrawElementsInstancedBaseInstance(GLenum mode, GLsizei count,
+                                        GLenum type,
+                                        const GLvoid *indices,
+                                        GLsizei numInstances,
+                                        GLuint baseInstance)
 {
    GET_CURRENT_CONTEXT(ctx);
 
@@ -1133,14 +1134,14 @@ _mesa_exec_DrawElementsInstancedBaseInstance(GLenum mode, GLsizei count,
 /**
  * Called by glDrawElementsInstancedBaseVertexBaseInstance() in immediate mode.
  */
-static void GLAPIENTRY
-_mesa_exec_DrawElementsInstancedBaseVertexBaseInstance(GLenum mode,
-                                                       GLsizei count,
-                                                       GLenum type,
-                                                       const GLvoid *indices,
-                                                       GLsizei numInstances,
-                                                       GLint basevertex,
-                                                       GLuint baseInstance)
+void GLAPIENTRY
+_mesa_DrawElementsInstancedBaseVertexBaseInstance(GLenum mode,
+                                                  GLsizei count,
+                                                  GLenum type,
+                                                  const GLvoid *indices,
+                                                  GLsizei numInstances,
+                                                  GLint basevertex,
+                                                  GLuint baseInstance)
 {
    GET_CURRENT_CONTEXT(ctx);
 
@@ -1225,7 +1226,7 @@ _mesa_validated_multidrawelements(struct gl_context *ctx, GLenum mode,
        * subranges of the index buffer as one large index buffer may lead to
        * us reading unmapped memory.
        */
-      if (!_mesa_is_bufferobj(ctx->Array.VAO->IndexBufferObj))
+      if (!ctx->Array.VAO->IndexBufferObj)
          fallback = GL_TRUE;
    }
 
@@ -1423,8 +1424,8 @@ _mesa_DrawTransformFeedback(GLenum mode, GLuint name)
 }
 
 
-static void GLAPIENTRY
-_mesa_exec_DrawTransformFeedbackStream(GLenum mode, GLuint name, GLuint stream)
+void GLAPIENTRY
+_mesa_DrawTransformFeedbackStream(GLenum mode, GLuint name, GLuint stream)
 {
    GET_CURRENT_CONTEXT(ctx);
    struct gl_transform_feedback_object *obj =
@@ -1438,9 +1439,9 @@ _mesa_exec_DrawTransformFeedbackStream(GLenum mode, GLuint name, GLuint stream)
 }
 
 
-static void GLAPIENTRY
-_mesa_exec_DrawTransformFeedbackInstanced(GLenum mode, GLuint name,
-                                          GLsizei primcount)
+void GLAPIENTRY
+_mesa_DrawTransformFeedbackInstanced(GLenum mode, GLuint name,
+                                     GLsizei primcount)
 {
    GET_CURRENT_CONTEXT(ctx);
    struct gl_transform_feedback_object *obj =
@@ -1454,10 +1455,10 @@ _mesa_exec_DrawTransformFeedbackInstanced(GLenum mode, GLuint name,
 }
 
 
-static void GLAPIENTRY
-_mesa_exec_DrawTransformFeedbackStreamInstanced(GLenum mode, GLuint name,
-                                                GLuint stream,
-                                                GLsizei primcount)
+void GLAPIENTRY
+_mesa_DrawTransformFeedbackStreamInstanced(GLenum mode, GLuint name,
+                                           GLuint stream,
+                                           GLsizei primcount)
 {
    GET_CURRENT_CONTEXT(ctx);
    struct gl_transform_feedback_object *obj =
@@ -1524,8 +1525,8 @@ _mesa_validated_multidrawelementsindirect(struct gl_context *ctx,
  * Like [Multi]DrawArrays/Elements, but they take most arguments from
  * a buffer object.
  */
-static void GLAPIENTRY
-_mesa_exec_DrawArraysIndirect(GLenum mode, const GLvoid *indirect)
+void GLAPIENTRY
+_mesa_DrawArraysIndirect(GLenum mode, const GLvoid *indirect)
 {
    GET_CURRENT_CONTEXT(ctx);
 
@@ -1541,12 +1542,12 @@ _mesa_exec_DrawArraysIndirect(GLenum mode, const GLvoid *indirect)
     *    pointer passed as their <indirect> parameters."
     */
    if (ctx->API == API_OPENGL_COMPAT &&
-       !_mesa_is_bufferobj(ctx->DrawIndirectBuffer)) {
+       !ctx->DrawIndirectBuffer) {
       DrawArraysIndirectCommand *cmd = (DrawArraysIndirectCommand *) indirect;
 
-      _mesa_exec_DrawArraysInstancedBaseInstance(mode, cmd->first, cmd->count,
-                                                 cmd->primCount,
-                                                 cmd->baseInstance);
+      _mesa_DrawArraysInstancedBaseInstance(mode, cmd->first, cmd->count,
+                                            cmd->primCount,
+                                            cmd->baseInstance);
       return;
    }
 
@@ -1570,8 +1571,8 @@ _mesa_exec_DrawArraysIndirect(GLenum mode, const GLvoid *indirect)
 }
 
 
-static void GLAPIENTRY
-_mesa_exec_DrawElementsIndirect(GLenum mode, GLenum type, const GLvoid *indirect)
+void GLAPIENTRY
+_mesa_DrawElementsIndirect(GLenum mode, GLenum type, const GLvoid *indirect)
 {
    GET_CURRENT_CONTEXT(ctx);
 
@@ -1588,14 +1589,14 @@ _mesa_exec_DrawElementsIndirect(GLenum mode, GLenum type, const GLvoid *indirect
     *    pointer passed as their <indirect> parameters."
     */
    if (ctx->API == API_OPENGL_COMPAT &&
-       !_mesa_is_bufferobj(ctx->DrawIndirectBuffer)) {
+       !ctx->DrawIndirectBuffer) {
       /*
        * Unlike regular DrawElementsInstancedBaseVertex commands, the indices
        * may not come from a client array and must come from an index buffer.
        * If no element array buffer is bound, an INVALID_OPERATION error is
        * generated.
        */
-      if (!_mesa_is_bufferobj(ctx->Array.VAO->IndexBufferObj)) {
+      if (!ctx->Array.VAO->IndexBufferObj) {
          _mesa_error(ctx, GL_INVALID_OPERATION,
                      "glDrawElementsIndirect(no buffer bound "
                      "to GL_ELEMENT_ARRAY_BUFFER)");
@@ -1607,11 +1608,11 @@ _mesa_exec_DrawElementsIndirect(GLenum mode, GLenum type, const GLvoid *indirect
          void *offset = (void *)
             (uintptr_t)((cmd->firstIndex * _mesa_sizeof_type(type)) & 0xffffffffUL);
 
-         _mesa_exec_DrawElementsInstancedBaseVertexBaseInstance(mode, cmd->count,
-                                                                type, offset,
-                                                                cmd->primCount,
-                                                                cmd->baseVertex,
-                                                                cmd->baseInstance);
+         _mesa_DrawElementsInstancedBaseVertexBaseInstance(mode, cmd->count,
+                                                           type, offset,
+                                                           cmd->primCount,
+                                                           cmd->baseVertex,
+                                                           cmd->baseInstance);
       }
 
       return;
@@ -1638,9 +1639,9 @@ _mesa_exec_DrawElementsIndirect(GLenum mode, GLenum type, const GLvoid *indirect
 }
 
 
-static void GLAPIENTRY
-_mesa_exec_MultiDrawArraysIndirect(GLenum mode, const GLvoid *indirect,
-                                   GLsizei primcount, GLsizei stride)
+void GLAPIENTRY
+_mesa_MultiDrawArraysIndirect(GLenum mode, const GLvoid *indirect,
+                              GLsizei primcount, GLsizei stride)
 {
    GET_CURRENT_CONTEXT(ctx);
 
@@ -1660,7 +1661,7 @@ _mesa_exec_MultiDrawArraysIndirect(GLenum mode, const GLvoid *indirect,
     *    pointer passed as their <indirect> parameters."
     */
    if (ctx->API == API_OPENGL_COMPAT &&
-       !_mesa_is_bufferobj(ctx->DrawIndirectBuffer)) {
+       !ctx->DrawIndirectBuffer) {
 
       if (!_mesa_valid_draw_indirect_multi(ctx, primcount, stride,
                                            "glMultiDrawArraysIndirect"))
@@ -1669,9 +1670,9 @@ _mesa_exec_MultiDrawArraysIndirect(GLenum mode, const GLvoid *indirect,
       const uint8_t *ptr = (const uint8_t *) indirect;
       for (unsigned i = 0; i < primcount; i++) {
          DrawArraysIndirectCommand *cmd = (DrawArraysIndirectCommand *) ptr;
-         _mesa_exec_DrawArraysInstancedBaseInstance(mode, cmd->first,
-                                                    cmd->count, cmd->primCount,
-                                                    cmd->baseInstance);
+         _mesa_DrawArraysInstancedBaseInstance(mode, cmd->first,
+                                               cmd->count, cmd->primCount,
+                                               cmd->baseInstance);
 
          if (stride == 0) {
             ptr += sizeof(DrawArraysIndirectCommand);
@@ -1704,10 +1705,10 @@ _mesa_exec_MultiDrawArraysIndirect(GLenum mode, const GLvoid *indirect,
 }
 
 
-static void GLAPIENTRY
-_mesa_exec_MultiDrawElementsIndirect(GLenum mode, GLenum type,
-                                     const GLvoid *indirect,
-                                     GLsizei primcount, GLsizei stride)
+void GLAPIENTRY
+_mesa_MultiDrawElementsIndirect(GLenum mode, GLenum type,
+                                const GLvoid *indirect,
+                                GLsizei primcount, GLsizei stride)
 {
    GET_CURRENT_CONTEXT(ctx);
 
@@ -1729,14 +1730,14 @@ _mesa_exec_MultiDrawElementsIndirect(GLenum mode, GLenum type,
     *    pointer passed as their <indirect> parameters."
     */
    if (ctx->API == API_OPENGL_COMPAT &&
-       !_mesa_is_bufferobj(ctx->DrawIndirectBuffer)) {
+       !ctx->DrawIndirectBuffer) {
       /*
        * Unlike regular DrawElementsInstancedBaseVertex commands, the indices
        * may not come from a client array and must come from an index buffer.
        * If no element array buffer is bound, an INVALID_OPERATION error is
        * generated.
        */
-      if (!_mesa_is_bufferobj(ctx->Array.VAO->IndexBufferObj)) {
+      if (!ctx->Array.VAO->IndexBufferObj) {
          _mesa_error(ctx, GL_INVALID_OPERATION,
                      "glMultiDrawElementsIndirect(no buffer bound "
                      "to GL_ELEMENT_ARRAY_BUFFER)");
@@ -1750,7 +1751,7 @@ _mesa_exec_MultiDrawElementsIndirect(GLenum mode, GLenum type,
 
       const uint8_t *ptr = (const uint8_t *) indirect;
       for (unsigned i = 0; i < primcount; i++) {
-         _mesa_exec_DrawElementsIndirect(mode, type, ptr);
+         _mesa_DrawElementsIndirect(mode, type, ptr);
 
          if (stride == 0) {
             ptr += sizeof(DrawElementsIndirectCommand);
@@ -1784,10 +1785,10 @@ _mesa_exec_MultiDrawElementsIndirect(GLenum mode, GLenum type,
 }
 
 
-static void GLAPIENTRY
-_mesa_exec_MultiDrawArraysIndirectCount(GLenum mode, GLintptr indirect,
-                                        GLintptr drawcount_offset,
-                                        GLsizei maxdrawcount, GLsizei stride)
+void GLAPIENTRY
+_mesa_MultiDrawArraysIndirectCountARB(GLenum mode, GLintptr indirect,
+                                      GLintptr drawcount_offset,
+                                      GLsizei maxdrawcount, GLsizei stride)
 {
    GET_CURRENT_CONTEXT(ctx);
 
@@ -1826,11 +1827,11 @@ _mesa_exec_MultiDrawArraysIndirectCount(GLenum mode, GLintptr indirect,
 }
 
 
-static void GLAPIENTRY
-_mesa_exec_MultiDrawElementsIndirectCount(GLenum mode, GLenum type,
-                                          GLintptr indirect,
-                                          GLintptr drawcount_offset,
-                                          GLsizei maxdrawcount, GLsizei stride)
+void GLAPIENTRY
+_mesa_MultiDrawElementsIndirectCountARB(GLenum mode, GLenum type,
+                                        GLintptr indirect,
+                                        GLintptr drawcount_offset,
+                                        GLsizei maxdrawcount, GLsizei stride)
 {
    GET_CURRENT_CONTEXT(ctx);
 
@@ -1888,8 +1889,6 @@ _mesa_initialize_exec_dispatch(const struct gl_context *ctx,
 
    if (ctx->API == API_OPENGL_COMPAT) {
       SET_Rectf(exec, _mesa_exec_Rectf);
-      SET_EvalMesh1(exec, _mesa_exec_EvalMesh1);
-      SET_EvalMesh2(exec, _mesa_exec_EvalMesh2);
    }
 
    if (ctx->API != API_OPENGLES &&
@@ -1901,44 +1900,7 @@ _mesa_initialize_exec_dispatch(const struct gl_context *ctx,
       if (_mesa_is_desktop_gl(ctx) || _mesa_is_gles3(ctx)) {
          SET_DrawRangeElementsBaseVertex(exec,
                                          _mesa_DrawRangeElementsBaseVertex);
-         SET_DrawElementsInstancedBaseVertex(exec,
-                                             _mesa_exec_DrawElementsInstancedBaseVertex);
       }
-   }
-
-   if (_mesa_is_desktop_gl(ctx) || _mesa_is_gles3(ctx)) {
-      SET_DrawArraysInstancedBaseInstance(exec,
-                                          _mesa_exec_DrawArraysInstancedBaseInstance);
-      SET_DrawElementsInstancedBaseInstance(exec,
-                                            _mesa_exec_DrawElementsInstancedBaseInstance);
-      SET_DrawElementsInstancedBaseVertexBaseInstance(exec,
-                                                      _mesa_exec_DrawElementsInstancedBaseVertexBaseInstance);
-   }
-
-   if (_mesa_is_desktop_gl(ctx) || _mesa_is_gles31(ctx)) {
-      SET_DrawArraysIndirect(exec, _mesa_exec_DrawArraysIndirect);
-      SET_DrawElementsIndirect(exec, _mesa_exec_DrawElementsIndirect);
-   }
-
-   if (_mesa_is_desktop_gl(ctx) || _mesa_is_gles3(ctx)) {
-      SET_DrawArraysInstancedARB(exec, _mesa_DrawArraysInstanced);
-      SET_DrawElementsInstancedARB(exec, _mesa_exec_DrawElementsInstanced);
-   }
-
-   if (_mesa_is_desktop_gl(ctx)) {
-      SET_DrawTransformFeedback(exec, _mesa_DrawTransformFeedback);
-      SET_DrawTransformFeedbackStream(exec,
-                                      _mesa_exec_DrawTransformFeedbackStream);
-      SET_DrawTransformFeedbackInstanced(exec,
-                                         _mesa_exec_DrawTransformFeedbackInstanced);
-      SET_DrawTransformFeedbackStreamInstanced(exec,
-                                               _mesa_exec_DrawTransformFeedbackStreamInstanced);
-      SET_MultiDrawArraysIndirect(exec, _mesa_exec_MultiDrawArraysIndirect);
-      SET_MultiDrawElementsIndirect(exec, _mesa_exec_MultiDrawElementsIndirect);
-      SET_MultiDrawArraysIndirectCountARB(exec,
-                                          _mesa_exec_MultiDrawArraysIndirectCount);
-      SET_MultiDrawElementsIndirectCountARB(exec,
-                                            _mesa_exec_MultiDrawElementsIndirectCount);
    }
 }
 

@@ -338,40 +338,40 @@ bool can_reorder(Instruction* candidate)
    }
 }
 
-bool is_gs_or_done_sendmsg(Instruction *instr)
+bool is_gs_or_done_sendmsg(const Instruction *instr)
 {
    if (instr->opcode == aco_opcode::s_sendmsg) {
-      uint16_t imm = static_cast<SOPP_instruction*>(instr)->imm;
+      uint16_t imm = static_cast<const SOPP_instruction*>(instr)->imm;
       return (imm & sendmsg_id_mask) == _sendmsg_gs ||
              (imm & sendmsg_id_mask) == _sendmsg_gs_done;
    }
    return false;
 }
 
-bool is_done_sendmsg(Instruction *instr)
+bool is_done_sendmsg(const Instruction *instr)
 {
    if (instr->opcode == aco_opcode::s_sendmsg) {
-      uint16_t imm = static_cast<SOPP_instruction*>(instr)->imm;
+      uint16_t imm = static_cast<const SOPP_instruction*>(instr)->imm;
       return (imm & sendmsg_id_mask) == _sendmsg_gs_done;
    }
    return false;
 }
 
-barrier_interaction get_barrier_interaction(Instruction* instr)
+barrier_interaction get_barrier_interaction(const Instruction* instr)
 {
    switch (instr->format) {
    case Format::SMEM:
-      return static_cast<SMEM_instruction*>(instr)->barrier;
+      return static_cast<const SMEM_instruction*>(instr)->barrier;
    case Format::MUBUF:
-      return static_cast<MUBUF_instruction*>(instr)->barrier;
+      return static_cast<const MUBUF_instruction*>(instr)->barrier;
    case Format::MIMG:
-      return static_cast<MIMG_instruction*>(instr)->barrier;
+      return static_cast<const MIMG_instruction*>(instr)->barrier;
    case Format::MTBUF:
-      return static_cast<MTBUF_instruction*>(instr)->barrier;
+      return static_cast<const MTBUF_instruction*>(instr)->barrier;
    case Format::FLAT:
    case Format::GLOBAL:
    case Format::SCRATCH:
-      return static_cast<FLAT_instruction*>(instr)->barrier;
+      return static_cast<const FLAT_instruction*>(instr)->barrier;
    case Format::DS:
       return barrier_shared;
    case Format::SOPP:
@@ -460,7 +460,7 @@ enum HazardResult {
    /* Must stop at these failures. The hazard query code doesn't consider them
     * when added. */
    hazard_fail_exec,
-   hazard_fail_memtime,
+   hazard_fail_unreorderable,
 };
 
 HazardResult perform_hazard_query(hazard_query *query, Instruction *instr)
@@ -478,11 +478,16 @@ HazardResult perform_hazard_query(hazard_query *query, Instruction *instr)
    if (instr->format == Format::EXP)
       return hazard_fail_export;
 
-   /* don't move s_memtime/s_memrealtime */
-   if (instr->opcode == aco_opcode::s_memtime || instr->opcode == aco_opcode::s_memrealtime)
-      return hazard_fail_memtime;
+   /* don't move non-reorderable instructions */
+   if (instr->opcode == aco_opcode::s_memtime ||
+       instr->opcode == aco_opcode::s_memrealtime ||
+       instr->opcode == aco_opcode::s_setprio)
+      return hazard_fail_unreorderable;
 
-   if (query->barrier_interaction && (query->barrier_interaction & parse_barrier(instr)))
+   barrier_interaction bar = parse_barrier(instr);
+   if (query->barrier_interaction && (query->barrier_interaction & bar))
+      return hazard_fail_barrier;
+   if (bar && query->barriers && (query->barriers & ~bar))
       return hazard_fail_barrier;
    if (query->barriers && (query->barriers & get_barrier_interaction(instr)))
       return hazard_fail_barrier;
@@ -795,7 +800,7 @@ void schedule_position_export(sched_ctx& ctx, Block* block,
          break;
 
       HazardResult haz = perform_hazard_query(&hq, candidate.get());
-      if (haz == hazard_fail_exec || haz == hazard_fail_memtime)
+      if (haz == hazard_fail_exec || haz == hazard_fail_unreorderable)
          break;
 
       if (haz != hazard_success) {
@@ -841,7 +846,7 @@ void schedule_block(sched_ctx& ctx, Program *program, Block* block, live& live_v
       }
    }
 
-   if ((program->stage & hw_vs) && block->index == program->blocks.size() - 1) {
+   if ((program->stage & (hw_vs | hw_ngg_gs)) && (block->kind & block_kind_export_end)) {
       /* Try to move position exports as far up as possible, to reduce register
        * usage and because ISA reference guides say so. */
       for (unsigned idx = 0; idx < block->instructions.size(); idx++) {

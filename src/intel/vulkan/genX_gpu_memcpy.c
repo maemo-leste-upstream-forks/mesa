@@ -113,6 +113,13 @@ genX(cmd_buffer_so_memcpy)(struct anv_cmd_buffer *cmd_buffer,
       });
 
 #if GEN_GEN >= 8
+   anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_VF_INSTANCING), vfi) {
+      vfi.InstancingEnable = false;
+      vfi.VertexElementIndex = 0;
+   }
+#endif
+
+#if GEN_GEN >= 8
    anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_VF_SGVS), sgvs);
 #endif
 
@@ -219,6 +226,11 @@ genX(cmd_buffer_so_memcpy)(struct anv_cmd_buffer *cmd_buffer,
    anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_VF_STATISTICS), vf) {
       vf.StatisticsEnable = false;
    }
+
+#if GEN_GEN >= 12
+   /* Disable Primitive Replication. */
+   anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_PRIMITIVE_REPLICATION), pr);
+#endif
 
    anv_batch_emit(&cmd_buffer->batch, GENX(3DPRIMITIVE), prim) {
       prim.VertexAccessType         = SEQUENTIAL;

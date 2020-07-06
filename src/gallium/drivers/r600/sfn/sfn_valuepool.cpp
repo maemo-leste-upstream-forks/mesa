@@ -53,8 +53,27 @@ GPRVector ValuePool::vec_from_nir(const nir_dest& dst, int num_components)
    for (int i = 0; i < 4; ++i)
       result[i] = from_nir(dst, i < num_components ? i : 7);
    return GPRVector(result);
-
 }
+
+std::vector<PValue> ValuePool::varvec_from_nir(const nir_dest& dst, int num_components)
+{
+   std::vector<PValue> result(num_components);
+   for (int i = 0; i < num_components; ++i)
+      result[i] = from_nir(dst, i);
+   return result;
+}
+
+
+std::vector<PValue> ValuePool::varvec_from_nir(const nir_src& src, int num_components)
+{
+   std::vector<PValue> result(num_components);
+   int i;
+   for (i = 0; i < num_components; ++i)
+      result[i] = from_nir(src, i);
+
+   return result;
+}
+
 
 PValue ValuePool::from_nir(const nir_src& v, unsigned component, unsigned swizzled)
 {
@@ -153,7 +172,7 @@ PValue ValuePool::create_register_from_nir_src(const nir_src& src, int comp)
                           get_local_register_index(*src.reg.reg);
 
    auto retval = lookup_register(idx, comp, false);
-   if (!retval)
+   if (!retval || retval->type() != Value::gpr || retval->type() != Value::gpr_array_value)
       retval = create_register(idx, comp);
    return retval;
 }
@@ -526,33 +545,12 @@ int ValuePool::allocate_with_mask(unsigned index, unsigned mask, bool pre_alloc)
 
 PValue ValuePool::literal(uint32_t value)
 {
-   const uint32_t float_1 = 0x3f800000;
-   const uint32_t float_05 = 0x3f000000;
-
    auto l = m_literals.find(value);
    if (l != m_literals.end())
       return l->second;
 
-   switch (value) {
-   case 0:
-      m_literals[0] = PValue(new InlineConstValue(ALU_SRC_0, 0));
-      return m_literals[0];
-   case 1:
-      m_literals[1] = PValue(new InlineConstValue(ALU_SRC_1_INT, 0));
-      return m_literals[1];
-   case float_1:
-      m_literals[float_1] = PValue(new InlineConstValue(ALU_SRC_1, 0));
-      return m_literals[float_1];
-   case float_05:
-      m_literals[float_05] = PValue(new InlineConstValue(ALU_SRC_0_5, 0));
-      return m_literals[float_05];
-   case 0xffffffff:
-      m_literals[0xffffffff] = PValue(new InlineConstValue(ALU_SRC_M_1_INT, 0));
-      return m_literals[0xffffffff];
-   default:
-      m_literals[value] = PValue(new LiteralValue(value));
-      return m_literals[value];
-   }
+   m_literals[value] = PValue(new LiteralValue(value));
+   return m_literals[value];
 }
 
 }

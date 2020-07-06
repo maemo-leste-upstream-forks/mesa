@@ -35,6 +35,7 @@
 #include "freedreno_program.h"
 
 #include "fd6_program.h"
+#include "fd6_const.h"
 #include "fd6_emit.h"
 #include "fd6_texture.h"
 #include "fd6_format.h"
@@ -77,6 +78,13 @@ fd6_emit_shader(struct fd_ringbuffer *ring, const struct ir3_shader_variant *so)
 		unreachable("");
 	}
 
+#ifdef DEBUG
+	/* Name should generally match what you get with MESA_SHADER_CAPTURE_PATH: */
+	const char *name = so->shader->nir->info.name;
+	if (name)
+		fd_emit_string5(ring, name, strlen(name));
+#endif
+
 	OUT_PKT4(ring, instrlen, 1);
 	OUT_RING(ring, so->instrlen);
 
@@ -89,7 +97,7 @@ fd6_emit_shader(struct fd_ringbuffer *ring, const struct ir3_shader_variant *so)
 			CP_LOAD_STATE6_0_STATE_SRC(SS6_INDIRECT) |
 			CP_LOAD_STATE6_0_STATE_BLOCK(sb) |
 			CP_LOAD_STATE6_0_NUM_UNIT(so->instrlen));
-	OUT_RELOCD(ring, so->bo, 0, 0, 0);
+	OUT_RELOC(ring, so->bo, 0, 0, 0);
 }
 
 /* Add any missing varyings needed for stream-out.  Otherwise varyings not
@@ -144,20 +152,24 @@ setup_stream_out(struct fd6_program_state *state, const struct ir3_shader_varian
 		struct ir3_shader_linkage *l)
 {
 	const struct ir3_stream_output_info *strmout = &v->shader->stream_output;
-	struct fd6_streamout_state *tf = &state->tf;
 
-	memset(tf, 0, sizeof(*tf));
+	uint32_t ncomp[PIPE_MAX_SO_BUFFERS];
+	uint32_t prog[256/2];
+	uint32_t prog_count;
 
-	tf->prog_count = align(l->max_loc, 2) / 2;
+	memset(ncomp, 0, sizeof(ncomp));
+	memset(prog, 0, sizeof(prog));
 
-	debug_assert(tf->prog_count < ARRAY_SIZE(tf->prog));
+	prog_count = align(l->max_loc, 2) / 2;
+
+	debug_assert(prog_count < ARRAY_SIZE(prog));
 
 	for (unsigned i = 0; i < strmout->num_outputs; i++) {
 		const struct ir3_stream_output *out = &strmout->output[i];
 		unsigned k = out->register_index;
 		unsigned idx;
 
-		tf->ncomp[out->output_buffer] += out->num_components;
+		ncomp[out->output_buffer] += out->num_components;
 
 		/* linkage map sorted by order frag shader wants things, so
 		 * a bit less ideal here..
@@ -174,22 +186,40 @@ setup_stream_out(struct fd6_program_state *state, const struct ir3_shader_varian
 			unsigned off = j + out->dst_offset;  /* in dwords */
 
 			if (loc & 1) {
-				tf->prog[loc/2] |= A6XX_VPC_SO_PROG_B_EN |
+				prog[loc/2] |= A6XX_VPC_SO_PROG_B_EN |
 						A6XX_VPC_SO_PROG_B_BUF(out->output_buffer) |
 						A6XX_VPC_SO_PROG_B_OFF(off * 4);
 			} else {
-				tf->prog[loc/2] |= A6XX_VPC_SO_PROG_A_EN |
+				prog[loc/2] |= A6XX_VPC_SO_PROG_A_EN |
 						A6XX_VPC_SO_PROG_A_BUF(out->output_buffer) |
 						A6XX_VPC_SO_PROG_A_OFF(off * 4);
 			}
 		}
 	}
 
-	tf->vpc_so_buf_cntl = A6XX_VPC_SO_BUF_CNTL_ENABLE |
-			COND(tf->ncomp[0] > 0, A6XX_VPC_SO_BUF_CNTL_BUF0) |
-			COND(tf->ncomp[1] > 0, A6XX_VPC_SO_BUF_CNTL_BUF1) |
-			COND(tf->ncomp[2] > 0, A6XX_VPC_SO_BUF_CNTL_BUF2) |
-			COND(tf->ncomp[3] > 0, A6XX_VPC_SO_BUF_CNTL_BUF3);
+	struct fd_ringbuffer *ring = state->streamout_stateobj;
+
+	OUT_PKT7(ring, CP_CONTEXT_REG_BUNCH, 12 + (2 * prog_count));
+	OUT_RING(ring, REG_A6XX_VPC_SO_BUF_CNTL);
+	OUT_RING(ring, A6XX_VPC_SO_BUF_CNTL_ENABLE |
+			COND(ncomp[0] > 0, A6XX_VPC_SO_BUF_CNTL_BUF0) |
+			COND(ncomp[1] > 0, A6XX_VPC_SO_BUF_CNTL_BUF1) |
+			COND(ncomp[2] > 0, A6XX_VPC_SO_BUF_CNTL_BUF2) |
+			COND(ncomp[3] > 0, A6XX_VPC_SO_BUF_CNTL_BUF3));
+	OUT_RING(ring, REG_A6XX_VPC_SO_NCOMP(0));
+	OUT_RING(ring, ncomp[0]);
+	OUT_RING(ring, REG_A6XX_VPC_SO_NCOMP(1));
+	OUT_RING(ring, ncomp[1]);
+	OUT_RING(ring, REG_A6XX_VPC_SO_NCOMP(2));
+	OUT_RING(ring, ncomp[2]);
+	OUT_RING(ring, REG_A6XX_VPC_SO_NCOMP(3));
+	OUT_RING(ring, ncomp[3]);
+	OUT_RING(ring, REG_A6XX_VPC_SO_CNTL);
+	OUT_RING(ring, A6XX_VPC_SO_CNTL_ENABLE);
+	for (unsigned i = 0; i < prog_count; i++) {
+		OUT_RING(ring, REG_A6XX_VPC_SO_PROG);
+		OUT_RING(ring, prog[i]);
+	}
 }
 
 static void
@@ -198,25 +228,22 @@ setup_config_stateobj(struct fd_ringbuffer *ring, struct fd6_program_state *stat
 	OUT_PKT4(ring, REG_A6XX_HLSQ_UPDATE_CNTL, 1);
 	OUT_RING(ring, 0xff);        /* XXX */
 
-	if (state->ds)
-		debug_assert(state->ds->constlen >= state->bs->constlen);
-	else
-		debug_assert(state->vs->constlen >= state->bs->constlen);
+	debug_assert(state->vs->constlen >= state->bs->constlen);
 
 	OUT_PKT4(ring, REG_A6XX_HLSQ_VS_CNTL, 4);
-	OUT_RING(ring, A6XX_HLSQ_VS_CNTL_CONSTLEN(align(state->vs->constlen, 4)) |
+	OUT_RING(ring, A6XX_HLSQ_VS_CNTL_CONSTLEN(state->vs->constlen) |
 			A6XX_HLSQ_VS_CNTL_ENABLED);
 	OUT_RING(ring, COND(state->hs,
 					A6XX_HLSQ_HS_CNTL_ENABLED |
-					A6XX_HLSQ_HS_CNTL_CONSTLEN(align(state->hs->constlen, 4))));
+					A6XX_HLSQ_HS_CNTL_CONSTLEN(state->hs->constlen)));
 	OUT_RING(ring, COND(state->ds,
 					A6XX_HLSQ_DS_CNTL_ENABLED |
-					A6XX_HLSQ_DS_CNTL_CONSTLEN(align(state->ds->constlen, 4))));
+					A6XX_HLSQ_DS_CNTL_CONSTLEN(state->ds->constlen)));
 	OUT_RING(ring, COND(state->gs,
 					A6XX_HLSQ_GS_CNTL_ENABLED |
-					A6XX_HLSQ_GS_CNTL_CONSTLEN(align(state->gs->constlen, 4))));
+					A6XX_HLSQ_GS_CNTL_CONSTLEN(state->gs->constlen)));
 	OUT_PKT4(ring, REG_A6XX_HLSQ_FS_CNTL, 1);
-	OUT_RING(ring, A6XX_HLSQ_FS_CNTL_CONSTLEN(align(state->fs->constlen, 4)) |
+	OUT_RING(ring, A6XX_HLSQ_FS_CNTL_CONSTLEN(state->fs->constlen) |
 			A6XX_HLSQ_FS_CNTL_ENABLED);
 
 	OUT_PKT4(ring, REG_A6XX_SP_VS_CONFIG, 1);
@@ -276,7 +303,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 	uint32_t vertex_regid, instance_regid, layer_regid, primitive_regid;
 	uint32_t hs_invocation_regid;
 	uint32_t tess_coord_x_regid, tess_coord_y_regid, hs_patch_regid, ds_patch_regid;
-	uint32_t ij_pix_regid, ij_samp_regid, ij_cent_regid, ij_size_regid;
+	uint32_t ij_regid[IJ_COUNT];
 	uint32_t gs_header_regid;
 	enum a3xx_threadsize fssz;
 	uint8_t psize_loc = ~0, pos_loc = ~0, layer_loc = ~0;
@@ -289,10 +316,11 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 	const struct ir3_shader_variant *gs = state->gs;
 	const struct ir3_shader_variant *fs = binning_pass ? &dummy_fs : state->fs;
 
-	if (binning_pass && state->ds)
-		ds = state->bs;
-	else if (binning_pass)
-		vs = state->bs;
+	/* binning VS is wrong when GS is present, so use nonbinning VS
+	 * TODO: compile both binning VS/GS variants correctly
+	 */
+	if (binning_pass && state->gs)
+		vs = state->vs;
 
 	bool sample_shading = fs->per_samp | key->sample_shading;
 
@@ -352,20 +380,18 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 	face_regid      = ir3_find_sysval_regid(fs, SYSTEM_VALUE_FRONT_FACE);
 	coord_regid     = ir3_find_sysval_regid(fs, SYSTEM_VALUE_FRAG_COORD);
 	zwcoord_regid   = next_regid(coord_regid, 2);
-	ij_pix_regid    = ir3_find_sysval_regid(fs, SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL);
-	ij_samp_regid   = ir3_find_sysval_regid(fs, SYSTEM_VALUE_BARYCENTRIC_PERSP_SAMPLE);
-	ij_cent_regid   = ir3_find_sysval_regid(fs, SYSTEM_VALUE_BARYCENTRIC_PERSP_CENTROID);
-	ij_size_regid   = ir3_find_sysval_regid(fs, SYSTEM_VALUE_BARYCENTRIC_PERSP_SIZE);
 	posz_regid      = ir3_find_output_regid(fs, FRAG_RESULT_DEPTH);
 	smask_regid     = ir3_find_output_regid(fs, FRAG_RESULT_SAMPLE_MASK);
+	for (unsigned i = 0; i < ARRAY_SIZE(ij_regid); i++)
+		ij_regid[i] = ir3_find_sysval_regid(fs, SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL + i);
 
 	/* If we have pre-dispatch texture fetches, then ij_pix should not
 	 * be DCE'd, even if not actually used in the shader itself:
 	 */
 	if (fs->num_sampler_prefetch > 0) {
-		assert(VALIDREG(ij_pix_regid));
+		assert(VALIDREG(ij_regid[IJ_PERSP_PIXEL]));
 		/* also, it seems like ij_pix is *required* to be r0.x */
-		assert(ij_pix_regid == regid(0, 0));
+		assert(ij_regid[IJ_PERSP_PIXEL] == regid(0, 0));
 	}
 
 	/* we can't write gl_SampleMask for !msaa..  if b0 is zero then we
@@ -408,41 +434,34 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 			 0xfc000000);
 
 	enum a3xx_threadsize vssz;
-	uint32_t vsregs;
 	if (ds || hs) {
 		vssz = TWO_QUADS;
-		vsregs = 0;
 	} else {
 		vssz = FOUR_QUADS;
-		vsregs = A6XX_SP_VS_CTRL_REG0_MERGEDREGS;
 	}
 
 	OUT_PKT4(ring, REG_A6XX_SP_VS_CTRL_REG0, 1);
 	OUT_RING(ring, A6XX_SP_VS_CTRL_REG0_THREADSIZE(vssz) |
 			A6XX_SP_VS_CTRL_REG0_FULLREGFOOTPRINT(vs->info.max_reg + 1) |
-			vsregs |
+			A6XX_SP_VS_CTRL_REG0_HALFREGFOOTPRINT(vs->info.max_half_reg + 1) |
+			COND(vs->mergedregs, A6XX_SP_VS_CTRL_REG0_MERGEDREGS) |
 			A6XX_SP_VS_CTRL_REG0_BRANCHSTACK(vs->branchstack) |
 			COND(vs->need_pixlod, A6XX_SP_VS_CTRL_REG0_PIXLODENABLE));
 
 	fd6_emit_shader(ring, vs);
-	ir3_emit_immediates(screen, vs, ring);
+	fd6_emit_immediates(screen, vs, ring);
 
 	struct ir3_shader_linkage l = {0};
 	const struct ir3_shader_variant *last_shader = fd6_last_shader(state);
-	ir3_link_shaders(&l, last_shader, fs);
+	ir3_link_shaders(&l, last_shader, fs, true);
 
-	BITSET_DECLARE(varbs, 128) = {0};
-	uint32_t *varmask = (uint32_t *)varbs;
-
-	for (i = 0; i < l.cnt; i++)
-		for (j = 0; j < util_last_bit(l.var[i].compmask); j++)
-			BITSET_SET(varbs, l.var[i].loc + j);
+	bool primid_passthru = l.primid_loc != 0xff;
 
 	OUT_PKT4(ring, REG_A6XX_VPC_VAR_DISABLE(0), 4);
-	OUT_RING(ring, ~varmask[0]);  /* VPC_VAR[0].DISABLE */
-	OUT_RING(ring, ~varmask[1]);  /* VPC_VAR[1].DISABLE */
-	OUT_RING(ring, ~varmask[2]);  /* VPC_VAR[2].DISABLE */
-	OUT_RING(ring, ~varmask[3]);  /* VPC_VAR[3].DISABLE */
+	OUT_RING(ring, ~l.varmask[0]);  /* VPC_VAR[0].DISABLE */
+	OUT_RING(ring, ~l.varmask[1]);  /* VPC_VAR[1].DISABLE */
+	OUT_RING(ring, ~l.varmask[2]);  /* VPC_VAR[2].DISABLE */
+	OUT_RING(ring, ~l.varmask[3]);  /* VPC_VAR[3].DISABLE */
 
 	/* Add stream out outputs after computing the VPC_VAR_DISABLE bitmask. */
 	if (last_shader->shader->stream_output.num_outputs > 0)
@@ -511,22 +530,26 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 		OUT_PKT4(ring, REG_A6XX_SP_HS_CTRL_REG0, 1);
 		OUT_RING(ring, A6XX_SP_HS_CTRL_REG0_THREADSIZE(TWO_QUADS) |
 			A6XX_SP_HS_CTRL_REG0_FULLREGFOOTPRINT(hs->info.max_reg + 1) |
+			A6XX_SP_HS_CTRL_REG0_HALFREGFOOTPRINT(hs->info.max_half_reg + 1) |
+			COND(hs->mergedregs, A6XX_SP_HS_CTRL_REG0_MERGEDREGS) |
 			A6XX_SP_HS_CTRL_REG0_BRANCHSTACK(hs->branchstack) |
 			COND(hs->need_pixlod, A6XX_SP_HS_CTRL_REG0_PIXLODENABLE));
 
 		fd6_emit_shader(ring, hs);
-		ir3_emit_immediates(screen, hs, ring);
-		ir3_emit_link_map(screen, vs, hs, ring);
+		fd6_emit_immediates(screen, hs, ring);
+		fd6_emit_link_map(screen, vs, hs, ring);
 
 		OUT_PKT4(ring, REG_A6XX_SP_DS_CTRL_REG0, 1);
 		OUT_RING(ring, A6XX_SP_DS_CTRL_REG0_THREADSIZE(TWO_QUADS) |
 			A6XX_SP_DS_CTRL_REG0_FULLREGFOOTPRINT(ds->info.max_reg + 1) |
+			A6XX_SP_DS_CTRL_REG0_HALFREGFOOTPRINT(ds->info.max_half_reg + 1) |
+			COND(ds->mergedregs, A6XX_SP_DS_CTRL_REG0_MERGEDREGS) |
 			A6XX_SP_DS_CTRL_REG0_BRANCHSTACK(ds->branchstack) |
 			COND(ds->need_pixlod, A6XX_SP_DS_CTRL_REG0_PIXLODENABLE));
 
 		fd6_emit_shader(ring, ds);
-		ir3_emit_immediates(screen, ds, ring);
-		ir3_emit_link_map(screen, hs, ds, ring);
+		fd6_emit_immediates(screen, ds, ring);
+		fd6_emit_link_map(screen, hs, ds, ring);
 
 		shader_info *hs_info = &hs->shader->nir->info;
 		OUT_PKT4(ring, REG_A6XX_PC_TESS_NUM_VERTEX, 1);
@@ -534,10 +557,10 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 
 		/* Total attribute slots in HS incoming patch. */
 		OUT_PKT4(ring, REG_A6XX_PC_UNKNOWN_9801, 1);
-		OUT_RING(ring, hs_info->tess.tcs_vertices_out * vs->shader->output_size / 4);
+		OUT_RING(ring, hs_info->tess.tcs_vertices_out * vs->output_size / 4);
 
 		OUT_PKT4(ring, REG_A6XX_SP_HS_UNKNOWN_A831, 1);
-		OUT_RING(ring, vs->shader->output_size);
+		OUT_RING(ring, vs->output_size);
 
 		shader_info *ds_info = &ds->shader->nir->info;
 		OUT_PKT4(ring, REG_A6XX_PC_TESS_CNTL, 1);
@@ -597,7 +620,8 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 	OUT_PKT4(ring, REG_A6XX_VPC_CNTL_0, 1);
 	OUT_RING(ring, A6XX_VPC_CNTL_0_NUMNONPOSVAR(fs->total_in) |
 			 COND(enable_varyings, A6XX_VPC_CNTL_0_VARYING) |
-			 0xff00ff00);
+			 A6XX_VPC_CNTL_0_PRIMIDLOC(l.primid_loc) |
+			 A6XX_VPC_CNTL_0_UNKLOC(0xff));
 
 	OUT_PKT4(ring, REG_A6XX_PC_PRIMITIVE_CNTL_1, 1);
 	OUT_RING(ring, A6XX_PC_PRIMITIVE_CNTL_1_STRIDE_IN_VPC(l.max_loc) |
@@ -611,14 +635,16 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 	OUT_RING(ring, A6XX_HLSQ_CONTROL_2_REG_FACEREGID(face_regid) |
 			 A6XX_HLSQ_CONTROL_2_REG_SAMPLEID(samp_id_regid) |
 			 A6XX_HLSQ_CONTROL_2_REG_SAMPLEMASK(smask_in_regid) |
-			 A6XX_HLSQ_CONTROL_2_REG_SIZE(ij_size_regid));
-	OUT_RING(ring, A6XX_HLSQ_CONTROL_3_REG_BARY_IJ_PIXEL(ij_pix_regid) |
-			 A6XX_HLSQ_CONTROL_3_REG_BARY_IJ_CENTROID(ij_cent_regid) |
-			 0xfc00fc00);               /* XXX */
+			 A6XX_HLSQ_CONTROL_2_REG_SIZE(ij_regid[IJ_PERSP_SIZE]));
+	OUT_RING(ring,
+			 A6XX_HLSQ_CONTROL_3_REG_IJ_PERSP_PIXEL(ij_regid[IJ_PERSP_PIXEL]) |
+			 A6XX_HLSQ_CONTROL_3_REG_IJ_LINEAR_PIXEL(ij_regid[IJ_LINEAR_PIXEL]) |
+			 A6XX_HLSQ_CONTROL_3_REG_IJ_PERSP_CENTROID(ij_regid[IJ_PERSP_CENTROID]) |
+			 A6XX_HLSQ_CONTROL_3_REG_IJ_LINEAR_CENTROID(ij_regid[IJ_LINEAR_CENTROID]));
 	OUT_RING(ring, A6XX_HLSQ_CONTROL_4_REG_XYCOORDREGID(coord_regid) |
 			 A6XX_HLSQ_CONTROL_4_REG_ZWCOORDREGID(zwcoord_regid) |
-			 A6XX_HLSQ_CONTROL_4_REG_BARY_IJ_PIXEL_PERSAMP(ij_samp_regid) |
-			 0x0000fc00);               /* XXX */
+			 A6XX_HLSQ_CONTROL_4_REG_IJ_PERSP_SAMPLE(ij_regid[IJ_PERSP_SAMPLE]) |
+			 A6XX_HLSQ_CONTROL_4_REG_IJ_LINEAR_SAMPLE(ij_regid[IJ_LINEAR_SAMPLE]));
 	OUT_RING(ring, 0xfc);              /* XXX */
 
 	OUT_PKT4(ring, REG_A6XX_HLSQ_UNKNOWN_B980, 1);
@@ -627,10 +653,10 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 	OUT_PKT4(ring, REG_A6XX_SP_FS_CTRL_REG0, 1);
 	OUT_RING(ring, A6XX_SP_FS_CTRL_REG0_THREADSIZE(fssz) |
 			COND(enable_varyings, A6XX_SP_FS_CTRL_REG0_VARYING) |
-			COND(fs->frag_coord, A6XX_SP_FS_CTRL_REG0_VARYING) |
 			0x1000000 |
 			A6XX_SP_FS_CTRL_REG0_FULLREGFOOTPRINT(fs->info.max_reg + 1) |
-			A6XX_SP_FS_CTRL_REG0_MERGEDREGS |
+			A6XX_SP_FS_CTRL_REG0_HALFREGFOOTPRINT(fs->info.max_half_reg + 1) |
+			COND(fs->mergedregs, A6XX_SP_FS_CTRL_REG0_MERGEDREGS) |
 			A6XX_SP_FS_CTRL_REG0_BRANCHSTACK(fs->branchstack) |
 			COND(fs->need_pixlod, A6XX_SP_FS_CTRL_REG0_PIXLODENABLE));
 
@@ -640,41 +666,43 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 	OUT_PKT4(ring, REG_A6XX_VPC_GS_SIV_CNTL, 1);
 	OUT_RING(ring, 0x0000ffff);        /* XXX */
 
+	bool need_size = fs->frag_face || fs->fragcoord_compmask != 0;
+	bool need_size_persamp = false;
+	if (VALIDREG(ij_regid[IJ_PERSP_SIZE])) {
+		if (sample_shading)
+			need_size_persamp = true;
+		else
+			need_size = true;
+	}
+	if (VALIDREG(ij_regid[IJ_LINEAR_PIXEL]))
+		need_size = true;
+
+	/* XXX: enable bits for linear centroid and linear sample bary */
+
 	OUT_PKT4(ring, REG_A6XX_GRAS_CNTL, 1);
 	OUT_RING(ring,
-			CONDREG(ij_pix_regid, A6XX_GRAS_CNTL_VARYING) |
-			CONDREG(ij_cent_regid, A6XX_GRAS_CNTL_CENTROID) |
-			CONDREG(ij_samp_regid, A6XX_GRAS_CNTL_PERSAMP_VARYING) |
-			COND(VALIDREG(ij_size_regid) && !sample_shading, A6XX_GRAS_CNTL_SIZE) |
-			COND(VALIDREG(ij_size_regid) &&  sample_shading, A6XX_GRAS_CNTL_SIZE_PERSAMP) |
-			COND(fs->frag_coord,
-					A6XX_GRAS_CNTL_SIZE |
-					A6XX_GRAS_CNTL_XCOORD |
-					A6XX_GRAS_CNTL_YCOORD |
-					A6XX_GRAS_CNTL_ZCOORD |
-					A6XX_GRAS_CNTL_WCOORD) |
-			COND(fs->frag_face, A6XX_GRAS_CNTL_SIZE));
+			CONDREG(ij_regid[IJ_PERSP_PIXEL], A6XX_GRAS_CNTL_IJ_PERSP_PIXEL) |
+			CONDREG(ij_regid[IJ_PERSP_CENTROID], A6XX_GRAS_CNTL_IJ_PERSP_CENTROID) |
+			CONDREG(ij_regid[IJ_PERSP_SAMPLE], A6XX_GRAS_CNTL_IJ_PERSP_SAMPLE) |
+			COND(need_size, A6XX_GRAS_CNTL_SIZE) |
+			COND(need_size_persamp, A6XX_GRAS_CNTL_SIZE_PERSAMP) |
+			COND(fs->fragcoord_compmask != 0, A6XX_GRAS_CNTL_COORD_MASK(fs->fragcoord_compmask)));
 
 	OUT_PKT4(ring, REG_A6XX_RB_RENDER_CONTROL0, 2);
 	OUT_RING(ring,
-			CONDREG(ij_pix_regid, A6XX_RB_RENDER_CONTROL0_VARYING) |
-			CONDREG(ij_cent_regid, A6XX_RB_RENDER_CONTROL0_CENTROID) |
-			CONDREG(ij_samp_regid, A6XX_RB_RENDER_CONTROL0_PERSAMP_VARYING) |
+			CONDREG(ij_regid[IJ_PERSP_PIXEL], A6XX_RB_RENDER_CONTROL0_IJ_PERSP_PIXEL) |
+			CONDREG(ij_regid[IJ_PERSP_CENTROID], A6XX_RB_RENDER_CONTROL0_IJ_PERSP_CENTROID) |
+			CONDREG(ij_regid[IJ_PERSP_SAMPLE], A6XX_RB_RENDER_CONTROL0_IJ_PERSP_SAMPLE) |
+			COND(need_size, A6XX_RB_RENDER_CONTROL0_SIZE) |
 			COND(enable_varyings, A6XX_RB_RENDER_CONTROL0_UNK10) |
-			COND(VALIDREG(ij_size_regid) && !sample_shading, A6XX_RB_RENDER_CONTROL0_SIZE) |
-			COND(VALIDREG(ij_size_regid) &&  sample_shading, A6XX_RB_RENDER_CONTROL0_SIZE_PERSAMP) |
-			COND(fs->frag_coord,
-					A6XX_RB_RENDER_CONTROL0_SIZE |
-					A6XX_RB_RENDER_CONTROL0_XCOORD |
-					A6XX_RB_RENDER_CONTROL0_YCOORD |
-					A6XX_RB_RENDER_CONTROL0_ZCOORD |
-					A6XX_RB_RENDER_CONTROL0_WCOORD) |
-			COND(fs->frag_face, A6XX_RB_RENDER_CONTROL0_SIZE));
+			COND(need_size_persamp, A6XX_RB_RENDER_CONTROL0_SIZE_PERSAMP) |
+			COND(fs->fragcoord_compmask != 0,
+					A6XX_RB_RENDER_CONTROL0_COORD_MASK(fs->fragcoord_compmask)));
 
 	OUT_RING(ring,
 			CONDREG(smask_in_regid, A6XX_RB_RENDER_CONTROL1_SAMPLEMASK) |
 			CONDREG(samp_id_regid, A6XX_RB_RENDER_CONTROL1_SAMPLEID) |
-			CONDREG(ij_size_regid, A6XX_RB_RENDER_CONTROL1_SIZE) |
+			CONDREG(ij_regid[IJ_PERSP_SIZE], A6XX_RB_RENDER_CONTROL1_SIZE) |
 			COND(fs->frag_face, A6XX_RB_RENDER_CONTROL1_FACENESS));
 
 	OUT_PKT4(ring, REG_A6XX_RB_SAMPLE_CNTL, 1);
@@ -701,15 +729,17 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 		OUT_PKT4(ring, REG_A6XX_SP_GS_CTRL_REG0, 1);
 		OUT_RING(ring, A6XX_SP_GS_CTRL_REG0_THREADSIZE(TWO_QUADS) |
 			A6XX_SP_GS_CTRL_REG0_FULLREGFOOTPRINT(gs->info.max_reg + 1) |
+			A6XX_SP_GS_CTRL_REG0_HALFREGFOOTPRINT(gs->info.max_half_reg + 1) |
+			COND(gs->mergedregs, A6XX_SP_GS_CTRL_REG0_MERGEDREGS) |
 			A6XX_SP_GS_CTRL_REG0_BRANCHSTACK(gs->branchstack) |
 			COND(gs->need_pixlod, A6XX_SP_GS_CTRL_REG0_PIXLODENABLE));
 
 		fd6_emit_shader(ring, gs);
-		ir3_emit_immediates(screen, gs, ring);
+		fd6_emit_immediates(screen, gs, ring);
 		if (ds)
-			ir3_emit_link_map(screen, ds, gs, ring);
+			fd6_emit_link_map(screen, ds, gs, ring);
 		else
-			ir3_emit_link_map(screen, vs, gs, ring);
+			fd6_emit_link_map(screen, vs, gs, ring);
 
 		OUT_PKT4(ring, REG_A6XX_VPC_PACK_GS, 1);
 		OUT_RING(ring, A6XX_VPC_PACK_GS_POSITIONLOC(pos_loc) |
@@ -768,19 +798,19 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 		/* Size of per-primitive alloction in ldlw memory in vec4s. */
 		uint32_t vec4_size =
 			gs->shader->nir->info.gs.vertices_in *
-			DIV_ROUND_UP(prev->shader->output_size, 4);
+			DIV_ROUND_UP(prev->output_size, 4);
 		OUT_PKT4(ring, REG_A6XX_PC_PRIMITIVE_CNTL_6, 1);
 		OUT_RING(ring, A6XX_PC_PRIMITIVE_CNTL_6_STRIDE_IN_VPC(vec4_size));
 
 		OUT_PKT4(ring, REG_A6XX_PC_UNKNOWN_9B07, 1);
 		OUT_RING(ring, 0);
 
-		OUT_PKT4(ring, REG_A6XX_SP_GS_UNKNOWN_A871, 1);
-		OUT_RING(ring, prev->shader->output_size);
+		OUT_PKT4(ring, REG_A6XX_SP_GS_PRIM_SIZE, 1);
+		OUT_RING(ring, prev->output_size);
 	} else {
 		OUT_PKT4(ring, REG_A6XX_PC_PRIMITIVE_CNTL_6, 1);
 		OUT_RING(ring, 0);
-		OUT_PKT4(ring, REG_A6XX_SP_GS_UNKNOWN_A871, 1);
+		OUT_PKT4(ring, REG_A6XX_SP_GS_PRIM_SIZE, 1);
 		OUT_RING(ring, 0);
 	}
 
@@ -792,6 +822,25 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 
 	if (fs->instrlen)
 		fd6_emit_shader(ring, fs);
+
+	OUT_PKT4(ring, REG_A6XX_PC_PRIMID_CNTL, 1);
+	OUT_RING(ring, COND(primid_passthru, A6XX_PC_PRIMID_CNTL_PRIMID_PASSTHRU));
+
+	uint32_t non_sysval_input_count = 0;
+	for (uint32_t i = 0; i < vs->inputs_count; i++)
+		if (!vs->inputs[i].sysval)
+			non_sysval_input_count++;
+
+	OUT_PKT4(ring, REG_A6XX_VFD_CONTROL_0, 1);
+	OUT_RING(ring, A6XX_VFD_CONTROL_0_FETCH_CNT(non_sysval_input_count) |
+			A6XX_VFD_CONTROL_0_DECODE_CNT(non_sysval_input_count));
+
+	OUT_PKT4(ring, REG_A6XX_VFD_DEST_CNTL(0), non_sysval_input_count);
+	for (uint32_t i = 0; i < non_sysval_input_count; i++) {
+		assert(vs->inputs[i].compmask);
+		OUT_RING(ring, A6XX_VFD_DEST_CNTL_INSTR_WRITEMASK(vs->inputs[i].compmask) |
+				A6XX_VFD_DEST_CNTL_INSTR_REGID(vs->inputs[i].regid));
+	}
 
 	OUT_PKT4(ring, REG_A6XX_VFD_CONTROL_1, 6);
 	OUT_RING(ring, A6XX_VFD_CONTROL_1_REGID4VTX(vertex_regid) |
@@ -807,56 +856,22 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_screen *screen,
 	OUT_RING(ring, 0x000000fc);   /* VFD_CONTROL_4 */
 	OUT_RING(ring, A6XX_VFD_CONTROL_5_REGID_GSHEADER(gs_header_regid) |
 			0xfc00);   /* VFD_CONTROL_5 */
-	OUT_RING(ring, 0x00000000);   /* VFD_CONTROL_6 */
-
-	bool fragz = fs->no_earlyz | fs->writes_pos;
-
-	OUT_PKT4(ring, REG_A6XX_RB_DEPTH_PLANE_CNTL, 1);
-	OUT_RING(ring, COND(fragz, A6XX_RB_DEPTH_PLANE_CNTL_FRAG_WRITES_Z));
-
-	OUT_PKT4(ring, REG_A6XX_GRAS_SU_DEPTH_PLANE_CNTL, 1);
-	OUT_RING(ring, COND(fragz, A6XX_GRAS_SU_DEPTH_PLANE_CNTL_FRAG_WRITES_Z));
+	OUT_RING(ring,
+			 COND(primid_passthru, A6XX_VFD_CONTROL_6_PRIMID_PASSTHRU));   /* VFD_CONTROL_6 */
 
 	if (!binning_pass)
-		ir3_emit_immediates(screen, fs, ring);
+		fd6_emit_immediates(screen, fs, ring);
 }
+
+static void emit_interp_state(struct fd_ringbuffer *ring, struct ir3_shader_variant *fs,
+		bool rasterflat, bool sprite_coord_mode, uint32_t sprite_coord_enable);
 
 static struct fd_ringbuffer *
 create_interp_stateobj(struct fd_context *ctx, struct fd6_program_state *state)
 {
-	const struct ir3_shader_variant *fs = state->fs;
 	struct fd_ringbuffer *ring = fd_ringbuffer_new_object(ctx->pipe, 18 * 4);
-	uint32_t vinterp[8] = {0};
 
-	/* figure out VARYING_INTERP / VARYING_PS_REPL register values: */
-	for (int j = -1; (j = ir3_next_varying(fs, j)) < (int)fs->inputs_count; ) {
-		/* NOTE: varyings are packed, so if compmask is 0xb
-		 * then first, third, and fourth component occupy
-		 * three consecutive varying slots:
-		 */
-		unsigned compmask = fs->inputs[j].compmask;
-
-		uint32_t inloc = fs->inputs[j].inloc;
-
-		if (fs->inputs[j].interpolate == INTERP_MODE_FLAT) {
-			uint32_t loc = inloc;
-
-			for (int i = 0; i < 4; i++) {
-				if (compmask & (1 << i)) {
-					vinterp[loc / 16] |= 1 << ((loc % 16) * 2);
-					loc++;
-				}
-			}
-		}
-	}
-
-	OUT_PKT4(ring, REG_A6XX_VPC_VARYING_INTERP_MODE(0), 8);
-	for (int i = 0; i < 8; i++)
-		OUT_RING(ring, vinterp[i]);    /* VPC_VARYING_INTERP[i].MODE */
-
-	OUT_PKT4(ring, REG_A6XX_VPC_VARYING_PS_REPL_MODE(0), 8);
-	for (int i = 0; i < 8; i++)
-		OUT_RING(ring, 0x00000000);    /* VPC_VARYING_PS_REPL[i] */
+	emit_interp_state(ring, state->fs, false, false, 0);
 
 	return ring;
 }
@@ -877,83 +892,81 @@ fd6_program_interp_state(struct fd6_emit *emit)
 		struct fd_ringbuffer *ring = fd_submit_new_ringbuffer(
 				emit->ctx->batch->submit, 18 * 4, FD_RINGBUFFER_STREAMING);
 
-		/* slow-path: */
-		struct ir3_shader_variant *fs = state->fs;
-		uint32_t vinterp[8], vpsrepl[8];
+		emit_interp_state(ring, state->fs, emit->rasterflat,
+				emit->sprite_coord_mode, emit->sprite_coord_enable);
 
-		memset(vinterp, 0, sizeof(vinterp));
-		memset(vpsrepl, 0, sizeof(vpsrepl));
+		return ring;
+	}
+}
 
-		for (int j = -1; (j = ir3_next_varying(fs, j)) < (int)fs->inputs_count; ) {
+static void
+emit_interp_state(struct fd_ringbuffer *ring, struct ir3_shader_variant *fs,
+		bool rasterflat, bool sprite_coord_mode, uint32_t sprite_coord_enable)
+{
+	uint32_t vinterp[8], vpsrepl[8];
 
-			/* NOTE: varyings are packed, so if compmask is 0xb
-			 * then first, third, and fourth component occupy
-			 * three consecutive varying slots:
-			 */
-			unsigned compmask = fs->inputs[j].compmask;
+	memset(vinterp, 0, sizeof(vinterp));
+	memset(vpsrepl, 0, sizeof(vpsrepl));
 
-			uint32_t inloc = fs->inputs[j].inloc;
+	for (int j = -1; (j = ir3_next_varying(fs, j)) < (int)fs->inputs_count; ) {
 
-			if ((fs->inputs[j].interpolate == INTERP_MODE_FLAT) ||
-					(fs->inputs[j].rasterflat && emit->rasterflat)) {
-				uint32_t loc = inloc;
+		/* NOTE: varyings are packed, so if compmask is 0xb
+		 * then first, third, and fourth component occupy
+		 * three consecutive varying slots:
+		 */
+		unsigned compmask = fs->inputs[j].compmask;
 
-				for (int i = 0; i < 4; i++) {
-					if (compmask & (1 << i)) {
-						vinterp[loc / 16] |= 1 << ((loc % 16) * 2);
-						loc++;
-					}
-				}
-			}
+		uint32_t inloc = fs->inputs[j].inloc;
 
-			gl_varying_slot slot = fs->inputs[j].slot;
+		if ((fs->inputs[j].interpolate == INTERP_MODE_FLAT) ||
+				(fs->inputs[j].rasterflat && rasterflat)) {
+			uint32_t loc = inloc;
 
-			/* since we don't enable PIPE_CAP_TGSI_TEXCOORD: */
-			if (slot >= VARYING_SLOT_VAR0) {
-				unsigned texmask = 1 << (slot - VARYING_SLOT_VAR0);
-				/* Replace the .xy coordinates with S/T from the point sprite. Set
-				 * interpolation bits for .zw such that they become .01
-				 */
-				if (emit->sprite_coord_enable & texmask) {
-					/* mask is two 2-bit fields, where:
-					 *   '01' -> S
-					 *   '10' -> T
-					 *   '11' -> 1 - T  (flip mode)
-					 */
-					unsigned mask = emit->sprite_coord_mode ? 0b1101 : 0b1001;
-					uint32_t loc = inloc;
-					if (compmask & 0x1) {
-						vpsrepl[loc / 16] |= ((mask >> 0) & 0x3) << ((loc % 16) * 2);
-						loc++;
-					}
-					if (compmask & 0x2) {
-						vpsrepl[loc / 16] |= ((mask >> 2) & 0x3) << ((loc % 16) * 2);
-						loc++;
-					}
-					if (compmask & 0x4) {
-						/* .z <- 0.0f */
-						vinterp[loc / 16] |= 0b10 << ((loc % 16) * 2);
-						loc++;
-					}
-					if (compmask & 0x8) {
-						/* .w <- 1.0f */
-						vinterp[loc / 16] |= 0b11 << ((loc % 16) * 2);
-						loc++;
-					}
+			for (int i = 0; i < 4; i++) {
+				if (compmask & (1 << i)) {
+					vinterp[loc / 16] |= 1 << ((loc % 16) * 2);
+					loc++;
 				}
 			}
 		}
 
-		OUT_PKT4(ring, REG_A6XX_VPC_VARYING_INTERP_MODE(0), 8);
-		for (int i = 0; i < 8; i++)
-			OUT_RING(ring, vinterp[i]);     /* VPC_VARYING_INTERP[i].MODE */
-
-		OUT_PKT4(ring, REG_A6XX_VPC_VARYING_PS_REPL_MODE(0), 8);
-		for (int i = 0; i < 8; i++)
-			OUT_RING(ring, vpsrepl[i]);     /* VPC_VARYING_PS_REPL[i] */
-
-		return ring;
+		bool coord_mode = sprite_coord_mode;
+		if (ir3_point_sprite(fs, j, sprite_coord_enable, &coord_mode)) {
+			/* mask is two 2-bit fields, where:
+			 *   '01' -> S
+			 *   '10' -> T
+			 *   '11' -> 1 - T  (flip mode)
+			 */
+			unsigned mask = coord_mode ? 0b1101 : 0b1001;
+			uint32_t loc = inloc;
+			if (compmask & 0x1) {
+				vpsrepl[loc / 16] |= ((mask >> 0) & 0x3) << ((loc % 16) * 2);
+				loc++;
+			}
+			if (compmask & 0x2) {
+				vpsrepl[loc / 16] |= ((mask >> 2) & 0x3) << ((loc % 16) * 2);
+				loc++;
+			}
+			if (compmask & 0x4) {
+				/* .z <- 0.0f */
+				vinterp[loc / 16] |= 0b10 << ((loc % 16) * 2);
+				loc++;
+			}
+			if (compmask & 0x8) {
+				/* .w <- 1.0f */
+				vinterp[loc / 16] |= 0b11 << ((loc % 16) * 2);
+				loc++;
+			}
+		}
 	}
+
+	OUT_PKT4(ring, REG_A6XX_VPC_VARYING_INTERP_MODE(0), 8);
+	for (int i = 0; i < 8; i++)
+		OUT_RING(ring, vinterp[i]);     /* VPC_VARYING_INTERP[i].MODE */
+
+	OUT_PKT4(ring, REG_A6XX_VPC_VARYING_PS_REPL_MODE(0), 8);
+	for (int i = 0; i < 8; i++)
+		OUT_RING(ring, vpsrepl[i]);     /* VPC_VARYING_PS_REPL[i] */
 }
 
 static struct ir3_program_state *
@@ -981,6 +994,8 @@ fd6_program_create(void *data, struct ir3_shader_variant *bs,
 	state->config_stateobj = fd_ringbuffer_new_object(ctx->pipe, 0x1000);
 	state->binning_stateobj = fd_ringbuffer_new_object(ctx->pipe, 0x1000);
 	state->stateobj = fd_ringbuffer_new_object(ctx->pipe, 0x1000);
+	state->streamout_stateobj = fd_ringbuffer_new_object(ctx->pipe, 0x1000);
+
 
 #ifdef DEBUG
 	if (!ds) {
@@ -1008,6 +1023,7 @@ fd6_program_destroy(void *data, struct ir3_program_state *state)
 	fd_ringbuffer_del(so->binning_stateobj);
 	fd_ringbuffer_del(so->config_stateobj);
 	fd_ringbuffer_del(so->interp_stateobj);
+	fd_ringbuffer_del(so->streamout_stateobj);
 	free(so);
 }
 
@@ -1019,32 +1035,15 @@ static const struct ir3_cache_funcs cache_funcs = {
 static void *
 fd6_shader_state_create(struct pipe_context *pctx, const struct pipe_shader_state *cso)
 {
-	struct fd_context *ctx = fd_context(pctx);
-	struct ir3_compiler *compiler = ctx->screen->compiler;
-	struct ir3_shader *shader =
-		ir3_shader_create(compiler, cso, &ctx->debug, pctx->screen);
-	unsigned packets, size;
-
-	/* pre-calculate size required for userconst stateobj: */
-	ir3_user_consts_size(&shader->ubo_state, &packets, &size);
-
-	/* also account for UBO addresses: */
-	packets += 1;
-	size += 2 * shader->const_state.num_ubos;
-
-	unsigned sizedwords = (4 * packets) + size;
-	shader->ubo_state.cmdstream_size = sizedwords * 4;
-
-	return shader;
+	return ir3_shader_state_create(pctx, cso);
 }
 
 static void
 fd6_shader_state_delete(struct pipe_context *pctx, void *hwcso)
 {
-	struct ir3_shader *so = hwcso;
 	struct fd_context *ctx = fd_context(pctx);
 	ir3_cache_invalidate(fd6_context(ctx)->shader_cache, hwcso);
-	ir3_shader_destroy(so);
+	ir3_shader_state_delete(pctx, hwcso);
 }
 
 void

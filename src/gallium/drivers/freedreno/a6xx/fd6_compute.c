@@ -25,10 +25,13 @@
  */
 
 #include "pipe/p_state.h"
+#include "util/u_dump.h"
 
+#include "freedreno_log.h"
 #include "freedreno_resource.h"
 
 #include "fd6_compute.h"
+#include "fd6_const.h"
 #include "fd6_context.h"
 #include "fd6_emit.h"
 
@@ -64,7 +67,7 @@ static void
 fd6_delete_compute_state(struct pipe_context *pctx, void *hwcso)
 {
 	struct fd6_compute_stateobj *so = hwcso;
-	ir3_shader_destroy(so->shader);
+	ir3_shader_state_delete(pctx, so->shader);
 	free(so);
 }
 
@@ -78,9 +81,8 @@ cs_program_emit(struct fd_ringbuffer *ring, struct ir3_shader_variant *v)
 	OUT_PKT4(ring, REG_A6XX_HLSQ_UPDATE_CNTL, 1);
 	OUT_RING(ring, 0xff);
 
-	unsigned constlen = align(v->constlen, 4);
 	OUT_PKT4(ring, REG_A6XX_HLSQ_CS_CNTL, 1);
-	OUT_RING(ring, A6XX_HLSQ_CS_CNTL_CONSTLEN(constlen) |
+	OUT_RING(ring, A6XX_HLSQ_CS_CNTL_CONSTLEN(v->constlen) |
 			A6XX_HLSQ_CS_CNTL_ENABLED);
 
 	OUT_PKT4(ring, REG_A6XX_SP_CS_CONFIG, 2);
@@ -94,7 +96,8 @@ cs_program_emit(struct fd_ringbuffer *ring, struct ir3_shader_variant *v)
 	OUT_PKT4(ring, REG_A6XX_SP_CS_CTRL_REG0, 1);
 	OUT_RING(ring, A6XX_SP_CS_CTRL_REG0_THREADSIZE(thrsz) |
 			A6XX_SP_CS_CTRL_REG0_FULLREGFOOTPRINT(i->max_reg + 1) |
-			A6XX_SP_CS_CTRL_REG0_MERGEDREGS |
+			A6XX_SP_CS_CTRL_REG0_HALFREGFOOTPRINT(i->max_half_reg + 1) |
+			COND(v->mergedregs, A6XX_SP_CS_CTRL_REG0_MERGEDREGS) |
 			A6XX_SP_CS_CTRL_REG0_BRANCHSTACK(v->branchstack) |
 			COND(v->need_pixlod, A6XX_SP_CS_CTRL_REG0_PIXLODENABLE));
 
@@ -126,7 +129,7 @@ fd6_launch_grid(struct fd_context *ctx, const struct pipe_grid_info *info)
 	struct ir3_shader_key key = {};
 	struct ir3_shader_variant *v;
 	struct fd_ringbuffer *ring = ctx->batch->draw;
-	unsigned i, nglobal = 0;
+	unsigned nglobal = 0;
 
 	fd6_emit_restore(ctx->batch, ring);
 
@@ -138,7 +141,7 @@ fd6_launch_grid(struct fd_context *ctx, const struct pipe_grid_info *info)
 		cs_program_emit(ring, v);
 
 	fd6_emit_cs_state(ctx, ring, v);
-	ir3_emit_cs_consts(v, ring, ctx, info);
+	fd6_emit_cs_consts(v, ring, ctx, info);
 
 	foreach_bit(i, ctx->global_bindings.enabled_mask)
 		nglobal++;
@@ -153,7 +156,7 @@ fd6_launch_grid(struct fd_context *ctx, const struct pipe_grid_info *info)
 		OUT_PKT7(ring, CP_NOP, 2 * nglobal);
 		foreach_bit(i, ctx->global_bindings.enabled_mask) {
 			struct pipe_resource *prsc = ctx->global_bindings.buf[i];
-			OUT_RELOCW(ring, fd_resource(prsc)->bo, 0, 0, 0);
+			OUT_RELOC(ring, fd_resource(prsc)->bo, 0, 0, 0);
 		}
 	}
 
@@ -181,6 +184,9 @@ fd6_launch_grid(struct fd_context *ctx, const struct pipe_grid_info *info)
 	OUT_RING(ring, 1);            /* HLSQ_CS_KERNEL_GROUP_Y */
 	OUT_RING(ring, 1);            /* HLSQ_CS_KERNEL_GROUP_Z */
 
+	fd_log(ctx->batch, "COMPUTE: START");
+	fd_log_stream(ctx->batch, stream, util_dump_grid_info(stream, info));
+
 	if (info->indirect) {
 		struct fd_resource *rsc = fd_resource(info->indirect);
 
@@ -198,9 +204,12 @@ fd6_launch_grid(struct fd_context *ctx, const struct pipe_grid_info *info)
 		OUT_RING(ring, CP_EXEC_CS_3_NGROUPS_Z(info->grid[2]));
 	}
 
+	fd_log(ctx->batch, "COMPUTE: END");
 	OUT_WFI5(ring);
+	fd_log(ctx->batch, "..");
 
 	fd6_cache_flush(ctx->batch, ring);
+	fd_log(ctx->batch, "..");
 }
 
 void

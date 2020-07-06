@@ -2456,6 +2456,7 @@ emit_fetch_texels( struct lp_build_tgsi_soa_context *bld,
    LLVMValueRef explicit_lod = NULL;
    LLVMValueRef coords[5];
    LLVMValueRef offsets[3] = { NULL };
+   LLVMValueRef ms_index = NULL;
    struct lp_sampler_params params;
    enum lp_sampler_lod_property lod_property = LP_SAMPLER_LOD_SCALAR;
    unsigned dims, i;
@@ -2517,6 +2518,13 @@ emit_fetch_texels( struct lp_build_tgsi_soa_context *bld,
       explicit_lod = lp_build_emit_fetch(&bld->bld_base, inst, 0, 3);
       lod_property = lp_build_lod_property(&bld->bld_base, inst, 0);
    }
+
+   if (target == TGSI_TEXTURE_2D_MSAA ||
+       target == TGSI_TEXTURE_2D_ARRAY_MSAA) {
+      sample_key |= LP_SAMPLER_FETCH_MS;
+      ms_index = lp_build_emit_fetch(&bld->bld_base, inst, 0, 3);
+   }
+
    /*
     * XXX: for real msaa support, the w component (or src2.x for sample_i_ms)
     * would be the sample index.
@@ -2557,6 +2565,7 @@ emit_fetch_texels( struct lp_build_tgsi_soa_context *bld,
    params.derivs = NULL;
    params.lod = explicit_lod;
    params.texel = texel;
+   params.ms_index = ms_index;
 
    bld->sampler->emit_tex_sample(bld->sampler,
                                  bld->bld_base.base.gallivm,
@@ -2635,6 +2644,7 @@ emit_size_query( struct lp_build_tgsi_soa_context *bld,
    params.lod_property = lod_property;
    params.explicit_lod = explicit_lod;
    params.sizes_out = sizes_out;
+   params.samples_only = false;
 
    bld->sampler->emit_size_query(bld->sampler,
                                  bld->bld_base.base.gallivm,
@@ -3946,14 +3956,13 @@ emit_vertex(
    LLVMBuilderRef builder = bld->bld_base.base.gallivm->builder;
 
    if (bld->gs_iface->emit_vertex) {
-      uint32_t stream_reg_idx = emit_data->inst->Src[0].Register.Index;
-      uint32_t stream_reg_swiz = emit_data->inst->Src[0].Register.SwizzleX;
-      LLVMValueRef stream_id = bld->immediates[stream_reg_idx][stream_reg_swiz];
+      LLVMValueRef stream_id = emit_fetch_immediate(bld_base, &emit_data->inst->Src[0],
+                                                    TGSI_TYPE_UNSIGNED,
+                                                    emit_data->inst->Src[0].Register.SwizzleX);
       LLVMValueRef mask = mask_vec(bld_base);
       LLVMValueRef total_emitted_vertices_vec =
          LLVMBuildLoad(builder, bld->total_emitted_vertices_vec_ptr, "");
 
-      stream_id = LLVMBuildBitCast(builder, stream_id, bld_base->uint_bld.vec_type, "");
       mask = clamp_mask_to_max_output_vertices(bld, mask,
                                                total_emitted_vertices_vec);
       gather_outputs(bld);

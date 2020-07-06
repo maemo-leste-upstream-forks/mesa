@@ -189,11 +189,14 @@ void get_block_needs(wqm_ctx &ctx, exec_ctx &exec_ctx, Block* block)
 
    if (block->kind & block_kind_top_level) {
       if (ctx.loop && ctx.wqm) {
-         /* mark all break conditions as WQM */
          unsigned block_idx = block->index + 1;
          while (!(ctx.program->blocks[block_idx].kind & block_kind_top_level)) {
+            /* flag all break conditions as WQM:
+             * the conditions might be computed outside the nested CF */
             if (ctx.program->blocks[block_idx].kind & block_kind_break)
                mark_block_wqm(ctx, block_idx);
+            /* flag all blocks as WQM to ensure we enter all (nested) loops in WQM */
+            exec_ctx.info[block_idx].block_needs |= WQM;
             block_idx++;
          }
       } else if (ctx.loop && !ctx.wqm) {
@@ -377,7 +380,7 @@ unsigned add_coupling_code(exec_ctx& ctx, Block* block,
       bld.insert(std::move(startpgm));
 
       /* exec seems to need to be manually initialized with combined shaders */
-      if (util_bitcount(ctx.program->stage & sw_mask) > 1) {
+      if (util_bitcount(ctx.program->stage & sw_mask) > 1 || (ctx.program->stage & hw_ngg_gs)) {
          bld.sop1(Builder::s_mov, bld.exec(Definition(exec_mask)), bld.lm == s2 ? Operand(UINT64_MAX) : Operand(UINT32_MAX));
          instructions[0]->definitions.pop_back();
       }

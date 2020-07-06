@@ -75,6 +75,7 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_VERTEX_SHADER_SATURATE:
    case PIPE_CAP_SEAMLESS_CUBE_MAP:
    case PIPE_CAP_PRIMITIVE_RESTART:
+   case PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX:
    case PIPE_CAP_CONDITIONAL_RENDER:
    case PIPE_CAP_TEXTURE_BARRIER:
    case PIPE_CAP_INDEP_BLEND_ENABLE:
@@ -160,7 +161,12 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_SHADER_SAMPLES_IDENTICAL:
    case PIPE_CAP_GL_SPIRV:
    case PIPE_CAP_DRAW_INFO_START_WITH_USER_INDICES:
+   case PIPE_CAP_ALPHA_TO_COVERAGE_DITHER_CONTROL:
+   case PIPE_CAP_MAP_UNSYNCHRONIZED_THREAD_SAFE:
       return 1;
+
+   case PIPE_CAP_GLSL_ZERO_INIT:
+      return 2;
 
    case PIPE_CAP_QUERY_SO_OVERFLOW:
       return !sscreen->use_ngg_streamout;
@@ -207,7 +213,8 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
    case PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE:
    case PIPE_CAP_MAX_SHADER_BUFFER_SIZE:
-      return MIN2(sscreen->info.max_alloc_size, INT_MAX);
+      /* Align it down to 256 bytes. I've chosen the number randomly. */
+      return ROUND_DOWN_TO(MIN2(sscreen->info.max_alloc_size, INT_MAX), 256);
 
    case PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY:
    case PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY:
@@ -218,6 +225,7 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return sscreen->info.has_sparse_vm_mappings ? RADEON_SPARSE_PAGE_SIZE : 0;
 
    case PIPE_CAP_UMA:
+   case PIPE_CAP_PREFER_IMM_ARRAYS_AS_CONSTBUF:
       return 0;
 
    case PIPE_CAP_FENCE_SIGNAL:
@@ -257,9 +265,8 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS:
       return 4095;
    case PIPE_CAP_MAX_GS_INVOCATIONS:
-      /* The closed driver exposes 127, but 125 is the greatest
-       * number that works. */
-      return 125;
+      /* Even though the hw supports more, we officially wanna expose only 32. */
+      return 32;
 
    case PIPE_CAP_MAX_VERTEX_ATTRIB_STRIDE:
       return 2048;
@@ -368,13 +375,6 @@ static int si_get_shader_param(struct pipe_screen *pscreen, enum pipe_shader_typ
 
          return ir;
       }
-
-      case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE: {
-         uint64_t max_const_buffer_size;
-         pscreen->get_compute_param(pscreen, PIPE_SHADER_IR_NIR,
-                                    PIPE_COMPUTE_CAP_MAX_MEM_ALLOC_SIZE, &max_const_buffer_size);
-         return MIN2(max_const_buffer_size, INT_MAX);
-      }
       default:
          /* If compute shaders don't require a special value
           * for this cap, we can return the same value we
@@ -401,7 +401,7 @@ static int si_get_shader_param(struct pipe_screen *pscreen, enum pipe_shader_typ
    case PIPE_SHADER_CAP_MAX_TEMPS:
       return 256; /* Max native temporaries. */
    case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
-      return MIN2(sscreen->info.max_alloc_size, INT_MAX - 3); /* aligned to 4 */
+      return si_get_param(pscreen, PIPE_CAP_MAX_SHADER_BUFFER_SIZE);
    case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
       return SI_NUM_CONST_BUFFERS;
    case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
@@ -455,6 +455,8 @@ static int si_get_shader_param(struct pipe_screen *pscreen, enum pipe_shader_typ
 
    /* Unsupported boolean features. */
    case PIPE_SHADER_CAP_FP16:
+   case PIPE_SHADER_CAP_FP16_DERIVATIVES:
+   case PIPE_SHADER_CAP_INT16:
    case PIPE_SHADER_CAP_SUBROUTINES:
    case PIPE_SHADER_CAP_SUPPORTED_IRS:
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:

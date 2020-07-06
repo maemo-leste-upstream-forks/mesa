@@ -33,7 +33,7 @@
 #include "os/os_mman.h"
 #include "util/os_time.h"
 
-#include "state_tracker/drm_driver.h"
+#include "frontend/drm_driver.h"
 
 #include <sys/ioctl.h>
 #include <xf86drm.h>
@@ -718,14 +718,14 @@ static struct radeon_bo *radeon_create_bo(struct radeon_drm_winsys *rws,
       if (va.operation == RADEON_VA_RESULT_VA_EXIST) {
          struct pb_buffer *b = &bo->base;
          struct radeon_bo *old_bo =
-               util_hash_table_get(rws->bo_vas, (void*)(uintptr_t)va.offset);
+               _mesa_hash_table_u64_search(rws->bo_vas, va.offset);
 
          mtx_unlock(&rws->bo_handles_mutex);
          pb_reference(&b, &old_bo->base);
          return radeon_bo(b);
       }
 
-      _mesa_hash_table_insert(rws->bo_vas, (void*)(uintptr_t)bo->va, bo);
+      _mesa_hash_table_u64_insert(rws->bo_vas, bo->va, bo);
       mtx_unlock(&rws->bo_handles_mutex);
    }
 
@@ -873,7 +873,8 @@ static unsigned eg_tile_split_rev(unsigned eg_tile_split)
 }
 
 static void radeon_bo_get_metadata(struct pb_buffer *_buf,
-                                   struct radeon_bo_metadata *md)
+                                   struct radeon_bo_metadata *md,
+                                   struct radeon_surf *surf)
 {
    struct radeon_bo *bo = radeon_bo(_buf);
    struct drm_radeon_gem_set_tiling args;
@@ -888,6 +889,27 @@ static void radeon_bo_get_metadata(struct pb_buffer *_buf,
                        DRM_RADEON_GEM_GET_TILING,
                        &args,
                        sizeof(args));
+
+   if (surf) {
+      if (args.tiling_flags & RADEON_TILING_MACRO)
+         md->mode = RADEON_SURF_MODE_2D;
+      else if (args.tiling_flags & RADEON_TILING_MICRO)
+         md->mode = RADEON_SURF_MODE_1D;
+      else
+         md->mode = RADEON_SURF_MODE_LINEAR_ALIGNED;
+
+      surf->u.legacy.bankw = (args.tiling_flags >> RADEON_TILING_EG_BANKW_SHIFT) & RADEON_TILING_EG_BANKW_MASK;
+      surf->u.legacy.bankh = (args.tiling_flags >> RADEON_TILING_EG_BANKH_SHIFT) & RADEON_TILING_EG_BANKH_MASK;
+      surf->u.legacy.tile_split = (args.tiling_flags >> RADEON_TILING_EG_TILE_SPLIT_SHIFT) & RADEON_TILING_EG_TILE_SPLIT_MASK;
+      surf->u.legacy.tile_split = eg_tile_split(surf->u.legacy.tile_split);
+      surf->u.legacy.mtilea = (args.tiling_flags >> RADEON_TILING_EG_MACRO_TILE_ASPECT_SHIFT) & RADEON_TILING_EG_MACRO_TILE_ASPECT_MASK;
+
+      if (bo->rws->gen >= DRV_SI && !(args.tiling_flags & RADEON_TILING_R600_NO_SCANOUT))
+         surf->flags |= RADEON_SURF_SCANOUT;
+      else
+         surf->flags &= ~RADEON_SURF_SCANOUT;
+      return;
+   }
 
    md->u.legacy.microtile = RADEON_LAYOUT_LINEAR;
    md->u.legacy.macrotile = RADEON_LAYOUT_LINEAR;
@@ -908,7 +930,8 @@ static void radeon_bo_get_metadata(struct pb_buffer *_buf,
 }
 
 static void radeon_bo_set_metadata(struct pb_buffer *_buf,
-                                   struct radeon_bo_metadata *md)
+                                   struct radeon_bo_metadata *md,
+                                   struct radeon_surf *surf)
 {
    struct radeon_bo *bo = radeon_bo(_buf);
    struct drm_radeon_gem_set_tiling args;
@@ -919,31 +942,56 @@ static void radeon_bo_set_metadata(struct pb_buffer *_buf,
 
    os_wait_until_zero(&bo->num_active_ioctls, PIPE_TIMEOUT_INFINITE);
 
-   if (md->u.legacy.microtile == RADEON_LAYOUT_TILED)
-      args.tiling_flags |= RADEON_TILING_MICRO;
-   else if (md->u.legacy.microtile == RADEON_LAYOUT_SQUARETILED)
-      args.tiling_flags |= RADEON_TILING_MICRO_SQUARE;
+   if (surf) {
+      if (surf->u.legacy.level[0].mode >= RADEON_SURF_MODE_1D)
+         args.tiling_flags |= RADEON_TILING_MICRO;
+      if (surf->u.legacy.level[0].mode >= RADEON_SURF_MODE_2D)
+         args.tiling_flags |= RADEON_TILING_MACRO;
 
-   if (md->u.legacy.macrotile == RADEON_LAYOUT_TILED)
-      args.tiling_flags |= RADEON_TILING_MACRO;
+      args.tiling_flags |= (surf->u.legacy.bankw & RADEON_TILING_EG_BANKW_MASK) <<
+                           RADEON_TILING_EG_BANKW_SHIFT;
+      args.tiling_flags |= (surf->u.legacy.bankh & RADEON_TILING_EG_BANKH_MASK) <<
+                           RADEON_TILING_EG_BANKH_SHIFT;
+      if (surf->u.legacy.tile_split) {
+         args.tiling_flags |= (eg_tile_split_rev(surf->u.legacy.tile_split) &
+                               RADEON_TILING_EG_TILE_SPLIT_MASK) <<
+                              RADEON_TILING_EG_TILE_SPLIT_SHIFT;
+      }
+      args.tiling_flags |= (surf->u.legacy.mtilea & RADEON_TILING_EG_MACRO_TILE_ASPECT_MASK) <<
+                           RADEON_TILING_EG_MACRO_TILE_ASPECT_SHIFT;
 
-   args.tiling_flags |= (md->u.legacy.bankw & RADEON_TILING_EG_BANKW_MASK) <<
-                                                                              RADEON_TILING_EG_BANKW_SHIFT;
-   args.tiling_flags |= (md->u.legacy.bankh & RADEON_TILING_EG_BANKH_MASK) <<
-                                                                              RADEON_TILING_EG_BANKH_SHIFT;
-   if (md->u.legacy.tile_split) {
-      args.tiling_flags |= (eg_tile_split_rev(md->u.legacy.tile_split) &
-                            RADEON_TILING_EG_TILE_SPLIT_MASK) <<
-                                                                 RADEON_TILING_EG_TILE_SPLIT_SHIFT;
+      if (bo->rws->gen >= DRV_SI && !(surf->flags & RADEON_SURF_SCANOUT))
+         args.tiling_flags |= RADEON_TILING_R600_NO_SCANOUT;
+
+      args.pitch = surf->u.legacy.level[0].nblk_x * surf->bpe;
+   } else {
+      if (md->u.legacy.microtile == RADEON_LAYOUT_TILED)
+         args.tiling_flags |= RADEON_TILING_MICRO;
+      else if (md->u.legacy.microtile == RADEON_LAYOUT_SQUARETILED)
+         args.tiling_flags |= RADEON_TILING_MICRO_SQUARE;
+
+      if (md->u.legacy.macrotile == RADEON_LAYOUT_TILED)
+         args.tiling_flags |= RADEON_TILING_MACRO;
+
+      args.tiling_flags |= (md->u.legacy.bankw & RADEON_TILING_EG_BANKW_MASK) <<
+                           RADEON_TILING_EG_BANKW_SHIFT;
+      args.tiling_flags |= (md->u.legacy.bankh & RADEON_TILING_EG_BANKH_MASK) <<
+                           RADEON_TILING_EG_BANKH_SHIFT;
+      if (md->u.legacy.tile_split) {
+         args.tiling_flags |= (eg_tile_split_rev(md->u.legacy.tile_split) &
+                               RADEON_TILING_EG_TILE_SPLIT_MASK) <<
+                              RADEON_TILING_EG_TILE_SPLIT_SHIFT;
+      }
+      args.tiling_flags |= (md->u.legacy.mtilea & RADEON_TILING_EG_MACRO_TILE_ASPECT_MASK) <<
+                           RADEON_TILING_EG_MACRO_TILE_ASPECT_SHIFT;
+
+      if (bo->rws->gen >= DRV_SI && !md->u.legacy.scanout)
+         args.tiling_flags |= RADEON_TILING_R600_NO_SCANOUT;
+
+      args.pitch = md->u.legacy.stride;
    }
-   args.tiling_flags |= (md->u.legacy.mtilea & RADEON_TILING_EG_MACRO_TILE_ASPECT_MASK) <<
-                                                                                           RADEON_TILING_EG_MACRO_TILE_ASPECT_SHIFT;
-
-   if (bo->rws->gen >= DRV_SI && !md->u.legacy.scanout)
-      args.tiling_flags |= RADEON_TILING_R600_NO_SCANOUT;
 
    args.handle = bo->handle;
-   args.pitch = md->u.legacy.stride;
 
    drmCommandWriteRead(bo->rws->fd,
                        DRM_RADEON_GEM_SET_TILING,
@@ -1116,14 +1164,14 @@ static struct pb_buffer *radeon_winsys_bo_from_ptr(struct radeon_winsys *rws,
       if (va.operation == RADEON_VA_RESULT_VA_EXIST) {
          struct pb_buffer *b = &bo->base;
          struct radeon_bo *old_bo =
-               util_hash_table_get(ws->bo_vas, (void*)(uintptr_t)va.offset);
+               _mesa_hash_table_u64_search(ws->bo_vas, va.offset);
 
          mtx_unlock(&ws->bo_handles_mutex);
          pb_reference(&b, &old_bo->base);
          return b;
       }
 
-      _mesa_hash_table_insert(ws->bo_vas, (void*)(uintptr_t)bo->va, bo);
+      _mesa_hash_table_u64_insert(ws->bo_vas, bo->va, bo);
       mtx_unlock(&ws->bo_handles_mutex);
    }
 
@@ -1247,14 +1295,14 @@ done:
       if (va.operation == RADEON_VA_RESULT_VA_EXIST) {
          struct pb_buffer *b = &bo->base;
          struct radeon_bo *old_bo =
-               util_hash_table_get(ws->bo_vas, (void*)(uintptr_t)va.offset);
+               _mesa_hash_table_u64_search(ws->bo_vas, va.offset);
 
          mtx_unlock(&ws->bo_handles_mutex);
          pb_reference(&b, &old_bo->base);
          return b;
       }
 
-      _mesa_hash_table_insert(ws->bo_vas, (void*)(uintptr_t)bo->va, bo);
+      _mesa_hash_table_u64_insert(ws->bo_vas, bo->va, bo);
       mtx_unlock(&ws->bo_handles_mutex);
    }
 

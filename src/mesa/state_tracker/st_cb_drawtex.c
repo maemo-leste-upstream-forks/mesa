@@ -1,5 +1,5 @@
 /**************************************************************************
- * 
+ *
  * Copyright 2008 VMware, Inc.
  * All Rights Reserved.
  *
@@ -12,7 +12,7 @@
 
 
 
-#include "util/imports.h"
+
 #include "main/image.h"
 #include "main/macros.h"
 #include "main/teximage.h"
@@ -219,7 +219,7 @@ st_DrawTex(struct gl_context *ctx, GLfloat x, GLfloat y, GLfloat z,
          return;
       }
 
-      z = CLAMP(z, 0.0f, 1.0f);
+      z = SATURATE(z);
 
       /* positions (in clip coords) */
       {

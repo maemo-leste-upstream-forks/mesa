@@ -45,7 +45,7 @@
 #include "util/u_screen.h"
 #include "util/u_string.h"
 
-#include "state_tracker/drm_driver.h"
+#include "frontend/drm_driver.h"
 
 #include "drm-uapi/drm_fourcc.h"
 
@@ -134,7 +134,6 @@ etna_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
    switch (param) {
    /* Supported features (boolean caps). */
-   case PIPE_CAP_ANISOTROPIC_FILTER:
    case PIPE_CAP_POINT_SPRITE:
    case PIPE_CAP_BLEND_EQUATION_SEPARATE:
    case PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT:
@@ -172,8 +171,10 @@ etna_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return true; /* VIV_FEATURE(priv->dev, chipMinorFeatures1,
                       NON_POWER_OF_TWO); */
 
+   case PIPE_CAP_ANISOTROPIC_FILTER:
    case PIPE_CAP_TEXTURE_SWIZZLE:
    case PIPE_CAP_PRIMITIVE_RESTART:
+   case PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX:
       return VIV_FEATURE(screen, chipMinorFeatures1, HALTI0);
 
    /* Unsupported features. */
@@ -220,13 +221,11 @@ etna_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_MAX_TEXEL_OFFSET:
       return 7;
    case PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE:
-      return VIV_FEATURE(screen, chipMinorFeatures2, SEAMLESS_CUBE_MAP);
+      return screen->specs.seamless_cube_map;
 
-   /* Timer queries. */
+   /* Queries. */
    case PIPE_CAP_OCCLUSION_QUERY:
       return VIV_FEATURE(screen, chipMinorFeatures1, HALTI0);
-   case PIPE_CAP_QUERY_TIMESTAMP:
-      return 1;
 
    /* Preferences */
    case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
@@ -351,6 +350,8 @@ etna_screen_get_shader_param(struct pipe_screen *pscreen,
       return VIV_FEATURE(screen, chipMinorFeatures0, HAS_SQRT_TRIG);
    case PIPE_SHADER_CAP_INT64_ATOMICS:
    case PIPE_SHADER_CAP_FP16:
+   case PIPE_SHADER_CAP_FP16_DERIVATIVES:
+   case PIPE_SHADER_CAP_INT16:
       return 0;
    case PIPE_SHADER_CAP_INTEGERS:
       return DBG_ENABLED(ETNA_DBG_NIR) && screen->specs.halti >= 2;
@@ -763,6 +764,9 @@ etna_get_specs(struct etna_screen *screen)
       VIV_FEATURE(screen, chipMinorFeatures4, HALTI2);
    screen->specs.v4_compression =
       VIV_FEATURE(screen, chipMinorFeatures6, V4_COMPRESSION);
+   screen->specs.seamless_cube_map =
+      (screen->model != 0x880) && /* Seamless cubemap is broken on GC880? */
+      VIV_FEATURE(screen, chipMinorFeatures2, SEAMLESS_CUBE_MAP);
 
    if (screen->specs.halti >= 5) {
       /* GC7000 - this core must load shaders from memory. */

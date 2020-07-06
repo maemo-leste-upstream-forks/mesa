@@ -86,7 +86,7 @@
 #include "util/u_string.h"
 #include "util/u_math.h"
 
-#include "util/imports.h"
+
 #include "main/shaderobj.h"
 #include "main/enums.h"
 #include "main/mtypes.h"
@@ -1064,9 +1064,13 @@ cross_validate_globals(struct gl_context *ctx, struct gl_shader_program *prog,
           * no vendor actually implemented that behavior.  The 4.20
           * behavior matches the implemented behavior of at least one other
           * vendor, so we'll implement that for all GLSL versions.
+          * If (at least) one of these constant expressions is implicit,
+          * because it was added by glsl_zero_init, we skip the verification.
           */
          if (var->constant_initializer != NULL) {
-            if (existing->constant_initializer != NULL) {
+            if (existing->constant_initializer != NULL &&
+                !existing->data.is_implicit_initializer &&
+                !var->data.is_implicit_initializer) {
                if (!var->constant_initializer->has_value(existing->constant_initializer)) {
                   linker_error(prog, "initializers for %s "
                                "`%s' have differing values\n",
@@ -1078,7 +1082,8 @@ cross_validate_globals(struct gl_context *ctx, struct gl_shader_program *prog,
                 * not have an initializer but a later instance does,
                 * replace the former with the later.
                 */
-               variables->replace_variable(existing->name, var);
+               if (!var->data.is_implicit_initializer)
+                  variables->replace_variable(existing->name, var);
             }
          }
 
@@ -1817,6 +1822,40 @@ link_bindless_layout_qualifiers(struct gl_shader_program *prog,
 }
 
 /**
+ * Check for conflicting viewport_relative settings across shaders, and sets
+ * the value for the linked shader.
+ */
+static void
+link_layer_viewport_relative_qualifier(struct gl_shader_program *prog,
+                                       struct gl_program *gl_prog,
+                                       struct gl_shader **shader_list,
+                                       unsigned num_shaders)
+{
+   unsigned i;
+
+   /* Find first shader with explicit layer declaration */
+   for (i = 0; i < num_shaders; i++) {
+      if (shader_list[i]->redeclares_gl_layer) {
+         gl_prog->info.layer_viewport_relative =
+            shader_list[i]->layer_viewport_relative;
+         break;
+      }
+   }
+
+   /* Now make sure that each subsequent shader's explicit layer declaration
+    * matches the first one's.
+    */
+   for (; i < num_shaders; i++) {
+      if (shader_list[i]->redeclares_gl_layer &&
+          shader_list[i]->layer_viewport_relative !=
+          gl_prog->info.layer_viewport_relative) {
+         linker_error(prog, "all gl_Layer redeclarations must have identical "
+                      "viewport_relative settings");
+      }
+   }
+}
+
+/**
  * Performs the cross-validation of tessellation control shader vertices and
  * layout qualifiers for the attached tessellation control shaders,
  * and propagates them to the linked TCS and linked shader program.
@@ -2433,9 +2472,7 @@ link_intrastage_shaders(void *mem_ctx,
 
    /* Create program and attach it to the linked shader */
    struct gl_program *gl_prog =
-      ctx->Driver.NewProgram(ctx,
-                             _mesa_shader_stage_to_program(shader_list[0]->Stage),
-                             prog->Name, false);
+      ctx->Driver.NewProgram(ctx, shader_list[0]->Stage, prog->Name, false);
    if (!gl_prog) {
       prog->data->LinkStatus = LINKING_FAILURE;
       _mesa_delete_linked_shader(ctx, linked);
@@ -2460,6 +2497,8 @@ link_intrastage_shaders(void *mem_ctx,
       link_xfb_stride_layout_qualifiers(ctx, prog, shader_list, num_shaders);
 
    link_bindless_layout_qualifiers(prog, shader_list, num_shaders);
+
+   link_layer_viewport_relative_qualifier(prog, gl_prog, shader_list, num_shaders);
 
    populate_symbol_table(linked, shader_list[0]->symbols);
 
@@ -2534,6 +2573,7 @@ link_intrastage_shaders(void *mem_ctx,
    for (unsigned i = 0; i < num_ubo_blocks; i++) {
       linked->Program->sh.UniformBlocks[i] = &ubo_blocks[i];
    }
+   linked->Program->sh.NumUniformBlocks = num_ubo_blocks;
    linked->Program->info.num_ubos = num_ubo_blocks;
 
    /* Copy ssbo blocks to linked shader list */
@@ -4404,20 +4444,20 @@ static void
 link_and_validate_uniforms(struct gl_context *ctx,
                            struct gl_shader_program *prog)
 {
+   assert(!ctx->Const.UseNIRGLSLLinker);
+
    update_array_sizes(prog);
    link_assign_uniform_locations(prog, ctx);
 
    if (prog->data->LinkStatus == LINKING_FAILURE)
       return;
 
-   if (!ctx->Const.UseNIRGLSLLinker) {
-      link_util_calculate_subroutine_compat(prog);
-      link_util_check_uniform_resources(ctx, prog);
-      link_util_check_subroutine_resources(prog);
-      check_image_resources(ctx, prog);
-      link_assign_atomic_counter_resources(ctx, prog);
-      link_check_atomic_counter_resources(ctx, prog);
-   }
+   link_util_calculate_subroutine_compat(prog);
+   link_util_check_uniform_resources(ctx, prog);
+   link_util_check_subroutine_resources(prog);
+   check_image_resources(ctx, prog);
+   link_assign_atomic_counter_resources(ctx, prog);
+   link_check_atomic_counter_resources(ctx, prog);
 }
 
 static bool
@@ -4464,7 +4504,8 @@ link_varyings_and_uniforms(unsigned first, unsigned last,
    if (!link_varyings(prog, first, last, ctx, mem_ctx))
       return false;
 
-   link_and_validate_uniforms(ctx, prog);
+   if (!ctx->Const.UseNIRGLSLLinker)
+      link_and_validate_uniforms(ctx, prog);
 
    if (!prog->data->LinkStatus)
       return false;

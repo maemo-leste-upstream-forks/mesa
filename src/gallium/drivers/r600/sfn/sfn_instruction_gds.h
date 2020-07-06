@@ -151,6 +151,7 @@ public:
                   bool ack);
 
    PValue rat_id_offset() const { return m_rat_id_offset;}
+   int  rat_id() const { return m_rat_id;}
 
    ERatOp rat_op() const {return m_rat_op;}
 
@@ -188,6 +189,20 @@ private:
 
    bool m_need_ack;
 
+};
+
+class GDSStoreTessFactor : public Instruction {
+public:
+      GDSStoreTessFactor(GPRVector& value);
+      int sel() const {return m_value.sel();}
+      int chan(int i ) const {return m_value.chan_i(i);}
+
+      void replace_values(const ValueSet& candiates, PValue new_value) override;
+private:
+      bool is_equal_to(const Instruction& lhs) const override;
+      void do_print(std::ostream& os) const override;
+
+      GPRVector m_value;
 };
 
 }

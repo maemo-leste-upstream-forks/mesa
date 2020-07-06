@@ -580,7 +580,7 @@ _nir_vector_extract_helper(nir_builder *b, nir_ssa_def *vec, nir_ssa_def *c,
       return nir_channel(b, vec, start);
    } else {
       unsigned mid = start + (end - start) / 2;
-      return nir_bcsel(b, nir_ilt(b, c, nir_imm_int(b, mid)),
+      return nir_bcsel(b, nir_ilt(b, c, nir_imm_intN_t(b, mid, c->bit_size)),
                        _nir_vector_extract_helper(b, vec, c, start, mid),
                        _nir_vector_extract_helper(b, vec, c, mid, end));
    }
@@ -591,13 +591,68 @@ nir_vector_extract(nir_builder *b, nir_ssa_def *vec, nir_ssa_def *c)
 {
    nir_src c_src = nir_src_for_ssa(c);
    if (nir_src_is_const(c_src)) {
-      unsigned c_const = nir_src_as_uint(c_src);
+      uint64_t c_const = nir_src_as_uint(c_src);
       if (c_const < vec->num_components)
          return nir_channel(b, vec, c_const);
       else
          return nir_ssa_undef(b, 1, vec->bit_size);
    } else {
       return _nir_vector_extract_helper(b, vec, c, 0, vec->num_components);
+   }
+}
+
+/** Replaces the component of `vec` specified by `c` with `scalar` */
+static inline nir_ssa_def *
+nir_vector_insert_imm(nir_builder *b, nir_ssa_def *vec,
+                      nir_ssa_def *scalar, unsigned c)
+{
+   assert(scalar->num_components == 1);
+   assert(c < vec->num_components);
+
+   nir_op vec_op = nir_op_vec(vec->num_components);
+   nir_alu_instr *vec_instr = nir_alu_instr_create(b->shader, vec_op);
+
+   for (unsigned i = 0; i < vec->num_components; i++) {
+      if (i == c) {
+         vec_instr->src[i].src = nir_src_for_ssa(scalar);
+         vec_instr->src[i].swizzle[0] = 0;
+      } else {
+         vec_instr->src[i].src = nir_src_for_ssa(vec);
+         vec_instr->src[i].swizzle[0] = i;
+      }
+   }
+
+   return nir_builder_alu_instr_finish_and_insert(b, vec_instr);
+}
+
+/** Replaces the component of `vec` specified by `c` with `scalar` */
+static inline nir_ssa_def *
+nir_vector_insert(nir_builder *b, nir_ssa_def *vec, nir_ssa_def *scalar,
+                  nir_ssa_def *c)
+{
+   assert(scalar->num_components == 1);
+   assert(c->num_components == 1);
+
+   nir_src c_src = nir_src_for_ssa(c);
+   if (nir_src_is_const(c_src)) {
+      uint64_t c_const = nir_src_as_uint(c_src);
+      if (c_const < vec->num_components)
+         return nir_vector_insert_imm(b, vec, scalar, c_const);
+      else
+         return vec;
+   } else {
+      nir_const_value per_comp_idx_const[NIR_MAX_VEC_COMPONENTS];
+      for (unsigned i = 0; i < NIR_MAX_VEC_COMPONENTS; i++)
+         per_comp_idx_const[i] = nir_const_value_for_int(i, c->bit_size);
+      nir_ssa_def *per_comp_idx =
+         nir_build_imm(b, vec->num_components,
+                       c->bit_size, per_comp_idx_const);
+
+      /* nir_builder will automatically splat out scalars to vectors so an
+       * insert is as simple as "if I'm the channel, replace me with the
+       * scalar."
+       */
+      return nir_bcsel(b, nir_ieq(b, c, per_comp_idx), scalar, vec);
    }
 }
 
@@ -1104,6 +1159,20 @@ nir_load_reg(nir_builder *build, nir_register *reg)
    return nir_ssa_for_src(build, nir_src_for_reg(reg), reg->num_components);
 }
 
+static inline void
+nir_store_reg(nir_builder *build, nir_register *reg,
+              nir_ssa_def *def, nir_component_mask_t write_mask)
+{
+   assert(reg->num_components == def->num_components);
+   assert(reg->bit_size == def->bit_size);
+
+   nir_alu_instr *mov = nir_alu_instr_create(build->shader, nir_op_mov);
+   mov->src[0].src = nir_src_for_ssa(def);
+   mov->dest.dest = nir_dest_for_reg(reg);
+   mov->dest.write_mask = write_mask & BITFIELD_MASK(reg->num_components);
+   nir_builder_instr_insert(build, &mov->instr);
+}
+
 static inline nir_ssa_def *
 nir_load_deref_with_access(nir_builder *build, nir_deref_instr *deref,
                            enum gl_access_qualifier access)
@@ -1291,17 +1360,67 @@ nir_compare_func(nir_builder *b, enum compare_func func,
 }
 
 static inline void
+nir_scoped_barrier(nir_builder *b,
+                   nir_scope exec_scope,
+                   nir_scope mem_scope,
+                   nir_memory_semantics mem_semantics,
+                   nir_variable_mode mem_modes)
+{
+   nir_intrinsic_instr *intrin =
+      nir_intrinsic_instr_create(b->shader, nir_intrinsic_scoped_barrier);
+   nir_intrinsic_set_execution_scope(intrin, exec_scope);
+   nir_intrinsic_set_memory_scope(intrin, mem_scope);
+   nir_intrinsic_set_memory_semantics(intrin, mem_semantics);
+   nir_intrinsic_set_memory_modes(intrin, mem_modes);
+   nir_builder_instr_insert(b, &intrin->instr);
+}
+
+static inline void
 nir_scoped_memory_barrier(nir_builder *b,
                           nir_scope scope,
                           nir_memory_semantics semantics,
                           nir_variable_mode modes)
 {
-   nir_intrinsic_instr *intrin =
-      nir_intrinsic_instr_create(b->shader, nir_intrinsic_scoped_memory_barrier);
-   nir_intrinsic_set_memory_scope(intrin, scope);
-   nir_intrinsic_set_memory_semantics(intrin, semantics);
-   nir_intrinsic_set_memory_modes(intrin, modes);
-   nir_builder_instr_insert(b, &intrin->instr);
+   nir_scoped_barrier(b, NIR_SCOPE_NONE, scope, semantics, modes);
+}
+
+static inline nir_ssa_def *
+nir_convert_to_bit_size(nir_builder *b,
+                    nir_ssa_def *src,
+                    nir_alu_type type,
+                    unsigned bit_size)
+{
+   nir_alu_type base_type = nir_alu_type_get_base_type(type);
+   nir_alu_type dst_type = (nir_alu_type)(bit_size | base_type);
+
+   nir_op opcode =
+      nir_type_conversion_op(type, dst_type, nir_rounding_mode_undef);
+
+   return nir_build_alu(b, opcode, src, NULL, NULL, NULL);
+}
+
+static inline nir_ssa_def *
+nir_i2iN(nir_builder *b, nir_ssa_def *src, unsigned bit_size)
+{
+   return nir_convert_to_bit_size(b, src, nir_type_int, bit_size);
+}
+
+static inline nir_ssa_def *
+nir_u2uN(nir_builder *b, nir_ssa_def *src, unsigned bit_size)
+{
+   return nir_convert_to_bit_size(b, src, nir_type_uint, bit_size);
+}
+
+static inline nir_ssa_def *
+nir_b2bN(nir_builder *b, nir_ssa_def *src, unsigned bit_size)
+{
+   return nir_convert_to_bit_size(b, src, nir_type_bool, bit_size);
+}
+
+static inline nir_ssa_def *
+nir_f2fN(nir_builder *b, nir_ssa_def *src, unsigned bit_size)
+{
+   return nir_convert_to_bit_size(b, src, nir_type_float, bit_size);
 }
 
 #endif /* NIR_BUILDER_H */

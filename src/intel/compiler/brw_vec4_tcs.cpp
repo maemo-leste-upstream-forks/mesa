@@ -373,7 +373,7 @@ brw_compile_tcs(const struct brw_compiler *compiler,
 
    struct brw_vue_map input_vue_map;
    brw_compute_vue_map(devinfo, &input_vue_map, nir->info.inputs_read,
-                       nir->info.separate_shader);
+                       nir->info.separate_shader, 1);
    brw_compute_tess_vue_map(&vue_prog_data->vue_map,
                             nir->info.outputs_written,
                             nir->info.patch_outputs_written);
@@ -394,7 +394,7 @@ brw_compile_tcs(const struct brw_compiler *compiler,
 
    if (compiler->use_tcs_8_patch &&
        nir->info.tess.tcs_vertices_out <= (devinfo->gen >= 12 ? 32 : 16) &&
-       2 + has_primitive_id + key->input_vertices <= 31) {
+       2 + has_primitive_id + key->input_vertices <= (devinfo->gen >= 12 ? 63 : 31)) {
       /* 3DSTATE_HS imposes two constraints on using 8_PATCH mode. First, the
        * "Instance" field limits the number of output vertices to [1, 16] on
        * gen11 and below, or [1, 32] on gen12 and above. Secondly, the
@@ -480,7 +480,8 @@ brw_compile_tcs(const struct brw_compiler *compiler,
                                         nir->info.name));
       }
 
-      g.generate_code(v.cfg, 8, v.shader_stats, stats);
+      g.generate_code(v.cfg, 8, v.shader_stats,
+                      v.performance_analysis.require(), stats);
 
       assembly = g.get_assembly();
    } else {
@@ -497,7 +498,9 @@ brw_compile_tcs(const struct brw_compiler *compiler,
 
 
       assembly = brw_vec4_generate_assembly(compiler, log_data, mem_ctx, nir,
-                                            &prog_data->base, v.cfg, stats);
+                                            &prog_data->base, v.cfg,
+                                            v.performance_analysis.require(),
+                                            stats);
    }
 
    return assembly;

@@ -37,10 +37,7 @@ extern "C" {
 
 struct nir_spirv_specialization {
    uint32_t id;
-   union {
-      uint32_t data32;
-      uint64_t data64;
-   };
+   nir_const_value value;
    bool defined_on_module;
 };
 
@@ -66,6 +63,17 @@ struct spirv_to_nir_options {
     * GLSLFragCoordIsSysVal in GLSL.
     */
    bool frag_coord_is_sysval;
+
+   /* Whether to lower TessLevelInner and TessLevelOuter to system values.
+    * This is the inverse of GLSLTessLevelsAsInputs in GLSL.
+    */
+   bool tess_levels_are_sysvals;
+
+   /* Whether to lower TessLevelInner/Outer from their SPIR-V declarations
+    * as arrays of floats to vec4 and vec2 respectively. This is the same as
+    * LowerTessLevel in GLSL.
+    */
+   bool lower_tess_levels_to_vec;
 
    struct spirv_supported_capabilities caps;
 

@@ -52,6 +52,7 @@
 
 #include "pan_context.h"
 #include "midgard/midgard_compile.h"
+#include "bifrost/bifrost_compile.h"
 #include "panfrost-quirks.h"
 
 static const struct debug_named_value debug_options[] = {
@@ -62,6 +63,9 @@ static const struct debug_named_value debug_options[] = {
         {"sync",      PAN_DBG_SYNC,     "Wait for each job's completion and check for any GPU fault"},
         {"precompile", PAN_DBG_PRECOMPILE, "Precompile shaders for shader-db"},
         {"gles3",     PAN_DBG_GLES3,    "Enable experimental GLES3 implementation"},
+        {"fp16",     PAN_DBG_FP16,     "Enable buggy experimental (don't use!) fp16"},
+        {"bifrost",   PAN_DBG_BIFROST, "Enable experimental Mali G31 and G52 support"},
+        {"gl3",       PAN_DBG_GL3,      "Enable experimental GL 3.x implementation, up to 3.3"},
         DEBUG_NAMED_VALUE_END
 };
 
@@ -92,10 +96,15 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
 {
         /* We expose in-dev stuff for dEQP that we don't want apps to use yet */
         bool is_deqp = pan_debug & PAN_DBG_DEQP;
+        struct panfrost_device *dev = pan_device(screen);
 
-        /* Our GLES3 implementation is WIP */
+        /* Our GL 3.x implementation is WIP */
+        bool is_gl3 = pan_debug & PAN_DBG_GL3;
+        is_gl3 |= is_deqp;
+
+        /* Same with GLES 3 */
         bool is_gles3 = pan_debug & PAN_DBG_GLES3;
-        is_gles3 |= is_deqp;
+        is_gles3 |= is_gl3;
 
         switch (param) {
         case PIPE_CAP_NPOT_TEXTURES:
@@ -103,11 +112,17 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
         case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
         case PIPE_CAP_VERTEX_SHADER_SATURATE:
+        case PIPE_CAP_VERTEX_COLOR_UNCLAMPED:
         case PIPE_CAP_POINT_SPRITE:
+        case PIPE_CAP_DEPTH_CLIP_DISABLE:
+        case PIPE_CAP_DEPTH_CLIP_DISABLE_SEPARATE:
                 return 1;
 
         case PIPE_CAP_MAX_RENDER_TARGETS:
                 return is_gles3 ? 4 : 1;
+
+        case PIPE_CAP_MAX_DUAL_SOURCE_RENDER_TARGETS:
+                return is_gl3 ? 1 : 0;
 
         /* Throttling frames breaks pipelining */
         case PIPE_CAP_THROTTLE:
@@ -117,7 +132,6 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
                 return 1;
         case PIPE_CAP_QUERY_TIME_ELAPSED:
         case PIPE_CAP_QUERY_PIPELINE_STATISTICS:
-        case PIPE_CAP_QUERY_TIMESTAMP:
         case PIPE_CAP_QUERY_SO_OVERFLOW:
                 return 0;
 
@@ -131,6 +145,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_TGSI_INSTANCEID:
         case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
         case PIPE_CAP_PRIMITIVE_RESTART:
+        case PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX:
                 return 1;
 
         case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
@@ -146,14 +161,12 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
 
         case PIPE_CAP_GLSL_FEATURE_LEVEL:
         case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
-                return is_gles3 ? 140 : 120;
+                return is_gl3 ? 330 : (is_gles3 ? 140 : 120);
         case PIPE_CAP_ESSL_FEATURE_LEVEL:
                 return is_gles3 ? 300 : 120;
 
         case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
                 return 16;
-
-                return is_deqp;
 
         case PIPE_CAP_TEXTURE_MULTISAMPLE:
                 return is_gles3;
@@ -169,9 +182,9 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_COMPUTE:
                 return is_deqp;
 
-        /* TODO: Where does this req come from in practice? */
-        case PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY:
-                return 1;
+        case PIPE_CAP_QUERY_TIMESTAMP:
+        case PIPE_CAP_CONDITIONAL_RENDER:
+                return is_gl3;
 
         case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
                 return 4096;
@@ -194,10 +207,11 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_GENERATE_MIPMAP:
                 return 1;
 
-        /* We would prefer varyings */
+        /* We would prefer varyings on Midgard, but proper sysvals on Bifrost */
         case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
         case PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL:
-                return 0;
+        case PIPE_CAP_TGSI_FS_POINT_IS_SYSVAL:
+                return dev->quirks & IS_BIFROST;
 
         /* I really don't want to set this CAP but let's not swim against the
          * tide.. */
@@ -286,6 +300,7 @@ panfrost_get_shader_param(struct pipe_screen *screen,
                           enum pipe_shader_cap param)
 {
         bool is_deqp = pan_debug & PAN_DBG_DEQP;
+        bool is_fp16 = pan_debug & PAN_DBG_FP16;
         struct panfrost_device *dev = pan_device(screen);
 
         if (shader != PIPE_SHADER_VERTEX &&
@@ -343,8 +358,10 @@ panfrost_get_shader_param(struct pipe_screen *screen,
                 return 1;
 
         case PIPE_SHADER_CAP_FP16:
-                return !(dev->quirks & MIDGARD_BROKEN_FP16);
+                return !(dev->quirks & MIDGARD_BROKEN_FP16) || is_fp16;
 
+        case PIPE_SHADER_CAP_FP16_DERIVATIVES:
+        case PIPE_SHADER_CAP_INT16:
         case PIPE_SHADER_CAP_INT64_ATOMICS:
         case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
         case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
@@ -451,7 +468,7 @@ panfrost_is_format_supported( struct pipe_screen *screen,
         /* MSAA 4x supported, but no more. Technically some revisions of the
          * hardware can go up to 16x but we don't support higher modes yet. */
 
-        if (sample_count > 1 && !(pan_debug & PAN_DBG_DEQP))
+        if (sample_count > 1 && !(pan_debug & (PAN_DBG_GL3 | PAN_DBG_DEQP)))
                 return false;
 
         if (sample_count > 4)
@@ -459,19 +476,6 @@ panfrost_is_format_supported( struct pipe_screen *screen,
 
         if (MAX2(sample_count, 1) != MAX2(storage_sample_count, 1))
                 return false;
-
-        /* Format wishlist */
-        if (format == PIPE_FORMAT_X8Z24_UNORM)
-                return false;
-
-        if (format == PIPE_FORMAT_A1B5G5R5_UNORM ||
-            format == PIPE_FORMAT_X1B5G5R5_UNORM ||
-            format == PIPE_FORMAT_B2G3R3_UNORM)
-                return false;
-
-        /* TODO */
-        if (format == PIPE_FORMAT_B5G5R5A1_UNORM)
-                return FALSE;
 
         /* Don't confuse poorly written apps (workaround dEQP bug) that expect
          * more alpha than they ask for */
@@ -482,45 +486,19 @@ panfrost_is_format_supported( struct pipe_screen *screen,
         if (scanout && renderable && !util_format_is_rgba8_variant(format_desc))
                 return false;
 
-        switch (format_desc->layout) {
-                case UTIL_FORMAT_LAYOUT_PLAIN:
-                case UTIL_FORMAT_LAYOUT_OTHER:
-                        break;
-                case UTIL_FORMAT_LAYOUT_ETC:
-                case UTIL_FORMAT_LAYOUT_ASTC:
+        if (pan_debug & (PAN_DBG_GL3 | PAN_DBG_DEQP)) {
+                if (format_desc->layout == UTIL_FORMAT_LAYOUT_RGTC)
                         return true;
-                default:
-                        return false;
         }
 
-        if (format_desc->channel[0].size > 32)
-            return false;
+        /* Check we support the format with the given bind */
 
-        /* Internally, formats that are depth/stencil renderable are limited.
-         *
-         * In particular: Z16, Z24, Z24S8, S8 are all identical from the GPU
-         * rendering perspective. That is, we render to Z24S8 (which we can
-         * AFBC compress), ignore the different when texturing (who cares?),
-         * and then in the off-chance there's a CPU read we blit back to
-         * staging.
-         *
-         * ...alternatively, we can make the state tracker deal with that. */
+        unsigned relevant_bind = bind &
+                ( PIPE_BIND_DEPTH_STENCIL | PIPE_BIND_RENDER_TARGET
+                | PIPE_BIND_VERTEX_BUFFER | PIPE_BIND_SAMPLER_VIEW);
 
-        if (bind & PIPE_BIND_DEPTH_STENCIL) {
-                switch (format) {
-                        case PIPE_FORMAT_Z24_UNORM_S8_UINT:
-                        case PIPE_FORMAT_Z24X8_UNORM:
-                        case PIPE_FORMAT_Z32_UNORM:
-                        case PIPE_FORMAT_Z32_FLOAT:
-                        case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
-                                return true;
-
-                        default:
-                                return false;
-                }
-        }
-
-        return true;
+        struct panfrost_format fmt = panfrost_pipe_format_table[format];
+        return fmt.hw && ((relevant_bind & ~fmt.bind) == 0);
 }
 
 static int
@@ -701,7 +679,10 @@ panfrost_screen_get_compiler_options(struct pipe_screen *pscreen,
                                      enum pipe_shader_ir ir,
                                      enum pipe_shader_type shader)
 {
-        return &midgard_nir_options;
+        if (pan_device(pscreen)->quirks & IS_BIFROST)
+                return &bifrost_nir_options;
+        else
+                return &midgard_nir_options;
 }
 
 struct pipe_screen *
@@ -747,6 +728,12 @@ panfrost_create_screen(int fd, struct renderonly *ro)
         case 0x820: /* T820 */
         case 0x860: /* T860 */
                 break;
+        case 0x7093: /* G31 */
+        case 0x7212: /* G52 */
+                if (pan_debug & PAN_DBG_BIFROST)
+                        break;
+
+                /* fallthrough */
         default:
                 /* Fail to load against untested models */
                 debug_printf("panfrost: Unsupported model %X", dev->gpu_id);

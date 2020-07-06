@@ -38,7 +38,7 @@
 #include "lp_screen.h"
 #include "lp_state.h"
 #include "lp_debug.h"
-#include "state_tracker/sw_winsys.h"
+#include "frontend/sw_winsys.h"
 
 
 static void *
@@ -191,7 +191,7 @@ llvmpipe_create_sampler_view(struct pipe_context *pipe,
 #ifdef DEBUG
      /*
       * This is possibly too lenient, but the primary reason is just
-      * to catch state trackers which forget to initialize this, so
+      * to catch gallium frontends which forget to initialize this, so
       * it only catches clearly impossible view targets.
       */
       if (view->target != texture->target) {
@@ -268,6 +268,8 @@ prepare_shader_sampling(
          unsigned num_layers = tex->depth0;
          unsigned first_level = 0;
          unsigned last_level = 0;
+         unsigned sample_stride = 0;
+         unsigned num_samples = tex->nr_samples;
 
          if (!lp_tex->dt) {
             /* regular texture - setup array of mipmap level offsets */
@@ -280,6 +282,8 @@ prepare_shader_sampling(
                assert(first_level <= last_level);
                assert(last_level <= res->last_level);
                addr = lp_tex->tex_data;
+
+               sample_stride = lp_tex->sample_stride;
 
                for (j = first_level; j <= last_level; j++) {
                   mip_offsets[j] = lp_tex->mip_offsets[j];
@@ -336,6 +340,7 @@ prepare_shader_sampling(
                                  i,
                                  width0, tex->height0, num_layers,
                                  first_level, last_level,
+                                 num_samples, sample_stride,
                                  addr,
                                  row_stride, img_stride, mip_offsets);
       }
@@ -399,6 +404,7 @@ prepare_shader_images(
    unsigned i;
    uint32_t row_stride;
    uint32_t img_stride;
+   uint32_t sample_stride;
    const void *addr;
 
    assert(num <= PIPE_MAX_SHADER_SAMPLER_VIEWS);
@@ -417,6 +423,7 @@ prepare_shader_images(
          unsigned width = u_minify(img->width0, view->u.tex.level);
          unsigned height = u_minify(img->height0, view->u.tex.level);
          unsigned num_layers = img->depth0;
+         unsigned num_samples = img->nr_samples;
 
          if (!lp_img->dt) {
             /* regular texture - setup array of mipmap level offsets */
@@ -438,6 +445,7 @@ prepare_shader_images(
 
                row_stride = lp_img->row_stride[view->u.tex.level];
                img_stride = lp_img->img_stride[view->u.tex.level];
+               sample_stride = lp_img->sample_stride;
                addr = (uint8_t *)addr + mip_offset;
             }
             else {
@@ -446,6 +454,7 @@ prepare_shader_images(
                /* probably don't really need to fill that out */
                row_stride = 0;
                img_stride = 0;
+               sample_stride = 0;
 
                /* everything specified in number of elements here. */
                width = view->u.buf.size / view_blocksize;
@@ -464,6 +473,7 @@ prepare_shader_images(
                                                 PIPE_TRANSFER_READ);
             row_stride = lp_img->row_stride[0];
             img_stride = lp_img->img_stride[0];
+            sample_stride = 0;
             assert(addr);
          }
          draw_set_mapped_image(lp->draw,
@@ -471,7 +481,8 @@ prepare_shader_images(
                                i,
                                width, height, num_layers,
                                addr,
-                               row_stride, img_stride);
+                               row_stride, img_stride,
+                               num_samples, sample_stride);
       }
    }
 }

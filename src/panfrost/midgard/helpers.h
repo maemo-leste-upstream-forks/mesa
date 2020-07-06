@@ -120,6 +120,13 @@
 /* Does the op convert types between int- and float- space (i2f/f2u/etc) */
 #define OP_TYPE_CONVERT (1 << 4)
 
+/* Is this opcode the first in a f2x (rte, rtz, rtn, rtp) sequence? If so,
+ * takes a roundmode argument in the IR. This has the semantic of rounding the
+ * source (it's all fused in), which is why it doesn't necessarily make sense
+ * for i2f (though folding there might be necessary for OpenCL reasons). Comes
+ * up in format conversion, i.e. f2u_rte */
+#define MIDGARD_ROUNDS (1 << 5)
+
 /* Vector-independant shorthands for the above; these numbers are arbitrary and
  * not from the ISA. Convert to the above with unit_enum_to_midgard */
 
@@ -240,39 +247,17 @@ struct mir_tag_props {
  * which is used for vector units */
 
 static inline unsigned
-expand_writemask(unsigned mask, unsigned channels)
+expand_writemask(unsigned mask, unsigned log2_channels)
 {
         unsigned o = 0;
-        unsigned factor = 8 / channels;
+        unsigned factor = 8 >> log2_channels;
         unsigned expanded = (1 << factor) - 1;
 
-        for (unsigned i = 0; i < channels; ++i)
+        for (unsigned i = 0; i < (1 << log2_channels); ++i)
                 if (mask & (1 << i))
                         o |= (expanded << (factor * i));
 
         return o;
-}
-
-/* Tansform an expanded writemask (duplicated 8-bit format) into its condensed
- * form (one bit per component) */
-
-static inline unsigned
-condense_writemask(unsigned expanded_mask,
-                   unsigned bits_per_component)
-{
-        if (bits_per_component == 8)
-                unreachable("XXX TODO: sort out how 8-bit constant encoding works");
-
-        unsigned slots_per_component = bits_per_component / 16;
-        unsigned max_comp = (16 * 8) / bits_per_component;
-        unsigned condensed_mask = 0;
-
-        for (unsigned i = 0; i < max_comp; i++) {
-                if (expanded_mask & (1 << (i * slots_per_component)))
-                        condensed_mask |= (1 << i);
-        }
-
-        return condensed_mask;
 }
 
 /* Coerce structs to integer */

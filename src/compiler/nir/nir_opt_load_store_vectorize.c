@@ -80,6 +80,8 @@ case nir_intrinsic_##op: {\
    STORE(0, deref, -1, -1, 0, 1)
    LOAD(nir_var_mem_shared, shared, -1, 0, -1)
    STORE(nir_var_mem_shared, shared, -1, 1, -1, 0)
+   LOAD(nir_var_mem_global, global, -1, 0, -1)
+   STORE(nir_var_mem_global, global, -1, 1, -1, 0)
    ATOMIC(nir_var_mem_ssbo, ssbo, add, 0, 1, -1, 2)
    ATOMIC(nir_var_mem_ssbo, ssbo, imin, 0, 1, -1, 2)
    ATOMIC(nir_var_mem_ssbo, ssbo, umin, 0, 1, -1, 2)
@@ -108,20 +110,34 @@ case nir_intrinsic_##op: {\
    ATOMIC(0, deref, fmin, -1, -1, 0, 1)
    ATOMIC(0, deref, fmax, -1, -1, 0, 1)
    ATOMIC(0, deref, fcomp_swap, -1, -1, 0, 1)
-   ATOMIC(nir_var_mem_shared, shared, add, 0, 1, -1, 2)
-   ATOMIC(nir_var_mem_shared, shared, imin, 0, 1, -1, 2)
-   ATOMIC(nir_var_mem_shared, shared, umin, 0, 1, -1, 2)
-   ATOMIC(nir_var_mem_shared, shared, imax, 0, 1, -1, 2)
-   ATOMIC(nir_var_mem_shared, shared, umax, 0, 1, -1, 2)
-   ATOMIC(nir_var_mem_shared, shared, and, 0, 1, -1, 2)
-   ATOMIC(nir_var_mem_shared, shared, or, 0, 1, -1, 2)
-   ATOMIC(nir_var_mem_shared, shared, xor, 0, 1, -1, 2)
-   ATOMIC(nir_var_mem_shared, shared, exchange, 0, 1, -1, 2)
-   ATOMIC(nir_var_mem_shared, shared, comp_swap, 0, 1, -1, 2)
-   ATOMIC(nir_var_mem_shared, shared, fadd, 0, 1, -1, 2)
-   ATOMIC(nir_var_mem_shared, shared, fmin, 0, 1, -1, 2)
-   ATOMIC(nir_var_mem_shared, shared, fmax, 0, 1, -1, 2)
-   ATOMIC(nir_var_mem_shared, shared, fcomp_swap, 0, 1, -1, 2)
+   ATOMIC(nir_var_mem_shared, shared, add, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_shared, shared, imin, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_shared, shared, umin, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_shared, shared, imax, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_shared, shared, umax, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_shared, shared, and, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_shared, shared, or, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_shared, shared, xor, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_shared, shared, exchange, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_shared, shared, comp_swap, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_shared, shared, fadd, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_shared, shared, fmin, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_shared, shared, fmax, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_shared, shared, fcomp_swap, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_global, global, add, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_global, global, imin, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_global, global, umin, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_global, global, imax, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_global, global, umax, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_global, global, and, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_global, global, or, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_global, global, xor, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_global, global, exchange, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_global, global, comp_swap, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_global, global, fadd, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_global, global, fmin, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_global, global, fmax, -1, 0, -1, 1)
+   ATOMIC(nir_var_mem_global, global, fcomp_swap, -1, 0, -1, 1)
    default:
       break;
 #undef ATOMIC
@@ -171,6 +187,7 @@ struct entry {
 struct vectorize_ctx {
    nir_variable_mode modes;
    nir_should_vectorize_mem_func callback;
+   nir_variable_mode robust_modes;
    struct list_head entries[nir_num_variable_modes];
    struct hash_table *loads[nir_num_variable_modes];
    struct hash_table *stores[nir_num_variable_modes];
@@ -182,20 +199,19 @@ static uint32_t hash_entry_key(const void *key_)
     * the order of the hash table walk is deterministic */
    struct entry_key *key = (struct entry_key*)key_;
 
-   uint32_t hash = _mesa_fnv32_1a_offset_bias;
+   uint32_t hash = 0;
    if (key->resource)
-      hash = _mesa_fnv32_1a_accumulate(hash, key->resource->index);
+      hash = XXH32(&key->resource->index, sizeof(key->resource->index), hash);
    if (key->var) {
-      hash = _mesa_fnv32_1a_accumulate(hash, key->var->index);
+      hash = XXH32(&key->var->index, sizeof(key->var->index), hash);
       unsigned mode = key->var->data.mode;
-      hash = _mesa_fnv32_1a_accumulate(hash, mode);
+      hash = XXH32(&mode, sizeof(mode), hash);
    }
 
    for (unsigned i = 0; i < key->offset_def_count; i++)
-      hash = _mesa_fnv32_1a_accumulate(hash, key->offset_defs[i]->index);
+      hash = XXH32(&key->offset_defs[i]->index, sizeof(key->offset_defs[i]->index), hash);
 
-   hash = _mesa_fnv32_1a_accumulate_block(
-      hash, key->offset_defs_mul, key->offset_def_count * sizeof(uint64_t));
+   hash = XXH32(key->offset_defs_mul, key->offset_def_count * sizeof(uint64_t), hash);
 
    return hash;
 }
@@ -515,6 +531,27 @@ get_variable_mode(struct entry *entry)
    return entry->deref->mode;
 }
 
+static unsigned
+mode_to_index(nir_variable_mode mode)
+{
+   assert(util_bitcount(mode) == 1);
+
+   /* Globals and SSBOs should be tracked together */
+   if (mode == nir_var_mem_global)
+      mode = nir_var_mem_ssbo;
+
+   return ffs(mode) - 1;
+}
+
+static nir_variable_mode
+aliasing_modes(nir_variable_mode modes)
+{
+   /* Global and SSBO can alias */
+   if (modes & (nir_var_mem_ssbo | nir_var_mem_global))
+      modes |= nir_var_mem_ssbo | nir_var_mem_global;
+   return modes;
+}
+
 static struct entry *
 create_entry(struct vectorize_ctx *ctx,
              const struct intrinsic_info *info,
@@ -793,7 +830,7 @@ vectorize_loads(nir_builder *b, struct vectorize_ctx *ctx,
       b->cursor = nir_before_instr(first->instr);
 
       nir_ssa_def *new_base = first->intrin->src[info->base_src].ssa;
-      new_base = nir_iadd(b, new_base, nir_imm_int(b, -(high_start / 8u)));
+      new_base = nir_iadd_imm(b, new_base, -(int)(high_start / 8u));
 
       nir_instr_rewrite_src(first->instr, &first->intrin->src[info->base_src],
                             nir_src_for_ssa(new_base));
@@ -952,7 +989,8 @@ compare_entries(struct entry *a, struct entry *b)
 static bool
 may_alias(struct entry *a, struct entry *b)
 {
-   assert(get_variable_mode(a) == get_variable_mode(b));
+   assert(mode_to_index(get_variable_mode(a)) ==
+          mode_to_index(get_variable_mode(b)));
 
    /* if the resources/variables are definitively different and both have
     * ACCESS_RESTRICT, we can assume they do not alias. */
@@ -989,7 +1027,7 @@ check_for_aliasing(struct vectorize_ctx *ctx, struct entry *first, struct entry 
                nir_var_mem_push_const | nir_var_mem_ubo))
       return false;
 
-   unsigned mode_index = ffs(mode) - 1;
+   unsigned mode_index = mode_to_index(mode);
    if (first->is_store) {
       /* find first entry that aliases "first" */
       list_for_each_entry_from(struct entry, next, first, &ctx->entries[mode_index], head) {
@@ -1016,10 +1054,27 @@ check_for_aliasing(struct vectorize_ctx *ctx, struct entry *first, struct entry 
 }
 
 static bool
+check_for_robustness(struct vectorize_ctx *ctx, struct entry *low)
+{
+   nir_variable_mode mode = get_variable_mode(low);
+   if (mode & ctx->robust_modes) {
+      unsigned low_bit_size = get_bit_size(low);
+      unsigned low_size = low->intrin->num_components * low_bit_size;
+
+      /* don't attempt to vectorize accesses if the offset can overflow. */
+      /* TODO: handle indirect accesses. */
+      return low->offset_signed < 0 && low->offset_signed + low_size >= 0;
+   }
+
+   return false;
+}
+
+static bool
 is_strided_vector(const struct glsl_type *type)
 {
    if (glsl_type_is_vector(type)) {
-      return glsl_get_explicit_stride(type) !=
+      unsigned explicit_stride = glsl_get_explicit_stride(type);
+      return explicit_stride != 0 && explicit_stride !=
              type_scalar_size_bytes(glsl_get_array_element(type));
    } else {
       return false;
@@ -1031,7 +1086,14 @@ try_vectorize(nir_function_impl *impl, struct vectorize_ctx *ctx,
               struct entry *low, struct entry *high,
               struct entry *first, struct entry *second)
 {
+   if (!(get_variable_mode(first) & ctx->modes) ||
+       !(get_variable_mode(second) & ctx->modes))
+      return false;
+
    if (check_for_aliasing(ctx, first, second))
+      return false;
+
+   if (check_for_robustness(ctx, low))
       return false;
 
    /* we can only vectorize non-volatile loads/stores of the same type and with
@@ -1163,7 +1225,10 @@ handle_barrier(struct vectorize_ctx *ctx, bool *progress, nir_function_impl *imp
       case nir_intrinsic_memory_barrier_shared:
          modes = nir_var_mem_shared;
          break;
-      case nir_intrinsic_scoped_memory_barrier:
+      case nir_intrinsic_scoped_barrier:
+	 if (nir_intrinsic_memory_scope(intrin) == NIR_SCOPE_NONE)
+            break;
+
          modes = nir_intrinsic_memory_modes(intrin);
          acquire = nir_intrinsic_memory_semantics(intrin) & NIR_MEMORY_ACQUIRE;
          release = nir_intrinsic_memory_semantics(intrin) & NIR_MEMORY_RELEASE;
@@ -1188,6 +1253,13 @@ handle_barrier(struct vectorize_ctx *ctx, bool *progress, nir_function_impl *imp
 
    while (modes) {
       unsigned mode_index = u_bit_scan(&modes);
+      if ((1 << mode_index) == nir_var_mem_global) {
+         /* Global should be rolled in with SSBO */
+         assert(list_is_empty(&ctx->entries[mode_index]));
+         assert(ctx->loads[mode_index] == NULL);
+         assert(ctx->stores[mode_index] == NULL);
+         continue;
+      }
 
       if (acquire)
          *progress |= vectorize_entries(ctx, impl, ctx->loads[mode_index]);
@@ -1230,9 +1302,9 @@ process_block(nir_function_impl *impl, struct vectorize_ctx *ctx, nir_block *blo
       nir_variable_mode mode = info->mode;
       if (!mode)
          mode = nir_src_as_deref(intrin->src[info->deref_src])->mode;
-      if (!(mode & ctx->modes))
+      if (!(mode & aliasing_modes(ctx->modes)))
          continue;
-      unsigned mode_index = ffs(mode) - 1;
+      unsigned mode_index = mode_to_index(mode);
 
       /* create entry */
       struct entry *entry = create_entry(ctx, info, intrin);
@@ -1277,13 +1349,15 @@ process_block(nir_function_impl *impl, struct vectorize_ctx *ctx, nir_block *blo
 
 bool
 nir_opt_load_store_vectorize(nir_shader *shader, nir_variable_mode modes,
-                             nir_should_vectorize_mem_func callback)
+                             nir_should_vectorize_mem_func callback,
+                             nir_variable_mode robust_modes)
 {
    bool progress = false;
 
    struct vectorize_ctx *ctx = rzalloc(NULL, struct vectorize_ctx);
    ctx->modes = modes;
    ctx->callback = callback;
+   ctx->robust_modes = robust_modes;
 
    nir_index_vars(shader, NULL, modes);
 

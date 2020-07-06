@@ -2506,7 +2506,7 @@ after lookup.
   If per-sample shading is not in effect or the source resource or render
   target is not multisampled, the result is (0.5, 0.5, undef, undef).
 
-  NOTE: no driver has implemented this opcode yet (and no state tracker
+  NOTE: no driver has implemented this opcode yet (and no gallium frontend
   emits it).  This information is subject to change.
 
 .. opcode:: SAMPLE_INFO
@@ -2525,7 +2525,7 @@ after lookup.
   If per-sample shading is not in effect or the source resource or render
   target is not multisampled, the result is (1, 0, 0, 0).
 
-  NOTE: no driver has implemented this opcode yet (and no state tracker
+  NOTE: no driver has implemented this opcode yet (and no gallium frontend
   emits it).  This information is subject to change.
 
 .. opcode:: LOD - level of detail
@@ -3526,6 +3526,13 @@ A bit mask of ``bit index < TGSI_SEMANTIC_SUBGROUP_INVOCATION``, i.e.
 ``(1 << subgroup_invocation) - 1`` in arbitrary precision arithmetic.
 
 
+TGSI_SEMANTIC_VIEWPORT_MASK
+"""""""""""""""""""""""""""
+
+A bit mask of viewports to broadcast the current primitive to. See
+GL_NV_viewport_array2 for more details.
+
+
 TGSI_SEMANTIC_TESS_DEFAULT_OUTER_LEVEL
 """"""""""""""""""""""""""""""""""""""
 
@@ -3796,6 +3803,13 @@ FS_POST_DEPTH_COVERAGE
 When enabled, the input for TGSI_SEMANTIC_SAMPLEMASK will exclude samples
 that have failed the depth/stencil tests. This is only valid when
 FS_EARLY_DEPTH_STENCIL is also specified.
+
+LAYER_VIEWPORT_RELATIVE
+"""""""""""""""""""""""
+
+When enabled, the TGSI_SEMATNIC_LAYER output value is relative to the
+current viewport. This is especially useful in conjunction with
+TGSI_SEMANTIC_VIEWPORT_MASK.
 
 
 Texture Sampling and Texture Formats

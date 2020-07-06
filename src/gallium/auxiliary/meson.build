@@ -46,6 +46,7 @@ files_libgallium = files(
   'draw/draw_pipe_stipple.c',
   'draw/draw_pipe_twoside.c',
   'draw/draw_pipe_unfilled.c',
+  'draw/draw_pipe_user_cull.c',
   'draw/draw_pipe_util.c',
   'draw/draw_pipe_validate.c',
   'draw/draw_pipe_vbuf.c',
@@ -182,6 +183,7 @@ files_libgallium = files(
   'tgsi/tgsi_build.h',
   'tgsi/tgsi_dump.c',
   'tgsi/tgsi_dump.h',
+  'tgsi/tgsi_dynamic_indexing.c',
   'tgsi/tgsi_exec.c',
   'tgsi/tgsi_exec.h',
   'tgsi/tgsi_emulate.c',
@@ -216,6 +218,7 @@ files_libgallium = files(
   'tgsi/tgsi_ureg.h',
   'tgsi/tgsi_util.c',
   'tgsi/tgsi_util.h',
+  'tgsi/tgsi_vpos.c',
   'translate/translate.c',
   'translate/translate.h',
   'translate/translate_cache.c',
@@ -246,7 +249,6 @@ files_libgallium = files(
   'util/u_debug_image.h',
   'util/u_debug_refcnt.c',
   'util/u_debug_refcnt.h',
-  'util/u_debug_stack.c',
   'util/u_debug_stack.h',
   'util/u_debug_symbol.c',
   'util/u_debug_symbol.h',
@@ -338,6 +340,16 @@ files_libgallium = files(
   'nir/nir_draw_helpers.c',
   'nir/nir_draw_helpers.h',
 )
+
+if with_platform_android
+  files_libgallium += files(
+    'util/u_debug_stack_android.cpp',
+  )
+else
+  files_libgallium += files(
+    'util/u_debug_stack.c',
+  )
+endif
 
 if dep_libdrm.found()
   files_libgallium += files(
@@ -478,7 +490,7 @@ if with_dri2 and with_platform_x11
   if with_dri3
     vlwinsys_deps += [
       dep_xcb_sync, dep_xcb_present, dep_xshmfence, dep_xcb_xfixes,
-      dep_xcb_dri3, 
+      dep_xcb_dri3,
     ]
     files_libgalliumvlwinsys += files('vl/vl_winsys_dri3.c')
   endif
@@ -506,8 +518,9 @@ libgallium = static_library(
   include_directories : [
     inc_loader, inc_gallium, inc_src, inc_include, include_directories('util')
   ],
-  c_args : [c_vis_args, c_msvc_compat_args],
-  cpp_args : [cpp_vis_args, cpp_msvc_compat_args],
+  c_args : [c_msvc_compat_args],
+  cpp_args : [cpp_msvc_compat_args],
+  gnu_symbol_visibility : 'hidden',
   dependencies : [
     dep_libdrm, dep_llvm, dep_unwind, dep_dl, dep_m, dep_thread, dep_lmsensors,
     idep_nir, idep_nir_headers, idep_mesautil,
@@ -518,8 +531,9 @@ libgallium = static_library(
 libgalliumvl_stub = static_library(
   'galliumvl_stub',
   'vl/vl_stubs.c',
-  c_args : [c_vis_args, c_msvc_compat_args],
-  cpp_args : [cpp_vis_args, cpp_msvc_compat_args],
+  c_args : [c_msvc_compat_args],
+  cpp_args : [cpp_msvc_compat_args],
+  gnu_symbol_visibility : 'hidden',
   include_directories: [inc_gallium, inc_include, inc_src],
   build_by_default : false,
 )
@@ -527,8 +541,9 @@ libgalliumvl_stub = static_library(
 libgalliumvl = static_library(
   'galliumvl',
   files_libgalliumvl,
-  c_args : [c_vis_args, c_msvc_compat_args],
-  cpp_args : [cpp_vis_args, cpp_msvc_compat_args],
+  c_args : [c_msvc_compat_args],
+  cpp_args : [cpp_msvc_compat_args],
+  gnu_symbol_visibility : 'hidden',
   include_directories : [inc_gallium, inc_include, inc_src],
   build_by_default : false,
 )

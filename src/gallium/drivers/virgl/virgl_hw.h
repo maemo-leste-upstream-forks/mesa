@@ -280,6 +280,18 @@ enum virgl_formats {
    VIRGL_FORMAT_BPTC_RGB_FLOAT          = 257,
    VIRGL_FORMAT_BPTC_RGB_UFLOAT         = 258,
 
+   /* etc2 compressed */
+   VIRGL_FORMAT_ETC2_RGB8               = 269,
+   VIRGL_FORMAT_ETC2_SRGB8              = 270,
+   VIRGL_FORMAT_ETC2_RGB8A1             = 271,
+   VIRGL_FORMAT_ETC2_SRGB8A1            = 272,
+   VIRGL_FORMAT_ETC2_RGBA8              = 273,
+   VIRGL_FORMAT_ETC2_SRGBA8             = 274,
+   VIRGL_FORMAT_ETC2_R11_UNORM          = 275,
+   VIRGL_FORMAT_ETC2_R11_SNORM          = 276,
+   VIRGL_FORMAT_ETC2_RG11_UNORM         = 277,
+   VIRGL_FORMAT_ETC2_RG11_SNORM         = 278,
+
    VIRGL_FORMAT_R10G10B10X2_UNORM       = 308,
    VIRGL_FORMAT_A4B4G4R4_UNORM          = 311,
 
@@ -324,6 +336,7 @@ enum virgl_formats {
 #define VIRGL_CAP_CLIP_HALFZ           (1 << 27)
 #define VIRGL_CAP_APP_TWEAK_SUPPORT    (1 << 28)
 #define VIRGL_CAP_BGRA_SRGB_IS_EMULATED (1 << 29)
+#define VIRGL_CAP_CLEAR_TEXTURE        (1 << 30)
 
 /* virgl bind flags - these are compatible with mesa 10.5 gallium.
  * but are fixed, no other should be passed to virgl either.

@@ -62,6 +62,7 @@
 #include "egl_dri2.h"
 #include "GL/mesa_glinterop.h"
 #include "loader/loader.h"
+#include "util/os_file.h"
 #include "util/u_atomic.h"
 #include "util/u_vector.h"
 #include "mapi/glapi/glapi.h"
@@ -822,9 +823,11 @@ dri2_load_driver_common(_EGLDisplay *disp,
    if (!extensions)
       return EGL_FALSE;
 
-   if (!dri2_bind_extensions(dri2_dpy, driver_extensions, extensions, false))
+   if (!dri2_bind_extensions(dri2_dpy, driver_extensions, extensions, false)) {
+      dlclose(dri2_dpy->driver);
+      dri2_dpy->driver = NULL;
       return EGL_FALSE;
-
+   }
    dri2_dpy->driver_extensions = extensions;
 
    dri2_bind_extensions(dri2_dpy, optional_driver_extensions, extensions, true);
@@ -1004,11 +1007,6 @@ dri2_setup_screen(_EGLDisplay *disp)
       if (dri2_dpy->image->base.version >= 8 &&
           dri2_dpy->image->createImageFromDmaBufs) {
          disp->Extensions.EXT_image_dma_buf_import = EGL_TRUE;
-      }
-      if (dri2_dpy->image->base.version >= 15 &&
-          dri2_dpy->image->createImageFromDmaBufs2 &&
-          dri2_dpy->image->queryDmaBufFormats &&
-          dri2_dpy->image->queryDmaBufModifiers) {
          disp->Extensions.EXT_image_dma_buf_import_modifiers = EGL_TRUE;
       }
 #endif
@@ -3459,7 +3457,7 @@ dri2_dup_native_fence_fd(_EGLDriver *drv, _EGLDisplay *disp, _EGLSync *sync)
       return EGL_NO_NATIVE_FENCE_FD_ANDROID;
    }
 
-   return dup(sync->SyncFd);
+   return os_dupfd_cloexec(sync->SyncFd);
 }
 
 static void

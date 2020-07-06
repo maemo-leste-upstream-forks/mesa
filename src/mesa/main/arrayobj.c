@@ -43,7 +43,7 @@
 #include "glheader.h"
 #include "hash.h"
 #include "image.h"
-#include "util/imports.h"
+
 #include "context.h"
 #include "bufferobj.h"
 #include "arrayobj.h"
@@ -54,6 +54,7 @@
 #include "util/bitscan.h"
 #include "util/u_atomic.h"
 #include "util/u_math.h"
+#include "util/u_memory.h"
 
 
 const GLubyte
@@ -303,8 +304,9 @@ _mesa_lookup_vao_err(struct gl_context *ctx, GLuint id,
  * to any buffer objects (VBOs).
  * This is done just prior to array object destruction.
  */
-static void
-unbind_array_object_vbos(struct gl_context *ctx, struct gl_vertex_array_object *obj)
+void
+_mesa_unbind_array_object_vbos(struct gl_context *ctx,
+                               struct gl_vertex_array_object *obj)
 {
    GLuint i;
 
@@ -319,7 +321,7 @@ unbind_array_object_vbos(struct gl_context *ctx, struct gl_vertex_array_object *
 struct gl_vertex_array_object *
 _mesa_new_vao(struct gl_context *ctx, GLuint name)
 {
-   struct gl_vertex_array_object *obj = CALLOC_STRUCT(gl_vertex_array_object);
+   struct gl_vertex_array_object *obj = MALLOC_STRUCT(gl_vertex_array_object);
    if (obj)
       _mesa_initialize_vao(ctx, obj, name);
    return obj;
@@ -332,7 +334,7 @@ _mesa_new_vao(struct gl_context *ctx, GLuint name)
 void
 _mesa_delete_vao(struct gl_context *ctx, struct gl_vertex_array_object *obj)
 {
-   unbind_array_object_vbos(ctx, obj);
+   _mesa_unbind_array_object_vbos(ctx, obj);
    _mesa_reference_buffer_object(ctx, &obj->IndexBufferObj, NULL);
    free(obj->Label);
    free(obj);
@@ -386,43 +388,6 @@ _mesa_reference_vao_(struct gl_context *ctx,
 
 
 /**
- * Initialize attributes of a vertex array within a vertex array object.
- * \param vao  the container vertex array object
- * \param index  which array in the VAO to initialize
- * \param size  number of components (1, 2, 3 or 4) per attribute
- * \param type  datatype of the attribute (GL_FLOAT, GL_INT, etc).
- */
-static void
-init_array(struct gl_context *ctx,
-           struct gl_vertex_array_object *vao,
-           gl_vert_attrib index, GLint size, GLint type)
-{
-   assert(index < ARRAY_SIZE(vao->VertexAttrib));
-   struct gl_array_attributes *array = &vao->VertexAttrib[index];
-   assert(index < ARRAY_SIZE(vao->BufferBinding));
-   struct gl_vertex_buffer_binding *binding = &vao->BufferBinding[index];
-
-   _mesa_set_vertex_format(&array->Format, size, type, GL_RGBA,
-                           GL_FALSE, GL_FALSE, GL_FALSE);
-   array->Stride = 0;
-   array->Ptr = NULL;
-   array->RelativeOffset = 0;
-   ASSERT_BITFIELD_SIZE(struct gl_array_attributes, BufferBindingIndex,
-                        VERT_ATTRIB_MAX - 1);
-   array->BufferBindingIndex = index;
-
-   binding->Offset = 0;
-   binding->Stride = array->Format._ElementSize;
-   binding->BufferObj = NULL;
-   binding->_BoundArrays = BITFIELD_BIT(index);
-
-   /* Vertex array buffers */
-   _mesa_reference_buffer_object(ctx, &binding->BufferObj,
-                                 ctx->Shared->NullBufferObj);
-}
-
-
-/**
  * Initialize a gl_vertex_array_object's arrays.
  */
 void
@@ -430,44 +395,8 @@ _mesa_initialize_vao(struct gl_context *ctx,
                      struct gl_vertex_array_object *vao,
                      GLuint name)
 {
-   GLuint i;
-
+   memcpy(vao, &ctx->Array.DefaultVAOState, sizeof(*vao));
    vao->Name = name;
-
-   vao->RefCount = 1;
-   vao->SharedAndImmutable = false;
-
-   /* Init the individual arrays */
-   for (i = 0; i < ARRAY_SIZE(vao->VertexAttrib); i++) {
-      switch (i) {
-      case VERT_ATTRIB_NORMAL:
-         init_array(ctx, vao, VERT_ATTRIB_NORMAL, 3, GL_FLOAT);
-         break;
-      case VERT_ATTRIB_COLOR1:
-         init_array(ctx, vao, VERT_ATTRIB_COLOR1, 3, GL_FLOAT);
-         break;
-      case VERT_ATTRIB_FOG:
-         init_array(ctx, vao, VERT_ATTRIB_FOG, 1, GL_FLOAT);
-         break;
-      case VERT_ATTRIB_COLOR_INDEX:
-         init_array(ctx, vao, VERT_ATTRIB_COLOR_INDEX, 1, GL_FLOAT);
-         break;
-      case VERT_ATTRIB_EDGEFLAG:
-         init_array(ctx, vao, VERT_ATTRIB_EDGEFLAG, 1, GL_UNSIGNED_BYTE);
-         break;
-      case VERT_ATTRIB_POINT_SIZE:
-         init_array(ctx, vao, VERT_ATTRIB_POINT_SIZE, 1, GL_FLOAT);
-         break;
-      default:
-         init_array(ctx, vao, i, 4, GL_FLOAT);
-         break;
-      }
-   }
-
-   vao->_AttributeMapMode = ATTRIBUTE_MAP_MODE_IDENTITY;
-
-   _mesa_reference_buffer_object(ctx, &vao->IndexBufferObj,
-                                 ctx->Shared->NullBufferObj);
 }
 
 
@@ -482,7 +411,7 @@ compute_vbo_offset_range(const struct gl_vertex_array_object *vao,
                          GLsizeiptr* min, GLsizeiptr* max)
 {
    /* The function is meant to work on VBO bindings */
-   assert(_mesa_is_bufferobj(binding->BufferObj));
+   assert(binding->BufferObj);
 
    /* Start with an inverted range of relative offsets. */
    GLuint min_offset = ~(GLuint)0;
@@ -617,6 +546,17 @@ _mesa_update_vao_derived_arrays(struct gl_context *ctx,
    vao->_EffEnabledVBO = _mesa_vao_enable_to_vp_inputs(mode, enabled & vbos);
    vao->_EffEnabledNonZeroDivisor =
       _mesa_vao_enable_to_vp_inputs(mode, enabled & divisor_is_nonzero);
+
+   /* Fast path when the VAO is updated too often. */
+   if (vao->IsDynamic)
+      return;
+
+   /* More than 4 updates turn the VAO to dynamic. */
+   if (ctx->Const.AllowDynamicVAOFastPath && ++vao->NumUpdates > 4) {
+      vao->IsDynamic = true;
+      return;
+   }
+
    /* Walk those enabled arrays that have a real vbo attached */
    GLbitfield mask = enabled;
    while (mask) {
@@ -627,7 +567,7 @@ _mesa_update_vao_derived_arrays(struct gl_context *ctx,
       struct gl_vertex_buffer_binding *binding = &vao->BufferBinding[bindex];
 
       /* The scan goes different for user space arrays than vbos */
-      if (_mesa_is_bufferobj(binding->BufferObj)) {
+      if (binding->BufferObj) {
          /* The bound arrays. */
          const GLbitfield bound = enabled & binding->_BoundArrays;
 
@@ -806,7 +746,7 @@ _mesa_update_vao_derived_arrays(struct gl_context *ctx,
             }
 
             /* User space buffer object */
-            assert(!_mesa_is_bufferobj(binding2->BufferObj));
+            assert(!binding2->BufferObj);
 
             eff_bound_arrays |= VERT_BIT(j);
          }
@@ -849,7 +789,7 @@ _mesa_update_vao_derived_arrays(struct gl_context *ctx,
          assert(binding->Stride == binding2->Stride);
          assert(binding->InstanceDivisor == binding2->InstanceDivisor);
          assert(binding->BufferObj == binding2->BufferObj);
-         if (_mesa_is_bufferobj(binding->BufferObj)) {
+         if (binding->BufferObj) {
             assert(attrib->_EffRelativeOffset <= MaxRelativeOffset);
             assert(binding->Offset + attrib->RelativeOffset ==
                    binding2->_EffOffset + attrib->_EffRelativeOffset);
@@ -891,7 +831,7 @@ _mesa_all_varyings_in_vbos(const struct gl_vertex_array_object *vao)
          &vao->BufferBinding[attrib_array->BufferBindingIndex];
 
       /* We have already masked out vao->VertexAttribBufferMask  */
-      assert(!_mesa_is_bufferobj(buffer_binding->BufferObj));
+      assert(!buffer_binding->BufferObj);
 
       /* Bail out once we find the first non vbo with a non zero stride */
       if (buffer_binding->Stride != 0)
@@ -920,7 +860,7 @@ _mesa_all_buffers_are_unmapped(const struct gl_vertex_array_object *vao)
          &vao->BufferBinding[attrib_array->BufferBindingIndex];
 
       /* We have already masked with vao->VertexAttribBufferMask  */
-      assert(_mesa_is_bufferobj(buffer_binding->BufferObj));
+      assert(buffer_binding->BufferObj);
 
       /* Bail out once we find the first disallowed mapping */
       if (_mesa_check_disallowed_mapping(buffer_binding->BufferObj))
@@ -950,7 +890,7 @@ _mesa_vao_map_arrays(struct gl_context *ctx, struct gl_vertex_array_object *vao,
       mask &= ~binding->_BoundArrays;
 
       struct gl_buffer_object *bo = binding->BufferObj;
-      assert(_mesa_is_bufferobj(bo));
+      assert(bo);
       if (_mesa_bufferobj_mapped(bo, MAP_INTERNAL))
          continue;
 
@@ -969,7 +909,7 @@ _mesa_vao_map(struct gl_context *ctx, struct gl_vertex_array_object *vao,
    struct gl_buffer_object *bo = vao->IndexBufferObj;
 
    /* map the index buffer, if there is one, and not already mapped */
-   if (_mesa_is_bufferobj(bo) && !_mesa_bufferobj_mapped(bo, MAP_INTERNAL))
+   if (bo && !_mesa_bufferobj_mapped(bo, MAP_INTERNAL))
       ctx->Driver.MapBufferRange(ctx, 0, bo->Size, access, bo, MAP_INTERNAL);
 
    _mesa_vao_map_arrays(ctx, vao, access);
@@ -992,7 +932,7 @@ _mesa_vao_unmap_arrays(struct gl_context *ctx,
       mask &= ~binding->_BoundArrays;
 
       struct gl_buffer_object *bo = binding->BufferObj;
-      assert(_mesa_is_bufferobj(bo));
+      assert(bo);
       if (!_mesa_bufferobj_mapped(bo, MAP_INTERNAL))
          continue;
 
@@ -1010,7 +950,7 @@ _mesa_vao_unmap(struct gl_context *ctx, struct gl_vertex_array_object *vao)
    struct gl_buffer_object *bo = vao->IndexBufferObj;
 
    /* unmap the index buffer, if there is one, and still mapped */
-   if (_mesa_is_bufferobj(bo) && _mesa_bufferobj_mapped(bo, MAP_INTERNAL))
+   if (bo && _mesa_bufferobj_mapped(bo, MAP_INTERNAL))
       ctx->Driver.UnmapBuffer(ctx, bo, MAP_INTERNAL);
 
    _mesa_vao_unmap_arrays(ctx, vao);
@@ -1125,7 +1065,7 @@ delete_vertex_arrays(struct gl_context *ctx, GLsizei n, const GLuint *ids)
          if (ctx->Array._DrawVAO == obj)
             _mesa_set_draw_vao(ctx, ctx->Array._EmptyVAO, 0);
 
-         /* Unreference the array object. 
+         /* Unreference the array object.
           * If refcount hits zero, the object will be deleted.
           */
          _mesa_reference_vao(ctx, &obj, NULL);
@@ -1312,14 +1252,16 @@ vertex_array_element_buffer(struct gl_context *ctx, GLuint vaobj, GLuint buffer,
       } else {
          bufObj = _mesa_lookup_bufferobj(ctx, buffer);
       }
+
+      if (!bufObj)
+         return;
+
+      bufObj->UsageHistory |= USAGE_ELEMENT_ARRAY_BUFFER;
    } else {
-      bufObj = ctx->Shared->NullBufferObj;
+      bufObj = NULL;
    }
 
-   if (bufObj) {
-      bufObj->UsageHistory |= USAGE_ELEMENT_ARRAY_BUFFER;
-      _mesa_reference_buffer_object(ctx, &vao->IndexBufferObj, bufObj);
-   }
+   _mesa_reference_buffer_object(ctx, &vao->IndexBufferObj, bufObj);
 }
 
 
@@ -1369,5 +1311,5 @@ _mesa_GetVertexArrayiv(GLuint vaobj, GLenum pname, GLint *param)
       return;
    }
 
-   param[0] = vao->IndexBufferObj->Name;
+   param[0] = vao->IndexBufferObj ? vao->IndexBufferObj->Name : 0;
 }

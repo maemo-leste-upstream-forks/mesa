@@ -27,13 +27,7 @@
 #ifndef IR3_RA_H_
 #define IR3_RA_H_
 
-//#include "util/u_math.h"
-//#include "util/register_allocate.h"
-//#include "util/ralloc.h"
 #include "util/bitset.h"
-
-//#include "ir3.h"
-//#include "ir3_compiler.h"
 
 
 static const unsigned class_sizes[] = {
@@ -63,9 +57,27 @@ static const unsigned high_class_sizes[] = {
 #define NUM_HIGH_REGS        (4 * 8)   /* r48 to r55 */
 #define FIRST_HIGH_REG       (4 * 48)
 /* Number of virtual regs in a given class: */
-#define CLASS_REGS(i)        (NUM_REGS - (class_sizes[i] - 1))
-#define HALF_CLASS_REGS(i)   (NUM_REGS - (half_class_sizes[i] - 1))
-#define HIGH_CLASS_REGS(i)   (NUM_HIGH_REGS - (high_class_sizes[i] - 1))
+
+static inline unsigned CLASS_REGS(unsigned i)
+{
+	assert(i < class_count);
+
+	return (NUM_REGS - (class_sizes[i] - 1));
+}
+
+static inline unsigned HALF_CLASS_REGS(unsigned i)
+{
+	assert(i < half_class_count);
+
+	return (NUM_REGS - (half_class_sizes[i] - 1));
+}
+
+static inline unsigned HIGH_CLASS_REGS(unsigned i)
+{
+	assert(i < high_class_count);
+
+	return (NUM_HIGH_REGS - (high_class_sizes[i] - 1));
+}
 
 #define HALF_OFFSET          (class_count)
 #define HIGH_OFFSET          (class_count + half_class_count)
@@ -76,6 +88,14 @@ struct ir3_ra_reg_set {
 	unsigned int classes[class_count];
 	unsigned int half_classes[half_class_count];
 	unsigned int high_classes[high_class_count];
+
+	/* pre-fetched tex dst is limited, on current gens to regs
+	 * 0x3f and below.  An additional register class, with one
+	 * vreg, that is setup to conflict with any regs above that
+	 * limit.
+	 */
+	unsigned prefetch_exclude_class;
+	unsigned prefetch_exclude_reg;
 
 	/* The virtual register space flattens out all the classes,
 	 * starting with full, followed by half and then high, ie:
@@ -132,6 +152,9 @@ struct ir3_ra_ctx {
 	bool scalar_pass;
 
 	unsigned alloc_count;
+	unsigned r0_xyz_nodes; /* ra node numbers for r0.[xyz] precolors */
+	unsigned hr0_xyz_nodes; /* ra node numbers for hr0.[xyz] precolors */
+	unsigned prefetch_exclude_node;
 	/* one per class, plus one slot for arrays: */
 	unsigned class_alloc_count[total_class_count + 1];
 	unsigned class_base[total_class_count + 1];
@@ -189,20 +212,6 @@ scalar_name(struct ir3_ra_ctx *ctx, struct ir3_instruction *instr, unsigned n)
 	}
 
 	return ra_name(ctx, &ctx->instrd[instr->ip]) + n;
-}
-
-static inline bool
-writes_gpr(struct ir3_instruction *instr)
-{
-	if (dest_regs(instr) == 0)
-		return false;
-	/* is dest a normal temp register: */
-	struct ir3_register *reg = instr->regs[0];
-	debug_assert(!(reg->flags & (IR3_REG_CONST | IR3_REG_IMMED)));
-	if ((reg->num == regid(REG_A0, 0)) ||
-			(reg->num == regid(REG_P0, 0)))
-		return false;
-	return true;
 }
 
 #define NO_NAME ~0
@@ -308,7 +317,6 @@ __ra_init_use_itr(struct ir3_ra_ctx *ctx, struct ir3_instruction *instr)
 
 	ctx->namecnt = ctx->nameidx = 0;
 
-	struct ir3_register *reg;
 	foreach_src (reg, instr) {
 		if (reg->flags & IR3_REG_ARRAY) {
 			struct ir3_array *arr =

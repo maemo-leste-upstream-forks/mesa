@@ -25,6 +25,7 @@
 #define GEN_PERF_H
 
 #include <stdio.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -37,6 +38,8 @@
 #include "util/hash_table.h"
 #include "compiler/glsl/list.h"
 #include "util/ralloc.h"
+
+#include "drm-uapi/i915_drm.h"
 
 struct gen_device_info;
 
@@ -58,6 +61,39 @@ enum gen_perf_counter_data_type {
    GEN_PERF_COUNTER_DATA_TYPE_UINT64,
    GEN_PERF_COUNTER_DATA_TYPE_FLOAT,
    GEN_PERF_COUNTER_DATA_TYPE_DOUBLE,
+};
+
+enum gen_perf_counter_units {
+   /* size */
+   GEN_PERF_COUNTER_UNITS_BYTES,
+
+   /* frequency */
+   GEN_PERF_COUNTER_UNITS_HZ,
+
+   /* time */
+   GEN_PERF_COUNTER_UNITS_NS,
+   GEN_PERF_COUNTER_UNITS_US,
+
+   /**/
+   GEN_PERF_COUNTER_UNITS_PIXELS,
+   GEN_PERF_COUNTER_UNITS_TEXELS,
+   GEN_PERF_COUNTER_UNITS_THREADS,
+   GEN_PERF_COUNTER_UNITS_PERCENT,
+
+   /* events */
+   GEN_PERF_COUNTER_UNITS_MESSAGES,
+   GEN_PERF_COUNTER_UNITS_NUMBER,
+   GEN_PERF_COUNTER_UNITS_CYCLES,
+   GEN_PERF_COUNTER_UNITS_EVENTS,
+   GEN_PERF_COUNTER_UNITS_UTILIZATION,
+
+   /**/
+   GEN_PERF_COUNTER_UNITS_EU_SENDS_TO_L3_CACHE_LINES,
+   GEN_PERF_COUNTER_UNITS_EU_ATOMIC_REQUESTS_TO_L3_CACHE_LINES,
+   GEN_PERF_COUNTER_UNITS_EU_REQUESTS_TO_L3_CACHE_LINES,
+   GEN_PERF_COUNTER_UNITS_EU_BYTES_PER_L3_CACHE_LINE,
+
+   GEN_PERF_COUNTER_UNITS_MAX
 };
 
 struct gen_pipeline_stat {
@@ -128,10 +164,14 @@ struct gen_perf_query_result {
 struct gen_perf_query_counter {
    const char *name;
    const char *desc;
+   const char *symbol_name;
+   const char *category;
    enum gen_perf_counter_type type;
    enum gen_perf_counter_data_type data_type;
+   enum gen_perf_counter_units units;
    uint64_t raw_max;
    size_t offset;
+   uint64_t query_mask;
 
    union {
       uint64_t (*oa_counter_read_uint64)(struct gen_perf_config *perf,
@@ -195,8 +235,14 @@ struct gen_perf_config {
    /* Version of the i915-perf subsystem, refer to i915_drm.h. */
    int i915_perf_version;
 
+   /* Powergating configuration for the running the query. */
+   struct drm_i915_gem_context_param_sseu sseu;
+
    struct gen_perf_query_info *queries;
    int n_queries;
+
+   struct gen_perf_query_counter **counters;
+   int n_counters;
 
    /* Variables referenced in the XML meta data for OA performance
     * counters, e.g in the normalization equations.
@@ -222,6 +268,12 @@ struct gen_perf_config {
     */
    struct hash_table *oa_metrics_table;
 
+   /* Whether we have support for this platform. If true && n_queries == 0,
+    * this means we will not be able to use i915-perf because of it is in
+    * paranoid mode.
+    */
+   bool platform_supported;
+
    /* Location of the device's sysfs entry. */
    char sysfs_dev_dir[256];
 
@@ -245,9 +297,16 @@ struct gen_perf_config {
    } vtbl;
 };
 
+struct gen_perf_counter_pass {
+   struct gen_perf_query_info *query;
+   struct gen_perf_query_counter *counter;
+   uint32_t pass;
+};
+
 void gen_perf_init_metrics(struct gen_perf_config *perf_cfg,
                            const struct gen_device_info *devinfo,
-                           int drm_fd);
+                           int drm_fd,
+                           bool include_pipeline_statistics);
 
 /** Query i915 for a metric id using guid.
  */
@@ -309,5 +368,14 @@ gen_perf_new(void *ctx)
    struct gen_perf_config *perf = rzalloc(ctx, struct gen_perf_config);
    return perf;
 }
+
+uint32_t gen_perf_get_n_passes(struct gen_perf_config *perf,
+                               const uint32_t *counter_indices,
+                               uint32_t counter_indices_count,
+                               struct gen_perf_query_info **pass_queries);
+void gen_perf_get_counters_passes(struct gen_perf_config *perf,
+                                  const uint32_t *counter_indices,
+                                  uint32_t counter_indices_count,
+                                  struct gen_perf_counter_pass *counter_pass);
 
 #endif /* GEN_PERF_H */

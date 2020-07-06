@@ -37,7 +37,7 @@ public:
    AssemblyFromShaderLegacy(struct r600_shader *sh, r600_shader_key *key);
    ~AssemblyFromShaderLegacy() override;
 private:
-   bool do_lower(const std::vector<Instruction::Pointer>& ir)  override ;
+   bool do_lower(const std::vector<InstructionBlock> &ir)  override ;
 
    struct AssemblyFromShaderLegacyImpl *impl;
 };

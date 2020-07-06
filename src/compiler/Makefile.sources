@@ -108,7 +108,6 @@ LIBGLSL_FILES = \
 	glsl/lower_int64.cpp \
 	glsl/lower_jumps.cpp \
 	glsl/lower_mat_op_to_vec.cpp \
-	glsl/lower_noise.cpp \
 	glsl/lower_offset_array.cpp \
 	glsl/lower_packed_varyings.cpp \
 	glsl/lower_named_interface_blocks.cpp \
@@ -215,6 +214,7 @@ NIR_FILES = \
 	nir/nir_control_flow.c \
 	nir/nir_control_flow.h \
 	nir/nir_control_flow_private.h \
+	nir/nir_convert_ycbcr.c \
 	nir/nir_deref.c \
 	nir/nir_deref.h \
 	nir/nir_divergence_analysis.c \
@@ -246,6 +246,7 @@ NIR_FILES = \
 	nir/nir_lower_clamp_color_outputs.c \
 	nir/nir_lower_clip.c \
 	nir/nir_lower_clip_cull_distance_arrays.c \
+	nir/nir_lower_clip_disable.c \
 	nir/nir_lower_clip_halfz.c \
 	nir/nir_lower_variable_initializers.c \
 	nir/nir_lower_discard_to_demote.c \
@@ -271,6 +272,7 @@ NIR_FILES = \
 	nir/nir_lower_io_to_temporaries.c \
 	nir/nir_lower_io_to_scalar.c \
 	nir/nir_lower_io_to_vector.c \
+	nir/nir_lower_mediump_outputs.c \
 	nir/nir_lower_non_uniform_access.c \
 	nir/nir_lower_packing.c \
 	nir/nir_lower_passthrough_edgeflags.c \
@@ -295,6 +297,7 @@ NIR_FILES = \
 	nir/nir_lower_viewport_transform.c \
 	nir/nir_lower_wpos_center.c \
 	nir/nir_lower_wpos_ytransform.c \
+	nir/nir_lower_wrmasks.c \
 	nir/nir_metadata.c \
 	nir/nir_move_vec_src_uses_to_dest.c \
 	nir/nir_normalize_cubemap_coords.c \
@@ -348,6 +351,7 @@ NIR_FILES = \
 	nir/nir_to_lcssa.c \
 	nir/nir_validate.c \
 	nir/nir_vla.h \
+	nir/nir_vulkan.h \
 	nir/nir_worklist.c \
 	nir/nir_worklist.h \
 	nir/nir_xfb_info.h

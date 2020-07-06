@@ -81,7 +81,7 @@ v3d_bo_dump_stats(struct v3d_screen *screen)
                 struct timespec time;
                 clock_gettime(CLOCK_MONOTONIC, &time);
                 fprintf(stderr, "  now:               %ld\n",
-                        time.tv_sec);
+                        (long)time.tv_sec);
         }
 }
 
@@ -367,7 +367,8 @@ v3d_bo_open_handle(struct v3d_screen *screen,
                         strerror(errno));
                 free(bo->map);
                 free(bo);
-                return NULL;
+                bo = NULL;
+                goto done;
         }
         bo->offset = get.offset;
         assert(bo->offset != 0);

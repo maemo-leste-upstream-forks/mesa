@@ -125,6 +125,7 @@ iris_to_brw_fs_key(const struct gen_device_info *devinfo,
       .coherent_fb_fetch = key->coherent_fb_fetch,
       .color_outputs_valid = key->color_outputs_valid,
       .input_slots_valid = key->input_slots_valid,
+      .ignore_sample_mask_out = !key->multisample_fbo,
    };
 }
 
@@ -267,8 +268,10 @@ iris_lower_storage_image_derefs(nir_shader *nir)
 static bool
 iris_fix_edge_flags(nir_shader *nir)
 {
-   if (nir->info.stage != MESA_SHADER_VERTEX)
+   if (nir->info.stage != MESA_SHADER_VERTEX) {
+      nir_shader_preserve_all_metadata(nir);
       return false;
+   }
 
    nir_variable *var = NULL;
    nir_foreach_variable(v, &nir->outputs) {
@@ -278,8 +281,10 @@ iris_fix_edge_flags(nir_shader *nir)
       }
    }
 
-   if (!var)
+   if (!var) {
+      nir_shader_preserve_all_metadata(nir);
       return false;
+   }
 
    exec_node_remove(&var->node);
    var->data.mode = nir_var_shader_temp;
@@ -294,6 +299,8 @@ iris_fix_edge_flags(nir_shader *nir)
                                         nir_metadata_dominance |
                                         nir_metadata_live_ssa_defs |
                                         nir_metadata_loop_analysis);
+      } else {
+         nir_metadata_preserve(f->impl, nir_metadata_all);
       }
    }
 
@@ -393,6 +400,7 @@ iris_setup_uniforms(const struct brw_compiler *compiler,
    unsigned patch_vert_idx = -1;
    unsigned ucp_idx[IRIS_MAX_CLIP_PLANES];
    unsigned img_idx[PIPE_MAX_SHADER_IMAGES];
+   unsigned variable_group_size_idx = -1;
    memset(ucp_idx, -1, sizeof(ucp_idx));
    memset(img_idx, -1, sizeof(img_idx));
 
@@ -432,6 +440,9 @@ iris_setup_uniforms(const struct brw_compiler *compiler,
             load_ubo->num_components = intrin->num_components;
             load_ubo->src[0] = nir_src_for_ssa(temp_const_ubo_name);
             load_ubo->src[1] = nir_src_for_ssa(offset);
+            nir_intrinsic_set_align(load_ubo,
+                                    nir_intrinsic_align_mul(intrin),
+                                    nir_intrinsic_align_offset(intrin));
             nir_ssa_dest_init(&load_ubo->instr, &load_ubo->dest,
                               intrin->dest.ssa.num_components,
                               intrin->dest.ssa.bit_size,
@@ -513,6 +524,21 @@ iris_setup_uniforms(const struct brw_compiler *compiler,
                                nir_intrinsic_base(intrin) * 16));
             break;
          }
+         case nir_intrinsic_load_local_group_size: {
+            assert(nir->info.cs.local_size_variable);
+            if (variable_group_size_idx == -1) {
+               variable_group_size_idx = num_system_values;
+               num_system_values += 3;
+               for (int i = 0; i < 3; i++) {
+                  system_values[variable_group_size_idx + i] =
+                     BRW_PARAM_BUILTIN_WORK_GROUP_SIZE_X + i;
+               }
+            }
+
+            b.cursor = nir_before_instr(instr);
+            offset = nir_imm_int(&b, variable_group_size_idx * sizeof(uint32_t));
+            break;
+         }
          default:
             continue;
          }
@@ -524,6 +550,7 @@ iris_setup_uniforms(const struct brw_compiler *compiler,
          load->num_components = comps;
          load->src[0] = nir_src_for_ssa(temp_ubo_name);
          load->src[1] = nir_src_for_ssa(offset);
+         nir_intrinsic_set_align(load, 4, 0);
          nir_ssa_dest_init(&load->instr, &load->dest, comps, 32, NULL);
          nir_builder_instr_insert(&b, &load->instr);
          nir_ssa_def_rewrite_uses(&intrin->dest.ssa,
@@ -1093,7 +1120,7 @@ iris_compile_vs(struct iris_context *ice,
 
    brw_compute_vue_map(devinfo,
                        &vue_prog_data->vue_map, nir->info.outputs_written,
-                       nir->info.separate_shader);
+                       nir->info.separate_shader, /* pos_slots */ 1);
 
    struct brw_vs_prog_key brw_key = iris_to_brw_vs_key(devinfo, key);
 
@@ -1114,7 +1141,7 @@ iris_compile_vs(struct iris_context *ice,
    }
 
    uint32_t *so_decls =
-      ice->vtbl.create_so_decl_list(&ish->stream_output,
+      screen->vtbl.create_so_decl_list(&ish->stream_output,
                                     &vue_prog_data->vue_map);
 
    struct iris_compiled_shader *shader =
@@ -1136,12 +1163,13 @@ iris_compile_vs(struct iris_context *ice,
 static void
 iris_update_compiled_vs(struct iris_context *ice)
 {
+   struct iris_screen *screen = (struct iris_screen *)ice->ctx.screen;
    struct iris_shader_state *shs = &ice->state.shaders[MESA_SHADER_VERTEX];
    struct iris_uncompiled_shader *ish =
       ice->shaders.uncompiled[MESA_SHADER_VERTEX];
 
    struct iris_vs_prog_key key = { KEY_ID(vue.base) };
-   ice->vtbl.populate_vs_key(ice, &ish->nir->info, last_vue_stage(ice), &key);
+   screen->vtbl.populate_vs_key(ice, &ish->nir->info, last_vue_stage(ice), &key);
 
    struct iris_compiled_shader *old = ice->shaders.prog[IRIS_CACHE_VS];
    struct iris_compiled_shader *shader =
@@ -1155,10 +1183,10 @@ iris_update_compiled_vs(struct iris_context *ice)
 
    if (old != shader) {
       ice->shaders.prog[IRIS_CACHE_VS] = shader;
-      ice->state.dirty |= IRIS_DIRTY_VS |
-                          IRIS_DIRTY_BINDINGS_VS |
-                          IRIS_DIRTY_CONSTANTS_VS |
-                          IRIS_DIRTY_VF_SGVS;
+      ice->state.dirty |= IRIS_DIRTY_VF_SGVS;
+      ice->state.stage_dirty |= IRIS_STAGE_DIRTY_VS |
+                                IRIS_STAGE_DIRTY_BINDINGS_VS |
+                                IRIS_STAGE_DIRTY_CONSTANTS_VS;
       shs->sysvals_need_upload = true;
 
       const struct brw_vs_prog_data *vs_prog_data =
@@ -1362,7 +1390,7 @@ iris_update_compiled_tcs(struct iris_context *ice)
    };
    get_unified_tess_slots(ice, &key.outputs_written,
                           &key.patch_outputs_written);
-   ice->vtbl.populate_tcs_key(ice, &key);
+   screen->vtbl.populate_tcs_key(ice, &key);
 
    struct iris_compiled_shader *old = ice->shaders.prog[IRIS_CACHE_TCS];
    struct iris_compiled_shader *shader =
@@ -1376,9 +1404,9 @@ iris_update_compiled_tcs(struct iris_context *ice)
 
    if (old != shader) {
       ice->shaders.prog[IRIS_CACHE_TCS] = shader;
-      ice->state.dirty |= IRIS_DIRTY_TCS |
-                          IRIS_DIRTY_BINDINGS_TCS |
-                          IRIS_DIRTY_CONSTANTS_TCS;
+      ice->state.stage_dirty |= IRIS_STAGE_DIRTY_TCS |
+                                IRIS_STAGE_DIRTY_BINDINGS_TCS |
+                                IRIS_STAGE_DIRTY_CONSTANTS_TCS;
       shs->sysvals_need_upload = true;
    }
 }
@@ -1447,7 +1475,7 @@ iris_compile_tes(struct iris_context *ice,
    }
 
    uint32_t *so_decls =
-      ice->vtbl.create_so_decl_list(&ish->stream_output,
+      screen->vtbl.create_so_decl_list(&ish->stream_output,
                                     &vue_prog_data->vue_map);
 
 
@@ -1470,13 +1498,14 @@ iris_compile_tes(struct iris_context *ice,
 static void
 iris_update_compiled_tes(struct iris_context *ice)
 {
+   struct iris_screen *screen = (struct iris_screen *)ice->ctx.screen;
    struct iris_shader_state *shs = &ice->state.shaders[MESA_SHADER_TESS_EVAL];
    struct iris_uncompiled_shader *ish =
       ice->shaders.uncompiled[MESA_SHADER_TESS_EVAL];
 
    struct iris_tes_prog_key key = { KEY_ID(vue.base) };
    get_unified_tess_slots(ice, &key.inputs_read, &key.patch_inputs_read);
-   ice->vtbl.populate_tes_key(ice, &ish->nir->info, last_vue_stage(ice), &key);
+   screen->vtbl.populate_tes_key(ice, &ish->nir->info, last_vue_stage(ice), &key);
 
    struct iris_compiled_shader *old = ice->shaders.prog[IRIS_CACHE_TES];
    struct iris_compiled_shader *shader =
@@ -1490,16 +1519,16 @@ iris_update_compiled_tes(struct iris_context *ice)
 
    if (old != shader) {
       ice->shaders.prog[IRIS_CACHE_TES] = shader;
-      ice->state.dirty |= IRIS_DIRTY_TES |
-                          IRIS_DIRTY_BINDINGS_TES |
-                          IRIS_DIRTY_CONSTANTS_TES;
+      ice->state.stage_dirty |= IRIS_STAGE_DIRTY_TES |
+                                IRIS_STAGE_DIRTY_BINDINGS_TES |
+                                IRIS_STAGE_DIRTY_CONSTANTS_TES;
       shs->sysvals_need_upload = true;
    }
 
    /* TODO: Could compare and avoid flagging this. */
    const struct shader_info *tes_info = &ish->nir->info;
    if (tes_info->system_values_read & (1ull << SYSTEM_VALUE_VERTICES_IN)) {
-      ice->state.dirty |= IRIS_DIRTY_CONSTANTS_TES;
+      ice->state.stage_dirty |= IRIS_STAGE_DIRTY_CONSTANTS_TES;
       ice->state.shaders[MESA_SHADER_TESS_EVAL].sysvals_need_upload = true;
    }
 }
@@ -1547,7 +1576,7 @@ iris_compile_gs(struct iris_context *ice,
 
    brw_compute_vue_map(devinfo,
                        &vue_prog_data->vue_map, nir->info.outputs_written,
-                       nir->info.separate_shader);
+                       nir->info.separate_shader, /* pos_slots */ 1);
 
    struct brw_gs_prog_key brw_key = iris_to_brw_gs_key(devinfo, key);
 
@@ -1568,7 +1597,7 @@ iris_compile_gs(struct iris_context *ice,
    }
 
    uint32_t *so_decls =
-      ice->vtbl.create_so_decl_list(&ish->stream_output,
+      screen->vtbl.create_so_decl_list(&ish->stream_output,
                                     &vue_prog_data->vue_map);
 
    struct iris_compiled_shader *shader =
@@ -1595,10 +1624,11 @@ iris_update_compiled_gs(struct iris_context *ice)
       ice->shaders.uncompiled[MESA_SHADER_GEOMETRY];
    struct iris_compiled_shader *old = ice->shaders.prog[IRIS_CACHE_GS];
    struct iris_compiled_shader *shader = NULL;
+   struct iris_screen *screen = (struct iris_screen *)ice->ctx.screen;
 
    if (ish) {
       struct iris_gs_prog_key key = { KEY_ID(vue.base) };
-      ice->vtbl.populate_gs_key(ice, &ish->nir->info, last_vue_stage(ice), &key);
+      screen->vtbl.populate_gs_key(ice, &ish->nir->info, last_vue_stage(ice), &key);
 
       shader =
          iris_find_cached_shader(ice, IRIS_CACHE_GS, sizeof(key), &key);
@@ -1612,9 +1642,9 @@ iris_update_compiled_gs(struct iris_context *ice)
 
    if (old != shader) {
       ice->shaders.prog[IRIS_CACHE_GS] = shader;
-      ice->state.dirty |= IRIS_DIRTY_GS |
-                          IRIS_DIRTY_BINDINGS_GS |
-                          IRIS_DIRTY_CONSTANTS_GS;
+      ice->state.stage_dirty |= IRIS_STAGE_DIRTY_GS |
+                                IRIS_STAGE_DIRTY_BINDINGS_GS |
+                                IRIS_STAGE_DIRTY_CONSTANTS_GS;
       shs->sysvals_need_upload = true;
    }
 }
@@ -1708,7 +1738,8 @@ iris_update_compiled_fs(struct iris_context *ice)
    struct iris_uncompiled_shader *ish =
       ice->shaders.uncompiled[MESA_SHADER_FRAGMENT];
    struct iris_fs_prog_key key = { KEY_ID(base) };
-   ice->vtbl.populate_fs_key(ice, &ish->nir->info, &key);
+   struct iris_screen *screen = (struct iris_screen *)ice->ctx.screen;
+   screen->vtbl.populate_fs_key(ice, &ish->nir->info, &key);
 
    if (ish->nos & (1ull << IRIS_NOS_LAST_VUE_MAP))
       key.input_slots_valid = ice->shaders.last_vue_map->slots_valid;
@@ -1727,12 +1758,12 @@ iris_update_compiled_fs(struct iris_context *ice)
       // XXX: only need to flag CLIP if barycentric has NONPERSPECTIVE
       // toggles.  might be able to avoid flagging SBE too.
       ice->shaders.prog[IRIS_CACHE_FS] = shader;
-      ice->state.dirty |= IRIS_DIRTY_FS |
-                          IRIS_DIRTY_BINDINGS_FS |
-                          IRIS_DIRTY_CONSTANTS_FS |
-                          IRIS_DIRTY_WM |
+      ice->state.dirty |= IRIS_DIRTY_WM |
                           IRIS_DIRTY_CLIP |
                           IRIS_DIRTY_SBE;
+      ice->state.stage_dirty |= IRIS_STAGE_DIRTY_FS |
+                                IRIS_STAGE_DIRTY_BINDINGS_FS |
+                                IRIS_STAGE_DIRTY_CONSTANTS_FS;
       shs->sysvals_need_upload = true;
    }
 }
@@ -1759,9 +1790,9 @@ update_last_vue_map(struct iris_context *ice,
       ice->state.dirty |= IRIS_DIRTY_CLIP |
                           IRIS_DIRTY_SF_CL_VIEWPORT |
                           IRIS_DIRTY_CC_VIEWPORT |
-                          IRIS_DIRTY_SCISSOR_RECT |
-                          IRIS_DIRTY_UNCOMPILED_FS |
-                          ice->state.dirty_for_nos[IRIS_NOS_LAST_VUE_MAP];
+                          IRIS_DIRTY_SCISSOR_RECT;
+      ice->state.stage_dirty |= IRIS_STAGE_DIRTY_UNCOMPILED_FS |
+         ice->state.stage_dirty_for_nos[IRIS_NOS_LAST_VUE_MAP];
    }
 
    if (changed_slots || (old_map && old_map->separate != vue_map->separate)) {
@@ -1797,7 +1828,7 @@ iris_update_pull_constant_descriptors(struct iris_context *ice,
    }
 
    if (any_new_descriptors)
-      ice->state.dirty |= IRIS_DIRTY_BINDINGS_VS << stage;
+      ice->state.stage_dirty |= IRIS_STAGE_DIRTY_BINDINGS_VS << stage;
 }
 
 /**
@@ -1826,6 +1857,7 @@ void
 iris_update_compiled_shaders(struct iris_context *ice)
 {
    const uint64_t dirty = ice->state.dirty;
+   const uint64_t stage_dirty = ice->state.stage_dirty;
 
    struct brw_vue_prog_data *old_prog_datas[4];
    if (!(dirty & IRIS_DIRTY_URB)) {
@@ -1833,7 +1865,8 @@ iris_update_compiled_shaders(struct iris_context *ice)
          old_prog_datas[i] = get_vue_prog_data(ice, i);
    }
 
-   if (dirty & (IRIS_DIRTY_UNCOMPILED_TCS | IRIS_DIRTY_UNCOMPILED_TES)) {
+   if (stage_dirty & (IRIS_STAGE_DIRTY_UNCOMPILED_TCS |
+                      IRIS_STAGE_DIRTY_UNCOMPILED_TES)) {
        struct iris_uncompiled_shader *tes =
           ice->shaders.uncompiled[MESA_SHADER_TESS_EVAL];
        if (tes) {
@@ -1842,19 +1875,20 @@ iris_update_compiled_shaders(struct iris_context *ice)
        } else {
           ice->shaders.prog[IRIS_CACHE_TCS] = NULL;
           ice->shaders.prog[IRIS_CACHE_TES] = NULL;
-          ice->state.dirty |=
-             IRIS_DIRTY_TCS | IRIS_DIRTY_TES |
-             IRIS_DIRTY_BINDINGS_TCS | IRIS_DIRTY_BINDINGS_TES |
-             IRIS_DIRTY_CONSTANTS_TCS | IRIS_DIRTY_CONSTANTS_TES;
+          ice->state.stage_dirty |=
+             IRIS_STAGE_DIRTY_TCS | IRIS_STAGE_DIRTY_TES |
+             IRIS_STAGE_DIRTY_BINDINGS_TCS | IRIS_STAGE_DIRTY_BINDINGS_TES |
+             IRIS_STAGE_DIRTY_CONSTANTS_TCS | IRIS_STAGE_DIRTY_CONSTANTS_TES;
        }
    }
 
-   if (dirty & IRIS_DIRTY_UNCOMPILED_VS)
+   if (stage_dirty & IRIS_STAGE_DIRTY_UNCOMPILED_VS)
       iris_update_compiled_vs(ice);
-   if (dirty & IRIS_DIRTY_UNCOMPILED_GS)
+   if (stage_dirty & IRIS_STAGE_DIRTY_UNCOMPILED_GS)
       iris_update_compiled_gs(ice);
 
-   if (dirty & (IRIS_DIRTY_UNCOMPILED_GS | IRIS_DIRTY_UNCOMPILED_TES)) {
+   if (stage_dirty & (IRIS_STAGE_DIRTY_UNCOMPILED_GS |
+                      IRIS_STAGE_DIRTY_UNCOMPILED_TES)) {
       const struct iris_compiled_shader *gs =
          ice->shaders.prog[MESA_SHADER_GEOMETRY];
       const struct iris_compiled_shader *tes =
@@ -1899,7 +1933,7 @@ iris_update_compiled_shaders(struct iris_context *ice)
       }
    }
 
-   if (dirty & IRIS_DIRTY_UNCOMPILED_FS)
+   if (stage_dirty & IRIS_STAGE_DIRTY_UNCOMPILED_FS)
       iris_update_compiled_fs(ice);
 
    /* Changing shader interfaces may require a URB configuration. */
@@ -1916,7 +1950,7 @@ iris_update_compiled_shaders(struct iris_context *ice)
    }
 
    for (int i = MESA_SHADER_VERTEX; i <= MESA_SHADER_FRAGMENT; i++) {
-      if (ice->state.dirty & (IRIS_DIRTY_CONSTANTS_VS << i))
+      if (ice->state.stage_dirty & (IRIS_STAGE_DIRTY_CONSTANTS_VS << i))
          iris_update_pull_constant_descriptors(ice, i);
    }
 }
@@ -1938,6 +1972,8 @@ iris_compile_cs(struct iris_context *ice,
    unsigned num_cbufs;
 
    nir_shader *nir = nir_shader_clone(mem_ctx, ish->nir);
+
+   NIR_PASS_V(nir, brw_nir_lower_cs_intrinsics);
 
    iris_setup_uniforms(compiler, mem_ctx, nir, prog_data, &system_values,
                        &num_system_values, &num_cbufs);
@@ -1983,7 +2019,8 @@ iris_update_compiled_cs(struct iris_context *ice)
       ice->shaders.uncompiled[MESA_SHADER_COMPUTE];
 
    struct iris_cs_prog_key key = { KEY_ID(base) };
-   ice->vtbl.populate_cs_key(ice, &key);
+   struct iris_screen *screen = (struct iris_screen *)ice->ctx.screen;
+   screen->vtbl.populate_cs_key(ice, &key);
 
    struct iris_compiled_shader *old = ice->shaders.prog[IRIS_CACHE_CS];
    struct iris_compiled_shader *shader =
@@ -1997,9 +2034,9 @@ iris_update_compiled_cs(struct iris_context *ice)
 
    if (old != shader) {
       ice->shaders.prog[IRIS_CACHE_CS] = shader;
-      ice->state.dirty |= IRIS_DIRTY_CS |
-                          IRIS_DIRTY_BINDINGS_CS |
-                          IRIS_DIRTY_CONSTANTS_CS;
+      ice->state.stage_dirty |= IRIS_STAGE_DIRTY_CS |
+                                IRIS_STAGE_DIRTY_BINDINGS_CS |
+                                IRIS_STAGE_DIRTY_CONSTANTS_CS;
       shs->sysvals_need_upload = true;
    }
 }
@@ -2007,22 +2044,23 @@ iris_update_compiled_cs(struct iris_context *ice)
 void
 iris_update_compiled_compute_shader(struct iris_context *ice)
 {
-   if (ice->state.dirty & IRIS_DIRTY_UNCOMPILED_CS)
+   if (ice->state.stage_dirty & IRIS_STAGE_DIRTY_UNCOMPILED_CS)
       iris_update_compiled_cs(ice);
 
-   if (ice->state.dirty & IRIS_DIRTY_CONSTANTS_CS)
+   if (ice->state.stage_dirty & IRIS_STAGE_DIRTY_CONSTANTS_CS)
       iris_update_pull_constant_descriptors(ice, MESA_SHADER_COMPUTE);
 }
 
 void
 iris_fill_cs_push_const_buffer(struct brw_cs_prog_data *cs_prog_data,
+                               unsigned threads,
                                uint32_t *dst)
 {
-   assert(cs_prog_data->push.total.size > 0);
+   assert(brw_cs_push_const_total_size(cs_prog_data, threads) > 0);
    assert(cs_prog_data->push.cross_thread.size == 0);
    assert(cs_prog_data->push.per_thread.dwords == 1);
    assert(cs_prog_data->base.param[0] == BRW_PARAM_BUILTIN_SUBGROUP_ID);
-   for (unsigned t = 0; t < cs_prog_data->threads; t++)
+   for (unsigned t = 0; t < threads; t++)
       dst[8 * t] = t;
 }
 
@@ -2184,7 +2222,7 @@ iris_create_shader_state(struct pipe_context *ctx,
    struct nir_shader *nir;
 
    if (state->type == PIPE_SHADER_IR_TGSI)
-      nir = tgsi_to_nir(state->tokens, ctx->screen);
+      nir = tgsi_to_nir(state->tokens, ctx->screen, false);
    else
       nir = state->ir.nir;
 
@@ -2381,7 +2419,7 @@ iris_delete_shader_state(struct pipe_context *ctx, void *state, gl_shader_stage 
 
    if (ice->shaders.uncompiled[stage] == ish) {
       ice->shaders.uncompiled[stage] = NULL;
-      ice->state.dirty |= IRIS_DIRTY_UNCOMPILED_VS << stage;
+      ice->state.stage_dirty |= IRIS_STAGE_DIRTY_UNCOMPILED_VS << stage;
    }
 
    if (ish->const_data) {
@@ -2440,7 +2478,7 @@ bind_shader_state(struct iris_context *ice,
                   struct iris_uncompiled_shader *ish,
                   gl_shader_stage stage)
 {
-   uint64_t dirty_bit = IRIS_DIRTY_UNCOMPILED_VS << stage;
+   uint64_t stage_dirty_bit = IRIS_STAGE_DIRTY_UNCOMPILED_VS << stage;
    const uint64_t nos = ish ? ish->nos : 0;
 
    const struct shader_info *old_info = iris_get_shader_info(ice, stage);
@@ -2448,20 +2486,20 @@ bind_shader_state(struct iris_context *ice,
 
    if ((old_info ? util_last_bit(old_info->textures_used) : 0) !=
        (new_info ? util_last_bit(new_info->textures_used) : 0)) {
-      ice->state.dirty |= IRIS_DIRTY_SAMPLER_STATES_VS << stage;
+      ice->state.stage_dirty |= IRIS_STAGE_DIRTY_SAMPLER_STATES_VS << stage;
    }
 
    ice->shaders.uncompiled[stage] = ish;
-   ice->state.dirty |= dirty_bit;
+   ice->state.stage_dirty |= stage_dirty_bit;
 
    /* Record that CSOs need to mark IRIS_DIRTY_UNCOMPILED_XS when they change
     * (or that they no longer need to do so).
     */
    for (int i = 0; i < IRIS_NOS_COUNT; i++) {
       if (nos & (1 << i))
-         ice->state.dirty_for_nos[i] |= dirty_bit;
+         ice->state.stage_dirty_for_nos[i] |= stage_dirty_bit;
       else
-         ice->state.dirty_for_nos[i] &= ~dirty_bit;
+         ice->state.stage_dirty_for_nos[i] &= ~stage_dirty_bit;
    }
 }
 

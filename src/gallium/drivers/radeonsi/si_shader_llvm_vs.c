@@ -152,7 +152,7 @@ static void load_input_vs(struct si_shader_context *ctx, unsigned input_index, L
    for (unsigned i = 0; i < num_fetches; ++i) {
       LLVMValueRef voffset = LLVMConstInt(ctx->ac.i32, fetch_stride * i, 0);
       fetches[i] = ac_build_buffer_load_format(&ctx->ac, vb_desc, vertex_index, voffset,
-                                               channels_per_fetch, 0, true);
+                                               channels_per_fetch, 0, true, false);
    }
 
    if (num_fetches == 1 && channels_per_fetch > 1) {
@@ -664,11 +664,10 @@ void si_llvm_build_vs_exports(struct si_shader_context *ctx,
       if (pos_args[i].out[0])
          shader->info.nr_pos_exports++;
 
-   /* Navi10-14 skip POS0 exports if EXEC=0 and DONE=0, causing a hang.
+   /* GFX10 (Navi1x) skip POS0 exports if EXEC=0 and DONE=0, causing a hang.
     * Setting valid_mask=1 prevents it and has no other effect.
     */
-   if (ctx->screen->info.family == CHIP_NAVI10 || ctx->screen->info.family == CHIP_NAVI12 ||
-       ctx->screen->info.family == CHIP_NAVI14)
+   if (ctx->screen->info.chip_class == GFX10)
       pos_args[0].valid_mask = 1;
 
    pos_idx = 0;
@@ -1014,7 +1013,7 @@ void si_llvm_init_vs_callbacks(struct si_shader_context *ctx, bool ngg_cull_shad
    else if (shader->key.opt.vs_as_prim_discard_cs)
       ctx->abi.emit_outputs = si_llvm_emit_prim_discard_cs_epilogue;
    else if (ngg_cull_shader)
-      ctx->abi.emit_outputs = gfx10_emit_ngg_culling_epilogue_4x_wave32;
+      ctx->abi.emit_outputs = gfx10_emit_ngg_culling_epilogue;
    else if (shader->key.as_ngg)
       ctx->abi.emit_outputs = gfx10_emit_ngg_epilogue;
    else

@@ -34,7 +34,7 @@
 #include "etnaviv_emit.h"
 #include "etnaviv_fence.h"
 #include "etnaviv_query.h"
-#include "etnaviv_query_hw.h"
+#include "etnaviv_query_acc.h"
 #include "etnaviv_rasterizer.h"
 #include "etnaviv_resource.h"
 #include "etnaviv_screen.h"
@@ -347,9 +347,6 @@ etna_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info)
       }
    }
 
-   list_for_each_entry(struct etna_hw_query, hq, &ctx->active_hw_queries, node)
-      resource_written(ctx, hq->prsc);
-
    ctx->stats.prims_emitted += u_reduced_prims_for_vertices(info->mode, info->count);
    ctx->stats.draw_calls++;
 
@@ -426,7 +423,6 @@ etna_reset_gpu_state(struct etna_context *ctx)
    if (screen->specs.halti >= 5) { /* Only on HALTI5+ */
       etna_set_state(stream, VIVS_NTE_DESCRIPTOR_UNK14C40, 0x00000001);
       etna_set_state(stream, VIVS_FE_HALTI5_UNK007D8, 0x00000002);
-      etna_set_state(stream, VIVS_FE_HALTI5_ID_CONFIG, 0x00000000);
       etna_set_state(stream, VIVS_PS_SAMPLER_BASE, 0x00000000);
       etna_set_state(stream, VIVS_VS_SAMPLER_BASE, 0x00000020);
       etna_set_state(stream, VIVS_SH_CONFIG, VIVS_SH_CONFIG_RTNE_ROUNDING);
@@ -471,14 +467,14 @@ etna_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence,
 
    mtx_lock(&ctx->lock);
 
-   list_for_each_entry(struct etna_hw_query, hq, &ctx->active_hw_queries, node)
-      etna_hw_query_suspend(hq, ctx);
+   list_for_each_entry(struct etna_acc_query, aq, &ctx->active_acc_queries, node)
+      etna_acc_query_suspend(aq, ctx);
 
    etna_cmd_stream_flush(ctx->stream, ctx->in_fence_fd,
                           (flags & PIPE_FLUSH_FENCE_FD) ? &out_fence_fd : NULL);
 
-   list_for_each_entry(struct etna_hw_query, hq, &ctx->active_hw_queries, node)
-      etna_hw_query_resume(hq, ctx);
+   list_for_each_entry(struct etna_acc_query, aq, &ctx->active_acc_queries, node)
+      etna_acc_query_resume(aq, ctx);
 
    if (fence)
       *fence = etna_fence_create(pctx, out_fence_fd);
@@ -578,7 +574,7 @@ etna_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
 
    /* context ctxate setup */
    ctx->screen = screen;
-   /* need some sane default in case state tracker doesn't set some state: */
+   /* need some sane default in case gallium frontends don't set some state: */
    ctx->sample_mask = 0xffff;
 
    /*  Set sensible defaults for state */
@@ -633,7 +629,7 @@ etna_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
       goto fail;
 
    slab_create_child(&ctx->transfer_pool, &screen->transfer_pool);
-   list_inithead(&ctx->active_hw_queries);
+   list_inithead(&ctx->active_acc_queries);
 
    /* create dummy RT buffer, used when rendering with no color buffer */
    ctx->dummy_rt = etna_bo_new(ctx->screen->dev, 64 * 64 * 4,

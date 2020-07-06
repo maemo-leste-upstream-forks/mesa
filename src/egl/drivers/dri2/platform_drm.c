@@ -36,6 +36,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include "util/os_file.h"
+
 #include "egl_dri2.h"
 #include "egl_dri2_fallbacks.h"
 #include "loader.h"
@@ -695,10 +697,6 @@ dri2_initialize_drm(_EGLDriver *drv, _EGLDisplay *disp)
    struct gbm_device *gbm;
    const char *err;
 
-   /* Not supported yet */
-   if (disp->Options.ForceSoftware)
-      return EGL_FALSE;
-
    dri2_dpy = calloc(1, sizeof *dri2_dpy);
    if (!dri2_dpy)
       return _eglError(EGL_BAD_ALLOC, "eglInitialize");
@@ -719,7 +717,7 @@ dri2_initialize_drm(_EGLDriver *drv, _EGLDisplay *disp)
       }
       dri2_dpy->own_device = true;
    } else {
-      dri2_dpy->fd = fcntl(gbm_device_get_fd(gbm), F_DUPFD_CLOEXEC, 3);
+      dri2_dpy->fd = os_dupfd_cloexec(gbm_device_get_fd(gbm));
       if (dri2_dpy->fd < 0) {
          err = "DRI2: failed to fcntl() existing gbm device";
          goto cleanup;
@@ -732,7 +730,7 @@ dri2_initialize_drm(_EGLDriver *drv, _EGLDisplay *disp)
       goto cleanup;
    }
 
-   dev = _eglAddDevice(dri2_dpy->fd, false);
+   dev = _eglAddDevice(dri2_dpy->fd, disp->Options.ForceSoftware);
    if (!dev) {
       err = "DRI2: failed to find EGLDevice";
       goto cleanup;

@@ -30,7 +30,7 @@
 
 #include "main/arrayobj.h"
 #include "main/mtypes.h"
-#include "state_tracker/st_api.h"
+#include "frontend/api.h"
 #include "main/fbobject.h"
 #include "state_tracker/st_atom.h"
 #include "util/u_helpers.h"
@@ -181,6 +181,10 @@ struct st_context
    boolean invalidate_on_gl_viewport;
    boolean draw_needs_minmax_index;
    boolean has_hw_atomics;
+
+
+   /* driver supports scissored clears */
+   boolean can_scissor_clear;
 
    /* Some state is contained in constant objects.
     * Other state is just parameter values.

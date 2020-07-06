@@ -22,7 +22,6 @@ MESA_UTIL_FILES := \
 	double.h \
 	fast_idiv_by_const.c \
 	fast_idiv_by_const.h \
-	fnv1a.h \
 	format/u_format.c \
 	format/u_format.h \
 	format/u_format_bptc.c \
@@ -51,8 +50,6 @@ MESA_UTIL_FILES := \
 	half_float.h \
 	hash_table.c \
 	hash_table.h \
-        imports.c \
-        imports.h \
 	list.h \
 	macros.h \
 	mesa-sha1.c \
@@ -119,6 +116,7 @@ MESA_UTIL_FILES := \
 	os_memory_stdc.h \
 	os_memory.h \
 	u_memory.h \
+	u_memset.h \
 	u_mm.h \
 	u_mm.c \
 	vma.c \

@@ -265,9 +265,8 @@ fd6_sampler_view_create(struct pipe_context *pctx, struct pipe_resource *prsc,
 			A6XX_TEX_CONST_1_WIDTH(u_minify(prsc->width0, lvl)) |
 			A6XX_TEX_CONST_1_HEIGHT(u_minify(prsc->height0, lvl));
 		so->texconst2 =
-			A6XX_TEX_CONST_2_FETCHSIZE(fd6_pipe2fetchsize(format)) |
-			A6XX_TEX_CONST_2_PITCH(
-				util_format_get_nblocksx(format, slice->pitch) * rsc->layout.cpp);
+			A6XX_TEX_CONST_2_PITCHALIGN(rsc->layout.pitchalign) |
+			A6XX_TEX_CONST_2_PITCH(slice->pitch);
 		so->offset = fd_resource_offset(rsc, lvl, cso->u.tex.first_layer);
 		so->ubwc_offset = fd_resource_ubwc_offset(rsc, lvl, cso->u.tex.first_layer);
 		so->ubwc_enabled = fd_resource_ubwc_enabled(rsc, lvl);
@@ -360,9 +359,7 @@ static uint32_t
 key_hash(const void *_key)
 {
 	const struct fd6_texture_key *key = _key;
-	uint32_t hash = _mesa_fnv32_1a_offset_bias;
-	hash = _mesa_fnv32_1a_accumulate_block(hash, key, sizeof(*key));
-	return hash;
+	return XXH32(key, sizeof(*key), 0);
 }
 
 static bool
@@ -442,10 +439,31 @@ fd6_texture_state_destroy(struct fd6_texture_state *state)
 	free(state);
 }
 
+static void
+fd6_rebind_resource(struct fd_context *ctx, struct fd_resource *rsc)
+{
+	if (!(rsc->dirty & FD_DIRTY_TEX))
+		return;
+
+	struct fd6_context *fd6_ctx = fd6_context(ctx);
+
+	hash_table_foreach (fd6_ctx->tex_cache, entry) {
+		struct fd6_texture_state *state = entry->data;
+
+		for (unsigned i = 0; i < ARRAY_SIZE(state->key.view); i++) {
+			if (rsc->seqno == state->key.view[i].rsc_seqno) {
+				fd6_texture_state_destroy(entry->data);
+				_mesa_hash_table_remove(fd6_ctx->tex_cache, entry);
+			}
+		}
+	}
+}
+
 void
 fd6_texture_init(struct pipe_context *pctx)
 {
-	struct fd6_context *fd6_ctx = fd6_context(fd_context(pctx));
+	struct fd_context *ctx = fd_context(pctx);
+	struct fd6_context *fd6_ctx = fd6_context(ctx);
 
 	pctx->create_sampler_state = fd6_sampler_state_create;
 	pctx->delete_sampler_state = fd6_sampler_state_delete;
@@ -454,6 +472,8 @@ fd6_texture_init(struct pipe_context *pctx)
 	pctx->create_sampler_view = fd6_sampler_view_create;
 	pctx->sampler_view_destroy = fd6_sampler_view_destroy;
 	pctx->set_sampler_views = fd_set_sampler_views;
+
+	ctx->rebind_resource = fd6_rebind_resource;
 
 	fd6_ctx->tex_cache = _mesa_hash_table_create(NULL, key_hash, key_equals);
 }

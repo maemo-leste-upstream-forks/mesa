@@ -27,7 +27,6 @@ files_panfrost = files(
   'pan_resource.h',
 
   'nir/nir_lower_blend.c',
-  'nir/nir_lower_framebuffer.c',
 
   'pan_context.c',
   'pan_blit.c',
@@ -69,7 +68,8 @@ libpanfrost = static_library(
     idep_nir
   ],
   include_directories : panfrost_includes,
-  c_args : [c_vis_args, c_msvc_compat_args, compile_args_panfrost],
+  c_args : [c_msvc_compat_args, compile_args_panfrost],
+  gnu_symbol_visibility : 'hidden',
 )
 
 driver_panfrost = declare_dependency(

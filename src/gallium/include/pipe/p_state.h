@@ -213,6 +213,10 @@ struct pipe_viewport_state
 {
    float scale[3];
    float translate[3];
+   enum pipe_viewport_swizzle swizzle_x:3;
+   enum pipe_viewport_swizzle swizzle_y:3;
+   enum pipe_viewport_swizzle swizzle_z:3;
+   enum pipe_viewport_swizzle swizzle_w:3;
 };
 
 
@@ -272,7 +276,7 @@ struct pipe_stream_output_info
  *
  * NOTE: since it is expected that the consumer will want to perform
  * additional passes on the nir_shader, the driver takes ownership of
- * the nir_shader.  If state trackers need to hang on to the IR (for
+ * the nir_shader.  If gallium frontends need to hang on to the IR (for
  * example, variant management), it should use nir_shader_clone().
  */
 struct pipe_shader_state
@@ -358,7 +362,9 @@ struct pipe_blend_state
    unsigned logicop_func:4;      /**< PIPE_LOGICOP_x */
    unsigned dither:1;
    unsigned alpha_to_coverage:1;
+   unsigned alpha_to_coverage_dither:1;
    unsigned alpha_to_one:1;
+   unsigned max_rt:3;            /* index of max rt, Ie. # of cbufs minus 1 */
    struct pipe_rt_blend_state rt[PIPE_MAX_COLOR_BUFS];
 };
 
@@ -898,7 +904,7 @@ struct pipe_compute_state
 
 /**
  * Structure that contains a callback for debug messages from the driver back
- * to the state tracker.
+ * to the gallium frontend.
  */
 struct pipe_debug_callback
 {
@@ -910,7 +916,7 @@ struct pipe_debug_callback
 
    /**
     * Callback for the driver to report debug/performance/etc information back
-    * to the state tracker.
+    * to the gallium frontend.
     *
     * \param data       user-supplied data pointer
     * \param id         message type identifier, if pointed value is 0, then a
@@ -929,7 +935,7 @@ struct pipe_debug_callback
 
 /**
  * Structure that contains a callback for device reset messages from the driver
- * back to the state tracker.
+ * back to the gallium frontend.
  *
  * The callback must not be called from driver-created threads.
  */

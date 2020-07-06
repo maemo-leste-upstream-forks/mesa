@@ -127,6 +127,8 @@ files_r600 = files(
   'sfn/sfn_instruction_alu.h',
   'sfn/sfn_instruction_base.cpp',
   'sfn/sfn_instruction_base.h',
+  'sfn/sfn_instruction_block.cpp',
+  'sfn/sfn_instruction_block.h',
   'sfn/sfn_instruction_cf.cpp',
   'sfn/sfn_instruction_cf.h',
   'sfn/sfn_instruction_export.cpp',
@@ -135,6 +137,8 @@ files_r600 = files(
   'sfn/sfn_instruction_fetch.h',
   'sfn/sfn_instruction_gds.cpp',
   'sfn/sfn_instruction_gds.h',
+  'sfn/sfn_instruction_lds.cpp',
+  'sfn/sfn_instruction_lds.h',
   'sfn/sfn_instruction_misc.cpp',
   'sfn/sfn_instruction_misc.h',
   'sfn/sfn_instruction_tex.cpp',
@@ -147,6 +151,7 @@ files_r600 = files(
   'sfn/sfn_nir.h',
   'sfn/sfn_nir_lower_fs_out_to_vector.cpp',
   'sfn/sfn_nir_lower_fs_out_to_vector.h',
+  'sfn/sfn_nir_lower_tess_io.cpp',
   'sfn/sfn_nir_vectorize_vs_inputs.c',
   'sfn/sfn_shader_base.cpp',
   'sfn/sfn_shader_base.h',
@@ -156,6 +161,10 @@ files_r600 = files(
   'sfn/sfn_shader_fragment.h',
   'sfn/sfn_shader_geometry.cpp',
   'sfn/sfn_shader_geometry.h',
+  'sfn/sfn_shader_tcs.cpp',
+  'sfn/sfn_shader_tcs.h',
+  'sfn/sfn_shader_tess_eval.cpp',
+  'sfn/sfn_shader_tess_eval.h',
   'sfn/sfn_shader_vertex.cpp',
   'sfn/sfn_shader_vertex.h',
   'sfn/sfn_shaderio.cpp',
@@ -166,6 +175,8 @@ files_r600 = files(
   'sfn/sfn_value_gpr.h',
   'sfn/sfn_valuepool.cpp',
   'sfn/sfn_valuepool.h',
+  'sfn/sfn_vertexstageexport.cpp',
+  'sfn/sfn_vertexstageexport.h',
   )
 
 egd_tables_h = custom_target(
@@ -184,8 +195,8 @@ endif
 libr600 = static_library(
   'r600',
   [files_r600, egd_tables_h],
-  c_args : [c_vis_args, r600_c_args, '-Wstrict-overflow=0'],
-  cpp_args : [cpp_vis_args],
+  c_args : [r600_c_args, '-Wstrict-overflow=0'],
+  gnu_symbol_visibility : 'hidden',
   include_directories : [
     inc_src, inc_mapi, inc_mesa, inc_include, inc_compiler, inc_gallium, inc_gallium_aux, inc_amd_common,
     inc_gallium_drivers,

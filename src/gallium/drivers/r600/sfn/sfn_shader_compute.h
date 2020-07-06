@@ -38,14 +38,15 @@ class ComputeShaderFromNir : public ShaderFromNirProcessor
 public:
    ComputeShaderFromNir(r600_pipe_shader *sh,
                         r600_pipe_shader_selector& sel,
-                        const r600_shader_key &key);
+                        const r600_shader_key &key,
+                        enum chip_class chip_class);
 
    bool scan_sysvalue_access(nir_instr *instr) override;
 
 private:
    bool emit_intrinsic_instruction_override(nir_intrinsic_instr* instr) override;
 
-   bool allocate_reserved_registers() override;
+   bool do_allocate_reserved_registers() override;
    bool do_process_inputs(nir_variable *input) override;
    bool do_process_outputs(nir_variable *output) override;
    bool do_emit_load_deref(const nir_variable *in_var, nir_intrinsic_instr* instr) override;
@@ -54,7 +55,6 @@ private:
 
    bool emit_load_3vec(nir_intrinsic_instr* instr, const std::array<PValue,3>& src);
    bool emit_load_num_work_groups(nir_intrinsic_instr* instr);
-   bool emit_barrier(nir_intrinsic_instr* instr);
 
    int m_reserved_registers;
    std::array<PValue,3> m_workgroup_id;

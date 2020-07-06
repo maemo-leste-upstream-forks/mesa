@@ -714,11 +714,10 @@ void si_nir_scan_shader(const struct nir_shader *nir, struct si_shader_info *inf
 
    info->constbuf0_num_slots = nir->num_uniforms;
    info->shader_buffers_declared = u_bit_consecutive(0, nir->info.num_ssbos);
-   info->const_buffers_declared = u_bit_consecutive(1, nir->info.num_ubos);
-   if (nir->num_uniforms > 0)
-      info->const_buffers_declared |= 1;
+   info->const_buffers_declared = u_bit_consecutive(0, nir->info.num_ubos);
    info->images_declared = u_bit_consecutive(0, nir->info.num_images);
-   info->msaa_images_declared = u_bit_consecutive(0, nir->info.last_msaa_image + 1);
+   info->msaa_images_declared = nir->info.msaa_images;
+   info->image_buffers = nir->info.image_buffers;
    info->samplers_declared = nir->info.textures_used;
 
    info->num_written_clipdistance = nir->info.clip_distance_array_size;
@@ -870,7 +869,7 @@ static void si_nir_lower_ps_inputs(struct nir_shader *nir)
 
 void si_nir_adjust_driver_locations(struct nir_shader *nir)
 {
-   /* Adjust the driver location of inputs and outputs. The state tracker
+   /* Adjust the driver location of inputs and outputs. the gallium frontend
     * interprets them as slots, while the ac/nir backend interprets them
     * as individual components.
     */
@@ -935,7 +934,7 @@ static void si_lower_nir(struct si_screen *sscreen, struct nir_shader *nir)
       si_nir_opts(nir);
 
    NIR_PASS_V(nir, nir_lower_bool_to_int32);
-   NIR_PASS_V(nir, nir_remove_dead_variables, nir_var_function_temp);
+   NIR_PASS_V(nir, nir_remove_dead_variables, nir_var_function_temp, NULL);
 
    if (sscreen->debug_flags & DBG(FS_CORRECT_DERIVS_AFTER_KILL))
       NIR_PASS_V(nir, nir_lower_discard_to_demote);

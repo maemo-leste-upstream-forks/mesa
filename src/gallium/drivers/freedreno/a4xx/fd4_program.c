@@ -64,7 +64,7 @@ emit_shader(struct fd_ringbuffer *ring, const struct ir3_shader_variant *so)
 		OUT_RING(ring, CP_LOAD_STATE4_1_EXT_SRC_ADDR(0) |
 				CP_LOAD_STATE4_1_STATE_TYPE(ST4_SHADER));
 	} else {
-		OUT_RELOCD(ring, so->bo, 0,
+		OUT_RELOC(ring, so->bo, 0,
 				CP_LOAD_STATE4_1_STATE_TYPE(ST4_SHADER), 0);
 	}
 
@@ -112,7 +112,8 @@ setup_stages(struct fd4_emit *emit, struct stage *s)
 		if (s[i].v) {
 			s[i].i = &s[i].v->info;
 			/* constlen is in units of 4 * vec4: */
-			s[i].constlen = align(s[i].v->constlen, 4) / 4;
+			assert(s[i].v->constlen % 4 == 0);
+			s[i].constlen = s[i].v->constlen / 4;
 			/* instrlen is already in units of 16 instr.. although
 			 * probably we should ditch that and not make the compiler
 			 * care about instruction group size of a3xx vs a4xx
@@ -163,7 +164,7 @@ fd4_program_emit(struct fd_ringbuffer *ring, struct fd4_emit *emit,
 {
 	struct stage s[MAX_STAGES];
 	uint32_t pos_regid, posz_regid, psize_regid, color_regid[8];
-	uint32_t face_regid, coord_regid, zwcoord_regid, vcoord_regid;
+	uint32_t face_regid, coord_regid, zwcoord_regid, vcoord_regid, lcoord_regid;
 	enum a3xx_threadsize fssz;
 	int constmode;
 	int i, j;
@@ -209,6 +210,16 @@ fd4_program_emit(struct fd_ringbuffer *ring, struct fd4_emit *emit,
 	coord_regid     = ir3_find_sysval_regid(s[FS].v, SYSTEM_VALUE_FRAG_COORD);
 	zwcoord_regid   = (coord_regid == regid(63,0)) ? regid(63,0) : (coord_regid + 2);
 	vcoord_regid    = ir3_find_sysval_regid(s[FS].v, SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL);
+	lcoord_regid    = ir3_find_sysval_regid(s[FS].v, SYSTEM_VALUE_BARYCENTRIC_LINEAR_PIXEL);
+
+	/* XXX since we don't know how to support noperspective varyings on a4xx,
+	 * use this little hack to support u_blitter, which should be the only
+	 * case with noperspective varyings on a4xx:
+	 */
+	if (VALIDREG(lcoord_regid)) {
+		assert(!VALIDREG(vcoord_regid));
+		vcoord_regid = lcoord_regid;
+	}
 
 	/* we could probably divide this up into things that need to be
 	 * emitted if frag-prog is dirty vs if vert-prog is dirty..
@@ -234,7 +245,7 @@ fd4_program_emit(struct fd_ringbuffer *ring, struct fd4_emit *emit,
 	OUT_RING(ring, A4XX_HLSQ_CONTROL_2_REG_PRIMALLOCTHRESHOLD(63) |
 			0x3f3f000 |           /* XXX */
 			A4XX_HLSQ_CONTROL_2_REG_FACEREGID(face_regid));
-	OUT_RING(ring, A4XX_HLSQ_CONTROL_3_REG_REGID(vcoord_regid) |
+	OUT_RING(ring, A4XX_HLSQ_CONTROL_3_REG_IJ_PERSP_PIXEL(vcoord_regid) |
 			0xfcfcfc00);
 	OUT_RING(ring, 0x00fcfcfc);   /* XXX HLSQ_CONTROL_4 */
 
@@ -281,7 +292,7 @@ fd4_program_emit(struct fd_ringbuffer *ring, struct fd4_emit *emit,
 			A4XX_SP_VS_CTRL_REG0_INOUTREGOVERLAP(0) |
 			A4XX_SP_VS_CTRL_REG0_THREADSIZE(TWO_QUADS) |
 			A4XX_SP_VS_CTRL_REG0_SUPERTHREADMODE |
-			COND(s[VS].v->num_samp > 0, A4XX_SP_VS_CTRL_REG0_PIXLODENABLE));
+			COND(s[VS].v->need_pixlod, A4XX_SP_VS_CTRL_REG0_PIXLODENABLE));
 	OUT_RING(ring, A4XX_SP_VS_CTRL_REG1_CONSTLENGTH(s[VS].constlen) |
 			A4XX_SP_VS_CTRL_REG1_INITIALOUTSTANDING(s[VS].v->total_in));
 	OUT_RING(ring, A4XX_SP_VS_PARAM_REG_POSREGID(pos_regid) |
@@ -289,7 +300,7 @@ fd4_program_emit(struct fd_ringbuffer *ring, struct fd4_emit *emit,
 			A4XX_SP_VS_PARAM_REG_TOTALVSOUTVAR(s[FS].v->varying_in));
 
 	struct ir3_shader_linkage l = {0};
-	ir3_link_shaders(&l, s[VS].v, s[FS].v);
+	ir3_link_shaders(&l, s[VS].v, s[FS].v, false);
 
 	for (i = 0, j = 0; (i < 16) && (j < l.cnt); i++) {
 		uint32_t reg = 0;
@@ -356,12 +367,12 @@ fd4_program_emit(struct fd_ringbuffer *ring, struct fd4_emit *emit,
 				A4XX_SP_FS_CTRL_REG0_INOUTREGOVERLAP(1) |
 				A4XX_SP_FS_CTRL_REG0_THREADSIZE(fssz) |
 				A4XX_SP_FS_CTRL_REG0_SUPERTHREADMODE |
-				COND(s[FS].v->num_samp > 0, A4XX_SP_FS_CTRL_REG0_PIXLODENABLE));
+				COND(s[FS].v->need_pixlod, A4XX_SP_FS_CTRL_REG0_PIXLODENABLE));
 		OUT_RING(ring, A4XX_SP_FS_CTRL_REG1_CONSTLENGTH(s[FS].constlen) |
 				0x80000000 |      /* XXX */
 				COND(s[FS].v->frag_face, A4XX_SP_FS_CTRL_REG1_FACENESS) |
 				COND(s[FS].v->total_in > 0, A4XX_SP_FS_CTRL_REG1_VARYING) |
-				COND(s[FS].v->frag_coord, A4XX_SP_FS_CTRL_REG1_FRAGCOORD));
+				COND(s[FS].v->fragcoord_compmask != 0, A4XX_SP_FS_CTRL_REG1_FRAGCOORD));
 
 		OUT_PKT0(ring, REG_A4XX_SP_FS_OBJ_OFFSET_REG, 2);
 		OUT_RING(ring, A4XX_SP_FS_OBJ_OFFSET_REG_CONSTOBJECTOFFSET(s[FS].constoff) |
@@ -385,10 +396,8 @@ fd4_program_emit(struct fd_ringbuffer *ring, struct fd4_emit *emit,
 	OUT_RING(ring, A4XX_RB_RENDER_CONTROL2_MSAA_SAMPLES(0) |
 			COND(s[FS].v->total_in > 0, A4XX_RB_RENDER_CONTROL2_VARYING) |
 			COND(s[FS].v->frag_face, A4XX_RB_RENDER_CONTROL2_FACENESS) |
-			COND(s[FS].v->frag_coord, A4XX_RB_RENDER_CONTROL2_XCOORD |
-					A4XX_RB_RENDER_CONTROL2_YCOORD |
-					A4XX_RB_RENDER_CONTROL2_ZCOORD |
-					A4XX_RB_RENDER_CONTROL2_WCOORD));
+			COND(s[FS].v->fragcoord_compmask != 0,
+					A4XX_RB_RENDER_CONTROL2_COORD_MASK(s[FS].v->fragcoord_compmask)));
 
 	OUT_PKT0(ring, REG_A4XX_RB_FS_OUTPUT_REG, 1);
 	OUT_RING(ring, A4XX_RB_FS_OUTPUT_REG_MRT(nr) |
@@ -465,40 +474,32 @@ fd4_program_emit(struct fd_ringbuffer *ring, struct fd4_emit *emit,
 				}
 			}
 
-			gl_varying_slot slot = s[FS].v->inputs[j].slot;
-
-			/* since we don't enable PIPE_CAP_TGSI_TEXCOORD: */
-			if (slot >= VARYING_SLOT_VAR0) {
-				unsigned texmask = 1 << (slot - VARYING_SLOT_VAR0);
-				/* Replace the .xy coordinates with S/T from the point sprite. Set
-				 * interpolation bits for .zw such that they become .01
+			bool coord_mode = emit->sprite_coord_mode;
+			if (ir3_point_sprite(s[FS].v, j, emit->sprite_coord_enable, &coord_mode)) {
+				/* mask is two 2-bit fields, where:
+				 *   '01' -> S
+				 *   '10' -> T
+				 *   '11' -> 1 - T  (flip mode)
 				 */
-				if (emit->sprite_coord_enable & texmask) {
-					/* mask is two 2-bit fields, where:
-					 *   '01' -> S
-					 *   '10' -> T
-					 *   '11' -> 1 - T  (flip mode)
-					 */
-					unsigned mask = emit->sprite_coord_mode ? 0b1101 : 0b1001;
-					uint32_t loc = inloc;
-					if (compmask & 0x1) {
-						vpsrepl[loc / 16] |= ((mask >> 0) & 0x3) << ((loc % 16) * 2);
-						loc++;
-					}
-					if (compmask & 0x2) {
-						vpsrepl[loc / 16] |= ((mask >> 2) & 0x3) << ((loc % 16) * 2);
-						loc++;
-					}
-					if (compmask & 0x4) {
-						/* .z <- 0.0f */
-						vinterp[loc / 16] |= 0b10 << ((loc % 16) * 2);
-						loc++;
-					}
-					if (compmask & 0x8) {
-						/* .w <- 1.0f */
-						vinterp[loc / 16] |= 0b11 << ((loc % 16) * 2);
-						loc++;
-					}
+				unsigned mask = coord_mode ? 0b1101 : 0b1001;
+				uint32_t loc = inloc;
+				if (compmask & 0x1) {
+					vpsrepl[loc / 16] |= ((mask >> 0) & 0x3) << ((loc % 16) * 2);
+					loc++;
+				}
+				if (compmask & 0x2) {
+					vpsrepl[loc / 16] |= ((mask >> 2) & 0x3) << ((loc % 16) * 2);
+					loc++;
+				}
+				if (compmask & 0x4) {
+					/* .z <- 0.0f */
+					vinterp[loc / 16] |= 0b10 << ((loc % 16) * 2);
+					loc++;
+				}
+				if (compmask & 0x8) {
+					/* .w <- 1.0f */
+					vinterp[loc / 16] |= 0b11 << ((loc % 16) * 2);
+					loc++;
 				}
 			}
 		}

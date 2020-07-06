@@ -42,8 +42,6 @@ struct fd4_format {
 	boolean present;
 };
 
-#define RB4_NONE ~0
-
 /* vertex + texture */
 #define VT(pipe, fmt, rbfmt, swapfmt) \
 	[PIPE_FORMAT_ ## pipe] = { \
@@ -58,7 +56,7 @@ struct fd4_format {
 #define _T(pipe, fmt, rbfmt, swapfmt) \
 	[PIPE_FORMAT_ ## pipe] = { \
 		.present = 1, \
-		.vtx = ~0, \
+		.vtx = VFMT4_NONE, \
 		.tex = TFMT4_ ## fmt, \
 		.rb = RB4_ ## rbfmt, \
 		.swap = swapfmt \
@@ -69,7 +67,7 @@ struct fd4_format {
 	[PIPE_FORMAT_ ## pipe] = { \
 		.present = 1, \
 		.vtx = VFMT4_ ## fmt, \
-		.tex = ~0, \
+		.tex = TFMT4_NONE, \
 		.rb = RB4_ ## rbfmt, \
 		.swap = swapfmt \
 	}
@@ -341,7 +339,7 @@ enum a4xx_vtx_fmt
 fd4_pipe2vtx(enum pipe_format format)
 {
 	if (!formats[format].present)
-		return ~0;
+		return VFMT4_NONE;
 	return formats[format].vtx;
 }
 
@@ -350,7 +348,7 @@ enum a4xx_tex_fmt
 fd4_pipe2tex(enum pipe_format format)
 {
 	if (!formats[format].present)
-		return ~0;
+		return TFMT4_NONE;
 	return formats[format].tex;
 }
 
@@ -359,7 +357,7 @@ enum a4xx_color_fmt
 fd4_pipe2color(enum pipe_format format)
 {
 	if (!formats[format].present)
-		return ~0;
+		return RB4_NONE;
 	return formats[format].rb;
 }
 

@@ -39,6 +39,8 @@
 #include <sys/types.h>
 #include <drm-uapi/drm_fourcc.h>
 
+#include "util/os_file.h"
+
 #include "loader.h"
 #include "egl_dri2.h"
 #include "egl_dri2_fallbacks.h"
@@ -152,26 +154,6 @@ static int get_fourcc(int native)
    case HAL_PIXEL_FORMAT_RGBA_1010102: return DRM_FORMAT_ABGR2101010;
    default:
       _eglLog(_EGL_WARNING, "unsupported native buffer format 0x%x", native);
-   }
-   return -1;
-}
-
-static int get_format(int format)
-{
-   switch (format) {
-   case HAL_PIXEL_FORMAT_BGRA_8888: return __DRI_IMAGE_FORMAT_ARGB8888;
-   case HAL_PIXEL_FORMAT_RGB_565:   return __DRI_IMAGE_FORMAT_RGB565;
-   case HAL_PIXEL_FORMAT_RGBA_8888: return __DRI_IMAGE_FORMAT_ABGR8888;
-   case HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED:
-      /*
-       * HACK: Hardcode this to RGBX_8888 as per cros_gralloc hack.
-       * TODO: Revert this once https://issuetracker.google.com/32077885 is fixed.
-       */
-   case HAL_PIXEL_FORMAT_RGBX_8888: return __DRI_IMAGE_FORMAT_XBGR8888;
-   case HAL_PIXEL_FORMAT_RGBA_FP16: return __DRI_IMAGE_FORMAT_ABGR16161616F;
-   case HAL_PIXEL_FORMAT_RGBA_1010102: return __DRI_IMAGE_FORMAT_ABGR2101010;
-   default:
-      _eglLog(_EGL_WARNING, "unsupported native buffer format 0x%x", format);
    }
    return -1;
 }
@@ -329,7 +311,6 @@ static bool
 droid_set_shared_buffer_mode(_EGLDisplay *disp, _EGLSurface *surf, bool mode)
 {
 #if ANDROID_API_LEVEL >= 24
-   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_surface *dri2_surf = dri2_egl_surface(surf);
    struct ANativeWindow *window = dri2_surf->window;
 
@@ -960,6 +941,26 @@ droid_create_image_from_prime_fds(_EGLDisplay *disp, _EGLContext *ctx,
 }
 
 #ifdef HAVE_DRM_GRALLOC
+static int get_format(int format)
+{
+   switch (format) {
+   case HAL_PIXEL_FORMAT_BGRA_8888: return __DRI_IMAGE_FORMAT_ARGB8888;
+   case HAL_PIXEL_FORMAT_RGB_565:   return __DRI_IMAGE_FORMAT_RGB565;
+   case HAL_PIXEL_FORMAT_RGBA_8888: return __DRI_IMAGE_FORMAT_ABGR8888;
+   case HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED:
+      /*
+       * HACK: Hardcode this to RGBX_8888 as per cros_gralloc hack.
+       * TODO: Revert this once https://issuetracker.google.com/32077885 is fixed.
+       */
+   case HAL_PIXEL_FORMAT_RGBX_8888: return __DRI_IMAGE_FORMAT_XBGR8888;
+   case HAL_PIXEL_FORMAT_RGBA_FP16: return __DRI_IMAGE_FORMAT_ABGR16161616F;
+   case HAL_PIXEL_FORMAT_RGBA_1010102: return __DRI_IMAGE_FORMAT_ABGR2101010;
+   default:
+      _eglLog(_EGL_WARNING, "unsupported native buffer format 0x%x", format);
+   }
+   return -1;
+}
+
 static _EGLImage *
 droid_create_image_from_name(_EGLDisplay *disp, _EGLContext *ctx,
                              struct ANativeWindowBuffer *buf)
@@ -1506,7 +1507,7 @@ droid_open_device(_EGLDisplay *disp, bool swrast)
       return EGL_FALSE;
    }
 
-   dri2_dpy->fd = fcntl(fd, F_DUPFD_CLOEXEC, 3);
+   dri2_dpy->fd = os_dupfd_cloexec(fd);
    if (dri2_dpy->fd < 0)
       return EGL_FALSE;
 

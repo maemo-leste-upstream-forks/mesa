@@ -41,7 +41,7 @@
 #include "util/u_math.h"
 #include "util/u_memory.h"
 #include "util/u_prim.h"
-
+#include "util/ralloc.h"
 /* fixme: move it from here */
 #define MAX_PRIMITIVES 64
 
@@ -608,11 +608,12 @@ int draw_geometry_shader_run(struct draw_geometry_shader *shader,
    }
 
 #if 0
-   debug_printf("%s count = %d (in prims # = %d)\n",
-                __FUNCTION__, num_input_verts, num_in_primitives);
+   debug_printf("%s count = %d (in prims # = %d, invocs = %d, streams = %d)\n",
+                __FUNCTION__, num_input_verts, num_in_primitives,
+                shader->num_invocations, shader->num_vertex_streams);
    debug_printf("\tlinear = %d, prim_info->count = %d\n",
                 input_prim->linear, input_prim->count);
-   debug_printf("\tprim pipe = %s, shader in = %s, shader out = %s\n"
+   debug_printf("\tprim pipe = %s, shader in = %s, shader out = %s\n",
                 u_prim_name(input_prim->prim),
                 u_prim_name(shader->input_primitive),
                 u_prim_name(shader->output_primitive));
@@ -880,7 +881,7 @@ draw_create_geometry_shader(struct draw_context *draw,
 
       gs->llvm_emitted_primitives = align_malloc(vector_size * PIPE_MAX_VERTEX_STREAMS, vector_size);
       gs->llvm_emitted_vertices = align_malloc(vector_size * PIPE_MAX_VERTEX_STREAMS, vector_size);
-      gs->llvm_prim_ids = align_malloc(vector_size, vector_size);
+      gs->llvm_prim_ids = align_calloc(vector_size, vector_size);
 
       gs->fetch_outputs = llvm_fetch_gs_outputs;
       gs->fetch_inputs = llvm_fetch_gs_input;
@@ -962,6 +963,9 @@ void draw_delete_geometry_shader(struct draw_context *draw,
 
    for (i = 0; i < TGSI_MAX_VERTEX_STREAMS; i++)
       FREE(dgs->stream[i].primitive_lengths);
+
+   if (dgs->state.ir.nir)
+      ralloc_free(dgs->state.ir.nir);
    FREE((void*) dgs->state.tokens);
    FREE(dgs);
 }

@@ -2,11 +2,17 @@ bifrost_FILES := \
         bifrost/bifrost.h \
         bifrost/bifrost_compile.c \
         bifrost/bifrost_compile.h \
+        bifrost/bi_layout.c \
+        bifrost/bi_liveness.c \
         bifrost/bi_lower_combine.c \
         bifrost/bi_tables.c \
         bifrost/bi_schedule.c \
+        bifrost/bi_special.c \
+        bifrost/bi_pack.c \
         bifrost/bi_print.c \
         bifrost/bi_print.h \
+        bifrost/bi_ra.c \
+        bifrost/bi_opt_dce.c \
         bifrost/bi_quirks.h \
         bifrost/bir.c \
         bifrost/compiler.h \
@@ -42,13 +48,12 @@ midgard_FILES := \
         midgard/midgard_emit.c \
         midgard/midgard.h \
         midgard/midgard_liveness.c \
+        midgard/midgard_helper_invocations.c \
         midgard/midgard_nir.h \
         midgard/midgard_ops.c \
         midgard/midgard_ops.h \
         midgard/midgard_opt_copy_prop.c \
         midgard/midgard_opt_dce.c \
-        midgard/midgard_opt_float.c \
-        midgard/midgard_opt_invert.c \
         midgard/midgard_opt_perspective.c \
         midgard/midgard-parse.h \
         midgard/midgard_print.c \
@@ -60,6 +65,7 @@ midgard_FILES := \
         midgard/mir_promote_uniforms.c \
         midgard/mir_squeeze.c \
         midgard/nir_undef_to_zero.c \
+        midgard/nir_fuse_io_16.c \
 
 shared_FILES := \
         shared/pan_minmax_cache.c \
@@ -78,7 +84,9 @@ pandecode_FILES := \
 util_FILES := \
         util/lcra.c \
         util/lcra.h \
+        util/nir_mod_helpers.c \
         util/pan_ir.c \
         util/pan_ir.h \
         util/pan_liveness.c \
+        util/pan_lower_framebuffer.c \
         util/pan_sysval.c \

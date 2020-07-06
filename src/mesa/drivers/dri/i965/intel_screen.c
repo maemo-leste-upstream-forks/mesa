@@ -44,7 +44,8 @@
 
 #include "utils.h"
 #include "util/disk_cache.h"
-#include "util/xmlpool.h"
+#include "util/driconf.h"
+#include "util/u_memory.h"
 
 #include "common/gen_defines.h"
 
@@ -57,7 +58,7 @@ DRI_CONF_BEGIN
        * DRI_CONF_BO_REUSE_ALL
        */
       DRI_CONF_OPT_BEGIN_V(bo_reuse, enum, 1, "0:1")
-	 DRI_CONF_DESC_BEGIN(en, "Buffer object reuse")
+	 DRI_CONF_DESC_BEGIN("Buffer object reuse")
 	    DRI_CONF_ENUM(0, "Disable buffer object reuse")
 	    DRI_CONF_ENUM(1, "Enable reuse of all sizes of buffer objects")
 	 DRI_CONF_DESC_END
@@ -70,7 +71,7 @@ DRI_CONF_BEGIN
       DRI_CONF_PRECISE_TRIG("false")
 
       DRI_CONF_OPT_BEGIN(clamp_max_samples, int, -1)
-              DRI_CONF_DESC(en, "Clamp the value of GL_MAX_SAMPLES to the "
+              DRI_CONF_DESC("Clamp the value of GL_MAX_SAMPLES to the "
                             "given integer. If negative, then do not clamp.")
       DRI_CONF_OPT_END
    DRI_CONF_SECTION_END
@@ -92,7 +93,7 @@ DRI_CONF_BEGIN
       DRI_CONF_FORCE_GLSL_ABS_SQRT("false")
 
       DRI_CONF_OPT_BEGIN_B(shader_precompile, "true")
-	 DRI_CONF_DESC(en, "Perform code generation at shader link time.")
+	 DRI_CONF_DESC("Perform code generation at shader link time.")
       DRI_CONF_OPT_END
    DRI_CONF_SECTION_END
 
@@ -900,9 +901,16 @@ intel_query_image(__DRIimage *image, int attrib, int *value)
    case __DRI_IMAGE_ATTRIB_STRIDE:
       *value = image->pitch;
       return true;
-   case __DRI_IMAGE_ATTRIB_HANDLE:
-      *value = brw_bo_export_gem_handle(image->bo);
+   case __DRI_IMAGE_ATTRIB_HANDLE: {
+      __DRIscreen *dri_screen = image->screen->driScrnPriv;
+      uint32_t handle;
+      if (brw_bo_export_gem_handle_for_device(image->bo,
+                                              dri_screen->fd,
+                                              &handle))
+         return false;
+      *value = handle;
       return true;
+   }
    case __DRI_IMAGE_ATTRIB_NAME:
       return !brw_bo_flink(image->bo, (uint32_t *) value);
    case __DRI_IMAGE_ATTRIB_FORMAT:
@@ -979,6 +987,7 @@ intel_dup_image(__DRIimage *orig_image, void *loaderPrivate)
       return NULL;
 
    brw_bo_reference(orig_image->bo);
+   image->screen          = orig_image->screen;
    image->bo              = orig_image->bo;
    image->internal_format = orig_image->internal_format;
    image->planar_format   = orig_image->planar_format;
@@ -1504,17 +1513,6 @@ static const __DRIimageExtension intelImageExtension = {
     .queryDmaBufFormatModifierAttribs   = intel_query_format_modifier_attribs,
 };
 
-static uint64_t
-get_aperture_size(int fd)
-{
-   struct drm_i915_gem_get_aperture aperture;
-
-   if (drmIoctl(fd, DRM_IOCTL_I915_GEM_GET_APERTURE, &aperture) != 0)
-      return 0;
-
-   return aperture.aper_size;
-}
-
 static int
 brw_query_renderer_integer(__DRIscreen *dri_screen,
                            int param, unsigned int *value)
@@ -1675,7 +1673,7 @@ intel_get_param(struct intel_screen *screen, int param, int *value)
    gp.param = param;
    gp.value = value;
 
-   if (drmIoctl(screen->driScrnPriv->fd, DRM_IOCTL_I915_GETPARAM, &gp) == -1) {
+   if (drmIoctl(screen->fd, DRM_IOCTL_I915_GETPARAM, &gp) == -1) {
       ret = -errno;
       if (ret != -EINVAL)
          _mesa_warning(NULL, "drm_i915_getparam: %d", ret);
@@ -1707,7 +1705,7 @@ intelDestroyScreen(__DRIscreen * sPriv)
 {
    struct intel_screen *screen = sPriv->driverPrivate;
 
-   brw_bufmgr_destroy(screen->bufmgr);
+   brw_bufmgr_unref(screen->bufmgr);
    driDestroyOptionInfo(&screen->optionCache);
 
    disk_cache_destroy(screen->disk_cache);
@@ -1925,12 +1923,13 @@ intel_init_bufmgr(struct intel_screen *screen)
       break;
    }
 
-   screen->bufmgr = brw_bufmgr_init(&screen->devinfo, dri_screen->fd, bo_reuse);
+   screen->bufmgr = brw_bufmgr_get_for_fd(&screen->devinfo, dri_screen->fd, bo_reuse);
    if (screen->bufmgr == NULL) {
       fprintf(stderr, "[%s:%u] Error initializing buffer manager.\n",
 	      __func__, __LINE__);
       return false;
    }
+   screen->fd = brw_bufmgr_get_fd(screen->bufmgr);
 
    if (!intel_get_boolean(screen, I915_PARAM_HAS_EXEC_NO_RELOC)) {
       fprintf(stderr, "[%s: %u] Kernel 3.9 required.\n", __func__, __LINE__);
@@ -2097,8 +2096,7 @@ intel_detect_pipelined_register(struct intel_screen *screen,
    /* Don't bother with error checking - if the execbuf fails, the
     * value won't be written and we'll just report that there's no access.
     */
-   __DRIscreen *dri_screen = screen->driScrnPriv;
-   drmIoctl(dri_screen->fd, DRM_IOCTL_I915_GEM_EXECBUFFER2, &execbuf);
+   drmIoctl(screen->fd, DRM_IOCTL_I915_GEM_EXECBUFFER2, &execbuf);
 
    /* Check whether the value got written. */
    void *results_map = brw_bo_map(NULL, results, MAP_READ);
@@ -2609,7 +2607,7 @@ __DRIconfig **intelInitScreen2(__DRIscreen *dri_screen)
       screen->max_gtt_map_object_size = gtt_size / 4;
    }
 
-   screen->aperture_threshold = get_aperture_size(dri_screen->fd) * 3 / 4;
+   screen->aperture_threshold = devinfo->aperture_bytes * 3 / 4;
 
    screen->hw_has_swizzling = intel_detect_swizzling(screen);
    screen->hw_has_timestamp = intel_detect_timestamp(screen);
@@ -2798,7 +2796,7 @@ __DRIconfig **intelInitScreen2(__DRIscreen *dri_screen)
       struct drm_i915_reset_stats stats;
       memset(&stats, 0, sizeof(stats));
 
-      const int ret = drmIoctl(dri_screen->fd, DRM_IOCTL_I915_GET_RESET_STATS, &stats);
+      const int ret = drmIoctl(screen->fd, DRM_IOCTL_I915_GET_RESET_STATS, &stats);
 
       screen->has_context_reset_notification =
          (ret != -1 || errno != EINVAL);
@@ -2822,6 +2820,7 @@ __DRIconfig **intelInitScreen2(__DRIscreen *dri_screen)
 
    screen->compiler->supports_pull_constants = true;
    screen->compiler->compact_params = true;
+   screen->compiler->lower_variable_group_size = true;
 
    screen->has_exec_fence =
      intel_get_boolean(screen, I915_PARAM_HAS_EXEC_FENCE);

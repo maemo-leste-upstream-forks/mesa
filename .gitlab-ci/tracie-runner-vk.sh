@@ -21,9 +21,12 @@ export DXVK_LOG_LEVEL="none"
 export DXVK_STATE_CACHE=0
 
 # Perform a self-test to ensure tracie is working properly.
-"$INSTALL/tracie/tests/test.sh"
+python3 -m pytest -v --pyargs $INSTALL/tracie/tests/test.py
 
-ret=0
+# Sanity check to ensure that our environment is sufficient to make our tests
+# run against the Mesa built by CI, rather than any installed distro version.
+MESA_VERSION=$(cat "$INSTALL/VERSION" | sed 's/\./\\./g')
+vulkaninfo | grep "Mesa $MESA_VERSION\(\s\|$\)"
 
 # Run gfxreconstruct traces against the host's running X server (xvfb
 # doesn't have DRI3 support).
@@ -31,6 +34,4 @@ ret=0
 # file:
 # https://docs.gitlab.com/runner/configuration/advanced-configuration.html#the-runners-section
 PATH="/gfxreconstruct/build/bin:$PATH" \
-    python3 $INSTALL/tracie/tracie.py --file $INSTALL/traces.yml --device-name $DEVICE_NAME
-
-exit $ret
+    python3 "$INSTALL/tracie/tracie.py" --file "$INSTALL/traces.yml" --device-name "$DEVICE_NAME"

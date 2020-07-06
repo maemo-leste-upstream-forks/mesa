@@ -35,14 +35,6 @@
 
 DEBUG_GET_ONCE_BOOL_OPTION(noop, "RADEON_NOOP", false)
 
-#ifndef AMDGPU_IB_FLAG_RESET_GDS_MAX_WAVE_ID
-#define AMDGPU_IB_FLAG_RESET_GDS_MAX_WAVE_ID  (1 << 4)
-#endif
-
-#ifndef AMDGPU_CHUNK_ID_SCHEDULED_DEPENDENCIES
-#define AMDGPU_CHUNK_ID_SCHEDULED_DEPENDENCIES	0x07
-#endif
-
 /* FENCES */
 
 static struct pipe_fence_handle *
@@ -839,7 +831,7 @@ static void amdgpu_ib_finalize(struct amdgpu_winsys *ws, struct amdgpu_ib *ib)
 {
    amdgpu_set_ib_size(ib);
    ib->used_ib_space += ib->base.current.cdw * 4;
-   ib->used_ib_space = align(ib->used_ib_space, ws->info.ib_start_alignment);
+   ib->used_ib_space = align(ib->used_ib_space, ws->info.ib_alignment);
    ib->max_ib_size = MAX2(ib->max_ib_size, ib->base.prev_dw + ib->base.current.cdw);
 }
 
@@ -1105,14 +1097,16 @@ static bool amdgpu_cs_check_space(struct radeon_cmdbuf *rcs, unsigned dw,
    /* This space was originally reserved. */
    rcs->current.max_dw += cs_epilog_dw;
 
-   /* Pad with NOPs and add INDIRECT_BUFFER packet */
-   while ((rcs->current.cdw & 7) != 4)
-      radeon_emit(rcs, 0xffff1000); /* type3 nop packet */
+   /* Pad with NOPs but leave 4 dwords for INDIRECT_BUFFER. */
+   uint32_t ib_pad_dw_mask = cs->ctx->ws->info.ib_pad_dw_mask[cs->ring_type];
+   while ((rcs->current.cdw & ib_pad_dw_mask) != ib_pad_dw_mask - 3)
+      radeon_emit(rcs, PKT3_NOP_PAD);
 
    radeon_emit(rcs, PKT3(PKT3_INDIRECT_BUFFER_CIK, 2, 0));
    radeon_emit(rcs, va);
    radeon_emit(rcs, va >> 32);
    new_ptr_ib_size = &rcs->current.buf[rcs->current.cdw++];
+   assert((rcs->current.cdw & ib_pad_dw_mask) == 0);
 
    assert((rcs->current.cdw & 7) == 0);
    assert(rcs->current.cdw <= rcs->current.max_dw);
@@ -1602,6 +1596,11 @@ void amdgpu_cs_submit_ib(void *job, int thread_index)
       chunks[num_chunks].chunk_data = (uintptr_t)&cs->ib[IB_MAIN];
       num_chunks++;
 
+      if (ws->secure && cs->secure)
+         cs->ib[IB_MAIN].flags |= AMDGPU_IB_FLAGS_SECURE;
+      else
+         cs->ib[IB_MAIN].flags &= ~AMDGPU_IB_FLAGS_SECURE;
+
       assert(num_chunks <= ARRAY_SIZE(chunks));
 
       r = amdgpu_cs_submit_raw2(ws->dev, acs->ctx->ctx, bo_list,
@@ -1667,51 +1666,54 @@ static int amdgpu_cs_flush(struct radeon_cmdbuf *rcs,
    struct amdgpu_cs *cs = amdgpu_cs(rcs);
    struct amdgpu_winsys *ws = cs->ctx->ws;
    int error_code = 0;
+   uint32_t ib_pad_dw_mask = ws->info.ib_pad_dw_mask[cs->ring_type];
 
    rcs->current.max_dw += amdgpu_cs_epilog_dws(cs);
 
+   /* Pad the IB according to the mask. */
    switch (cs->ring_type) {
    case RING_DMA:
-      /* pad DMA ring to 8 DWs */
       if (ws->info.chip_class <= GFX6) {
-         while (rcs->current.cdw & 7)
+         while (rcs->current.cdw & ib_pad_dw_mask)
             radeon_emit(rcs, 0xf0000000); /* NOP packet */
+      } else {
+         while (rcs->current.cdw & ib_pad_dw_mask)
+            radeon_emit(rcs, 0x00000000); /* NOP packet */
       }
       break;
    case RING_GFX:
    case RING_COMPUTE:
-      /* pad GFX ring to 8 DWs to meet CP fetch alignment requirements */
       if (ws->info.gfx_ib_pad_with_type2) {
-         while (rcs->current.cdw & 7)
-            radeon_emit(rcs, 0x80000000); /* type2 nop packet */
+         while (rcs->current.cdw & ib_pad_dw_mask)
+            radeon_emit(rcs, PKT2_NOP_PAD);
       } else {
-         while (rcs->current.cdw & 7)
-            radeon_emit(rcs, 0xffff1000); /* type3 nop packet */
+         while (rcs->current.cdw & ib_pad_dw_mask)
+            radeon_emit(rcs, PKT3_NOP_PAD);
       }
       if (cs->ring_type == RING_GFX)
          ws->gfx_ib_size_counter += (rcs->prev_dw + rcs->current.cdw) * 4;
 
       /* Also pad secondary IBs. */
       if (cs->compute_ib.ib_mapped) {
-         while (cs->compute_ib.base.current.cdw & 7)
-            radeon_emit(&cs->compute_ib.base, 0xffff1000); /* type3 nop packet */
+         while (cs->compute_ib.base.current.cdw & ib_pad_dw_mask)
+            radeon_emit(&cs->compute_ib.base, PKT3_NOP_PAD);
       }
       break;
    case RING_UVD:
    case RING_UVD_ENC:
-      while (rcs->current.cdw & 15)
+      while (rcs->current.cdw & ib_pad_dw_mask)
          radeon_emit(rcs, 0x80000000); /* type2 nop packet */
       break;
    case RING_VCN_JPEG:
       if (rcs->current.cdw % 2)
          assert(0);
-      while (rcs->current.cdw & 15) {
+      while (rcs->current.cdw & ib_pad_dw_mask) {
          radeon_emit(rcs, 0x60000000); /* nop packet */
          radeon_emit(rcs, 0x00000000);
       }
       break;
    case RING_VCN_DEC:
-      while (rcs->current.cdw & 15)
+      while (rcs->current.cdw & ib_pad_dw_mask)
          radeon_emit(rcs, 0x81ff); /* nop packet */
       break;
    default:

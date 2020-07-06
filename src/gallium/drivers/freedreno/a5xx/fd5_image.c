@@ -86,7 +86,7 @@ static void translate_image(struct fd5_image *img, struct pipe_image_view *pimg)
 		lvl = pimg->u.tex.level;
 		slice = fd_resource_slice(rsc, lvl);
 		img->offset = fd_resource_offset(rsc, lvl, pimg->u.tex.first_layer);
-		img->pitch  = slice->pitch * rsc->layout.cpp;
+		img->pitch  = slice->pitch;
 	}
 
 	img->width     = u_minify(prsc->width0, lvl);
@@ -184,7 +184,7 @@ static void emit_image_ssbo(struct fd_ringbuffer *ring, unsigned slot,
 		CP_LOAD_STATE4_1_EXT_SRC_ADDR(0));
 	OUT_RING(ring, CP_LOAD_STATE4_2_EXT_SRC_ADDR_HI(0));
 	if (img->bo) {
-		OUT_RELOCW(ring, img->bo, img->offset, 0, 0);
+		OUT_RELOC(ring, img->bo, img->offset, 0, 0);
 	} else {
 		OUT_RING(ring, 0x00000000);
 		OUT_RING(ring, 0x00000000);

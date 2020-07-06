@@ -220,6 +220,7 @@ ALU2(MUL)
 ALU1(FRC)
 ALU1(RNDD)
 ALU1(RNDE)
+ALU1(RNDU)
 ALU1(RNDZ)
 ALU2(MAC)
 ALU2(MACH)
@@ -309,6 +310,36 @@ brw_message_ex_desc_ex_mlen(UNUSED const struct gen_device_info *devinfo,
                             uint32_t ex_desc)
 {
    return GET_BITS(ex_desc, 9, 6);
+}
+
+static inline uint32_t
+brw_urb_desc(const struct gen_device_info *devinfo,
+             unsigned msg_type,
+             bool per_slot_offset_present,
+             bool channel_mask_present,
+             unsigned global_offset)
+{
+   if (devinfo->gen >= 8) {
+      return (SET_BITS(per_slot_offset_present, 17, 17) |
+              SET_BITS(channel_mask_present, 15, 15) |
+              SET_BITS(global_offset, 14, 4) |
+              SET_BITS(msg_type, 3, 0));
+   } else if (devinfo->gen >= 7) {
+      assert(!channel_mask_present);
+      return (SET_BITS(per_slot_offset_present, 16, 16) |
+              SET_BITS(global_offset, 13, 3) |
+              SET_BITS(msg_type, 3, 0));
+   } else {
+      unreachable("unhandled URB write generation");
+   }
+}
+
+static inline uint32_t
+brw_urb_desc_msg_type(ASSERTED const struct gen_device_info *devinfo,
+                      uint32_t desc)
+{
+   assert(devinfo->gen >= 7);
+   return GET_BITS(desc, 3, 0);
 }
 
 /**
@@ -744,7 +775,8 @@ brw_dp_a64_untyped_surface_rw_desc(const struct gen_device_info *devinfo,
       SET_BITS(brw_mdc_cmask(num_channels), 3, 0) |
       SET_BITS(simd_mode, 5, 4);
 
-   return brw_dp_desc(devinfo, BRW_BTI_STATELESS, msg_type, msg_control);
+   return brw_dp_desc(devinfo, GEN8_BTI_STATELESS_NON_COHERENT,
+                      msg_type, msg_control);
 }
 
 /**
@@ -782,7 +814,8 @@ brw_dp_a64_byte_scattered_rw_desc(const struct gen_device_info *devinfo,
       SET_BITS(brw_mdc_a64_ds(bit_size / 8), 3, 2) |
       SET_BITS(exec_size == 16, 4, 4);
 
-   return brw_dp_desc(devinfo, BRW_BTI_STATELESS, msg_type, msg_control);
+   return brw_dp_desc(devinfo, GEN8_BTI_STATELESS_NON_COHERENT,
+                      msg_type, msg_control);
 }
 
 static inline uint32_t
@@ -803,7 +836,8 @@ brw_dp_a64_untyped_atomic_desc(const struct gen_device_info *devinfo,
       SET_BITS(bit_size == 64, 4, 4) |
       SET_BITS(response_expected, 5, 5);
 
-   return brw_dp_desc(devinfo, BRW_BTI_STATELESS, msg_type, msg_control);
+   return brw_dp_desc(devinfo, GEN8_BTI_STATELESS_NON_COHERENT,
+                      msg_type, msg_control);
 }
 
 static inline uint32_t
@@ -822,7 +856,8 @@ brw_dp_a64_untyped_atomic_float_desc(const struct gen_device_info *devinfo,
       SET_BITS(atomic_op, 1, 0) |
       SET_BITS(response_expected, 5, 5);
 
-   return brw_dp_desc(devinfo, BRW_BTI_STATELESS, msg_type, msg_control);
+   return brw_dp_desc(devinfo, GEN8_BTI_STATELESS_NON_COHERENT,
+                      msg_type, msg_control);
 }
 
 static inline uint32_t
@@ -1098,7 +1133,7 @@ brw_inst *brw_WHILE(struct brw_codegen *p);
 
 brw_inst *brw_BREAK(struct brw_codegen *p);
 brw_inst *brw_CONT(struct brw_codegen *p);
-brw_inst *gen6_HALT(struct brw_codegen *p);
+brw_inst *brw_HALT(struct brw_codegen *p);
 
 /* Forward jumps:
  */
@@ -1153,7 +1188,8 @@ brw_memory_fence(struct brw_codegen *p,
                  struct brw_reg dst,
                  struct brw_reg src,
                  enum opcode send_op,
-                 bool stall,
+                 enum brw_message_target sfid,
+                 bool commit_enable,
                  unsigned bti);
 
 void

@@ -24,7 +24,6 @@
  */
 
 #include "main/enums.h"
-#include "util/imports.h"
 #include "main/macros.h"
 #include "main/mtypes.h"
 #include "main/fbobject.h"
@@ -36,6 +35,7 @@
 #include "main/condrender.h"
 #include "util/hash_table.h"
 #include "util/set.h"
+#include "util/u_memory.h"
 
 #include "swrast/swrast.h"
 #include "drivers/common/meta.h"
@@ -928,6 +928,9 @@ intel_blit_framebuffer(struct gl_context *ctx,
                                 mask, filter);
    if (mask == 0x0)
       return;
+
+   /* brw_blorp_framebuffer should always be successful for color blits. */
+   assert(!(mask & GL_COLOR_BUFFER_BIT));
 
    mask = _mesa_meta_BlitFramebuffer(ctx, readFb, drawFb,
                                      srcX0, srcY0, srcX1, srcY1,

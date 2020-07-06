@@ -71,7 +71,7 @@ struct tgsi_buffer;
 struct draw_pt_front_end;
 struct draw_assembler;
 struct draw_llvm;
-
+struct lp_cached_code;
 
 /**
  * Represents the mapped vertex buffer.
@@ -122,6 +122,7 @@ struct draw_context
       struct draw_stage *flatshade;
       struct draw_stage *clip;
       struct draw_stage *cull;
+      struct draw_stage *user_cull;
       struct draw_stage *twoside;
       struct draw_stage *offset;
       struct draw_stage *unfilled;
@@ -390,6 +391,14 @@ struct draw_context
    bool collect_primgen;
 
    struct draw_assembler *ia;
+
+   void *disk_cache_cookie;
+   void (*disk_cache_find_shader)(void *cookie,
+                                  struct lp_cached_code *cache,
+                                  unsigned char ir_sha1_cache_key[20]);
+   void (*disk_cache_insert_shader)(void *cookie,
+                                    struct lp_cached_code *cache,
+                                    unsigned char ir_sha1_cache_key[20]);
 
    void *driver_private;
 };

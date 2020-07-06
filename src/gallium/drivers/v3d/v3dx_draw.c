@@ -706,8 +706,8 @@ v3d_emit_gl_shader_state(struct v3d_context *v3d,
                 vpm_cfg.Ve = 0;
                 vpm_cfg.Vc = v3d->prog.vs->prog_data.vs->vcm_cache_size;
         }
-#if V3D_VERSION >= 41
         else {
+#if V3D_VERSION >= 41
                 v3d_emit_gs_state_record(v3d->job,
                                          v3d->prog.gs_bin, gs_bin_uniforms,
                                          v3d->prog.gs, gs_uniforms);
@@ -738,8 +738,10 @@ v3d_emit_gl_shader_state(struct v3d_context *v3d,
                                               vpm_cfg.gs_width,
                                               vpm_cfg.Gd,
                                               vpm_cfg.Gv);
-        }
+#else
+                unreachable("No GS support pre-4.1");
 #endif
+        }
 
         cl_emit(&job->indirect, GL_SHADER_STATE_RECORD, shader) {
                 shader.enable_clipping = true;
@@ -1744,7 +1746,7 @@ v3d_tlb_clear(struct v3d_job *job, unsigned buffers,
 }
 
 static void
-v3d_clear(struct pipe_context *pctx, unsigned buffers,
+v3d_clear(struct pipe_context *pctx, unsigned buffers, const struct pipe_scissor_state *scissor_state,
           const union pipe_color_union *color, double depth, unsigned stencil)
 {
         struct v3d_context *v3d = v3d_context(pctx);

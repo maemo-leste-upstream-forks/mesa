@@ -137,7 +137,7 @@ struct st_fp_variant_key
    GLuint lower_two_sided_color:1;
 
    GLuint lower_flatshade:1;
-   enum compare_func lower_alpha_func:3;
+   unsigned lower_alpha_func:3;
 
    /** needed for ATI_fragment_shader */
    char texture_targets[MAX_NUM_FRAGMENT_REGISTERS_ATI];
@@ -316,6 +316,9 @@ st_get_common_variant(struct st_context *st,
 
 extern void
 st_release_variants(struct st_context *st, struct st_program *p);
+
+extern void
+st_release_program(struct st_context *st, struct st_program **p);
 
 extern void
 st_destroy_program_variants(struct st_context *st);

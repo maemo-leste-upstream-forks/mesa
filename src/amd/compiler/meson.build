@@ -60,6 +60,7 @@ libaco_files = files(
   'aco_instruction_selection_setup.cpp',
   'aco_interface.cpp',
   'aco_interface.h',
+  'aco_ir.cpp',
   'aco_ir.h',
   'aco_assembler.cpp',
   'aco_insert_exec_mask.cpp',
@@ -68,7 +69,7 @@ libaco_files = files(
   'aco_reduce_assign.cpp',
   'aco_register_allocation.cpp',
   'aco_live_var_analysis.cpp',
-  'aco_lower_bool_phis.cpp',
+  'aco_lower_phis.cpp',
   'aco_lower_to_cssa.cpp',
   'aco_lower_to_hw_instr.cpp',
   'aco_optimizer.cpp',
@@ -76,8 +77,9 @@ libaco_files = files(
   'aco_print_asm.cpp',
   'aco_print_ir.cpp',
   'aco_scheduler.cpp',
-  'aco_ssa_elimination.cpp',
   'aco_spill.cpp',
+  'aco_ssa_elimination.cpp',
+  'aco_statistics.cpp',
   'aco_util.h',
   'aco_validate.cpp',
 )
@@ -95,8 +97,7 @@ _libaco = static_library(
     dep_llvm, dep_thread, dep_elf, dep_libdrm_amdgpu, dep_valgrind,
     idep_nir_headers, idep_amdgfxregs_h,
   ],
-  c_args : [c_vis_args],
-  cpp_args : [cpp_vis_args],
+  gnu_symbol_visibility : 'hidden',
   build_by_default : true,
 )
 

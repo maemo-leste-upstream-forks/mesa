@@ -255,10 +255,10 @@ enum pipe_transfer_usage
 
    /** 
     * The transfer should map the texture storage directly. The driver may
-    * return NULL if that isn't possible, and the state tracker needs to cope
+    * return NULL if that isn't possible, and the gallium frontend needs to cope
     * with that and use an alternative path without this flag.
     *
-    * E.g. the state tracker could have a simpler path which maps textures and
+    * E.g. the gallium frontend could have a simpler path which maps textures and
     * does read/modify/write cycles on them directly, and a more complicated
     * path which uses minimal read and write transfers.
     *
@@ -344,6 +344,13 @@ enum pipe_transfer_usage
     * the resource.
     */
    PIPE_TRANSFER_COHERENT = (1 << 14),
+
+   /**
+    * Map a resource in a thread-safe manner, because the calling thread can
+    * be any thread. It can only be used if both WRITE and UNSYNCHRONIZED are
+    * set.
+    */
+   PIPE_TRANSFER_THREAD_SAFE = 1 << 15,
 
    /**
     * This and higher bits are reserved for private use by drivers. Drivers
@@ -441,7 +448,7 @@ enum pipe_flush_flags
 #define PIPE_TEXTURE_BARRIER_FRAMEBUFFER  (1 << 1)
 
 /**
- * Resource binding flags -- state tracker must specify in advance all
+ * Resource binding flags -- gallium frontends must specify in advance all
  * the ways a resource might be used.
  */
 #define PIPE_BIND_DEPTH_STENCIL        (1 << 0) /* create_surface */
@@ -455,7 +462,7 @@ enum pipe_flush_flags
 /* gap */
 #define PIPE_BIND_STREAM_OUTPUT        (1 << 10) /* set_stream_output_buffers */
 #define PIPE_BIND_CURSOR               (1 << 11) /* mouse cursor */
-#define PIPE_BIND_CUSTOM               (1 << 12) /* state-tracker/winsys usages */
+#define PIPE_BIND_CUSTOM               (1 << 12) /* gallium frontend/winsys usages */
 #define PIPE_BIND_GLOBAL               (1 << 13) /* set_global_binding */
 #define PIPE_BIND_SHADER_BUFFER        (1 << 14) /* set_shader_buffers */
 #define PIPE_BIND_SHADER_IMAGE         (1 << 15) /* set_shader_images */
@@ -470,10 +477,9 @@ enum pipe_flush_flags
  * below do not fit within that and probably need to be migrated to some
  * other place.
  *
- * It seems like scanout is used by the Xorg state tracker to ask for
- * a texture suitable for actual scanout (hence the name), which
- * implies extra layout constraints on some hardware.  It may also
- * have some special meaning regarding mouse cursor images.
+ * Scanout is used to ask for a texture suitable for actual scanout (hence
+ * the name), which implies extra layout constraints on some hardware.
+ * It may also have some special meaning regarding mouse cursor images.
  *
  * The shared flag is quite underspecified, but certainly isn't a
  * binding flag - it seems more like a message to the winsys to create
@@ -495,8 +501,9 @@ enum pipe_flush_flags
 #define PIPE_RESOURCE_FLAG_TEXTURING_MORE_LIKELY (1 << 2)
 #define PIPE_RESOURCE_FLAG_SPARSE                (1 << 3)
 #define PIPE_RESOURCE_FLAG_SINGLE_THREAD_USE     (1 << 4)
+#define PIPE_RESOURCE_FLAG_ENCRYPTED             (1 << 5)
 #define PIPE_RESOURCE_FLAG_DRV_PRIV    (1 << 8) /* driver/winsys private */
-#define PIPE_RESOURCE_FLAG_ST_PRIV     (1 << 24) /* state-tracker/winsys private */
+#define PIPE_RESOURCE_FLAG_FRONTEND_PRIV         (1 << 24) /* gallium frontend private */
 
 /**
  * Hint about the expected lifecycle of a resource.
@@ -626,6 +633,20 @@ enum pipe_swizzle {
    PIPE_SWIZZLE_MAX, /**< Number of enums counter (must be last) */
 };
 
+/**
+ * Viewport swizzles
+ */
+enum pipe_viewport_swizzle {
+   PIPE_VIEWPORT_SWIZZLE_POSITIVE_X,
+   PIPE_VIEWPORT_SWIZZLE_NEGATIVE_X,
+   PIPE_VIEWPORT_SWIZZLE_POSITIVE_Y,
+   PIPE_VIEWPORT_SWIZZLE_NEGATIVE_Y,
+   PIPE_VIEWPORT_SWIZZLE_POSITIVE_Z,
+   PIPE_VIEWPORT_SWIZZLE_NEGATIVE_Z,
+   PIPE_VIEWPORT_SWIZZLE_POSITIVE_W,
+   PIPE_VIEWPORT_SWIZZLE_NEGATIVE_W,
+};
+
 #define PIPE_TIMEOUT_INFINITE 0xffffffffffffffffull
 
 
@@ -703,6 +724,10 @@ enum pipe_cap
    PIPE_CAP_BLEND_EQUATION_SEPARATE,
    PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS,
    PIPE_CAP_PRIMITIVE_RESTART,
+   /** subset of PRIMITIVE_RESTART where the restart index is always the fixed
+    * maximum value for the index type
+    */
+   PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX,
    /** blend enables and write masks per rendertarget */
    PIPE_CAP_INDEP_BLEND_ENABLE,
    /** different blend funcs per rendertarget */
@@ -796,6 +821,7 @@ enum pipe_cap
    PIPE_CAP_SHAREABLE_SHADERS,
    PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS,
    PIPE_CAP_CLEAR_TEXTURE,
+   PIPE_CAP_CLEAR_SCISSORED,
    PIPE_CAP_DRAW_PARAMETERS,
    PIPE_CAP_TGSI_PACK_HALF_FLOAT,
    PIPE_CAP_MULTI_DRAW_INDIRECT,
@@ -920,6 +946,12 @@ enum pipe_cap
    PIPE_CAP_PSIZ_CLAMPED,
    PIPE_CAP_DRAW_INFO_START_WITH_USER_INDICES,
    PIPE_CAP_GL_BEGIN_END_BUFFER_SIZE,
+   PIPE_CAP_VIEWPORT_SWIZZLE,
+   PIPE_CAP_SYSTEM_SVM,
+   PIPE_CAP_VIEWPORT_MASK,
+   PIPE_CAP_ALPHA_TO_COVERAGE_DITHER_CONTROL,
+   PIPE_CAP_MAP_UNSYNCHRONIZED_THREAD_SAFE,
+   PIPE_CAP_GLSL_ZERO_INIT,
 };
 
 /**
@@ -987,6 +1019,8 @@ enum pipe_shader_cap
    PIPE_SHADER_CAP_INTEGERS,
    PIPE_SHADER_CAP_INT64_ATOMICS,
    PIPE_SHADER_CAP_FP16,
+   PIPE_SHADER_CAP_FP16_DERIVATIVES,
+   PIPE_SHADER_CAP_INT16,
    PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS,
    PIPE_SHADER_CAP_PREFERRED_IR,
    PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED,
@@ -1015,7 +1049,7 @@ enum pipe_shader_cap
  * get TGSI.
  *
  * Note that PIPE_SHADER_IR_TGSI should be zero for backwards compat with
- * state trackers that only understand TGSI.
+ * gallium frontends that only understand TGSI.
  */
 enum pipe_shader_ir
 {

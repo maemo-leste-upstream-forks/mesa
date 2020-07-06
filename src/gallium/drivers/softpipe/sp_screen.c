@@ -37,7 +37,7 @@
 #include "pipe/p_screen.h"
 #include "draw/draw_context.h"
 
-#include "state_tracker/sw_winsys.h"
+#include "frontend/sw_winsys.h"
 #include "tgsi/tgsi_exec.h"
 
 #include "sp_texture.h"
@@ -51,7 +51,7 @@ DEBUG_GET_ONCE_BOOL_OPTION(use_llvm, "SOFTPIPE_USE_LLVM", FALSE)
 static const char *
 softpipe_get_vendor(struct pipe_screen *screen)
 {
-   return "VMware, Inc.";
+   return "Mesa/X.org";
 }
 
 
@@ -132,6 +132,7 @@ softpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_MAX_VERTEX_ATTRIB_STRIDE:
       return 2048;
    case PIPE_CAP_PRIMITIVE_RESTART:
+   case PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX:
       return 1;
    case PIPE_CAP_SHADER_STENCIL_EXPORT:
       return 1;
@@ -451,7 +452,7 @@ softpipe_is_format_supported( struct pipe_screen *screen,
       /*
        * Although possible, it is unnatural to render into compressed or YUV
        * surfaces. So disable these here to avoid going into weird paths
-       * inside the state trackers.
+       * inside gallium frontends.
        */
       if (format_desc->block.width != 1 ||
           format_desc->block.height != 1)

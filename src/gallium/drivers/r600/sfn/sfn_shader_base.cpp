@@ -36,6 +36,7 @@
 #include "sfn_nir.h"
 #include "sfn_instruction_misc.h"
 #include "sfn_instruction_fetch.h"
+#include "sfn_instruction_lds.h"
 
 #include <iostream>
 
@@ -57,18 +58,28 @@ using namespace std;
 
 ShaderFromNirProcessor::ShaderFromNirProcessor(pipe_shader_type ptype,
                                                r600_pipe_shader_selector& sel,
-                                               r600_shader &sh_info, int scratch_size):
+                                               r600_shader &sh_info, int scratch_size,
+                                               enum chip_class chip_class,
+                                               int atomic_base):
    m_processor_type(ptype),
+   m_nesting_depth(0),
+   m_block_number(0),
+   m_export_output(0, -1),
    m_sh_info(sh_info),
+   m_chip_class(chip_class),
    m_tex_instr(*this),
    m_alu_instr(*this),
    m_ssbo_instr(*this),
    m_pending_else(nullptr),
    m_scratch_size(scratch_size),
    m_next_hwatomic_loc(0),
-   m_sel(sel)
+   m_sel(sel),
+   m_atomic_base(atomic_base),
+   m_image_count(0)
+
 {
    m_sh_info.processor_type = ptype;
+
 }
 
 
@@ -83,12 +94,71 @@ bool ShaderFromNirProcessor::scan_instruction(nir_instr *instr)
       nir_tex_instr *t = nir_instr_as_tex(instr);
       if (t->sampler_dim == GLSL_SAMPLER_DIM_BUF)
          sh_info().uses_tex_buffers = true;
+      if (t->op == nir_texop_txs &&
+          t->sampler_dim == GLSL_SAMPLER_DIM_CUBE &&
+          t->is_array)
+         sh_info().has_txq_cube_array_z_comp = true;
+      break;
+   }
+   case nir_instr_type_intrinsic: {
+      auto *i = nir_instr_as_intrinsic(instr);
+      switch (i->intrinsic) {
+      case nir_intrinsic_ssbo_atomic_add:
+      case nir_intrinsic_image_atomic_add:
+      case nir_intrinsic_ssbo_atomic_and:
+      case nir_intrinsic_image_atomic_and:
+      case nir_intrinsic_ssbo_atomic_or:
+      case nir_intrinsic_image_atomic_or:
+      case nir_intrinsic_ssbo_atomic_imin:
+      case nir_intrinsic_image_atomic_imin:
+      case nir_intrinsic_ssbo_atomic_imax:
+      case nir_intrinsic_image_atomic_imax:
+      case nir_intrinsic_ssbo_atomic_umin:
+      case nir_intrinsic_image_atomic_umin:
+      case nir_intrinsic_ssbo_atomic_umax:
+      case nir_intrinsic_image_atomic_umax:
+      case nir_intrinsic_image_atomic_xor:
+      case nir_intrinsic_image_atomic_exchange:
+      case nir_intrinsic_image_atomic_comp_swap:
+         m_sel.info.writes_memory = 1;
+         /* fallthrough */
+      case nir_intrinsic_image_load:
+         m_ssbo_instr.set_require_rat_return_address();
+         break;
+      case nir_intrinsic_image_size: {
+         if (nir_intrinsic_image_dim(i) == GLSL_SAMPLER_DIM_CUBE &&
+             nir_intrinsic_image_array(i) && nir_dest_num_components(i->dest) > 2)
+            sh_info().has_txq_cube_array_z_comp = true;
+      }
+
+
+
+      default:
+         ;
+      }
+
+
    }
    default:
       ;
    }
 
    return scan_sysvalue_access(instr);
+}
+
+enum chip_class ShaderFromNirProcessor::get_chip_class(void) const
+{
+  return m_chip_class;
+}
+
+bool ShaderFromNirProcessor::allocate_reserved_registers()
+{
+   bool retval = do_allocate_reserved_registers();
+   m_ssbo_instr.load_rat_return_address();
+   if (sh_info().uses_atomics)
+      m_ssbo_instr.load_atomic_inc_limits();
+   m_ssbo_instr.set_ssbo_offset(m_image_count);
+   return retval;
 }
 
 static void remap_shader_info(r600_shader& sh_info,
@@ -135,10 +205,9 @@ void ShaderFromNirProcessor::remap_registers()
       if (register_map[i].valid)
          sfn_log << SfnLog::merge << "Map:" << i << " -> " << register_map[i].new_reg << "\n";
 
-
    ValueRemapper vmap0(register_map, temp_register_map);
-   for (auto ir: m_output)
-      ir->remap_registers(vmap0);
+   for (auto& block: m_output)
+      block.remap_registers(vmap0);
 
    remap_shader_info(m_sh_info, register_map, temp_register_map);
 
@@ -159,8 +228,8 @@ void ShaderFromNirProcessor::remap_registers()
    }
 
    ValueRemapper vmap1(register_map, temp_register_map);
-   for (auto ir: m_output)
-      ir->remap_registers(vmap1);
+   for (auto& ir: m_output)
+      ir.remap_registers(vmap1);
 
    remap_shader_info(m_sh_info, register_map, temp_register_map);
 }
@@ -182,7 +251,7 @@ bool ShaderFromNirProcessor::process_uniforms(nir_variable *uniform)
       struct r600_shader_atomic& atom = sh_info().atomics[sh_info().nhwatomic_ranges];
       ++sh_info().nhwatomic_ranges;
       atom.buffer_id = uniform->data.binding;
-      atom.hw_idx = m_next_hwatomic_loc;
+      atom.hw_idx = m_atomic_base + m_next_hwatomic_loc;
       atom.start = m_next_hwatomic_loc;
       atom.end = atom.start + natomics - 1;
       m_next_hwatomic_loc = atom.end + 1;
@@ -196,6 +265,10 @@ bool ShaderFromNirProcessor::process_uniforms(nir_variable *uniform)
 
    if (uniform->type->is_image() || uniform->data.mode == nir_var_mem_ssbo) {
       sh_info().uses_images = 1;
+   }
+
+   if (uniform->type->is_image()) {
+      ++m_image_count;
    }
 
    return true;
@@ -246,6 +319,8 @@ void ShaderFromNirProcessor::evaluate_spi_sid(r600_shader_io& io)
       io.spi_sid = 0;
       break;
    case TGSI_SEMANTIC_GENERIC:
+   case TGSI_SEMANTIC_TEXCOORD:
+   case TGSI_SEMANTIC_PCOORD:
       io.spi_sid = io.sid + 1;
       break;
    default:
@@ -280,12 +355,17 @@ bool ShaderFromNirProcessor::emit_tex_instruction(nir_instr* instr)
 void ShaderFromNirProcessor::emit_instruction(Instruction *ir)
 {
    if (m_pending_else) {
-      m_output.push_back(PInstruction(m_pending_else));
+      append_block(-1);
+      m_output.back().emit(PInstruction(m_pending_else));
+      append_block(1);
       m_pending_else = nullptr;
    }
 
    r600::sfn_log << SfnLog::instr << "     as '" << *ir << "'\n";
-   m_output.push_back(Instruction::Pointer(ir));
+   if (m_output.empty())
+      append_block(0);
+
+   m_output.back().emit(Instruction::Pointer(ir));
 }
 
 void ShaderFromNirProcessor::emit_shader_start()
@@ -330,6 +410,7 @@ bool ShaderFromNirProcessor::emit_loop_start(int loop_id)
    LoopBeginInstruction *loop = new LoopBeginInstruction();
    emit_instruction(loop);
    m_loop_begin_block_map[loop_id] = loop;
+   append_block(1);
    return true;
 }
 bool ShaderFromNirProcessor::emit_loop_end(int loop_id)
@@ -340,6 +421,9 @@ bool ShaderFromNirProcessor::emit_loop_end(int loop_id)
               << loop_id << "  not found\n";
       return false;
    }
+   m_nesting_depth--;
+   m_block_number++;
+   m_output.push_back(InstructionBlock(m_nesting_depth, m_block_number));
    LoopEndInstruction *loop = new LoopEndInstruction(start->second);
    emit_instruction(loop);
 
@@ -356,6 +440,8 @@ bool ShaderFromNirProcessor::emit_if_start(int if_id, nir_if *if_stmt)
    pred->set_flag(alu_update_exec);
    pred->set_flag(alu_update_pred);
    pred->set_cf_type(cf_alu_push_before);
+
+   append_block(1);
 
    IfInstruction *ir = new IfInstruction(pred);
    emit_instruction(ir);
@@ -401,8 +487,94 @@ bool ShaderFromNirProcessor::emit_ifelse_end(int if_id)
 
    m_pending_else = nullptr;
 
+   append_block(-1);
    IfElseEndInstruction *ir = new IfElseEndInstruction();
    emit_instruction(ir);
+
+   return true;
+}
+
+bool ShaderFromNirProcessor::emit_load_tcs_param_base(nir_intrinsic_instr* instr, int offset)
+{
+   PValue src = get_temp_register();
+   emit_instruction(new AluInstruction(op1_mov, src, Value::zero, {alu_write, alu_last_instr}));
+
+   GPRVector dest = vec_from_nir(instr->dest, nir_dest_num_components(instr->dest));
+   emit_instruction(new FetchTCSIOParam(dest, src, offset));
+
+   return true;
+
+}
+
+bool ShaderFromNirProcessor::emit_load_local_shared(nir_intrinsic_instr* instr)
+{
+   auto address = varvec_from_nir(instr->src[0], instr->num_components);
+   auto dest_value = varvec_from_nir(instr->dest, instr->num_components);
+
+   emit_instruction(new LDSReadInstruction(address, dest_value));
+   return true;
+}
+
+static unsigned
+lds_op_from_intrinsic(nir_intrinsic_op op) {
+   switch (op) {
+   case nir_intrinsic_shared_atomic_add:
+      return LDS_OP2_LDS_ADD_RET;
+   case nir_intrinsic_shared_atomic_and:
+      return LDS_OP2_LDS_AND_RET;
+   case nir_intrinsic_shared_atomic_or:
+      return LDS_OP2_LDS_OR_RET;
+   case nir_intrinsic_shared_atomic_imax:
+      return LDS_OP2_LDS_MAX_INT_RET;
+   case nir_intrinsic_shared_atomic_umax:
+      return LDS_OP2_LDS_MAX_UINT_RET;
+   case nir_intrinsic_shared_atomic_imin:
+      return LDS_OP2_LDS_MIN_INT_RET;
+   case nir_intrinsic_shared_atomic_umin:
+      return LDS_OP2_LDS_MIN_UINT_RET;
+   case nir_intrinsic_shared_atomic_xor:
+      return LDS_OP2_LDS_XOR_RET;
+   case nir_intrinsic_shared_atomic_exchange:
+      return LDS_OP2_LDS_XCHG_RET;
+   case nir_intrinsic_shared_atomic_comp_swap:
+      return LDS_OP3_LDS_CMP_XCHG_RET;
+   default:
+      unreachable("Unsupported shared atomic opcode");
+   }
+}
+
+bool ShaderFromNirProcessor::emit_atomic_local_shared(nir_intrinsic_instr* instr)
+{
+   auto address = from_nir(instr->src[0], 0);
+   auto dest_value = from_nir(instr->dest, 0);
+   auto value = from_nir(instr->src[1], 0);
+   auto op = lds_op_from_intrinsic(instr->intrinsic);
+
+   if (unlikely(instr->intrinsic ==nir_intrinsic_shared_atomic_comp_swap)) {
+      auto value2 = from_nir(instr->src[2], 0);
+      emit_instruction(new LDSAtomicInstruction(dest_value, value, value2, address, op));
+   } else {
+      emit_instruction(new LDSAtomicInstruction(dest_value, value, address, op));
+   }
+   return true;
+}
+
+
+bool ShaderFromNirProcessor::emit_store_local_shared(nir_intrinsic_instr* instr)
+{
+   unsigned write_mask = nir_intrinsic_write_mask(instr);
+
+   auto address = from_nir(instr->src[1], 0);
+   int swizzle_base = (write_mask & 0x3) ? 0 : 2;
+   write_mask |= write_mask >> 2;
+
+   auto value =  from_nir(instr->src[0], swizzle_base);
+   if (!(write_mask & 2)) {
+      emit_instruction(new LDSWriteInstruction(address, 0, value));
+   } else {
+      auto value1 = from_nir(instr->src[0], swizzle_base + 1);
+      emit_instruction(new LDSWriteInstruction(address, 0, value, value1));
+   }
 
    return true;
 }
@@ -415,6 +587,11 @@ bool ShaderFromNirProcessor::emit_intrinsic_instruction(nir_intrinsic_instr* ins
 
    if (emit_intrinsic_instruction_override(instr))
       return true;
+
+   if (m_ssbo_instr.emit(&instr->instr)) {
+      m_sel.info.writes_memory = true;
+      return true;
+   }
 
    switch (instr->intrinsic) {
    case nir_intrinsic_load_deref: {
@@ -450,28 +627,37 @@ bool ShaderFromNirProcessor::emit_intrinsic_instruction(nir_intrinsic_instr* ins
       return emit_discard_if(instr);
    case nir_intrinsic_load_ubo_r600:
       return emit_load_ubo(instr);
-   case nir_intrinsic_atomic_counter_add:
-   case nir_intrinsic_atomic_counter_and:
-   case nir_intrinsic_atomic_counter_exchange:
-   case nir_intrinsic_atomic_counter_max:
-   case nir_intrinsic_atomic_counter_min:
-   case nir_intrinsic_atomic_counter_or:
-   case nir_intrinsic_atomic_counter_xor:
-   case nir_intrinsic_atomic_counter_comp_swap:
-   case nir_intrinsic_atomic_counter_read:
-   case nir_intrinsic_atomic_counter_post_dec:
-   case nir_intrinsic_atomic_counter_inc:
-   case nir_intrinsic_atomic_counter_pre_dec:
-   case nir_intrinsic_store_ssbo:
-      m_sel.info.writes_memory = true;
-      /* fallthrough */
-   case nir_intrinsic_load_ssbo:
-      return m_ssbo_instr.emit(&instr->instr);
-      break;
+   case nir_intrinsic_load_tcs_in_param_base_r600:
+      return emit_load_tcs_param_base(instr, 0);
+   case nir_intrinsic_load_tcs_out_param_base_r600:
+      return emit_load_tcs_param_base(instr, 16);
+   case nir_intrinsic_load_local_shared_r600:
+   case nir_intrinsic_load_shared:
+      return emit_load_local_shared(instr);
+   case nir_intrinsic_store_local_shared_r600:
+   case nir_intrinsic_store_shared:
+      return emit_store_local_shared(instr);
+   case nir_intrinsic_control_barrier:
+   case nir_intrinsic_memory_barrier_tcs_patch:
+   case nir_intrinsic_memory_barrier_shared:
+   case nir_intrinsic_memory_barrier:
+      return emit_barrier(instr);
+   case nir_intrinsic_shared_atomic_add:
+   case nir_intrinsic_shared_atomic_and:
+   case nir_intrinsic_shared_atomic_or:
+   case nir_intrinsic_shared_atomic_imax:
+   case nir_intrinsic_shared_atomic_umax:
+   case nir_intrinsic_shared_atomic_imin:
+   case nir_intrinsic_shared_atomic_umin:
+   case nir_intrinsic_shared_atomic_xor:
+   case nir_intrinsic_shared_atomic_exchange:
+   case nir_intrinsic_shared_atomic_comp_swap:
+      return emit_atomic_local_shared(instr);
    case nir_intrinsic_copy_deref:
    case nir_intrinsic_load_constant:
    case nir_intrinsic_load_input:
    case nir_intrinsic_store_output:
+
    default:
       fprintf(stderr, "r600-nir: Unsupported intrinsic %d\n", instr->intrinsic);
       return false;
@@ -490,6 +676,15 @@ ShaderFromNirProcessor::emit_load_function_temp(UNUSED const nir_variable *var, 
    return false;
 }
 
+bool ShaderFromNirProcessor::emit_barrier(UNUSED nir_intrinsic_instr* instr)
+{
+   AluInstruction *ir = new AluInstruction(op0_group_barrier);
+   ir->set_flag(alu_last_instr);
+   emit_instruction(ir);
+   return true;
+}
+
+
 bool ShaderFromNirProcessor::load_preloaded_value(const nir_dest& dest, int chan, PValue value, bool as_last)
 {
    if (!dest.is_ssa) {
@@ -507,9 +702,8 @@ bool ShaderFromNirProcessor::emit_store_scratch(nir_intrinsic_instr* instr)
 {
    PValue address = from_nir(instr->src[1], 0, 0);
 
-   std::unique_ptr<GPRVector> vec(vec_from_nir_with_fetch_constant(instr->src[0], (1 << instr->num_components) - 1,
-                                  swizzle_from_mask(instr->num_components)));
-   GPRVector value(*vec);
+   auto value = vec_from_nir_with_fetch_constant(instr->src[0], (1 << instr->num_components) - 1,
+         swizzle_from_comps(instr->num_components));
 
    int writemask = nir_intrinsic_write_mask(instr);
    int align = nir_intrinsic_align_mul(instr);
@@ -544,21 +738,44 @@ bool ShaderFromNirProcessor::emit_load_scratch(nir_intrinsic_instr* instr)
    return true;
 }
 
-GPRVector *ShaderFromNirProcessor::vec_from_nir_with_fetch_constant(const nir_src& src,
-                                                                    UNUSED unsigned mask,
-                                                                    const GPRVector::Swizzle& swizzle)
+GPRVector ShaderFromNirProcessor::vec_from_nir_with_fetch_constant(const nir_src& src,
+                                                                   unsigned mask,
+                                                                   const GPRVector::Swizzle& swizzle,
+                                                                   bool match)
 {
-   GPRVector *result = nullptr;
-   int sel = lookup_register_index(src);
-   if (sel >= 0 && from_nir(src, 0)->type() == Value::gpr &&
-       from_nir(src, 0)->chan() == 0) {
-      /* If the x-channel is really an x-channel register then we are pretty
-       * save that the value come like we need them */
-      result = new GPRVector(from_nir(src, 0)->sel(), swizzle);
-   } else {
+   bool use_same = true;
+   GPRVector::Values v;
+
+   for (int i = 0; i < 4 && use_same; ++i)  {
+      if ((1 << i) & mask) {
+         if (swizzle[i] < 4) {
+            v[i] = from_nir(src, swizzle[i]);
+            assert(v[i]);
+            if (v[i]->type() != Value::gpr)
+               use_same = false;
+            if (match && (v[i]->chan() != swizzle[i]))
+                use_same = false;
+         }
+      }
+   }
+
+   if (use_same) {
+      int i = 0;
+      while (!v[i] && i < 4) ++i;
+      assert(i < 4);
+
+      unsigned sel = v[i]->sel();
+      for (i = 0; i < 4 && use_same; ++i) {
+         if (!v[i])
+            v[i] = PValue(new GPRValue(sel, swizzle[i]));
+         else
+            use_same &= v[i]->sel() == sel;
+      }
+   }
+
+   if (!use_same) {
       AluInstruction *ir = nullptr;
       int sel = allocate_temp_register();
-      GPRVector::Values v;
       for (int i = 0; i < 4; ++i) {
          v[i] = PValue(new GPRValue(sel, swizzle[i]));
          if (swizzle[i] < 4 && (mask & (1 << i))) {
@@ -569,10 +786,8 @@ GPRVector *ShaderFromNirProcessor::vec_from_nir_with_fetch_constant(const nir_sr
       }
       if (ir)
          ir->set_flag(alu_last_instr);
-
-      result = new GPRVector(v);
    }
-   return result;
+   return GPRVector(v);;
 }
 
 bool ShaderFromNirProcessor::emit_load_ubo(nir_intrinsic_instr* instr)
@@ -774,8 +989,7 @@ PValue ShaderFromNirProcessor::from_nir_with_fetch_constant(const nir_src& src, 
    if (value->type() != Value::gpr &&
        value->type() != Value::gpr_vector &&
        value->type() != Value::gpr_array_value) {
-      unsigned temp = allocate_temp_register();
-      PValue retval(new GPRValue(temp, component));
+      PValue retval = get_temp_register();
       emit_instruction(new AluInstruction(op1_mov, retval, value,
                                           EmitInstruction::last_write));
       value = retval;
@@ -860,7 +1074,7 @@ void ShaderFromNirProcessor::add_param_output_reg(int loc, const GPRVector *gpr)
 void ShaderFromNirProcessor::emit_export_instruction(WriteoutInstruction *ir)
 {
    r600::sfn_log << SfnLog::instr << "     as '" << *ir << "'\n";
-   m_export_output.push_back(PInstruction(ir));
+   m_export_output.emit(PInstruction(ir));
 }
 
 const GPRVector * ShaderFromNirProcessor::output_register(unsigned location) const
@@ -878,10 +1092,16 @@ void ShaderFromNirProcessor::set_input(unsigned pos, PValue var)
    m_inputs[pos] = var;
 }
 
-void ShaderFromNirProcessor::set_output(unsigned pos, PValue var)
+void ShaderFromNirProcessor::set_output(unsigned pos, int sel)
 {
-   r600::sfn_log << SfnLog::io << "Set output[" << pos << "] =" << *var <<  "\n";
-   m_outputs[pos] = var;
+   r600::sfn_log << SfnLog::io << "Set output[" << pos << "] =" << sel <<  "\n";
+   m_outputs[pos] = sel;
+}
+
+void ShaderFromNirProcessor::append_block(int nesting_change)
+{
+   m_nesting_depth += nesting_change;
+   m_output.push_back(InstructionBlock(m_nesting_depth, m_block_number++));
 }
 
 void ShaderFromNirProcessor::finalize()
@@ -892,10 +1112,9 @@ void ShaderFromNirProcessor::finalize()
       m_sh_info.input[i.first].gpr = i.second->sel();
 
    for (auto& i : m_outputs)
-      m_sh_info.output[i.first].gpr = i.second->sel();
+      m_sh_info.output[i.first].gpr = i.second;
 
-   m_output.insert(m_output.end(), m_export_output.begin(), m_export_output.end());
-   m_export_output.clear();
+   m_output.push_back(m_export_output);
 }
 
 }

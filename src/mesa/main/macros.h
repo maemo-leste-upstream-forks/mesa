@@ -34,8 +34,9 @@
 #include "util/macros.h"
 #include "util/u_math.h"
 #include "util/rounding.h"
-#include "util/imports.h"
+#include "util/compiler.h"
 #include "main/glheader.h"
+#include "mesa_private.h"
 
 
 /**
@@ -303,14 +304,14 @@ COPY_4UBV(GLubyte dst[4], const GLubyte src[4])
 }
 
 /** Copy \p SZ elements into a 4-element vector */
-#define COPY_SZ_4V(DST, SZ, SRC)  \
-do {                              \
-   switch (SZ) {                  \
-   case 4: (DST)[3] = (SRC)[3];   \
-   case 3: (DST)[2] = (SRC)[2];   \
-   case 2: (DST)[1] = (SRC)[1];   \
-   case 1: (DST)[0] = (SRC)[0];   \
-   }                              \
+#define COPY_SZ_4V(DST, SZ, SRC)                  \
+do {                                              \
+   switch (SZ) {                                  \
+   case 4: (DST)[3] = (SRC)[3]; /* fallthrough */ \
+   case 3: (DST)[2] = (SRC)[2]; /* fallthrough */ \
+   case 2: (DST)[1] = (SRC)[1]; /* fallthrough */ \
+   case 1: (DST)[0] = (SRC)[0]; /* fallthrough */ \
+   }                                              \
 } while(0)
 
 /** Copy \p SZ elements into a homegeneous (4-element) vector, giving
@@ -691,52 +692,6 @@ minify(unsigned value, unsigned levels)
     return MAX2(1, value >> levels);
 }
 
-/**
- * Align a value up to an alignment value
- *
- * If \c value is not already aligned to the requested alignment value, it
- * will be rounded up.
- *
- * \param value  Value to be rounded
- * \param alignment  Alignment value to be used.  This must be a power of two.
- *
- * \sa ROUND_DOWN_TO()
- */
-static inline uintptr_t
-ALIGN(uintptr_t value, int32_t alignment)
-{
-   assert((alignment > 0) && _mesa_is_pow_two(alignment));
-   return (((value) + (alignment) - 1) & ~((alignment) - 1));
-}
-
-/**
- * Like ALIGN(), but works with a non-power-of-two alignment.
- */
-static inline uintptr_t
-ALIGN_NPOT(uintptr_t value, int32_t alignment)
-{
-   assert(alignment > 0);
-   return (value + alignment - 1) / alignment * alignment;
-}
-
-/**
- * Align a value down to an alignment value
- *
- * If \c value is not already aligned to the requested alignment value, it
- * will be rounded down.
- *
- * \param value  Value to be rounded
- * \param alignment  Alignment value to be used.  This must be a power of two.
- *
- * \sa ALIGN()
- */
-static inline uintptr_t
-ROUND_DOWN_TO(uintptr_t value, int32_t alignment)
-{
-   assert((alignment > 0) && _mesa_is_pow_two(alignment));
-   return ((value) & ~(alignment - 1));
-}
-
 
 /** Cross product of two 3-element vectors */
 static inline void
@@ -832,5 +787,14 @@ DIFFERENT_SIGNS(GLfloat x, GLfloat y)
 
 /* Stringify */
 #define STRINGIFY(x) #x
+
+/*
+ * For GL_ARB_vertex_buffer_object we need to treat vertex array pointers
+ * as offsets into buffer stores.  Since the vertex array pointer and
+ * buffer store pointer are both pointers and we need to add them, we use
+ * this macro.
+ * Both pointers/offsets are expressed in bytes.
+ */
+#define ADD_POINTERS(A, B)  ( (GLubyte *) (A) + (uintptr_t) (B) )
 
 #endif

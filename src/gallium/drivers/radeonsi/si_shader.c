@@ -698,6 +698,24 @@ void si_create_function(struct si_shader_context *ctx, bool ngg_cull_shader)
          ac_add_arg(&ctx->args, AC_ARG_SGPR, cs_user_data_dwords, AC_ARG_INT, &ctx->cs_user_data);
       }
 
+      /* Some descriptors can be in user SGPRs. */
+      /* Shader buffers in user SGPRs. */
+      for (unsigned i = 0; i < shader->selector->cs_num_shaderbufs_in_user_sgprs; i++) {
+         while (ctx->args.num_sgprs_used % 4 != 0)
+            ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, NULL);
+
+         ac_add_arg(&ctx->args, AC_ARG_SGPR, 4, AC_ARG_INT, &ctx->cs_shaderbuf[i]);
+      }
+      /* Images in user SGPRs. */
+      for (unsigned i = 0; i < shader->selector->cs_num_images_in_user_sgprs; i++) {
+         unsigned num_sgprs = shader->selector->info.image_buffers & (1 << i) ? 4 : 8;
+
+         while (ctx->args.num_sgprs_used % num_sgprs != 0)
+            ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, NULL);
+
+         ac_add_arg(&ctx->args, AC_ARG_SGPR, num_sgprs, AC_ARG_INT, &ctx->cs_image[i]);
+      }
+
       /* Hardware SGPRs. */
       for (i = 0; i < 3; i++) {
          if (shader->selector->info.uses_block_id[i]) {
@@ -1276,13 +1294,24 @@ static void si_optimize_vs_outputs(struct si_shader_context *ctx)
 {
    struct si_shader *shader = ctx->shader;
    struct si_shader_info *info = &shader->selector->info;
+   unsigned skip_vs_optim_mask = 0;
 
    if ((ctx->type != PIPE_SHADER_VERTEX && ctx->type != PIPE_SHADER_TESS_EVAL) ||
        shader->key.as_ls || shader->key.as_es)
       return;
 
+   /* Optimizing these outputs is not possible, since they might be overriden
+    * at runtime with S_028644_PT_SPRITE_TEX. */
+   for (int i = 0; i < info->num_outputs; i++) {
+      if (info->output_semantic_name[i] == TGSI_SEMANTIC_PCOORD ||
+          info->output_semantic_name[i] == TGSI_SEMANTIC_TEXCOORD) {
+         skip_vs_optim_mask |= 1u << shader->info.vs_output_param_offset[i];
+      }
+   }
+
    ac_optimize_vs_outputs(&ctx->ac, ctx->main_fn, shader->info.vs_output_param_offset,
-                          info->num_outputs, &shader->info.nr_param_exports);
+                          info->num_outputs, skip_vs_optim_mask,
+                          &shader->info.nr_param_exports);
 }
 
 static bool si_vs_needs_prolog(const struct si_shader_selector *sel,
@@ -1938,6 +1967,9 @@ si_get_shader_part(struct si_screen *sscreen, struct si_shader_part **list,
       shader.key.as_ls = key->vs_prolog.as_ls;
       shader.key.as_es = key->vs_prolog.as_es;
       shader.key.as_ngg = key->vs_prolog.as_ngg;
+      shader.key.opt.ngg_culling =
+         (key->vs_prolog.gs_fast_launch_tri_list ? SI_NGG_CULL_GS_FAST_LAUNCH_TRI_LIST : 0) |
+         (key->vs_prolog.gs_fast_launch_tri_strip ? SI_NGG_CULL_GS_FAST_LAUNCH_TRI_STRIP : 0);
       shader.key.opt.vs_as_prim_discard_cs = key->vs_prolog.as_prim_discard_cs;
       break;
    case PIPE_SHADER_TESS_CTRL:
@@ -1961,6 +1993,7 @@ si_get_shader_part(struct si_screen *sscreen, struct si_shader_part **list,
    struct si_shader_context ctx;
    si_llvm_context_init(&ctx, sscreen, compiler,
                         si_get_wave_size(sscreen, type, shader.key.as_ngg, shader.key.as_es,
+                                         shader.key.opt.ngg_culling & SI_NGG_CULL_GS_FAST_LAUNCH_ALL,
                                          shader.key.opt.vs_as_prim_discard_cs));
    ctx.shader = &shader;
    ctx.type = type;
@@ -2473,7 +2506,10 @@ bool si_create_shader_variant(struct si_screen *sscreen, struct ac_llvm_compiler
 
    if (shader->key.as_ngg) {
       assert(!shader->key.as_es && !shader->key.as_ls);
-      gfx10_ngg_calculate_subgroup_info(shader);
+      if (!gfx10_ngg_calculate_subgroup_info(shader)) {
+         fprintf(stderr, "Failed to compute subgroup info\n");
+         return false;
+      }
    } else if (sscreen->info.chip_class >= GFX9 && sel->type == PIPE_SHADER_GEOMETRY) {
       gfx9_get_gs_info(shader->previous_stage_sel, sel, &shader->gs_info);
    }

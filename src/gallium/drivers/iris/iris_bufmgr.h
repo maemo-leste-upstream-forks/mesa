@@ -28,6 +28,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <sys/types.h>
+#include "c11/threads.h"
 #include "util/macros.h"
 #include "util/u_atomic.h"
 #include "util/list.h"
@@ -89,6 +90,34 @@ enum iris_memory_zone {
 #define IRIS_BORDER_COLOR_POOL_ADDRESS IRIS_MEMZONE_DYNAMIC_START
 #define IRIS_BORDER_COLOR_POOL_SIZE (64 * 1024)
 
+/**
+ * Classification of the various incoherent caches of the GPU into a number of
+ * caching domains.
+ */
+enum iris_domain {
+   /** Render color cache. */
+   IRIS_DOMAIN_RENDER_WRITE = 0,
+   /** (Hi)Z/stencil cache. */
+   IRIS_DOMAIN_DEPTH_WRITE,
+   /** Any other read-write cache. */
+   IRIS_DOMAIN_OTHER_WRITE,
+   /** Any other read-only cache. */
+   IRIS_DOMAIN_OTHER_READ,
+   /** Number of caching domains. */
+   NUM_IRIS_DOMAINS,
+   /** Not a real cache, use to opt out of the cache tracking mechanism. */
+   IRIS_DOMAIN_NONE = NUM_IRIS_DOMAINS
+};
+
+/**
+ * Whether a caching domain is guaranteed not to write any data to memory.
+ */
+static inline bool
+iris_domain_is_read_only(enum iris_domain access)
+{
+   return access == IRIS_DOMAIN_OTHER_READ;
+}
+
 struct iris_bo {
    /**
     * Size in bytes of the buffer object.
@@ -100,6 +129,9 @@ struct iris_bo {
 
    /** Buffer manager context associated with this buffer object */
    struct iris_bufmgr *bufmgr;
+
+   /** Pre-computed hash using _mesa_hash_pointer for cache tracking sets */
+   uint32_t hash;
 
    /** The GEM handle for this buffer object. */
    uint32_t gem_handle;
@@ -132,15 +164,6 @@ struct iris_bo {
     */
    unsigned index;
 
-   /**
-    * Boolean of whether the GPU is definitely not accessing the buffer.
-    *
-    * This is only valid when reusable, since non-reusable
-    * buffers are those that have been shared with other
-    * processes, so we don't know their state.
-    */
-   bool idle;
-
    int refcount;
    const char *name;
 
@@ -157,7 +180,6 @@ struct iris_bo {
     * Current tiling mode
     */
    uint32_t tiling_mode;
-   uint32_t swizzle_mode;
    uint32_t stride;
 
    time_t free_time;
@@ -171,6 +193,30 @@ struct iris_bo {
 
    /** BO cache list */
    struct list_head head;
+
+   /** List of GEM handle exports of this buffer (bo_export) */
+   struct list_head exports;
+
+   /**
+    * Synchronization sequence number of most recent access of this BO from
+    * each caching domain.
+    *
+    * Although this is a global field, use in multiple contexts should be
+    * safe, see iris_emit_buffer_barrier_for() for details.
+    *
+    * Also align it to 64 bits. This will make atomic operations faster on 32
+    * bit platforms.
+    */
+   uint64_t last_seqnos[NUM_IRIS_DOMAINS] __attribute__ ((aligned (8)));
+
+   /**
+    * Boolean of whether the GPU is definitely not accessing the buffer.
+    *
+    * This is only valid when reusable, since non-reusable
+    * buffers are those that have been shared with other
+    * processes, so we don't know their state.
+    */
+   bool idle;
 
    /**
     * Boolean of whether this buffer can be re-used
@@ -191,9 +237,6 @@ struct iris_bo {
     * Boolean of whether this buffer points into user memory
     */
    bool userptr;
-
-   /** Pre-computed hash using _mesa_hash_pointer for cache tracking sets */
-   uint32_t hash;
 };
 
 #define BO_ALLOC_ZEROED     (1<<0)
@@ -285,20 +328,11 @@ static inline int iris_bo_unmap(struct iris_bo *bo) { return 0; }
  */
 void iris_bo_wait_rendering(struct iris_bo *bo);
 
-/**
- * Tears down the buffer manager instance.
- */
-void iris_bufmgr_destroy(struct iris_bufmgr *bufmgr);
 
 /**
- * Get the current tiling (and resulting swizzling) mode for the bo.
- *
- * \param buf Buffer to get tiling mode for
- * \param tiling_mode returned tiling mode
- * \param swizzle_mode returned swizzling mode
+ * Unref a buffer manager instance.
  */
-int iris_bo_get_tiling(struct iris_bo *bo, uint32_t *tiling_mode,
-                      uint32_t *swizzle_mode);
+void iris_bufmgr_unref(struct iris_bufmgr *bufmgr);
 
 /**
  * Create a visible name for a buffer which can be used by other apps
@@ -307,6 +341,13 @@ int iris_bo_get_tiling(struct iris_bo *bo, uint32_t *tiling_mode,
  * \param name Returned name
  */
 int iris_bo_flink(struct iris_bo *bo, uint32_t *name);
+
+/**
+ * Make a BO externally accessible.
+ *
+ * \param bo Buffer to make external
+ */
+void iris_bo_make_external(struct iris_bo *bo);
 
 /**
  * Returns 1 if mapping the buffer for write could cause the process
@@ -329,8 +370,10 @@ int iris_bo_busy(struct iris_bo *bo);
 int iris_bo_madvise(struct iris_bo *bo, int madv);
 
 /* drm_bacon_bufmgr_gem.c */
-struct iris_bufmgr *iris_bufmgr_init(struct gen_device_info *devinfo, int fd,
-                                     bool bo_reuse);
+struct iris_bufmgr *iris_bufmgr_get_for_fd(struct gen_device_info *devinfo, int fd,
+                                           bool bo_reuse);
+int iris_bufmgr_get_fd(struct iris_bufmgr *bufmgr);
+
 struct iris_bo *iris_bo_gem_create_from_name(struct iris_bufmgr *bufmgr,
                                              const char *name,
                                              unsigned handle);
@@ -353,7 +396,19 @@ void iris_destroy_hw_context(struct iris_bufmgr *bufmgr, uint32_t ctx_id);
 
 int iris_bo_export_dmabuf(struct iris_bo *bo, int *prime_fd);
 struct iris_bo *iris_bo_import_dmabuf(struct iris_bufmgr *bufmgr, int prime_fd,
-                                      uint32_t tiling, uint32_t stride);
+                                      int tiling, uint32_t stride);
+
+/**
+ * Exports a bo as a GEM handle into a given DRM file descriptor
+ * \param bo Buffer to export
+ * \param drm_fd File descriptor where the new handle is created
+ * \param out_handle Pointer to store the new handle
+ *
+ * Returns 0 if the buffer was successfully exported, a non zero error code
+ * otherwise.
+ */
+int iris_bo_export_gem_handle_for_device(struct iris_bo *bo, int drm_fd,
+                                         uint32_t *out_handle);
 
 uint32_t iris_bo_export_gem_handle(struct iris_bo *bo);
 
@@ -376,6 +431,24 @@ iris_bo_offset_from_base_address(struct iris_bo *bo)
     */
    assert(bo->gtt_offset < IRIS_MEMZONE_OTHER_START);
    return bo->gtt_offset;
+}
+
+/**
+ * Track access of a BO from the specified caching domain and sequence number.
+ *
+ * Can be used without locking.  Only the most recent access (i.e. highest
+ * seqno) is tracked.
+ */
+static inline void
+iris_bo_bump_seqno(struct iris_bo *bo, uint64_t seqno,
+                   enum iris_domain type)
+{
+   uint64_t *const last_seqno = &bo->last_seqnos[type];
+   uint64_t tmp, prev_seqno = p_atomic_read(last_seqno);
+
+   while (prev_seqno < seqno &&
+          prev_seqno != (tmp = p_atomic_cmpxchg(last_seqno, prev_seqno, seqno)))
+      prev_seqno = tmp;
 }
 
 enum iris_memory_zone iris_memzone_for_address(uint64_t address);

@@ -1,8 +1,8 @@
 /**************************************************************************
- * 
+ *
  * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
  * "Software"), to deal in the Software without restriction, including
@@ -10,11 +10,11 @@
  * distribute, sub license, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to
  * the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice (including the
  * next paragraph) shall be included in all copies or substantial portions
  * of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
@@ -22,10 +22,10 @@
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- * 
+ *
  **************************************************************************/
 
-#include "util/imports.h"
+
 #include "main/arrayobj.h"
 #include "main/image.h"
 #include "main/macros.h"
@@ -216,7 +216,7 @@ st_feedback_draw_vbo(struct gl_context *ctx,
 
       if (ctx->Array._PrimitiveRestart) {
          info.primitive_restart = true;
-         info.restart_index = _mesa_primitive_restart_index(ctx, info.index_size);
+         info.restart_index = ctx->Array._RestartIndex[index_size - 1];
       }
    } else {
       info.index_size = 0;
@@ -232,7 +232,7 @@ st_feedback_draw_vbo(struct gl_context *ctx,
    struct pipe_transfer *ubo_transfer[PIPE_MAX_CONSTANT_BUFFERS] = {0};
    assert(prog->info.num_ubos <= ARRAY_SIZE(ubo_transfer));
 
-   for (unsigned i = 0; i < prog->info.num_ubos; i++) {
+   for (unsigned i = 0; i < prog->sh.NumUniformBlocks; i++) {
       struct gl_buffer_binding *binding =
          &st->ctx->UniformBufferBindings[prog->sh.UniformBlocks[i]->Binding];
       struct st_buffer_object *st_obj = st_buffer_object(binding->BufferObject);
@@ -370,7 +370,7 @@ st_feedback_draw_vbo(struct gl_context *ctx,
 
       draw_set_mapped_texture(draw, PIPE_SHADER_VERTEX, i, width0,
                               res->height0, num_layers, first_level,
-                              last_level, (void*)base_addr, row_stride,
+                              last_level, 0, 0, (void*)base_addr, row_stride,
                               img_stride, mip_offset);
    }
 
@@ -417,7 +417,7 @@ st_feedback_draw_vbo(struct gl_context *ctx,
       }
 
       draw_set_mapped_image(draw, PIPE_SHADER_VERTEX, i, width, height,
-                            num_layers, addr, row_stride, img_stride);
+                            num_layers, addr, row_stride, img_stride, 0, 0);
    }
    draw_set_images(draw, PIPE_SHADER_VERTEX, images, prog->info.num_images);
 
@@ -446,7 +446,7 @@ st_feedback_draw_vbo(struct gl_context *ctx,
    /* unmap images */
    for (unsigned i = 0; i < prog->info.num_images; i++) {
       if (img_transfer[i]) {
-         draw_set_mapped_image(draw, PIPE_SHADER_VERTEX, i, 0, 0, 0, NULL, 0, 0);
+         draw_set_mapped_image(draw, PIPE_SHADER_VERTEX, i, 0, 0, 0, NULL, 0, 0, 0, 0);
          pipe_transfer_unmap(pipe, img_transfer[i]);
       }
    }

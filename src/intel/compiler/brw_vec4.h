@@ -28,6 +28,7 @@
 
 #ifdef __cplusplus
 #include "brw_ir_vec4.h"
+#include "brw_ir_performance.h"
 #include "brw_vec4_builder.h"
 #include "brw_vec4_live_variables.h"
 #endif
@@ -47,6 +48,7 @@ brw_vec4_generate_assembly(const struct brw_compiler *compiler,
                            const nir_shader *nir,
                            struct brw_vue_prog_data *prog_data,
                            const struct cfg_t *cfg,
+                           const brw::performance &perf,
                            struct brw_compile_stats *stats);
 
 #ifdef __cplusplus
@@ -107,6 +109,8 @@ public:
    unsigned int max_grf;
    BRW_ANALYSIS(live_analysis, brw::vec4_live_variables,
                 backend_shader *) live_analysis;
+   BRW_ANALYSIS(performance_analysis, brw::performance,
+                vec4_visitor *) performance_analysis;
 
    bool need_all_constants_in_pull_buffer;
 
@@ -312,8 +316,8 @@ public:
 
    bool optimize_predicate(nir_alu_instr *instr, enum brw_predicate *predicate);
 
-   void emit_conversion_from_double(dst_reg dst, src_reg src, bool saturate);
-   void emit_conversion_to_double(dst_reg dst, src_reg src, bool saturate);
+   void emit_conversion_from_double(dst_reg dst, src_reg src);
+   void emit_conversion_to_double(dst_reg dst, src_reg src);
 
    vec4_instruction *shuffle_64bit_data(dst_reg dst, src_reg src,
                                         bool for_write,

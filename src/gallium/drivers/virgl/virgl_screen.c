@@ -54,7 +54,7 @@ DEBUG_GET_ONCE_FLAGS_OPTION(virgl_debug, "VIRGL_DEBUG", debug_options, 0)
 static const char *
 virgl_get_vendor(struct pipe_screen *screen)
 {
-   return "Red Hat";
+   return "Mesa/X.org";
 }
 
 
@@ -126,6 +126,7 @@ virgl_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_MAX_STREAM_OUTPUT_INTERLEAVED_COMPONENTS:
       return 16*4;
    case PIPE_CAP_PRIMITIVE_RESTART:
+   case PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX:
       return vscreen->caps.caps.v1.bset.primitive_restart;
    case PIPE_CAP_SHADER_STENCIL_EXPORT:
       return vscreen->caps.caps.v1.bset.shader_stencil_export;
@@ -298,7 +299,6 @@ virgl_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_DEVICE_RESET_STATUS_QUERY:
    case PIPE_CAP_DEPTH_BOUNDS_TEST:
    case PIPE_CAP_SHAREABLE_SHADERS:
-   case PIPE_CAP_CLEAR_TEXTURE:
    case PIPE_CAP_DRAW_PARAMETERS:
    case PIPE_CAP_TGSI_PACK_HALF_FLOAT:
    case PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL:
@@ -352,6 +352,8 @@ virgl_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_PROGRAMMABLE_SAMPLE_LOCATIONS:
    case PIPE_CAP_MAX_TEXTURE_UPLOAD_MEMORY_BUDGET:
       return 0;
+   case PIPE_CAP_CLEAR_TEXTURE:
+      return vscreen->caps.caps.v2.capability_bits & VIRGL_CAP_CLEAR_TEXTURE;
    case PIPE_CAP_CLIP_HALFZ:
       return vscreen->caps.caps.v2.capability_bits & VIRGL_CAP_CLIP_HALFZ;
    case PIPE_CAP_MAX_GS_INVOCATIONS:
@@ -462,6 +464,8 @@ virgl_get_shader_param(struct pipe_screen *screen,
       case PIPE_SHADER_CAP_TGSI_SKIP_MERGE_REGISTERS:
       case PIPE_SHADER_CAP_INT64_ATOMICS:
       case PIPE_SHADER_CAP_FP16:
+      case PIPE_SHADER_CAP_FP16_DERIVATIVES:
+      case PIPE_SHADER_CAP_INT16:
          return 0;
       default:
          return 0;
@@ -724,7 +728,7 @@ virgl_is_format_supported( struct pipe_screen *screen,
       /*
        * Although possible, it is unnatural to render into compressed or YUV
        * surfaces. So disable these here to avoid going into weird paths
-       * inside the state trackers.
+       * inside gallium frontends.
        */
       if (format_desc->block.width != 1 ||
           format_desc->block.height != 1)
@@ -757,6 +761,9 @@ virgl_is_format_supported( struct pipe_screen *screen,
       goto out_lookup;
    }
    if (format_desc->layout == UTIL_FORMAT_LAYOUT_BPTC) {
+      goto out_lookup;
+   }
+   if (format_desc->layout == UTIL_FORMAT_LAYOUT_ETC) {
       goto out_lookup;
    }
 

@@ -35,7 +35,7 @@
 #include "util/u_drm.h"
 #include "renderonly/renderonly.h"
 
-#include "state_tracker/drm_driver.h"
+#include "frontend/drm_driver.h"
 
 #include "drm-uapi/drm_fourcc.h"
 #include "drm-uapi/lima_drm.h"
@@ -389,6 +389,7 @@ lima_resource_get_handle(struct pipe_screen *pscreen,
    if (!lima_bo_export(res->bo, handle))
       return false;
 
+   handle->offset = res->levels[0].offset;
    handle->stride = res->levels[0].stride;
    return true;
 }

@@ -38,7 +38,7 @@
 #include "util/u_string.h"
 #include "util/u_screen.h"
 
-#include "state_tracker/sw_winsys.h"
+#include "frontend/sw_winsys.h"
 
 #include "jit_api.h"
 
@@ -127,7 +127,7 @@ swr_is_format_supported(struct pipe_screen *_screen,
       /*
        * Although possible, it is unnatural to render into compressed or YUV
        * surfaces. So disable these here to avoid going into weird paths
-       * inside the state trackers.
+       * inside gallium frontends.
        */
       if (format_desc->block.width != 1 || format_desc->block.height != 1)
          return false;
@@ -139,6 +139,12 @@ swr_is_format_supported(struct pipe_screen *_screen,
 
       if (mesa_to_swr_format(format) == (SWR_FORMAT)-1)
          return false;
+   }
+
+   if (bind & PIPE_BIND_VERTEX_BUFFER) {
+      if (mesa_to_swr_format(format) == (SWR_FORMAT)-1) {
+         return false;
+      }
    }
 
    if (format_desc->layout == UTIL_FORMAT_LAYOUT_ASTC ||
@@ -247,6 +253,7 @@ swr_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER:
    case PIPE_CAP_DEPTH_CLIP_DISABLE:
    case PIPE_CAP_PRIMITIVE_RESTART:
+   case PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX:
    case PIPE_CAP_TGSI_INSTANCEID:
    case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
    case PIPE_CAP_START_INSTANCE:

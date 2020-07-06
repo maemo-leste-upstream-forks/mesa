@@ -50,6 +50,7 @@
 #include "compiler/glsl/list.h"
 #include "util/simple_mtx.h"
 #include "util/u_dynarray.h"
+#include "vbo/vbo.h"
 
 
 #ifdef __cplusplus
@@ -79,7 +80,6 @@ struct gl_program_parameter_list;
 struct gl_shader_spirv_data;
 struct set;
 struct shader_includes;
-struct vbo_context;
 /*@}*/
 
 
@@ -105,6 +105,7 @@ _mesa_varying_slot_in_fs(gl_varying_slot slot)
    case VARYING_SLOT_TESS_LEVEL_INNER:
    case VARYING_SLOT_BOUNDING_BOX0:
    case VARYING_SLOT_BOUNDING_BOX1:
+   case VARYING_SLOT_VIEWPORT_MASK:
       return GL_FALSE;
    default:
       return GL_TRUE;
@@ -688,6 +689,9 @@ struct gl_multisample_attrib
 
    /** The GL spec defines this as an array but >32x MSAA is madness */
    GLbitfield SampleMaskValue;
+
+   /* NV_alpha_to_coverage_dither_control */
+   GLenum SampleAlphaToCoverageDitherControl;
 };
 
 
@@ -1312,6 +1316,9 @@ struct gl_viewport_attrib
    GLfloat X, Y;		/**< position */
    GLfloat Width, Height;	/**< size */
    GLfloat Near, Far;		/**< Depth buffer range */
+
+   /**< GL_NV_viewport_swizzle */
+   GLenum16 SwizzleX, SwizzleY, SwizzleZ, SwizzleW;
 };
 
 
@@ -1533,11 +1540,25 @@ struct gl_vertex_array_object
    GLboolean EverBound;
 
    /**
+    * Whether the VAO is changed by the application so often that some of
+    * the derived fields are not updated at all to decrease overhead.
+    * Also, interleaved arrays are not detected, because it's too expensive
+    * to do that before every draw call.
+    */
+   bool IsDynamic;
+
+   /**
     * Marked to true if the object is shared between contexts and immutable.
     * Then reference counting is done using atomics and thread safe.
     * Is used for dlist VAOs.
     */
    bool SharedAndImmutable;
+
+   /**
+    * Number of updates that were done by the application. This is used to
+    * decide whether the VAO is static or dynamic.
+    */
+   unsigned NumUpdates;
 
    /** Vertex attribute arrays */
    struct gl_array_attributes VertexAttrib[VERT_ATTRIB_MAX];
@@ -1591,6 +1612,9 @@ struct gl_array_attrib
    /** The last VAO accessed by a DSA function */
    struct gl_vertex_array_object *LastLookedUpVAO;
 
+   /** These contents are copied to newly created VAOs. */
+   struct gl_vertex_array_object DefaultVAOState;
+
    /** Array objects (GL_ARB_vertex_array_object) */
    struct _mesa_HashTable *Objects;
 
@@ -1609,6 +1633,7 @@ struct gl_array_attrib
    GLboolean PrimitiveRestartFixedIndex;
    GLboolean _PrimitiveRestart;
    GLuint RestartIndex;
+   GLuint _RestartIndex[4]; /**< Restart indices for index_size - 1. */
    /*@}*/
 
    /* GL_ARB_vertex_buffer_object */
@@ -2042,19 +2067,6 @@ struct gl_bindless_image
 
 
 /**
- * Current vertex processing mode: fixed function vs. shader.
- * In reality, fixed function is probably implemented by a shader but that's
- * not what we care about here.
- */
-typedef enum
-{
-   VP_MODE_FF,     /**< legacy / fixed function */
-   VP_MODE_SHADER, /**< ARB vertex program or GLSL vertex shader */
-   VP_MODE_MAX     /**< for sizing arrays */
-} gl_vertex_processing_mode;
-
-
-/**
  * Base class for any kind of program object
  */
 struct gl_program
@@ -2170,6 +2182,7 @@ struct gl_program
           */
          GLenum16 ImageAccess[MAX_IMAGE_UNIFORMS];
 
+         GLuint NumUniformBlocks;
          struct gl_uniform_block **UniformBlocks;
          struct gl_uniform_block **ShaderStorageBlocks;
 
@@ -2279,6 +2292,8 @@ struct gl_vertex_program_state
    GLboolean TwoSideEnabled;     /**< GL_VERTEX_PROGRAM_TWO_SIDE_ARB/NV */
    /** Should fixed-function T&L be implemented with a vertex prog? */
    GLboolean _MaintainTnlProgram;
+   /** Whether the fixed-func program is being used right now. */
+   GLboolean _UsesTnlProgram;
 
    struct gl_program *Current;  /**< User-bound vertex program */
 
@@ -2352,6 +2367,8 @@ struct gl_fragment_program_state
    GLboolean Enabled;     /**< User-set fragment program enable flag */
    /** Should fixed-function texturing be implemented with a fragment prog? */
    GLboolean _MaintainTexEnvProgram;
+   /** Whether the fixed-func program is being used right now. */
+   GLboolean _UsesTexEnvProgram;
 
    struct gl_program *Current;  /**< User-bound fragment program */
 
@@ -2665,6 +2682,12 @@ struct gl_shader
    bool bindless_image;
    bool bound_sampler;
    bool bound_image;
+
+   /**
+    * Whether layer output is viewport-relative.
+    */
+   bool redeclares_gl_layer;
+   bool layer_viewport_relative;
 
    /** Global xfb_stride out qualifier if any */
    GLuint TransformFeedbackBufferStride[MAX_FEEDBACK_BUFFERS];
@@ -3183,7 +3206,9 @@ struct gl_shader_compiler_options
     * If we can lower the precision of variables based on precision
     * qualifiers
     */
-   GLboolean LowerPrecision;
+   GLboolean LowerPrecisionFloat16;
+   GLboolean LowerPrecisionInt16;
+   GLboolean LowerPrecisionDerivatives;
 
    /**
     * \name Forms of indirect addressing the driver cannot do.
@@ -3309,9 +3334,6 @@ struct gl_shared_state
    mtx_t TexMutex;		/**< texobj thread safety */
    GLuint TextureStateStamp;	        /**< state notification for shared tex */
    /*@}*/
-
-   /** Default buffer object for vertex arrays that aren't in VBOs */
-   struct gl_buffer_object *NullBufferObj;
 
    /**
     * \name Vertex/geometry/fragment programs
@@ -3808,6 +3830,11 @@ struct gl_constants
    GLboolean AllowGLSLExtensionDirectiveMidShader;
 
    /**
+    * Allow a subset of GLSL 1.20 in GLSL 1.10 as needed by SPECviewperf13.
+    */
+   GLboolean AllowGLSL120SubsetIn110;
+
+   /**
     * Allow builtins as part of constant expressions. This was not allowed
     * until GLSL 1.20 this allows it everywhere.
     */
@@ -3848,9 +3875,18 @@ struct gl_constants
    GLboolean ForceGLSLAbsSqrt;
 
    /**
-    * Force uninitialized variables to default to zero.
+    * Types of variable to default initialized to zero. Supported values are:
+    *   - 0: no zero initialization
+    *   - 1: all shader variables and gl_FragColor are initialiazed to 0
+    *   - 2: same as 1, but shader out variables are *not* initialized, while
+    *        function out variables are now initialized.
     */
-   GLboolean GLSLZeroInit;
+   GLchar GLSLZeroInit;
+
+   /**
+    * Treat integer textures using GL_LINEAR filters as GL_NEAREST.
+    */
+   GLboolean ForceIntegerTexNearest;
 
    /**
     * Does the driver support real 32-bit integers?  (Otherwise, integers are
@@ -4052,51 +4088,6 @@ struct gl_constants
    } SupportedMultisampleModes[40];
    GLint NumSupportedMultisampleModes;
 
-   /**
-    * GL_EXT_texture_multisample_blit_scaled implementation assumes that
-    * samples are laid out in a rectangular grid roughly corresponding to
-    * sample locations within a pixel. Below SampleMap{2,4,8}x variables
-    * are used to map indices of rectangular grid to sample numbers within
-    * a pixel. This mapping of indices to sample numbers must be initialized
-    * by the driver for the target hardware. For example, if we have the 8X
-    * MSAA sample number layout (sample positions) for XYZ hardware:
-    *
-    *        sample indices layout          sample number layout
-    *            ---------                      ---------
-    *            | 0 | 1 |                      | a | b |
-    *            ---------                      ---------
-    *            | 2 | 3 |                      | c | d |
-    *            ---------                      ---------
-    *            | 4 | 5 |                      | e | f |
-    *            ---------                      ---------
-    *            | 6 | 7 |                      | g | h |
-    *            ---------                      ---------
-    *
-    * Where a,b,c,d,e,f,g,h are integers between [0-7].
-    *
-    * Then, initialize the SampleMap8x variable for XYZ hardware as shown
-    * below:
-    *    SampleMap8x = {a, b, c, d, e, f, g, h};
-    *
-    * Follow the logic for sample counts 2-8.
-    *
-    * For 16x the sample indices layout as a 4x4 grid as follows:
-    *
-    *            -----------------
-    *            | 0 | 1 | 2 | 3 |
-    *            -----------------
-    *            | 4 | 5 | 6 | 7 |
-    *            -----------------
-    *            | 8 | 9 |10 |11 |
-    *            -----------------
-    *            |12 |13 |14 |15 |
-    *            -----------------
-    */
-   uint8_t SampleMap2x[2];
-   uint8_t SampleMap4x[4];
-   uint8_t SampleMap8x[8];
-   uint8_t SampleMap16x[16];
-
    /** GL_ARB_shader_atomic_counters */
    GLuint MaxAtomicBufferBindings;
    GLuint MaxAtomicBufferSize;
@@ -4157,6 +4148,12 @@ struct gl_constants
    /** When drivers are OK with mapped buffers during draw and other calls. */
    bool AllowMappedBuffersDuringExecution;
 
+   /**
+    * Whether buffer creation, unsynchronized mapping, unmapping, and
+    * deletion is thread-safe.
+    */
+   bool BufferCreateMapUnsynchronizedThreadSafe;
+
    /** GL_ARB_get_program_binary */
    GLuint NumProgramBinaryFormats;
 
@@ -4184,6 +4181,16 @@ struct gl_constants
 
    /** Whether out-of-order draw (Begin/End) optimizations are allowed. */
    bool AllowDrawOutOfOrder;
+
+   /** Whether to allow the fast path for frequently updated VAOs. */
+   bool AllowDynamicVAOFastPath;
+
+   /** Whether the driver can support primitive restart with a fixed index.
+    * This is essentially a subset of NV_primitive_restart with enough support
+    * to be able to enable GLES 3.1. Some hardware can support this but not the
+    * full NV extension with arbitrary restart indices.
+    */
+   bool PrimitiveRestartFixedIndex;
 
    /** GL_ARB_gl_spirv */
    struct spirv_supported_capabilities SpirVCapabilities;
@@ -4421,6 +4428,7 @@ struct gl_extensions
    GLboolean EXT_shader_framebuffer_fetch_non_coherent;
    GLboolean MESA_shader_integer_functions;
    GLboolean MESA_ycbcr_texture;
+   GLboolean NV_alpha_to_coverage_dither_control;
    GLboolean NV_compute_shader_derivatives;
    GLboolean NV_conditional_render;
    GLboolean NV_copy_image;
@@ -4437,6 +4445,8 @@ struct gl_extensions
    GLboolean NV_conservative_raster_dilate;
    GLboolean NV_conservative_raster_pre_snap_triangles;
    GLboolean NV_conservative_raster_pre_snap;
+   GLboolean NV_viewport_array2;
+   GLboolean NV_viewport_swizzle;
    GLboolean NVX_gpu_memory_info;
    GLboolean TDFX_texture_compression_FXT1;
    GLboolean OES_EGL_image;
@@ -4461,12 +4471,6 @@ struct gl_extensions
     * while meta is in progress.
     */
    GLubyte Version;
-   /**
-    * Force-enabled, yet unrecognized, extensions.
-    * See _mesa_one_time_init_extension_overrides()
-    */
-#define MAX_UNRECOGNIZED_EXTENSIONS 16
-   const char *unrecognized_extensions[MAX_UNRECOGNIZED_EXTENSIONS];
 };
 
 
@@ -4510,7 +4514,7 @@ struct gl_matrix_stack
 #define _NEW_TEXTURE_MATRIX    (1u << 2)   /**< gl_context::TextureMatrix */
 #define _NEW_COLOR             (1u << 3)   /**< gl_context::Color */
 #define _NEW_DEPTH             (1u << 4)   /**< gl_context::Depth */
-#define _NEW_EVAL              (1u << 5)   /**< gl_context::Eval, EvalMap */
+/* gap */
 #define _NEW_FOG               (1u << 6)   /**< gl_context::Fog */
 #define _NEW_HINT              (1u << 7)   /**< gl_context::Hint */
 #define _NEW_LIGHT             (1u << 8)   /**< gl_context::Light */
@@ -4735,6 +4739,9 @@ struct gl_driver_flags
    /** gl_context::Transform::ClipPlanesEnabled */
    uint64_t NewClipPlaneEnable;
 
+   /** gl_context::Color::ClampFragmentColor */
+   uint64_t NewFragClamp;
+
    /** gl_context::Transform::DepthClamp */
    uint64_t NewDepthClamp;
 
@@ -4856,6 +4863,31 @@ struct gl_memory_object
 struct gl_semaphore_object
 {
    GLuint Name;            /**< hash table ID/name */
+};
+
+/**
+ * One element of the client attrib stack.
+ */
+struct gl_client_attrib_node
+{
+   GLbitfield Mask;
+   struct gl_array_attrib Array;
+   struct gl_vertex_array_object VAO;
+   struct gl_pixelstore_attrib Pack;
+   struct gl_pixelstore_attrib Unpack;
+};
+
+/**
+ * The VBO module implemented in src/vbo.
+ */
+struct vbo_context {
+   struct gl_vertex_buffer_binding binding;
+   struct gl_array_attributes current[VBO_ATTRIB_MAX];
+
+   struct gl_vertex_array_object *VAO;
+
+   struct vbo_exec_context exec;
+   struct vbo_save_context save;
 };
 
 /**
@@ -4996,7 +5028,7 @@ struct gl_context
    /** \name Client attribute stack */
    /*@{*/
    GLuint ClientAttribStackDepth;
-   struct gl_attrib_node *ClientAttribStack[MAX_CLIENT_ATTRIB_STACK_DEPTH];
+   struct gl_client_attrib_node ClientAttribStack[MAX_CLIENT_ATTRIB_STACK_DEPTH];
    /*@}*/
 
    /** \name Client attribute groups */
@@ -5205,7 +5237,7 @@ struct gl_context
    void *swrast_context;
    void *swsetup_context;
    void *swtnl_context;
-   struct vbo_context *vbo_context;
+   struct vbo_context vbo_context;
    struct st_context *st;
    /*@}*/
 

@@ -28,6 +28,7 @@
 #include "sid.h"
 
 #include <map>
+#include <set>
 #include <stack>
 
 /*
@@ -213,7 +214,7 @@ void next_uses_per_block(spill_ctx& ctx, unsigned block_idx, std::set<uint32_t>&
 
 }
 
-void compute_global_next_uses(spill_ctx& ctx, std::vector<std::set<Temp>>& live_out)
+void compute_global_next_uses(spill_ctx& ctx)
 {
    ctx.next_use_distances_start.resize(ctx.program->blocks.size());
    ctx.next_use_distances_end.resize(ctx.program->blocks.size());
@@ -1572,7 +1573,7 @@ void assign_spill_slots(spill_ctx& ctx, unsigned spills_to_vgpr) {
                   for (unsigned i = 0; i < temp.size(); i++)
                      bld.mubuf(opcode, scratch_rsrc, Operand(), scratch_offset, split->definitions[i].getTemp(), offset + i * 4, false);
                } else {
-                  bld.mubuf(opcode, scratch_rsrc, Operand(), scratch_offset, temp, offset, false);
+                  bld.mubuf(opcode, scratch_rsrc, Operand(v1), scratch_offset, temp, offset, false);
                }
             } else if (sgpr_slot.find(spill_id) != sgpr_slot.end()) {
                ctx.program->config->spilled_sgprs += (*it)->operands[0].size();
@@ -1640,7 +1641,7 @@ void assign_spill_slots(spill_ctx& ctx, unsigned spills_to_vgpr) {
                   }
                   bld.insert(vec);
                } else {
-                  bld.mubuf(opcode, def, scratch_rsrc, Operand(), scratch_offset, offset, false);
+                  bld.mubuf(opcode, def, scratch_rsrc, Operand(v1), scratch_offset, offset, false);
                }
             } else if (sgpr_slot.find(spill_id) != sgpr_slot.end()) {
                uint32_t spill_slot = sgpr_slot[spill_id];
@@ -1764,7 +1765,7 @@ void spill(Program* program, live& live_vars, const struct radv_nir_compiler_opt
 
    /* initialize ctx */
    spill_ctx ctx(register_target, program, live_vars.register_demand);
-   compute_global_next_uses(ctx, live_vars.live_out);
+   compute_global_next_uses(ctx);
    get_rematerialize_info(ctx);
 
    /* create spills and reloads */

@@ -58,7 +58,7 @@ static void dump_info(struct ir3_shader_variant *so, const char *str)
 {
 	uint32_t *bin;
 	const char *type = ir3_shader_stage(so);
-	bin = ir3_shader_assemble(so, so->shader->compiler->gpu_id);
+	bin = ir3_shader_assemble(so);
 	debug_printf("; %s: %s\n", type, str);
 	ir3_shader_disasm(so, bin, stdout);
 	free(bin);
@@ -326,7 +326,6 @@ int main(int argc, char **argv)
 
 		if (!strcmp(argv[n], "--half-precision")) {
 			debug_printf(" %s", argv[n]);
-			key.half_precision = true;
 			n++;
 			continue;
 		}
@@ -492,11 +491,13 @@ int main(int argc, char **argv)
 	s.compiler = compiler;
 	s.nir = nir;
 
-	ir3_optimize_nir(&s, nir, NULL);
+	ir3_finalize_nir(compiler, nir);
 
 	v.key = key;
 	v.shader = &s;
 	s.type = v.type = nir->info.stage;
+
+	ir3_nir_lower_variant(&v, nir);
 
 	info = "NIR compiler";
 	ret = ir3_compile_shader_nir(s.compiler, &v);

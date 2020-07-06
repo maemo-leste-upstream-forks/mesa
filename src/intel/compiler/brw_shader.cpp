@@ -570,10 +570,10 @@ brw_saturate_immediate(enum brw_reg_type type, struct brw_reg *reg)
       /* Nothing to do. */
       return false;
    case BRW_REGISTER_TYPE_F:
-      sat_imm.f = CLAMP(imm.f, 0.0f, 1.0f);
+      sat_imm.f = SATURATE(imm.f);
       break;
    case BRW_REGISTER_TYPE_DF:
-      sat_imm.df = CLAMP(imm.df, 0.0, 1.0);
+      sat_imm.df = SATURATE(imm.df);
       break;
    case BRW_REGISTER_TYPE_UB:
    case BRW_REGISTER_TYPE_B:
@@ -941,6 +941,7 @@ backend_instruction::can_do_saturate() const
    case BRW_OPCODE_ADD:
    case BRW_OPCODE_ASR:
    case BRW_OPCODE_AVG:
+   case BRW_OPCODE_CSEL:
    case BRW_OPCODE_DP2:
    case BRW_OPCODE_DP3:
    case BRW_OPCODE_DP4:
@@ -1277,7 +1278,7 @@ brw_compile_tes(const struct brw_compiler *compiler,
 
    brw_compute_vue_map(devinfo, &prog_data->base.vue_map,
                        nir->info.outputs_written,
-                       nir->info.separate_shader);
+                       nir->info.separate_shader, 1);
 
    unsigned output_size_bytes = prog_data->base.vue_map.num_slots * 4 * 4;
 
@@ -1370,7 +1371,8 @@ brw_compile_tes(const struct brw_compiler *compiler,
                                         nir->info.name));
       }
 
-      g.generate_code(v.cfg, 8, v.shader_stats, stats);
+      g.generate_code(v.cfg, 8, v.shader_stats,
+                      v.performance_analysis.require(), stats);
 
       assembly = g.get_assembly();
    } else {
@@ -1386,7 +1388,9 @@ brw_compile_tes(const struct brw_compiler *compiler,
 	 v.dump_instructions();
 
       assembly = brw_vec4_generate_assembly(compiler, log_data, mem_ctx, nir,
-                                            &prog_data->base, v.cfg, stats);
+                                            &prog_data->base, v.cfg,
+                                            v.performance_analysis.require(),
+                                            stats);
    }
 
    return assembly;

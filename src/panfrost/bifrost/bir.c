@@ -38,14 +38,15 @@ bi_has_outmod(bi_instruction *ins)
         return classy && floaty;
 }
 
-/* Technically we should check the source type, not the dest
- * type, but the type converting opcodes (i2f, f2i) don't
- * actually support mods so it doesn't matter. */
+/* Have to check source for e.g. compares */
 
 bool
 bi_has_source_mods(bi_instruction *ins)
 {
-        return bi_has_outmod(ins);
+        bool classy = bi_class_props[ins->type] & BI_MODS;
+        bool floaty = nir_alu_type_get_base_type(ins->src_types[0]) == nir_type_float;
+
+        return classy && floaty;
 }
 
 /* A source is swizzled if the op is swizzlable, in 8-bit or
@@ -93,26 +94,33 @@ bi_from_bytemask(uint16_t bytemask, unsigned bytes)
 }
 
 unsigned
-bi_get_component_count(bi_instruction *ins, unsigned src)
+bi_get_component_count(bi_instruction *ins, signed src)
 {
-        if (bi_class_props[ins->type] & BI_VECTOR) {
-                return (src == 0) ? 4 : 1;
-        } else {
-                /* Stores imply VECTOR */
-                assert(ins->dest_type);
-                unsigned bytes = nir_alu_type_get_type_size(ins->dest_type);
-                return 32 / bytes;
-        }
-}
+        /* Discards and branches are oddball since they're not BI_VECTOR but no
+         * destination. So special case.. */
+        if (ins->type == BI_DISCARD || ins->type == BI_BRANCH)
+                return 1;
 
-unsigned
-bi_load32_components(bi_instruction *ins)
-{
-        unsigned mask = bi_from_bytemask(ins->writemask, 4);
-        unsigned count = util_bitcount(mask);
-        assert(mask == ((1 << count) - 1));
-        assert(count >= 1 && count <= 4);
-        return count;
+        if (bi_class_props[ins->type] & BI_VECTOR) {
+                assert(ins->vector_channels);
+                return (src <= 0) ? ins->vector_channels : 1;
+        } else {
+                unsigned dest_bytes = nir_alu_type_get_type_size(ins->dest_type);
+                unsigned src_bytes = nir_alu_type_get_type_size(ins->src_types[src]);
+
+                /* If there's either f32 on either end, it's only a single
+                 * component, etc. */
+
+                unsigned bytes = src < 0 ? dest_bytes : src_bytes;
+
+                if (ins->type == BI_CONVERT)
+                        bytes = MAX2(dest_bytes, src_bytes);
+                
+                if (ins->type == BI_ATEST || ins->type == BI_SELECT)
+                        return 1;
+
+                return MAX2(32 / bytes, 1);
+        }
 }
 
 uint16_t
@@ -140,15 +148,35 @@ bi_bytemask_of_read_components(bi_instruction *ins, unsigned node)
 uint64_t
 bi_get_immediate(bi_instruction *ins, unsigned index)
 {
-        assert(index & BIR_INDEX_CONSTANT);
-        unsigned shift = index & ~BIR_INDEX_CONSTANT;
-        return ins->constant.u64 >> shift;
+        unsigned v = ins->src[index];
+        assert(v & BIR_INDEX_CONSTANT);
+        unsigned shift = v & ~BIR_INDEX_CONSTANT;
+        uint64_t shifted = ins->constant.u64 >> shift;
+
+        /* Mask off the accessed part */
+        unsigned sz = nir_alu_type_get_type_size(ins->src_types[index]);
+
+        if (sz == 64)
+                return shifted;
+        else
+                return shifted & ((1ull << sz) - 1);
 }
 
 bool
 bi_writes_component(bi_instruction *ins, unsigned comp)
 {
+        return comp < bi_get_component_count(ins, -1);
+}
+
+unsigned
+bi_writemask(bi_instruction *ins)
+{
         nir_alu_type T = ins->dest_type;
         unsigned size = nir_alu_type_get_type_size(T);
-        return ins->writemask & (0xF << (comp * (size / 8)));
+        unsigned bytes_per_comp = size / 8;
+        unsigned components = bi_get_component_count(ins, -1);
+        unsigned bytes = bytes_per_comp * components;
+        unsigned mask = (1 << bytes) - 1;
+        unsigned shift = ins->dest_offset * 4; /* 32-bit words */
+        return (mask << shift);
 }

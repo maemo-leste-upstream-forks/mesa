@@ -611,6 +611,13 @@ enum isl_aux_usage {
     */
    ISL_AUX_USAGE_CCS_E,
 
+   /** The auxiliary surface provides full lossless color compression on
+    *  Gen12.
+    *
+    * @invariant isl_surf::samples == 1
+    */
+   ISL_AUX_USAGE_GEN12_CCS_E,
+
    /** The auxiliary surface provides full lossless media color compression
     *
     * @invariant isl_surf::samples == 1
@@ -1624,6 +1631,12 @@ isl_format_has_bc_compression(enum isl_format fmt)
 }
 
 static inline bool
+isl_format_is_planar(enum isl_format fmt)
+{
+   return fmt == ISL_FORMAT_PLANAR_420_8;
+}
+
+static inline bool
 isl_format_is_yuv(enum isl_format fmt)
 {
    const struct isl_format_layout *fmtl = isl_format_get_layout(fmt);
@@ -1676,6 +1689,10 @@ isl_format_is_rgbx(enum isl_format fmt)
 enum isl_format isl_format_rgb_to_rgba(enum isl_format rgb) ATTRIBUTE_CONST;
 enum isl_format isl_format_rgb_to_rgbx(enum isl_format rgb) ATTRIBUTE_CONST;
 enum isl_format isl_format_rgbx_to_rgba(enum isl_format rgb) ATTRIBUTE_CONST;
+
+union isl_color_value
+isl_color_value_swizzle_inv(union isl_color_value src,
+                            struct isl_swizzle swizzle);
 
 void isl_color_value_pack(const union isl_color_value *value,
                           enum isl_format format,
@@ -1793,6 +1810,7 @@ isl_aux_usage_has_ccs(enum isl_aux_usage usage)
 {
    return usage == ISL_AUX_USAGE_CCS_D ||
           usage == ISL_AUX_USAGE_CCS_E ||
+          usage == ISL_AUX_USAGE_GEN12_CCS_E ||
           usage == ISL_AUX_USAGE_MC ||
           usage == ISL_AUX_USAGE_HIZ_CCS_WT ||
           usage == ISL_AUX_USAGE_HIZ_CCS ||
@@ -1854,7 +1872,8 @@ isl_drm_modifier_get_default_aux_state(uint64_t modifier)
    if (!mod_info || mod_info->aux_usage == ISL_AUX_USAGE_NONE)
       return ISL_AUX_STATE_AUX_INVALID;
 
-   assert(mod_info->aux_usage == ISL_AUX_USAGE_CCS_E);
+   assert(mod_info->aux_usage == ISL_AUX_USAGE_CCS_E ||
+          mod_info->aux_usage == ISL_AUX_USAGE_GEN12_CCS_E);
    return mod_info->supports_clear_color ? ISL_AUX_STATE_COMPRESSED_CLEAR :
                                            ISL_AUX_STATE_COMPRESSED_NO_CLEAR;
 }
@@ -1980,6 +1999,10 @@ isl_surf_init_s(const struct isl_device *dev,
 void
 isl_surf_get_tile_info(const struct isl_surf *surf,
                        struct isl_tile_info *tile_info);
+
+bool
+isl_surf_supports_ccs(const struct isl_device *dev,
+                      const struct isl_surf *surf);
 
 bool
 isl_surf_get_hiz_surf(const struct isl_device *dev,

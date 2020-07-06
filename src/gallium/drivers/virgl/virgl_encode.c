@@ -248,6 +248,16 @@ static const enum virgl_formats virgl_formats_conv_table[PIPE_FORMAT_COUNT] = {
    CONV_FORMAT(R10G10B10X2_UNORM)
    CONV_FORMAT(A4B4G4R4_UNORM)
    CONV_FORMAT(R8_SRGB)
+   CONV_FORMAT(ETC2_RGB8)
+   CONV_FORMAT(ETC2_SRGB8)
+   CONV_FORMAT(ETC2_RGB8A1)
+   CONV_FORMAT(ETC2_SRGB8A1)
+   CONV_FORMAT(ETC2_RGBA8)
+   CONV_FORMAT(ETC2_SRGBA8)
+   CONV_FORMAT(ETC2_R11_UNORM)
+   CONV_FORMAT(ETC2_R11_SNORM)
+   CONV_FORMAT(ETC2_RG11_UNORM)
+   CONV_FORMAT(ETC2_RG11_SNORM)
 };
 
 enum virgl_formats pipe_to_virgl_format(enum pipe_format format)
@@ -569,6 +579,38 @@ int virgl_encode_clear(struct virgl_context *ctx,
    return 0;
 }
 
+int virgl_encode_clear_texture(struct virgl_context *ctx,
+                               struct virgl_resource *res,
+                               unsigned int level,
+                               const struct pipe_box *box,
+                               const void *data)
+{
+   const struct util_format_description *desc = util_format_description(res->u.b.format);
+   unsigned block_bits = desc->block.bits;
+   uint32_t arr[4] = {0};
+   /* The spec describe <data> as a pointer to an array of between one
+    * and four components of texel data that will be used as the source
+    * for the constant fill value.
+    * Here, we are just copying the memory into <arr>. We do not try to
+    * re-create the data array. The host part will take care of interpreting
+    * the memory and applying the correct format to the clear call.
+    */
+   memcpy(&arr, data, block_bits / 8);
+
+   virgl_encoder_write_cmd_dword(ctx, VIRGL_CMD0(VIRGL_CCMD_CLEAR_TEXTURE, 0, VIRGL_CLEAR_TEXTURE_SIZE));
+   virgl_encoder_write_res(ctx, res);
+   virgl_encoder_write_dword(ctx->cbuf, level);
+   virgl_encoder_write_dword(ctx->cbuf, box->x);
+   virgl_encoder_write_dword(ctx->cbuf, box->y);
+   virgl_encoder_write_dword(ctx->cbuf, box->z);
+   virgl_encoder_write_dword(ctx->cbuf, box->width);
+   virgl_encoder_write_dword(ctx->cbuf, box->height);
+   virgl_encoder_write_dword(ctx->cbuf, box->depth);
+   for (unsigned i = 0; i < 4; i++)
+      virgl_encoder_write_dword(ctx->cbuf, arr[i]);
+   return 0;
+}
+
 int virgl_encoder_set_framebuffer_state(struct virgl_context *ctx,
                                        const struct pipe_framebuffer_state *state)
 {
@@ -753,7 +795,7 @@ static void virgl_encoder_transfer3d_common(struct virgl_screen *vs,
    if (encode_stride == virgl_transfer3d_explicit_stride) {
       stride = transfer->stride;
       layer_stride = transfer->layer_stride;
-   } else if (virgl_transfer3d_host_inferred_stride) {
+   } else if (encode_stride == virgl_transfer3d_host_inferred_stride) {
       stride = 0;
       layer_stride = 0;
    } else {

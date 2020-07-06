@@ -38,7 +38,7 @@
 #include "tgsi/tgsi_strings.h"
 #include "tgsi/tgsi_text.h"
 #include "cso_cache/cso_context.h"
-#include "state_tracker/winsys_handle.h"
+#include "frontend/winsys_handle.h"
 #include <stdio.h>
 
 #define TOLERANCE 0.01
@@ -177,7 +177,7 @@ util_set_common_states_and_clear(struct cso_context *cso, struct pipe_context *c
    util_set_rasterizer_normal(cso);
    util_set_max_viewport(cso, cb);
 
-   ctx->clear(ctx, PIPE_CLEAR_COLOR0, (void*)clear_color, 0, 0);
+   ctx->clear(ctx, PIPE_CLEAR_COLOR0, NULL, (void*)clear_color, 0, 0);
 }
 
 static void

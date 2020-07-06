@@ -21,7 +21,9 @@
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "zink_context.h"
 #include "zink_compiler.h"
+#include "zink_program.h"
 #include "zink_screen.h"
 #include "nir_to_spirv/nir_to_spirv.h"
 
@@ -35,86 +37,6 @@
 #include "tgsi/tgsi_from_mesa.h"
 
 #include "util/u_memory.h"
-
-static bool
-lower_instr(nir_intrinsic_instr *instr, nir_builder *b)
-{
-   b->cursor = nir_before_instr(&instr->instr);
-
-   if (instr->intrinsic == nir_intrinsic_load_ubo) {
-      nir_ssa_def *old_idx = nir_ssa_for_src(b, instr->src[0], 1);
-      nir_ssa_def *new_idx = nir_iadd(b, old_idx, nir_imm_int(b, 1));
-      nir_instr_rewrite_src(&instr->instr, &instr->src[0],
-                            nir_src_for_ssa(new_idx));
-      return true;
-   }
-
-   if (instr->intrinsic == nir_intrinsic_load_uniform) {
-      nir_ssa_def *ubo_idx = nir_imm_int(b, 0);
-      nir_ssa_def *ubo_offset =
-         nir_iadd(b, nir_imm_int(b, nir_intrinsic_base(instr)),
-                  nir_ssa_for_src(b, instr->src[0], 1));
-
-      nir_intrinsic_instr *load =
-         nir_intrinsic_instr_create(b->shader, nir_intrinsic_load_ubo);
-      load->num_components = instr->num_components;
-      load->src[0] = nir_src_for_ssa(ubo_idx);
-      load->src[1] = nir_src_for_ssa(ubo_offset);
-      nir_ssa_dest_init(&load->instr, &load->dest,
-                        load->num_components, instr->dest.ssa.bit_size,
-                        instr->dest.ssa.name);
-      nir_builder_instr_insert(b, &load->instr);
-      nir_ssa_def_rewrite_uses(&instr->dest.ssa, nir_src_for_ssa(&load->dest.ssa));
-
-      nir_instr_remove(&instr->instr);
-      return true;
-   }
-
-   return false;
-}
-
-static bool
-lower_uniforms_to_ubo(nir_shader *shader)
-{
-   bool progress = false;
-
-   nir_foreach_function(function, shader) {
-      if (function->impl) {
-         nir_builder builder;
-         nir_builder_init(&builder, function->impl);
-         nir_foreach_block(block, function->impl) {
-            nir_foreach_instr_safe(instr, block) {
-               if (instr->type == nir_instr_type_intrinsic)
-                  progress |= lower_instr(nir_instr_as_intrinsic(instr),
-                                          &builder);
-            }
-         }
-
-         nir_metadata_preserve(function->impl, nir_metadata_block_index |
-                                               nir_metadata_dominance);
-      }
-   }
-
-   if (progress) {
-      assert(shader->num_uniforms > 0);
-      const struct glsl_type *type = glsl_array_type(glsl_vec4_type(),
-                                                     shader->num_uniforms, 0);
-      nir_variable *ubo = nir_variable_create(shader, nir_var_mem_ubo, type,
-                                              "uniform_0");
-      ubo->data.binding = 0;
-
-      struct glsl_struct_field field = {
-         .type = type,
-         .name = "data",
-         .location = -1,
-      };
-      ubo->interface_type =
-            glsl_interface_type(&field, 1, GLSL_INTERFACE_PACKING_STD430,
-                                false, "__ubo0_interface");
-   }
-
-   return progress;
-}
 
 static bool
 lower_discard_if_instr(nir_intrinsic_instr *instr, nir_builder *b)
@@ -168,6 +90,11 @@ static const struct nir_shader_compiler_options nir_options = {
    .lower_flrp32 = true,
    .lower_fpow = true,
    .lower_fsat = true,
+   .lower_extract_byte = true,
+   .lower_extract_word = true,
+   .lower_mul_high = true,
+   .lower_rotate = true,
+   .lower_uadd_carry = true,
 };
 
 const void *
@@ -188,7 +115,7 @@ zink_tgsi_to_nir(struct pipe_screen *screen, const struct tgsi_token *tokens)
       fprintf(stderr, "---8<---\n\n");
    }
 
-   return tgsi_to_nir(tokens, screen);
+   return tgsi_to_nir(tokens, screen, false);
 }
 
 static void
@@ -207,19 +134,62 @@ optimize_nir(struct nir_shader *s)
       NIR_PASS(progress, s, nir_opt_algebraic);
       NIR_PASS(progress, s, nir_opt_constant_folding);
       NIR_PASS(progress, s, nir_opt_undef);
+      NIR_PASS(progress, s, zink_nir_lower_b2b);
    } while (progress);
 }
 
+/* check for a genuine gl_PointSize output vs one from nir_lower_point_size_mov */
+static bool
+check_psiz(struct nir_shader *s)
+{
+   nir_foreach_variable(var, &s->outputs) {
+      if (var->data.location == VARYING_SLOT_PSIZ) {
+         /* genuine PSIZ outputs will have this set */
+         return !!var->data.explicit_location;
+      }
+   }
+   return false;
+}
+
+/* semi-copied from iris */
+static void
+update_so_info(struct pipe_stream_output_info *so_info,
+               uint64_t outputs_written, bool have_psiz)
+{
+   uint8_t reverse_map[64] = {};
+   unsigned slot = 0;
+   while (outputs_written) {
+      int bit = u_bit_scan64(&outputs_written);
+      /* PSIZ from nir_lower_point_size_mov breaks stream output, so always skip it */
+      if (bit == VARYING_SLOT_PSIZ && !have_psiz)
+         continue;
+      reverse_map[slot++] = bit;
+   }
+
+   for (unsigned i = 0; i < so_info->num_outputs; i++) {
+      struct pipe_stream_output *output = &so_info->output[i];
+
+      /* Map Gallium's condensed "slots" back to real VARYING_SLOT_* enums */
+      output->register_index = reverse_map[output->register_index];
+   }
+}
+
 struct zink_shader *
-zink_compile_nir(struct zink_screen *screen, struct nir_shader *nir)
+zink_compile_nir(struct zink_screen *screen, struct nir_shader *nir,
+                 const struct pipe_stream_output_info *so_info)
 {
    struct zink_shader *ret = CALLOC_STRUCT(zink_shader);
+   bool have_psiz = false;
 
-   NIR_PASS_V(nir, lower_uniforms_to_ubo);
+   ret->programs = _mesa_pointer_set_create(NULL);
+
+   NIR_PASS_V(nir, nir_lower_uniforms_to_ubo, 1);
    NIR_PASS_V(nir, nir_lower_clip_halfz);
+   if (nir->info.stage == MESA_SHADER_VERTEX)
+      have_psiz = check_psiz(nir);
    NIR_PASS_V(nir, nir_lower_regs_to_ssa);
    optimize_nir(nir);
-   NIR_PASS_V(nir, nir_remove_dead_variables, nir_var_function_temp);
+   NIR_PASS_V(nir, nir_remove_dead_variables, nir_var_function_temp, NULL);
    NIR_PASS_V(nir, lower_discard_if);
    NIR_PASS_V(nir, nir_convert_from_ssa, true);
 
@@ -265,8 +235,12 @@ zink_compile_nir(struct zink_screen *screen, struct nir_shader *nir)
    }
 
    ret->info = nir->info;
+   if (so_info) {
+      memcpy(&ret->stream_output, so_info, sizeof(ret->stream_output));
+      update_so_info(&ret->stream_output, nir->info.outputs_written, have_psiz);
+   }
 
-   struct spirv_shader *spirv = nir_to_spirv(nir);
+   struct spirv_shader *spirv = nir_to_spirv(nir, so_info, so_info ? &ret->stream_output : NULL);
    assert(spirv);
 
    if (zink_debug & ZINK_DEBUG_SPIRV) {
@@ -274,9 +248,11 @@ zink_compile_nir(struct zink_screen *screen, struct nir_shader *nir)
       static int i;
       snprintf(buf, sizeof(buf), "dump%02d.spv", i++);
       FILE *fp = fopen(buf, "wb");
-      fwrite(spirv->words, sizeof(uint32_t), spirv->num_words, fp);
-      fclose(fp);
-      fprintf(stderr, "wrote '%s'...\n", buf);
+      if (fp) {
+         fwrite(spirv->words, sizeof(uint32_t), spirv->num_words, fp);
+         fclose(fp);
+         fprintf(stderr, "wrote '%s'...\n", buf);
+      }
    }
 
    VkShaderModuleCreateInfo smci = {};
@@ -294,5 +270,9 @@ void
 zink_shader_free(struct zink_screen *screen, struct zink_shader *shader)
 {
    vkDestroyShaderModule(screen->dev, shader->shader_module, NULL);
+   set_foreach(shader->programs, entry) {
+      zink_gfx_program_remove_shader((void*)entry->key, shader);
+   }
+   _mesa_set_destroy(shader->programs, NULL);
    FREE(shader);
 }

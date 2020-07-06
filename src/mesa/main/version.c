@@ -25,7 +25,7 @@
 
 #include <stdio.h>
 #include "context.h"
-#include "util/imports.h"
+
 #include "mtypes.h"
 #include "version.h"
 #include "git_sha1.h"
@@ -120,7 +120,7 @@ create_version_string(struct gl_context *ctx, const char *prefix)
 
    ctx->VersionString = malloc(max);
    if (ctx->VersionString) {
-      _mesa_snprintf(ctx->VersionString, max,
+      snprintf(ctx->VersionString, max,
 		     "%s%u.%u%s Mesa " PACKAGE_VERSION MESA_GIT_SHA1,
 		     prefix,
 		     ctx->Version / 10, ctx->Version % 10,
@@ -330,6 +330,8 @@ compute_version(const struct gl_extensions *extensions,
                          extensions->ARB_transform_feedback3);
    const bool ver_4_1 = (ver_4_0 &&
                          consts->GLSLVersion >= 410 &&
+                         consts->MaxTextureSize >= 16384 &&
+                         consts->MaxRenderbufferSize >= 16384 &&
                          extensions->ARB_ES2_compatibility &&
                          extensions->ARB_shader_precision &&
                          extensions->ARB_vertex_attrib_64bit &&
@@ -524,7 +526,8 @@ compute_version_es2(const struct gl_extensions *extensions,
                          extensions->ARB_draw_instanced &&
                          extensions->ARB_uniform_buffer_object &&
                          extensions->EXT_texture_snorm &&
-                         extensions->NV_primitive_restart &&
+                         (extensions->NV_primitive_restart ||
+                          consts->PrimitiveRestartFixedIndex) &&
                          extensions->OES_depth_texture_cube_map &&
                          extensions->EXT_texture_type_2_10_10_10_REV);
    const bool es31_compute_shader =

@@ -60,7 +60,7 @@ anv_gem_mmap(struct anv_device *device, uint32_t gem_handle,
  * this map is no longer valid.  Pair this with anv_gem_mmap().
  */
 void
-anv_gem_munmap(void *p, uint64_t size)
+anv_gem_munmap(struct anv_device *device, void *p, uint64_t size)
 {
    munmap(p, size);
 }
@@ -160,12 +160,6 @@ anv_gem_has_context_priority(int fd)
 }
 
 int
-anv_gem_get_aperture(int fd, uint64_t *size)
-{
-   unreachable("Unused");
-}
-
-int
 anv_gem_gpu_get_reset_stats(struct anv_device *device,
                             uint32_t *active, uint32_t *pending)
 {
@@ -248,8 +242,7 @@ anv_gem_syncobj_wait(struct anv_device *device,
 }
 
 int
-anv_gem_reg_read(struct anv_device *device,
-                 uint32_t offset, uint64_t *result)
+anv_gem_reg_read(int fd, uint32_t offset, uint64_t *result)
 {
    unreachable("Unused");
 }

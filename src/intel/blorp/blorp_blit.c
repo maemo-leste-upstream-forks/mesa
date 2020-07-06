@@ -35,21 +35,6 @@
 
 static const bool split_blorp_blit_debug = false;
 
-/**
- * Enum to specify the order of arguments in a sampler message
- */
-enum sampler_message_arg
-{
-   SAMPLER_MESSAGE_ARG_U_FLOAT,
-   SAMPLER_MESSAGE_ARG_V_FLOAT,
-   SAMPLER_MESSAGE_ARG_U_INT,
-   SAMPLER_MESSAGE_ARG_V_INT,
-   SAMPLER_MESSAGE_ARG_R_INT,
-   SAMPLER_MESSAGE_ARG_SI_INT,
-   SAMPLER_MESSAGE_ARG_MCS_INT,
-   SAMPLER_MESSAGE_ARG_ZERO_INT,
-};
-
 struct brw_blorp_blit_vars {
    /* Input values from brw_blorp_wm_inputs */
    nir_variable *v_discard_rect;
@@ -2679,6 +2664,7 @@ blorp_copy(struct blorp_batch *batch,
           params.src.aux_usage == ISL_AUX_USAGE_MCS ||
           params.src.aux_usage == ISL_AUX_USAGE_MCS_CCS ||
           params.src.aux_usage == ISL_AUX_USAGE_CCS_E ||
+          params.src.aux_usage == ISL_AUX_USAGE_GEN12_CCS_E ||
           params.src.aux_usage == ISL_AUX_USAGE_STC_CCS);
 
    if (isl_aux_usage_has_hiz(params.src.aux_usage)) {
@@ -2694,9 +2680,11 @@ blorp_copy(struct blorp_batch *batch,
        */
       params.src.view.format = params.dst.surf.format;
       params.dst.view.format = params.dst.surf.format;
-   } else if (params.dst.aux_usage == ISL_AUX_USAGE_CCS_E) {
+   } else if (params.dst.aux_usage == ISL_AUX_USAGE_CCS_E ||
+              params.dst.aux_usage == ISL_AUX_USAGE_GEN12_CCS_E) {
       params.dst.view.format = get_ccs_compatible_copy_format(dst_fmtl);
-      if (params.src.aux_usage == ISL_AUX_USAGE_CCS_E) {
+      if (params.src.aux_usage == ISL_AUX_USAGE_CCS_E ||
+          params.src.aux_usage == ISL_AUX_USAGE_GEN12_CCS_E) {
          params.src.view.format = get_ccs_compatible_copy_format(src_fmtl);
       } else if (src_fmtl->bpb == dst_fmtl->bpb) {
          params.src.view.format = params.dst.view.format;
@@ -2704,7 +2692,8 @@ blorp_copy(struct blorp_batch *batch,
          params.src.view.format =
             get_copy_format_for_bpb(isl_dev, src_fmtl->bpb);
       }
-   } else if (params.src.aux_usage == ISL_AUX_USAGE_CCS_E) {
+   } else if (params.src.aux_usage == ISL_AUX_USAGE_CCS_E ||
+              params.src.aux_usage == ISL_AUX_USAGE_GEN12_CCS_E) {
       params.src.view.format = get_ccs_compatible_copy_format(src_fmtl);
       if (src_fmtl->bpb == dst_fmtl->bpb) {
          params.dst.view.format = params.src.view.format;

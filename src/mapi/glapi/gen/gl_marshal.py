@@ -32,11 +32,12 @@ import sys
 header = """
 #include "api_exec.h"
 #include "glthread_marshal.h"
+#include "bufferobj.h"
 #include "dispatch.h"
 
 #define COMPAT (ctx->API != API_OPENGL_CORE)
 
-static inline int safe_mul(int a, int b)
+UNUSED static inline int safe_mul(int a, int b)
 {
     if (a < 0 || b < 0) return -1;
     if (a == 0 || b == 0) return 0;
@@ -143,12 +144,50 @@ class PrintCode(gl_XML.gl_print_base):
         # Uncomment this if you want to call _mesa_glthread_finish for debugging
         #out('_mesa_glthread_finish(ctx);')
 
+    def get_type_size(self, str):
+        if str.find('*') != -1:
+            return 8;
+
+        mapping = {
+            'GLboolean': 1,
+            'GLbyte': 1,
+            'GLubyte': 1,
+            'GLshort': 2,
+            'GLushort': 2,
+            'GLenum': 4,
+            'GLint': 4,
+            'GLuint': 4,
+            'GLbitfield': 4,
+            'GLsizei': 4,
+            'GLfloat': 4,
+            'GLclampf': 4,
+            'GLfixed': 4,
+            'GLclampx': 4,
+            'GLhandleARB': 4,
+            'int': 4,
+            'float': 4,
+            'GLdouble': 8,
+            'GLclampd': 8,
+            'GLintptr': 8,
+            'GLsizeiptr': 8,
+            'GLint64': 8,
+            'GLuint64': 8,
+            'GLuint64EXT': 8,
+            'GLsync': 8,
+        }
+        val = mapping.get(str, 9999)
+        if val == 9999:
+            print('Unhandled type in gl_marshal.py.get_type_size: ' + str, file=sys.stderr)
+        return val
+
     def print_async_struct(self, func):
         out('struct marshal_cmd_{0}'.format(func.name))
         out('{')
         with indent():
             out('struct marshal_cmd_base cmd_base;')
-            for p in func.fixed_params:
+
+            # Sort the parameters according to their size to pack the structure optimally
+            for p in sorted(func.fixed_params, key=lambda p: self.get_type_size(p.type_string())):
                 if p.count:
                     out('{0} {1}[{2}];'.format(
                             p.get_base_type_string(), p.name, p.count))
@@ -297,7 +336,7 @@ class PrintCode(gl_XML.gl_print_base):
 
     def print_create_marshal_table(self, api):
         out('/* _mesa_create_marshal_table takes a long time to compile with -O2 */')
-        out('#ifdef __GNUC__')
+        out('#if defined(__GNUC__) && !defined(__clang__)')
         out('__attribute__((optimize("O1")))')
         out('#endif')
         out('struct _glapi_table *')

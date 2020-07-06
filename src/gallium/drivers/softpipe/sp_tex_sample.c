@@ -2320,7 +2320,7 @@ create_filter_table(void)
       for (i = 0; i < WEIGHT_LUT_SIZE; ++i) {
          const float alpha = 2;
          const float r2 = (float) i / (float) (WEIGHT_LUT_SIZE - 1);
-         const float weight = (float) exp(-alpha * r2);
+         const float weight = (float) expf(-alpha * r2);
          lut[i] = weight;
       }
       weightLut = lut;
@@ -3599,7 +3599,7 @@ softpipe_create_sampler_view(struct pipe_context *pipe,
 #ifdef DEBUG
      /*
       * This is possibly too lenient, but the primary reason is just
-      * to catch state trackers which forget to initialize this, so
+      * to catch gallium frontends which forget to initialize this, so
       * it only catches clearly impossible view targets.
       */
       if (view->target != resource->target) {

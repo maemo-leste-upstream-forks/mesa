@@ -84,20 +84,16 @@ panfrost_sysval_for_instr(nir_instr *instr, nir_dest *dest);
 
 typedef struct {
         int work_register_count;
-        int uniform_count;
         int uniform_cutoff;
+
+        /* For Bifrost - output type for each RT */
+        nir_alu_type blend_types[BIFROST_MAX_RENDER_TARGET_COUNT];
 
         /* Prepended before uniforms, mapping to SYSVAL_ names for the
          * sysval */
 
         unsigned sysval_count;
         unsigned sysvals[MAX_SYSVAL_COUNT];
-
-        unsigned varyings[32];
-        enum mali_format varying_type[32];
-
-        /* Boolean properties of the program */
-        bool writes_point_size;
 
         int first_tag;
 
@@ -161,6 +157,13 @@ struct pan_instruction {
                 _entry_##v = _mesa_set_next_entry(blk->predecessors, _entry_##v), \
                 v = (struct pan_block *) (_entry_##v ? _entry_##v->key : NULL))
 
+static inline pan_block *
+pan_exit_block(struct list_head *blocks)
+{
+        pan_block *last = list_last_entry(blocks, pan_block, link);
+        assert(!last->successors[0] && !last->successors[1]);
+        return last;
+}
 
 typedef void (*pan_liveness_update)(uint16_t *, void *, unsigned max);
 
@@ -178,5 +181,44 @@ uint16_t
 pan_to_bytemask(unsigned bytes, unsigned mask);
 
 void pan_block_add_successor(pan_block *block, pan_block *successor);
+
+/* IR indexing */
+#define PAN_IS_REG (1)
+
+static inline unsigned
+pan_ssa_index(nir_ssa_def *ssa)
+{
+        /* Off-by-one ensures BIR_NO_ARG is skipped */
+        return ((ssa->index + 1) << 1) | 0;
+}
+
+static inline unsigned
+pan_src_index(nir_src *src)
+{
+        if (src->is_ssa)
+                return pan_ssa_index(src->ssa);
+        else {
+                assert(!src->reg.indirect);
+                return (src->reg.reg->index << 1) | PAN_IS_REG;
+        }
+}
+
+static inline unsigned
+pan_dest_index(nir_dest *dst)
+{
+        if (dst->is_ssa)
+                return pan_ssa_index(&dst->ssa);
+        else {
+                assert(!dst->reg.indirect);
+                return (dst->reg.reg->index << 1) | PAN_IS_REG;
+        }
+}
+
+/* IR printing helpers */
+void pan_print_alu_type(nir_alu_type t, FILE *fp);
+
+/* Until it can be upstreamed.. */
+bool pan_has_source_mod(nir_alu_src *src, nir_op op);
+bool pan_has_dest_mod(nir_dest **dest, nir_op op);
 
 #endif

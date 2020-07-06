@@ -493,7 +493,7 @@ brw_prepare_vertices(struct brw_context *brw)
          _mesa_draw_buffer_binding(vao, ffs(vbomask) - 1);
       const GLsizei stride = glbinding->Stride;
 
-      assert(_mesa_is_bufferobj(glbinding->BufferObj));
+      assert(glbinding->BufferObj);
 
       /* Accumulate the range of a single vertex, start with inverted range */
       uint32_t vertex_range_start = ~(uint32_t)0;
@@ -549,6 +549,26 @@ brw_prepare_vertices(struct brw_context *brw)
             start = vertex_range_start + stride * min_index;
             range = (stride * (max_index - min_index) +
                      vertex_size);
+
+            /**
+             * Unreal Engine 4 has a bug in usage of glDrawRangeElements,
+             * causing it to be called with a number of vertices in place
+             * of "end" parameter (which specifies the maximum array index
+             * contained in indices).
+             *
+             * Since there is unknown amount of games affected and we
+             * could not identify that a game is built with UE4 - we are
+             * forced to make a blanket workaround, disregarding max_index
+             * in range calculations. Fortunately all such calls look like:
+             *   glDrawRangeElements(GL_TRIANGLES, 0, 3, 3, ...);
+             * So we are able to narrow down this workaround.
+             *
+             * See: https://gitlab.freedesktop.org/mesa/mesa/-/issues/2917
+             */
+            if (unlikely(max_index == 3 && min_index == 0 &&
+                         brw->draw.derived_params.is_indexed_draw)) {
+                  range = intel_buffer->Base.Size - offset - start;
+            }
          }
       }
 
@@ -581,7 +601,7 @@ brw_prepare_vertices(struct brw_context *brw)
          _mesa_draw_buffer_binding(vao, ffs(usermask) - 1);
       const GLsizei stride = glbinding->Stride;
 
-      assert(!_mesa_is_bufferobj(glbinding->BufferObj));
+      assert(!glbinding->BufferObj);
       assert(brw->vb.index_bounds_valid);
 
       /* Accumulate the range of a single vertex, start with inverted range */
@@ -727,7 +747,7 @@ brw_upload_indices(struct brw_context *brw)
 
    /* Turn into a proper VBO:
     */
-   if (!_mesa_is_bufferobj(bufferobj)) {
+   if (!bufferobj) {
       /* Get new bufferobj, offset:
        */
       brw_upload_data(&brw->upload, index_buffer->ptr, ib_size, ib_type_size,

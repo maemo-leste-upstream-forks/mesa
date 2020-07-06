@@ -36,14 +36,20 @@ struct spirv_shader {
 };
 
 struct nir_shader;
+struct pipe_stream_output_info;
 
 struct spirv_shader *
-nir_to_spirv(struct nir_shader *s);
+nir_to_spirv(struct nir_shader *s, const struct pipe_stream_output_info *so_info, struct pipe_stream_output_info *local_so_info);
 
 void
 spirv_shader_delete(struct spirv_shader *s);
 
 uint32_t
 zink_binding(gl_shader_stage stage, VkDescriptorType type, int index);
+
+struct nir_shader;
+
+bool
+zink_nir_lower_b2b(struct nir_shader *shader);
 
 #endif

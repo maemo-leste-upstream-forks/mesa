@@ -203,9 +203,11 @@ static VkResult anv_create_cmd_buffer(
    if (cmd_buffer == NULL)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
+   vk_object_base_init(&device->vk, &cmd_buffer->base,
+                       VK_OBJECT_TYPE_COMMAND_BUFFER);
+
    cmd_buffer->batch.status = VK_SUCCESS;
 
-   cmd_buffer->_loader_data.loaderMagic = ICD_LOADER_MAGIC;
    cmd_buffer->device = device;
    cmd_buffer->pool = pool;
    cmd_buffer->level = level;
@@ -280,6 +282,7 @@ anv_cmd_buffer_destroy(struct anv_cmd_buffer *cmd_buffer)
 
    anv_cmd_state_finish(cmd_buffer);
 
+   vk_object_base_finish(&cmd_buffer->base);
    vk_free(&cmd_buffer->pool->alloc, cmd_buffer);
 }
 
@@ -303,6 +306,7 @@ VkResult
 anv_cmd_buffer_reset(struct anv_cmd_buffer *cmd_buffer)
 {
    cmd_buffer->usage_flags = 0;
+   cmd_buffer->perf_query_pool = NULL;
    anv_cmd_buffer_reset_batch_bo_chain(cmd_buffer);
    anv_cmd_state_reset(cmd_buffer);
 
@@ -834,13 +838,16 @@ anv_cmd_buffer_cs_push_constants(struct anv_cmd_buffer *cmd_buffer)
    const struct brw_cs_prog_data *cs_prog_data = get_cs_prog_data(pipeline);
    const struct anv_push_range *range = &pipeline->cs->bind_map.push_ranges[0];
 
-   if (cs_prog_data->push.total.size == 0)
+   const struct anv_cs_parameters cs_params = anv_cs_parameters(pipeline);
+   const unsigned total_push_constants_size =
+      brw_cs_push_const_total_size(cs_prog_data, cs_params.threads);
+   if (total_push_constants_size == 0)
       return (struct anv_state) { .offset = 0 };
 
    const unsigned push_constant_alignment =
       cmd_buffer->device->info.gen < 8 ? 32 : 64;
    const unsigned aligned_total_push_constants_size =
-      ALIGN(cs_prog_data->push.total.size, push_constant_alignment);
+      ALIGN(total_push_constants_size, push_constant_alignment);
    struct anv_state state =
       anv_cmd_buffer_alloc_dynamic_state(cmd_buffer,
                                          aligned_total_push_constants_size,
@@ -856,7 +863,7 @@ anv_cmd_buffer_cs_push_constants(struct anv_cmd_buffer *cmd_buffer)
    }
 
    if (cs_prog_data->push.per_thread.size > 0) {
-      for (unsigned t = 0; t < cs_prog_data->threads; t++) {
+      for (unsigned t = 0; t < cs_params.threads; t++) {
          memcpy(dst, src, cs_prog_data->push.per_thread.size);
 
          uint32_t *subgroup_id = dst +
@@ -898,15 +905,17 @@ VkResult anv_CreateCommandPool(
    ANV_FROM_HANDLE(anv_device, device, _device);
    struct anv_cmd_pool *pool;
 
-   pool = vk_alloc2(&device->alloc, pAllocator, sizeof(*pool), 8,
+   pool = vk_alloc2(&device->vk.alloc, pAllocator, sizeof(*pool), 8,
                      VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (pool == NULL)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
+   vk_object_base_init(&device->vk, &pool->base, VK_OBJECT_TYPE_COMMAND_POOL);
+
    if (pAllocator)
       pool->alloc = *pAllocator;
    else
-      pool->alloc = device->alloc;
+      pool->alloc = device->vk.alloc;
 
    list_inithead(&pool->cmd_buffers);
 
@@ -931,7 +940,8 @@ void anv_DestroyCommandPool(
       anv_cmd_buffer_destroy(cmd_buffer);
    }
 
-   vk_free2(&device->alloc, pAllocator, pool);
+   vk_object_base_finish(&pool->base);
+   vk_free2(&device->vk.alloc, pAllocator, pool);
 }
 
 VkResult anv_ResetCommandPool(
@@ -1109,9 +1119,7 @@ void anv_CmdPushDescriptorSetKHR(
       case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
       case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
          for (uint32_t j = 0; j < write->descriptorCount; j++) {
-            assert(write->pBufferInfo[j].buffer);
             ANV_FROM_HANDLE(anv_buffer, buffer, write->pBufferInfo[j].buffer);
-            assert(buffer);
 
             anv_descriptor_set_write_buffer(cmd_buffer->device, set,
                                             &cmd_buffer->surface_state_stream,

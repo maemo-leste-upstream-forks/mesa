@@ -77,6 +77,9 @@ public:
       cond_if,
       cond_else,
       cond_endif,
+      lds_atomic,
+      lds_read,
+      lds_write,
       loop_begin,
       loop_end,
       loop_break,
@@ -88,6 +91,8 @@ public:
       mem_wr_scratch,
       gds,
       rat,
+      tf_write,
+      block,
       unknown
    };
 

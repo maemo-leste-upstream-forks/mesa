@@ -37,7 +37,6 @@
 #include "main/fbobject.h"
 #include "main/extensions.h"
 #include "main/glthread.h"
-#include "util/imports.h"
 #include "main/macros.h"
 #include "main/points.h"
 #include "main/version.h"
@@ -76,6 +75,7 @@
 #include "util/ralloc.h"
 #include "util/debug.h"
 #include "util/disk_cache.h"
+#include "util/u_memory.h"
 #include "isl/isl.h"
 
 #include "common/gen_defines.h"
@@ -602,14 +602,6 @@ brw_initialize_context_constants(struct brw_context *brw)
    ctx->Const.MaxIntegerSamples = max_samples;
    ctx->Const.MaxImageSamples = 0;
 
-   /* gen6_set_sample_maps() sets SampleMap{2,4,8}x variables which are used
-    * to map indices of rectangular grid to sample numbers within a pixel.
-    * These variables are used by GL_EXT_framebuffer_multisample_blit_scaled
-    * extension implementation. For more details see the comment above
-    * gen6_set_sample_maps() definition.
-    */
-   gen6_set_sample_maps(ctx);
-
    ctx->Const.MinLineWidth = 1.0;
    ctx->Const.MinLineWidthAA = 1.0;
    if (devinfo->gen >= 6) {
@@ -843,6 +835,15 @@ brw_initialize_cs_context_constants(struct brw_context *brw)
    ctx->Const.MaxComputeWorkGroupSize[2] = max_invocations;
    ctx->Const.MaxComputeWorkGroupInvocations = max_invocations;
    ctx->Const.MaxComputeSharedMemorySize = 64 * 1024;
+
+   /* Constants used for ARB_compute_variable_group_size. */
+   if (devinfo->gen >= 7) {
+      assert(max_invocations >= 512);
+      ctx->Const.MaxComputeVariableGroupSize[0] = max_invocations;
+      ctx->Const.MaxComputeVariableGroupSize[1] = max_invocations;
+      ctx->Const.MaxComputeVariableGroupSize[2] = max_invocations;
+      ctx->Const.MaxComputeVariableGroupInvocations = max_invocations;
+   }
 }
 
 /**
@@ -914,7 +915,7 @@ brw_process_driconf_options(struct brw_context *brw)
    ctx->Const.ForceGLSLAbsSqrt =
       driQueryOptionb(options, "force_glsl_abs_sqrt");
 
-   ctx->Const.GLSLZeroInit = driQueryOptionb(options, "glsl_zero_init");
+   ctx->Const.GLSLZeroInit = driQueryOptionb(options, "glsl_zero_init") ? 1 : 0;
 
    brw->dual_color_blend_by_location =
       driQueryOptionb(options, "dual_color_blend_by_location");

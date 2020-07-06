@@ -327,6 +327,32 @@ FetchGDSOpResult::FetchGDSOpResult(const GPRVector dst, const PValue src):
    set_flag(vtx_vpm);
 }
 
+FetchTCSIOParam::FetchTCSIOParam(GPRVector dst, PValue src, int offset):
+   FetchInstruction(vc_fetch,
+                    no_index_offset,
+                    fmt_32_32_32_32,
+                    vtx_nf_scaled,
+                    vtx_es_none,
+                    src,
+                    dst,
+                    offset,
+                    false,
+                    16,
+                    R600_LDS_INFO_CONST_BUFFER,
+                    0,
+                    bim_none,
+                    false,
+                    false,
+                    0,
+                    0,
+                    0,
+                    PValue(),
+                    {0,1,2,3})
+{
+   set_flag(vtx_srf_mode);
+   set_flag(vtx_format_comp_signed);
+}
+
 
 static const char *fmt_descr[64] = {
    "INVALID",
@@ -404,7 +430,7 @@ void FetchInstruction::do_print(std::ostream& os) const
    };
    static const char buffer_index_mode_char[] = "_01E";
    static const char *flag_string[] = {"WQM",  "CF", "signed", "no_zero",
-                                       "nostride", "AC"};
+                                       "nostride", "AC", "TC", "VPM"};
    switch (m_vc_opcode) {
    case vc_fetch:
       os << "Fetch " << m_dst;

@@ -71,7 +71,8 @@ util_live_shader_cache_deinit(struct util_live_shader_cache *cache)
 void *
 util_live_shader_cache_get(struct pipe_context *ctx,
                            struct util_live_shader_cache *cache,
-                           const struct pipe_shader_state *state)
+                           const struct pipe_shader_state *state,
+                           bool* cache_hit)
 {
    struct blob blob = {0};
    unsigned ir_size;
@@ -124,9 +125,15 @@ util_live_shader_cache_get(struct pipe_context *ctx,
    }
    simple_mtx_unlock(&cache->lock);
 
+   if (cache_hit)
+      *cache_hit = (shader != NULL);
+
    /* Return if the shader already exists. */
-   if (shader)
+   if (shader) {
+      if (state->type == PIPE_SHADER_IR_NIR)
+          ralloc_free(state->ir.nir);
       return shader;
+   }
 
    /* The cache mutex is unlocked to allow multiple create_shader
     * invocations to run simultaneously.

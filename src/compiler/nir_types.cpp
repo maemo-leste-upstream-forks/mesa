@@ -34,6 +34,12 @@ glsl_get_type_name(const glsl_type *type)
    return type->name;
 }
 
+int
+glsl_array_size(const struct glsl_type *type)
+{
+   return type->array_size();
+}
+
 const glsl_type *
 glsl_get_array_element(const glsl_type* type)
 {
@@ -626,6 +632,18 @@ glsl_float16_type(const struct glsl_type *type)
    return type->get_float16_type();
 }
 
+const glsl_type *
+glsl_int16_type(const struct glsl_type *type)
+{
+   return type->get_int16_type();
+}
+
+const glsl_type *
+glsl_uint16_type(const struct glsl_type *type)
+{
+   return type->get_uint16_type();
+}
+
 void
 glsl_get_natural_size_align_bytes(const struct glsl_type *type,
                                   unsigned *size, unsigned *align)
@@ -738,7 +756,10 @@ glsl_type_get_sampler_count(const struct glsl_type *type)
               glsl_type_get_sampler_count(glsl_without_array(type)));
    }
 
-   if (glsl_type_is_struct_or_ifc(type)) {
+   /* Ignore interface blocks - they can only contain bindless samplers,
+    * which we shouldn't count.
+    */
+   if (glsl_type_is_struct(type)) {
       unsigned count = 0;
       for (unsigned i = 0; i < glsl_get_length(type); i++)
          count += glsl_type_get_sampler_count(glsl_get_struct_field(type, i));
@@ -759,7 +780,10 @@ glsl_type_get_image_count(const struct glsl_type *type)
               glsl_type_get_image_count(glsl_without_array(type)));
    }
 
-   if (glsl_type_is_struct_or_ifc(type)) {
+   /* Ignore interface blocks - they can only contain bindless images,
+    * which we shouldn't count.
+    */
+   if (glsl_type_is_struct(type)) {
       unsigned count = 0;
       for (unsigned i = 0; i < glsl_get_length(type); i++)
          count += glsl_type_get_image_count(glsl_get_struct_field(type, i));
@@ -777,6 +801,12 @@ glsl_get_internal_ifc_packing(const struct glsl_type *type,
                               bool std430_supported)
 {
    return type->get_internal_ifc_packing(std430_supported);
+}
+
+enum glsl_interface_packing
+glsl_get_ifc_packing(const struct glsl_type *type)
+{
+   return type->get_interface_packing();
 }
 
 unsigned

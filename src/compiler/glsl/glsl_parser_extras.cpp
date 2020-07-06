@@ -82,7 +82,13 @@ _mesa_glsl_parse_state::_mesa_glsl_parse_state(struct gl_context *_ctx,
    /* Set default language version and extensions */
    this->language_version = 110;
    this->forced_language_version = ctx->Const.ForceGLSLVersion;
-   this->zero_init = ctx->Const.GLSLZeroInit;
+   if (ctx->Const.GLSLZeroInit == 1) {
+      this->zero_init = (1u << ir_var_auto) | (1u << ir_var_temporary) | (1u << ir_var_shader_out);
+   } else if (ctx->Const.GLSLZeroInit == 2) {
+      this->zero_init = (1u << ir_var_auto) | (1u << ir_var_temporary) | (1u << ir_var_function_out);
+   } else {
+      this->zero_init = 0;
+   }
    this->gl_version = 20;
    this->compat_shader = true;
    this->es_shader = false;
@@ -311,6 +317,8 @@ _mesa_glsl_parse_state::_mesa_glsl_parse_state(struct gl_context *_ctx,
           sizeof(this->atomic_counter_offsets));
    this->allow_extension_directive_midshader =
       ctx->Const.AllowGLSLExtensionDirectiveMidShader;
+   this->allow_glsl_120_subset_in_110 =
+      ctx->Const.AllowGLSL120SubsetIn110;
    this->allow_builtin_variable_redeclaration =
       ctx->Const.AllowGLSLBuiltinVariableRedeclaration;
    this->allow_layout_qualifier_on_function_parameter =
@@ -721,6 +729,7 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    EXT(EXT_demote_to_helper_invocation),
    EXT(EXT_frag_depth),
    EXT(EXT_draw_buffers),
+   EXT(EXT_draw_instanced),
    EXT(EXT_clip_cull_distance),
    EXT(EXT_geometry_point_size),
    EXT_AEP(EXT_geometry_shader),
@@ -730,6 +739,7 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    EXT(EXT_separate_shader_objects),
    EXT(EXT_shader_framebuffer_fetch),
    EXT(EXT_shader_framebuffer_fetch_non_coherent),
+   EXT(EXT_shader_group_vote),
    EXT(EXT_shader_image_load_formatted),
    EXT(EXT_shader_image_load_store),
    EXT(EXT_shader_implicit_conversions),
@@ -751,6 +761,7 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    EXT(NV_fragment_shader_interlock),
    EXT(NV_image_formats),
    EXT(NV_shader_atomic_float),
+   EXT(NV_viewport_array2),
 };
 
 #undef EXT
@@ -1929,6 +1940,8 @@ set_shader_inout_layout(struct gl_shader *shader,
    shader->bindless_image = state->bindless_image_specified;
    shader->bound_sampler = state->bound_sampler_specified;
    shader->bound_image = state->bound_image_specified;
+   shader->redeclares_gl_layer = state->redeclares_gl_layer;
+   shader->layer_viewport_relative = state->layer_viewport_relative;
 }
 
 /* src can be NULL if only the symbols found in the exec_list should be
@@ -2236,8 +2249,8 @@ _mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader,
       &ctx->Const.ShaderCompilerOptions[shader->Stage];
 
    if (!state->error && !shader->ir->is_empty()) {
-      if (options->LowerPrecision && shader->Stage == MESA_SHADER_FRAGMENT)
-         lower_precision(shader->ir);
+      if (options->LowerPrecisionFloat16 || options->LowerPrecisionInt16)
+         lower_precision(options, shader->ir);
       lower_builtins(shader->ir);
       assign_subroutine_indexes(state);
       lower_subroutine(shader->ir, state);
@@ -2351,7 +2364,20 @@ do_common_optimization(exec_list *ir, bool linked,
    OPT(lower_vector_insert, ir, false);
    OPT(optimize_swizzles, ir);
 
-   OPT(optimize_split_arrays, ir, linked);
+   /* Some drivers only call do_common_optimization() once rather than in a
+    * loop, and split arrays causes each element of a constant array to
+    * dereference is own copy of the entire array initilizer. This IR is not
+    * something that can be generated manually in a shader and is not
+    * accounted for by NIR optimisations, the result is an exponential slow
+    * down in compilation speed as a constant arrays element count grows. To
+    * avoid that here we make sure to always clean up the mess split arrays
+    * causes to constant arrays.
+    */
+   bool array_split = optimize_split_arrays(ir, linked);
+   if (array_split)
+      do_constant_propagation(ir);
+   progress |= array_split;
+
    OPT(optimize_redundant_jumps, ir);
 
    if (options->MaxUnrollIterations) {

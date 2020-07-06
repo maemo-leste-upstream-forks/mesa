@@ -29,6 +29,8 @@
 #include "tgsi/tgsi_parse.h"
 #include "tgsi/tgsi_scan.h"
 
+struct nir_shader_compiler_options;
+
 /*
  * This struct constitutes linkage information in TGSI terminology.
  *
@@ -70,10 +72,12 @@ struct nv50_ir_prog_symbol
    uint32_t offset;
 };
 
+#define NVISA_GF100_CHIPSET    0xc0
 #define NVISA_GK104_CHIPSET    0xe0
 #define NVISA_GK20A_CHIPSET    0xea
 #define NVISA_GM107_CHIPSET    0x110
 #define NVISA_GM200_CHIPSET    0x120
+#define NVISA_GV100_CHIPSET    0x140
 
 struct nv50_ir_prog_info
 {
@@ -177,6 +181,7 @@ struct nv50_ir_prog_info
       uint8_t globalAccess;      /* 1 for read, 2 for wr, 3 for rw */
       bool fp64;                 /* program uses fp64 math */
       bool mul_zero_wins;        /* program wants for x*0 = 0 */
+      bool layer_viewport_relative;
       bool nv50styleSurfaces;    /* generate gX[] access for raw buffers */
       uint16_t texBindBase;      /* base address for tex handles (nve4) */
       uint16_t fbtexBindBase;    /* base address for fbtex handle (nve4) */
@@ -198,6 +203,9 @@ struct nv50_ir_prog_info
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+const struct nir_shader_compiler_options *
+nv50_ir_nir_shader_compiler_options(int chipset);
 
 extern int nv50_ir_generate_code(struct nv50_ir_prog_info *);
 

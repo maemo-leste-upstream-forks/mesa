@@ -191,7 +191,7 @@ blorp_compile_fs(struct blorp_context *blorp, void *mem_ctx,
    wm_prog_data->base.binding_table.texture_start = BLORP_TEXTURE_BT_INDEX;
 
    brw_preprocess_nir(compiler, nir, NULL);
-   nir_remove_dead_variables(nir, nir_var_shader_in);
+   nir_remove_dead_variables(nir, nir_var_shader_in, NULL);
    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
 
    if (blorp->compiler->devinfo->gen < 6) {
@@ -227,7 +227,8 @@ blorp_compile_vs(struct blorp_context *blorp, void *mem_ctx,
    brw_compute_vue_map(compiler->devinfo,
                        &vs_prog_data->base.vue_map,
                        nir->info.outputs_written,
-                       nir->info.separate_shader);
+                       nir->info.separate_shader,
+                       1);
 
    struct brw_vs_prog_key vs_key = { 0, };
 
@@ -285,7 +286,7 @@ blorp_ensure_sf_program(struct blorp_batch *batch,
    unsigned program_size;
 
    struct brw_vue_map vue_map;
-   brw_compute_vue_map(blorp->compiler->devinfo, &vue_map, slots_valid, false);
+   brw_compute_vue_map(blorp->compiler->devinfo, &vue_map, slots_valid, false, 1);
 
    struct brw_sf_prog_data prog_data_tmp;
    program = brw_compile_sf(blorp->compiler, mem_ctx, &key.key,

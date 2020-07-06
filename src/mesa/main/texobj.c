@@ -35,7 +35,7 @@
 #include "fbobject.h"
 #include "formats.h"
 #include "hash.h"
-#include "util/imports.h"
+
 #include "macros.h"
 #include "shaderimage.h"
 #include "teximage.h"
@@ -44,6 +44,7 @@
 #include "mtypes.h"
 #include "program/prog_instruction.h"
 #include "texturebindless.h"
+#include "util/u_memory.h"
 
 
 
@@ -1512,6 +1513,10 @@ delete_textures(struct gl_context *ctx, GLsizei n, const GLuint *textures)
              * Remove it from the hash table now.
              */
             _mesa_HashRemove(ctx->Shared->TexObjects, delObj->Name);
+
+            if (ctx->Driver.TextureRemovedFromShared) {
+               ctx->Driver.TextureRemovedFromShared(ctx, delObj);
+            }
 
             /* Unreference the texobj.  If refcount hits zero, the texture
              * will be deleted.

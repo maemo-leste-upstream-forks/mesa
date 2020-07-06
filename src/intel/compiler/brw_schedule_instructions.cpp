@@ -671,7 +671,7 @@ public:
                             int block_count,
                             instruction_scheduler_mode mode);
    void calculate_deps();
-   bool is_compressed(fs_inst *inst);
+   bool is_compressed(const fs_inst *inst);
    schedule_node *choose_instruction_to_schedule();
    int issue_time(backend_instruction *inst);
    const fs_visitor *v;
@@ -1063,7 +1063,7 @@ instruction_scheduler::add_barrier_deps(schedule_node *n)
  * actually writes 2 MRFs.
  */
 bool
-fs_instruction_scheduler::is_compressed(fs_inst *inst)
+fs_instruction_scheduler::is_compressed(const fs_inst *inst)
 {
    return inst->exec_size == 16;
 }
@@ -1649,10 +1649,12 @@ vec4_instruction_scheduler::choose_instruction_to_schedule()
 }
 
 int
-fs_instruction_scheduler::issue_time(backend_instruction *inst)
+fs_instruction_scheduler::issue_time(backend_instruction *inst0)
 {
-   const unsigned overhead = v->bank_conflict_cycles((fs_inst *)inst);
-   if (is_compressed((fs_inst *)inst))
+   const fs_inst *inst = static_cast<fs_inst *>(inst0);
+   const unsigned overhead = v->grf_used && has_bank_conflict(v->devinfo, inst) ?
+      DIV_ROUND_UP(inst->dst.component_size(inst->exec_size), REG_SIZE) : 0;
+   if (is_compressed(inst))
       return 4 + overhead;
    else
       return 2 + overhead;
@@ -1760,24 +1762,6 @@ instruction_scheduler::schedule_instructions(bblock_t *block)
    }
 
    assert(instructions_to_schedule == 0);
-
-   block->cycle_count = time;
-}
-
-static unsigned get_cycle_count(cfg_t *cfg)
-{
-   unsigned count = 0, multiplier = 1;
-   foreach_block(block, cfg) {
-      if (block->start()->opcode == BRW_OPCODE_DO)
-         multiplier *= 10; /* assume that loops execute ~10 times */
-
-      count += block->cycle_count * multiplier;
-
-      if (block->end()->opcode == BRW_OPCODE_WHILE)
-         multiplier /= 10;
-   }
-
-   return count;
 }
 
 void
@@ -1819,8 +1803,6 @@ instruction_scheduler::run(cfg_t *cfg)
               post_reg_alloc);
       bs->dump_instructions();
    }
-
-   cfg->cycle_count = get_cycle_count(cfg);
 }
 
 void

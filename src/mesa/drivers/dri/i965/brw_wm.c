@@ -253,8 +253,8 @@ brw_populate_sampler_prog_key_data(struct gl_context *ctx,
                      key->swizzles[i] |= SWIZZLE_ONE << (3 * i);
                   }
                }
-               /* fallthrough */
             }
+            /* fallthrough */
             case GL_RG32F:
                /* The channel select for green doesn't work - we have to
                 * request blue.  Haswell can use SCS for this, but Ivybridge
@@ -490,6 +490,8 @@ brw_wm_populate_key(struct brw_context *brw, struct brw_wm_prog_key *key)
       key->multisample_fbo = _mesa_geometric_samples(ctx->DrawBuffer) > 1;
    }
 
+   key->ignore_sample_mask_out = !key->multisample_fbo;
+
    /* BRW_NEW_VUE_MAP_GEOM_OUT */
    if (devinfo->gen < 6 || util_bitcount64(prog->info.inputs_read &
                                              BRW_FS_VARYING_INPUT_MASK) > 16) {
@@ -602,7 +604,7 @@ brw_fs_precompile(struct gl_context *ctx, struct gl_program *prog)
    if (devinfo->gen < 6) {
       brw_compute_vue_map(&brw->screen->devinfo, &vue_map,
                           prog->info.inputs_read | VARYING_BIT_POS,
-                          false);
+                          false, 1);
    }
 
    bool success = brw_codegen_wm_prog(brw, bfp, &key, &vue_map);

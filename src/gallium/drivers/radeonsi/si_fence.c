@@ -490,10 +490,10 @@ static void si_flush_from_st(struct pipe_context *ctx, struct pipe_fence_handle 
          ws->cs_sync_flush(sctx->gfx_cs);
    } else {
       /* Instead of flushing, create a deferred fence. Constraints:
-       * - The state tracker must allow a deferred flush.
-       * - The state tracker must request a fence.
+		 * - the gallium frontend must allow a deferred flush.
+		 * - the gallium frontend must request a fence.
        * - fence_get_fd is not allowed.
-       * Thread safety in fence_finish must be ensured by the state tracker.
+		 * Thread safety in fence_finish must be ensured by the gallium frontend.
        */
       if (flags & PIPE_FLUSH_DEFERRED && !(flags & PIPE_FLUSH_FENCE_FD) && fence) {
          gfx_fence = sctx->ws->cs_get_next_fence(sctx->gfx_cs);
@@ -589,13 +589,16 @@ static void si_fence_server_sync(struct pipe_context *ctx, struct pipe_fence_han
    if (sfence->gfx_unflushed.ctx && sfence->gfx_unflushed.ctx == sctx)
       return;
 
-   /* All unflushed commands will not start execution before
-    * this fence dependency is signalled.
+   /* All unflushed commands will not start execution before this fence
+    * dependency is signalled. That's fine. Flushing is very expensive
+    * if we get fence_server_sync after every draw call. (which happens
+    * with Android/SurfaceFlinger)
     *
-    * Therefore we must flush before inserting the dependency
+    * In a nutshell, when CPU overhead is greater than GPU overhead,
+    * or when the time it takes to execute an IB on the GPU is less than
+    * the time it takes to create and submit that IB, flushing decreases
+    * performance. Therefore, DO NOT FLUSH.
     */
-   si_flush_from_st(ctx, NULL, PIPE_FLUSH_ASYNC);
-
    if (sfence->sdma)
       si_add_fence_dependency(sctx, sfence->sdma);
    if (sfence->gfx)

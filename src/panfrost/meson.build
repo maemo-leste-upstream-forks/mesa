@@ -36,7 +36,9 @@ subdir('encoder')
 
 files_bifrost = files(
   'bifrost/cmdline.c',
-  'bifrost/test/bi_submit.c'
+  'bifrost/test/bi_submit.c',
+  'bifrost/test/bi_interpret.c',
+  'bifrost/test/bi_test_pack.c',
 )
 
 bifrost_compiler = executable(
@@ -64,5 +66,5 @@ bifrost_compiler = executable(
     libpanfrost_encoder,
     libpanfrost_midgard, # references disassemble_midgard...
   ],
-  build_by_default : true
+  build_by_default : with_tools.contains('panfrost')
 )

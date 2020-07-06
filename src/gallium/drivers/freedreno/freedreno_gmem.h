@@ -62,7 +62,7 @@ struct fd_gmem_stateobj {
 	uint8_t num_vsc_pipes;   /* number of pipes for a20x */
 
 	struct fd_vsc_pipe vsc_pipe[32];
-	struct fd_tile     tile[512];
+	struct fd_tile     tile[2048];
 
 	struct list_head node;
 };
@@ -88,7 +88,7 @@ struct fd_gmem_cache {
 struct fd_batch;
 
 void fd_gmem_render_tiles(struct fd_batch *batch);
-
+unsigned fd_gmem_estimate_bins_per_pipe(struct fd_batch *batch);
 bool fd_gmem_needs_restore(struct fd_batch *batch, const struct fd_tile *tile,
 		uint32_t buffers);
 

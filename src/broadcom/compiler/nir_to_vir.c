@@ -23,6 +23,7 @@
 
 #include <inttypes.h>
 #include "util/format/u_format.h"
+#include "util/u_helpers.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
 #include "util/ralloc.h"
@@ -1563,20 +1564,13 @@ ntq_setup_vs_inputs(struct v3d_compile *c)
 }
 
 static bool
-var_needs_point_coord(struct v3d_compile *c, nir_variable *var)
-{
-        return (var->data.location == VARYING_SLOT_PNTC ||
-                (var->data.location >= VARYING_SLOT_VAR0 &&
-                 (c->fs_key->point_sprite_mask &
-                  (1 << (var->data.location - VARYING_SLOT_VAR0)))));
-}
-
-static bool
 program_reads_point_coord(struct v3d_compile *c)
 {
         nir_foreach_variable(var, &c->s->inputs) {
-                if (var_needs_point_coord(c, var))
+                if (util_varying_is_point_coord(var->data.location,
+                                                c->fs_key->point_sprite_mask)) {
                         return true;
+                }
         }
 
         return false;
@@ -1657,7 +1651,8 @@ ntq_setup_fs_inputs(struct v3d_compile *c)
 
                 if (var->data.location == VARYING_SLOT_POS) {
                         emit_fragcoord_input(c, loc);
-                } else if (var_needs_point_coord(c, var)) {
+                } else if (util_varying_is_point_coord(var->data.location,
+                                                       c->fs_key->point_sprite_mask)) {
                         c->inputs[loc * 4 + 0] = c->point_x;
                         c->inputs[loc * 4 + 1] = c->point_y;
                 } else {
@@ -1767,7 +1762,10 @@ ntq_emit_image_size(struct v3d_compile *c, nir_intrinsic_instr *instr)
                        vir_uniform(c, QUNIFORM_IMAGE_WIDTH, image_index));
         if (instr->num_components > 1) {
                 ntq_store_dest(c, &instr->dest, 1,
-                               vir_uniform(c, QUNIFORM_IMAGE_HEIGHT,
+                               vir_uniform(c,
+                                           instr->num_components == 2 && is_array ?
+                                                   QUNIFORM_IMAGE_ARRAY_SIZE :
+                                                   QUNIFORM_IMAGE_HEIGHT,
                                            image_index));
         }
         if (instr->num_components > 2) {
@@ -2027,7 +2025,18 @@ emit_store_output_gs(struct v3d_compile *c, nir_intrinsic_instr *instr)
                            V3D_QPU_PF_PUSHZ);
         }
 
-        vir_VPM_WRITE_indirect(c, ntq_get_src(c, instr->src[0], 0), offset);
+        struct qreg val = ntq_get_src(c, instr->src[0], 0);
+
+        /* The offset isn’t necessarily dynamically uniform for a geometry
+         * shader. This can happen if the shader sometimes doesn’t emit one of
+         * the vertices. In that case subsequent vertices will be written to
+         * different offsets in the VPM and we need to use the scatter write
+         * instruction to have a different offset for each lane.
+         */
+        if (nir_src_is_dynamically_uniform(instr->src[1]))
+                vir_VPM_WRITE_indirect(c, val, offset);
+        else
+                vir_STVPMD(c, offset, val);
 
         if (vir_in_nonuniform_control_flow(c)) {
                 struct qinst *last_inst =
@@ -2123,7 +2132,7 @@ ntq_emit_intrinsic(struct v3d_compile *c, nir_intrinsic_instr *instr)
                 break;
 
         case nir_intrinsic_load_user_clip_plane:
-                for (int i = 0; i < instr->num_components; i++) {
+                for (int i = 0; i < nir_intrinsic_dest_components(instr); i++) {
                         ntq_store_dest(c, &instr->dest, i,
                                        vir_uniform(c, QUNIFORM_USER_CLIP_PLANE,
                                                    nir_intrinsic_ucp_id(instr) *

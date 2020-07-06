@@ -31,12 +31,43 @@
 #include "panfrost/encoder/pan_device.h"
 #include "panfrost/encoder/pan_bo.h"
 #include "bifrost_compile.h"
+#include "bifrost/compiler.h"
 
 struct panfrost_device *
 bit_initialize(void *memctx);
 
 bool bit_sanity_check(struct panfrost_device *dev);
-bool bit_vertex(struct panfrost_device *dev, panfrost_program prog);
+
+enum bit_debug {
+        BIT_DEBUG_NONE = 0,
+        BIT_DEBUG_FAIL,
+        BIT_DEBUG_ALL
+};
+
+bool
+bit_vertex(struct panfrost_device *dev, panfrost_program prog,
+                uint32_t *iubo, size_t sz_ubo,
+                uint32_t *iattr, size_t sz_attr,
+                uint32_t *expected, size_t sz_expected, enum bit_debug debug);
+
+/* BIT interpreter */
+
+struct bit_state {
+        /* Work registers */
+        uint32_t r[64];
+
+        /* Passthrough within the bundle */
+        uint32_t T;
+
+        /* Passthrough from last bundle */
+        uint32_t T0;
+        uint32_t T1;
+};
+
+void
+bit_step(struct bit_state *s, bi_instruction *ins, bool FMA);
+
+void bit_packing(struct panfrost_device *dev, enum bit_debug debug);
 
 #endif
 

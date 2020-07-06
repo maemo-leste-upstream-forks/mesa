@@ -1,8 +1,8 @@
 /**************************************************************************
- * 
+ *
  * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
  * "Software"), to deal in the Software without restriction, including
@@ -10,11 +10,11 @@
  * distribute, sub license, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to
  * the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice (including the
  * next paragraph) shall be included in all copies or substantial portions
  * of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
@@ -22,7 +22,7 @@
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- * 
+ *
  **************************************************************************/
  /*
   * Authors:
@@ -32,7 +32,7 @@
 
 
 #include "main/errors.h"
-#include "util/imports.h"
+
 #include "main/hash.h"
 #include "main/mtypes.h"
 #include "program/prog_parameter.h"
@@ -53,6 +53,8 @@
 #include "tgsi/tgsi_parse.h"
 #include "tgsi/tgsi_ureg.h"
 
+#include "util/u_memory.h"
+
 #include "st_debug.h"
 #include "st_cb_bitmap.h"
 #include "st_cb_drawpixels.h"
@@ -68,6 +70,8 @@
 #include "cso_cache/cso_context.h"
 
 
+static void
+destroy_program_variants(struct st_context *st, struct gl_program *target);
 
 static void
 set_affected_state_flags(uint64_t *states,
@@ -334,6 +338,19 @@ st_release_variants(struct st_context *st, struct st_program *p)
     */
 }
 
+/**
+ * Free all basic program variants and unref program.
+ */
+void
+st_release_program(struct st_context *st, struct st_program **p)
+{
+   if (!*p)
+      return;
+
+   destroy_program_variants(st, &((*p)->Base));
+   st_reference_prog(st, p, NULL);
+}
+
 void
 st_finalize_nir_before_variants(struct nir_shader *nir)
 {
@@ -478,8 +495,6 @@ st_translate_vertex_program(struct st_context *st,
    if (stp->Base.arb.IsPositionInvariant)
       _mesa_insert_mvp_code(st->ctx, &stp->Base);
 
-   st_prepare_vertex_program(stp);
-
    /* ARB_vp: */
    if (!stp->glsl_to_tgsi) {
       _mesa_remove_output_reads(&stp->Base, PROGRAM_OUTPUT);
@@ -511,13 +526,33 @@ st_translate_vertex_program(struct st_context *st,
          stp->state.type = PIPE_SHADER_IR_NIR;
          stp->Base.nir = st_translate_prog_to_nir(st, &stp->Base,
                                                   MESA_SHADER_VERTEX);
+
+         /* We must update stp->Base.info after translation and before
+          * st_prepare_vertex_program is called, because inputs_read
+          * may become outdated after NIR optimization passes.
+          *
+          * For ffvp/ARB_vp inputs_read is populated based
+          * on declared attributes without taking their usage into
+          * consideration. When creating shader variants we expect
+          * that their inputs_read would match the base ones for
+          * input mapping to work properly.
+          */
+         nir_shader_gather_info(stp->Base.nir,
+                                nir_shader_get_entrypoint(stp->Base.nir));
+         st_nir_assign_vs_in_locations(stp->Base.nir);
+         stp->Base.info = stp->Base.nir->info;
+
          /* For st_draw_feedback, we need to generate TGSI too if draw doesn't
           * use LLVM.
           */
-         if (draw_has_llvm())
+         if (draw_has_llvm()) {
+            st_prepare_vertex_program(stp);
             return true;
+         }
       }
    }
+
+   st_prepare_vertex_program(stp);
 
    /* Get semantic names and indices. */
    for (attr = 0; attr < VARYING_SLOT_MAX; attr++) {
@@ -681,24 +716,30 @@ st_create_vp_variant(struct st_context *st,
                                               PIPE_CAP_NIR_COMPACT_ARRAYS);
 
          bool use_eye = st->ctx->_Shader->CurrentProgram[MESA_SHADER_VERTEX] != NULL;
-         gl_state_index16 clipplane_state[MAX_CLIP_PLANES][STATE_LENGTH];
-         for (int i = 0; i < MAX_CLIP_PLANES; ++i) {
-            if (use_eye) {
-               clipplane_state[i][0] = STATE_CLIPPLANE;
-               clipplane_state[i][1] = i;
-            } else {
-               clipplane_state[i][0] = STATE_INTERNAL;
-               clipplane_state[i][1] = STATE_CLIP_INTERNAL;
-               clipplane_state[i][2] = i;
-            }
-            _mesa_add_state_reference(params, clipplane_state[i]);
-         }
+         struct nir_shader *nir = state.ir.nir;
 
-         NIR_PASS_V(state.ir.nir, nir_lower_clip_vs, key->lower_ucp,
-                    true, can_compact, clipplane_state);
-         NIR_PASS_V(state.ir.nir, nir_lower_io_to_temporaries,
-                    nir_shader_get_entrypoint(state.ir.nir), true, false);
-         NIR_PASS_V(state.ir.nir, nir_lower_global_vars_to_local);
+         if (nir->info.outputs_written & VARYING_BIT_CLIP_DIST0)
+            NIR_PASS_V(state.ir.nir, nir_lower_clip_disable, key->lower_ucp);
+         else {
+            gl_state_index16 clipplane_state[MAX_CLIP_PLANES][STATE_LENGTH];
+            for (int i = 0; i < MAX_CLIP_PLANES; ++i) {
+               if (use_eye) {
+                  clipplane_state[i][0] = STATE_CLIPPLANE;
+                  clipplane_state[i][1] = i;
+               } else {
+                  clipplane_state[i][0] = STATE_INTERNAL;
+                  clipplane_state[i][1] = STATE_CLIP_INTERNAL;
+                  clipplane_state[i][2] = i;
+               }
+               _mesa_add_state_reference(params, clipplane_state[i]);
+            }
+
+            NIR_PASS_V(state.ir.nir, nir_lower_clip_vs, key->lower_ucp,
+                       true, can_compact, clipplane_state);
+            NIR_PASS_V(state.ir.nir, nir_lower_io_to_temporaries,
+                       nir_shader_get_entrypoint(state.ir.nir), true, false);
+            NIR_PASS_V(state.ir.nir, nir_lower_global_vars_to_local);
+         }
          finalize = true;
       }
 

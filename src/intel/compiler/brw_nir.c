@@ -597,7 +597,7 @@ brw_nir_optimize(nir_shader *nir, const struct brw_compiler *compiler,
    /* Workaround Gfxbench unused local sampler variable which will trigger an
     * assert in the opt_large_constants pass.
     */
-   OPT(nir_remove_dead_variables, nir_var_function_temp);
+   OPT(nir_remove_dead_variables, nir_var_function_temp, NULL);
 }
 
 static unsigned
@@ -785,8 +785,8 @@ brw_nir_link_shaders(const struct brw_compiler *compiler,
    if (nir_link_opt_varyings(producer, consumer))
       brw_nir_optimize(consumer, compiler, c_is_scalar, false);
 
-   NIR_PASS_V(producer, nir_remove_dead_variables, nir_var_shader_out);
-   NIR_PASS_V(consumer, nir_remove_dead_variables, nir_var_shader_in);
+   NIR_PASS_V(producer, nir_remove_dead_variables, nir_var_shader_out, NULL);
+   NIR_PASS_V(consumer, nir_remove_dead_variables, nir_var_shader_in, NULL);
 
    if (nir_remove_unused_varyings(producer, consumer)) {
       NIR_PASS_V(producer, nir_lower_global_vars_to_local);
@@ -824,6 +824,31 @@ brw_nir_link_shaders(const struct brw_compiler *compiler,
    }
 }
 
+static bool
+brw_nir_should_vectorize_mem(unsigned align, unsigned bit_size,
+                             unsigned num_components, unsigned high_offset,
+                             nir_intrinsic_instr *low,
+                             nir_intrinsic_instr *high)
+{
+   /* Don't combine things to generate 64-bit loads/stores.  We have to split
+    * those back into 32-bit ones anyway and UBO loads aren't split in NIR so
+    * we don't want to make a mess for the back-end.
+    */
+   if (bit_size > 32)
+      return false;
+
+   /* We can handle at most a vec4 right now.  Anything bigger would get
+    * immediately split by brw_nir_lower_mem_access_bit_sizes anyway.
+    */
+   if (num_components > 4)
+      return false;
+
+   if (align < bit_size / 8)
+      return false;
+
+   return true;
+}
+
 static
 bool combine_all_barriers(nir_intrinsic_instr *a,
                           nir_intrinsic_instr *b,
@@ -844,6 +869,36 @@ bool combine_all_barriers(nir_intrinsic_instr *a,
    return true;
 }
 
+static void
+brw_vectorize_lower_mem_access(nir_shader *nir,
+                               const struct brw_compiler *compiler,
+                               bool is_scalar)
+{
+   const struct gen_device_info *devinfo = compiler->devinfo;
+   bool progress = false;
+
+   if (is_scalar) {
+      OPT(nir_opt_load_store_vectorize,
+          nir_var_mem_ubo | nir_var_mem_ssbo |
+          nir_var_mem_global | nir_var_mem_shared,
+          brw_nir_should_vectorize_mem,
+          (nir_variable_mode)0);
+   }
+
+   OPT(brw_nir_lower_mem_access_bit_sizes, devinfo);
+
+   while (progress) {
+      progress = false;
+
+      OPT(nir_lower_pack);
+      OPT(nir_copy_prop);
+      OPT(nir_opt_dce);
+      OPT(nir_opt_cse);
+      OPT(nir_opt_algebraic);
+      OPT(nir_opt_constant_folding);
+   }
+}
+
 /* Prepare the given shader for codegen
  *
  * This function is intended to be called right before going into the actual
@@ -861,8 +916,7 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
 
    UNUSED bool progress; /* Written by OPT */
 
-   OPT(brw_nir_lower_mem_access_bit_sizes, devinfo);
-
+   OPT(brw_nir_lower_scoped_barriers);
    OPT(nir_opt_combine_memory_barriers, combine_all_barriers, NULL);
 
    do {
@@ -871,6 +925,8 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
    } while (progress);
 
    brw_nir_optimize(nir, compiler, is_scalar, false);
+
+   brw_vectorize_lower_mem_access(nir, compiler, is_scalar);
 
    if (OPT(nir_lower_int64, nir->options->lower_int64_options))
       brw_nir_optimize(nir, compiler, is_scalar, false);
@@ -907,10 +963,10 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
           * havok on the vec4 backend.  The handling of constants in the vec4
           * backend is not good.
           */
-         if (is_scalar) {
+         if (is_scalar)
             OPT(nir_opt_constant_folding);
-            OPT(nir_copy_prop);
-         }
+
+         OPT(nir_copy_prop);
          OPT(nir_opt_dce);
          OPT(nir_opt_cse);
       }
@@ -921,7 +977,13 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
 
    if (is_scalar)
       OPT(nir_lower_alu_to_scalar, NULL, NULL);
-   OPT(nir_lower_to_source_mods, nir_lower_all_source_mods);
+
+   while (OPT(nir_opt_algebraic_distribute_src_mods)) {
+      OPT(nir_copy_prop);
+      OPT(nir_opt_dce);
+      OPT(nir_opt_cse);
+   }
+
    OPT(nir_copy_prop);
    OPT(nir_opt_dce);
    OPT(nir_opt_move, nir_move_comparisons);

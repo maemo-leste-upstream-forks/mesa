@@ -148,7 +148,7 @@ static const struct anv_format main_formats[] = {
    fmt1(VK_FORMAT_R4G4B4A4_UNORM_PACK16,             ISL_FORMAT_A4B4G4R4_UNORM),
    swiz_fmt1(VK_FORMAT_B4G4R4A4_UNORM_PACK16,        ISL_FORMAT_A4B4G4R4_UNORM,  BGRA),
    fmt1(VK_FORMAT_R5G6B5_UNORM_PACK16,               ISL_FORMAT_B5G6R5_UNORM),
-   swiz_fmt1(VK_FORMAT_B5G6R5_UNORM_PACK16,          ISL_FORMAT_B5G6R5_UNORM, BGRA),
+   fmt_unsupported(VK_FORMAT_B5G6R5_UNORM_PACK16),
    fmt1(VK_FORMAT_R5G5B5A1_UNORM_PACK16,             ISL_FORMAT_A1B5G5R5_UNORM),
    fmt_unsupported(VK_FORMAT_B5G5R5A1_UNORM_PACK16),
    fmt1(VK_FORMAT_A1R5G5B5_UNORM_PACK16,             ISL_FORMAT_B5G5R5A1_UNORM),
@@ -1155,7 +1155,7 @@ VkResult anv_GetPhysicalDeviceImageFormatProperties2(
             external_props->externalMemoryProperties = android_image_props;
             break;
          }
-      /* fallthrough if ahw not supported */
+      /* fallthrough - if ahw not supported */
       default:
          /* From the Vulkan 1.0.42 spec:
           *
@@ -1286,13 +1286,15 @@ VkResult anv_CreateSamplerYcbcrConversion(
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_CREATE_INFO);
 
-   conversion = vk_alloc2(&device->alloc, pAllocator, sizeof(*conversion), 8,
+   conversion = vk_alloc2(&device->vk.alloc, pAllocator, sizeof(*conversion), 8,
                           VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (!conversion)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
    memset(conversion, 0, sizeof(*conversion));
 
+   vk_object_base_init(&device->vk, &conversion->base,
+                       VK_OBJECT_TYPE_SAMPLER_YCBCR_CONVERSION);
    conversion->format = anv_get_format(pCreateInfo->format);
    conversion->ycbcr_model = pCreateInfo->ycbcrModel;
    conversion->ycbcr_range = pCreateInfo->ycbcrRange;
@@ -1342,5 +1344,6 @@ void anv_DestroySamplerYcbcrConversion(
    if (!conversion)
       return;
 
-   vk_free2(&device->alloc, pAllocator, conversion);
+   vk_object_base_finish(&conversion->base);
+   vk_free2(&device->vk.alloc, pAllocator, conversion);
 }

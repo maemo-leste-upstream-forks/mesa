@@ -83,6 +83,7 @@ ok_ubwc_format(struct fd_resource *rsc, enum pipe_format pfmt)
 	case FMT6_8_8_SINT:
 	case FMT6_8_8_UINT:
 	case FMT6_8_8_UNORM:
+	case FMT6_8_UNORM:
 	case FMT6_Z24_UNORM_S8_UINT:
 	case FMT6_Z24_UNORM_S8_UINT_AS_R8G8B8A8:
 		return true;
@@ -152,7 +153,8 @@ fd6_setup_slices(struct fd_resource *rsc)
 	fdl6_layout(&rsc->layout, prsc->format, fd_resource_nr_samples(prsc),
 			prsc->width0, prsc->height0, prsc->depth0,
 			prsc->last_level + 1, prsc->array_size,
-			prsc->target == PIPE_TEXTURE_3D);
+			prsc->target == PIPE_TEXTURE_3D,
+			NULL);
 
 	return rsc->layout.size;
 }
@@ -174,17 +176,10 @@ fill_ubwc_buffer_sizes(struct fd_resource *rsc)
 	rsc->layout.ubwc = true;
 	rsc->layout.tile_mode = TILE6_3;
 
-	fdl6_layout(&rsc->layout, prsc->format, fd_resource_nr_samples(prsc),
+	if (!fdl6_layout(&rsc->layout, prsc->format, fd_resource_nr_samples(prsc),
 			prsc->width0, prsc->height0, prsc->depth0,
-			prsc->last_level + 1, prsc->array_size, false);
-
-	if (fd_resource_slice(rsc, 0)->pitch != slice.pitch)
+			prsc->last_level + 1, prsc->array_size, false, &slice))
 		return -1;
-
-	/* The imported buffer may specify an offset, add that in here. */
-	rsc->layout.slices[0].offset += slice.offset;
-	rsc->layout.ubwc_slices[0].offset += slice.offset;
-	rsc->layout.size += slice.offset;
 
 	if (rsc->layout.size > fd_bo_size(rsc->bo))
 		return -1;

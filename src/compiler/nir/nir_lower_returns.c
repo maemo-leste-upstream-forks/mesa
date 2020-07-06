@@ -50,7 +50,7 @@ predicate_following(nir_cf_node *node, struct lower_returns_state *state)
    nir_builder *b = &state->builder;
    b->cursor = nir_after_cf_node_and_phis(node);
 
-   if (nir_cursors_equal(b->cursor, nir_after_cf_list(state->cf_list)))
+   if (!state->loop && nir_cursors_equal(b->cursor, nir_after_cf_list(state->cf_list)))
       return; /* Nothing to predicate */
 
    assert(state->return_flag);
@@ -275,9 +275,7 @@ nir_lower_returns_impl(nir_function_impl *impl)
       nir_metadata_preserve(impl, nir_metadata_none);
       nir_repair_ssa_impl(impl);
    } else {
-#ifndef NDEBUG
-      impl->valid_metadata &= ~nir_metadata_not_properly_reset;
-#endif
+      nir_metadata_preserve(impl, nir_metadata_all);
    }
 
    return progress;

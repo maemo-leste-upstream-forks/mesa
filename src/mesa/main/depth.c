@@ -24,7 +24,7 @@
 
 
 #include "glheader.h"
-#include "util/imports.h"
+
 #include "context.h"
 #include "depth.h"
 #include "enums.h"
@@ -154,8 +154,8 @@ _mesa_DepthBoundsEXT( GLclampd zmin, GLclampd zmax )
       return;
    }
 
-   zmin = CLAMP(zmin, 0.0, 1.0);
-   zmax = CLAMP(zmax, 0.0, 1.0);
+   zmin = SATURATE(zmin);
+   zmax = SATURATE(zmax);
 
    if (ctx->Depth.BoundsMin == zmin && ctx->Depth.BoundsMax == zmax)
       return;

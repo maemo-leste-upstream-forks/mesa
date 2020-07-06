@@ -303,7 +303,7 @@ v3d_uncompiled_shader_create(struct pipe_context *pctx,
                         tgsi_dump(ir, 0);
                         fprintf(stderr, "\n");
                 }
-                s = tgsi_to_nir(ir, pctx->screen);
+                s = tgsi_to_nir(ir, pctx->screen, false);
         }
 
         nir_variable_mode lower_mode = nir_var_all & ~nir_var_uniform;
@@ -322,7 +322,7 @@ v3d_uncompiled_shader_create(struct pipe_context *pctx,
 
         v3d_optimize_nir(s);
 
-        NIR_PASS_V(s, nir_remove_dead_variables, nir_var_function_temp);
+        NIR_PASS_V(s, nir_remove_dead_variables, nir_var_function_temp, NULL);
 
         /* Garbage collect dead instructions */
         nir_sweep(s);

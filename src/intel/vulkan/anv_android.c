@@ -308,7 +308,7 @@ anv_import_ahw_memory(VkDevice device_h,
    VkResult result = anv_device_import_bo(device, dma_buf, 0,
                                           0 /* client_address */,
                                           &mem->bo);
-   assert(VK_SUCCESS);
+   assert(result == VK_SUCCESS);
 
    /* "If the vkAllocateMemory command succeeds, the implementation must
     * acquire a reference to the imported hardware buffer, which it must
@@ -616,7 +616,7 @@ setup_gralloc0_usage(VkFormat format, VkImageUsageFlags imageUsage,
     */
    switch (format) {
       case VK_FORMAT_B8G8R8A8_UNORM:
-      case VK_FORMAT_B5G6R5_UNORM_PACK16:
+      case VK_FORMAT_R5G6B5_UNORM_PACK16:
       case VK_FORMAT_R8G8B8A8_UNORM:
       case VK_FORMAT_R8G8B8A8_SRGB:
          *grallocUsage |= GRALLOC_USAGE_HW_FB |

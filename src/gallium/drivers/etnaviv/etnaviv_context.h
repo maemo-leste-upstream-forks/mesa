@@ -113,6 +113,8 @@ struct etna_context {
    void (*emit_texture_state)(struct etna_context *pctx);
    /* Get sampler TS pointer for sampler view */
    struct etna_sampler_ts *(*ts_for_sampler_view)(struct pipe_sampler_view *pview);
+   /* GPU-specific blit implementation */
+   bool (*blit)(struct pipe_context *pipe, const struct pipe_blit_info *info);
 
    struct etna_screen *screen;
    struct etna_cmd_stream *stream;
@@ -190,8 +192,8 @@ struct etna_context {
    struct pipe_debug_callback debug;
    int in_fence_fd;
 
-   /* list of active hardware queries */
-   struct list_head active_hw_queries;
+   /* list of accumulated HW queries */
+   struct list_head active_acc_queries;
 
    struct etna_bo *dummy_rt;
    struct etna_reloc dummy_rt_reloc;

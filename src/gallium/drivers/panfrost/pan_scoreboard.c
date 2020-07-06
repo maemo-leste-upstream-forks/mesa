@@ -25,6 +25,7 @@
 #include "pan_context.h"
 #include "pan_job.h"
 #include "pan_allocate.h"
+#include "panfrost-quirks.h"
 #include "util/bitset.h"
 
 /*
@@ -114,15 +115,18 @@ panfrost_new_job(
                 void *payload, size_t payload_size,
                 bool inject)
 {
+        struct panfrost_device *dev = pan_device(batch->ctx->base.screen);
+
         unsigned global_dep = 0;
 
         if (type == JOB_TYPE_TILER) {
-                /* Tiler jobs must be chained, and the first tiler job must
-                 * depend on the write value job, whose index we reserve now */
+                /* Tiler jobs must be chained, and on Midgard, the first tiler
+                 * job must depend on the write value job, whose index we
+                 * reserve now */
 
                 if (batch->tiler_dep)
                         global_dep = batch->tiler_dep;
-                else {
+                else if (!(dev->quirks & IS_BIFROST)) {
                         batch->write_value_index = ++batch->job_index;
                         global_dep = batch->write_value_index;
                 }
@@ -171,8 +175,10 @@ panfrost_new_job(
 void
 panfrost_scoreboard_initialize_tiler(struct panfrost_batch *batch)
 {
+        struct panfrost_device *dev = pan_device(batch->ctx->base.screen);
+
         /* Check if we even need tiling */
-        if (!batch->tiler_dep)
+        if (dev->quirks & IS_BIFROST || !batch->tiler_dep)
                 return;
 
         /* Okay, we do. Let's generate it. We'll need the job's polygon list

@@ -64,13 +64,12 @@ enum ac_target_machine_options {
 	AC_TM_CHECK_IR = (1 << 4),
 	AC_TM_ENABLE_GLOBAL_ISEL = (1 << 5),
 	AC_TM_CREATE_LOW_OPT = (1 << 6),
-	AC_TM_NO_LOAD_STORE_OPT = (1 << 7),
-	AC_TM_WAVE32 = (1 << 8),
+	AC_TM_WAVE32 = (1 << 7),
 };
 
 enum ac_float_mode {
 	AC_FLOAT_MODE_DEFAULT,
-	AC_FLOAT_MODE_NO_SIGNED_ZEROS_FP_MATH,
+	AC_FLOAT_MODE_DEFAULT_OPENGL,
 	AC_FLOAT_MODE_DENORM_FLUSH_TO_ZERO,
 };
 
@@ -109,6 +108,8 @@ LLVMModuleRef ac_create_module(LLVMTargetMachineRef tm, LLVMContextRef ctx);
 
 LLVMBuilderRef ac_create_builder(LLVMContextRef ctx,
 				 enum ac_float_mode float_mode);
+bool ac_disable_inexact_math(LLVMBuilderRef builder);
+void ac_restore_inexact_math(LLVMBuilderRef builder, bool value);
 
 void
 ac_llvm_add_target_dep_function_attr(LLVMValueRef F,

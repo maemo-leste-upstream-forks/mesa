@@ -27,6 +27,8 @@
 #include "util/u_bitcast.h"
 #include "util/u_memory.h"
 #include "util/hash_table.h"
+#define XXH_INLINE_ALL
+#include "util/xxhash.h"
 
 #include <stdbool.h>
 #include <inttypes.h>
@@ -220,6 +222,30 @@ spirv_builder_emit_array_stride(struct spirv_builder *b, SpvId target,
 {
    uint32_t args[] = { stride };
    emit_decoration(b, target, SpvDecorationArrayStride, args, ARRAY_SIZE(args));
+}
+
+void
+spirv_builder_emit_offset(struct spirv_builder *b, SpvId target,
+                          uint32_t offset)
+{
+   uint32_t args[] = { offset };
+   emit_decoration(b, target, SpvDecorationOffset, args, ARRAY_SIZE(args));
+}
+
+void
+spirv_builder_emit_xfb_buffer(struct spirv_builder *b, SpvId target,
+                              uint32_t buffer)
+{
+   uint32_t args[] = { buffer };
+   emit_decoration(b, target, SpvDecorationXfbBuffer, args, ARRAY_SIZE(args));
+}
+
+void
+spirv_builder_emit_xfb_stride(struct spirv_builder *b, SpvId target,
+                              uint32_t stride)
+{
+   uint32_t args[] = { stride };
+   emit_decoration(b, target, SpvDecorationXfbStride, args, ARRAY_SIZE(args));
 }
 
 void
@@ -439,6 +465,42 @@ spirv_builder_emit_vector_shuffle(struct spirv_builder *b, SpvId result_type,
    return result;
 }
 
+SpvId
+spirv_builder_emit_vector_extract(struct spirv_builder *b, SpvId result_type,
+                                  SpvId vector_1,
+                                  uint32_t component)
+{
+   SpvId result = spirv_builder_new_id(b);
+
+   int words = 5;
+   spirv_buffer_prepare(&b->instructions, words);
+   spirv_buffer_emit_word(&b->instructions, SpvOpVectorExtractDynamic | (words << 16));
+   spirv_buffer_emit_word(&b->instructions, result_type);
+   spirv_buffer_emit_word(&b->instructions, result);
+   spirv_buffer_emit_word(&b->instructions, vector_1);
+   spirv_buffer_emit_word(&b->instructions, spirv_builder_const_uint(b, 32, component));
+   return result;
+}
+
+SpvId
+spirv_builder_emit_vector_insert(struct spirv_builder *b, SpvId result_type,
+                                  SpvId vector_1,
+                                  SpvId component,
+                                  uint32_t index)
+{
+   SpvId result = spirv_builder_new_id(b);
+
+   int words = 6;
+   spirv_buffer_prepare(&b->instructions, words);
+   spirv_buffer_emit_word(&b->instructions, SpvOpVectorInsertDynamic | (words << 16));
+   spirv_buffer_emit_word(&b->instructions, result_type);
+   spirv_buffer_emit_word(&b->instructions, result);
+   spirv_buffer_emit_word(&b->instructions, vector_1);
+   spirv_buffer_emit_word(&b->instructions, component);
+   spirv_buffer_emit_word(&b->instructions, spirv_builder_const_uint(b, 32, index));
+   return result;
+}
+
 void
 spirv_builder_emit_branch(struct spirv_builder *b, SpvId label)
 {
@@ -595,16 +657,27 @@ spirv_builder_emit_image_fetch(struct spirv_builder *b,
                                SpvId result_type,
                                SpvId image,
                                SpvId coordinate,
-                               SpvId lod)
+                               SpvId lod,
+                               SpvId sample)
 {
    SpvId result = spirv_builder_new_id(b);
 
-   SpvId extra_operands[2];
+   SpvImageOperandsMask operand_mask = SpvImageOperandsMaskNone;
+   SpvId extra_operands[3];
    int num_extra_operands = 0;
    if (lod) {
-      extra_operands[0] = SpvImageOperandsLodMask;
-      extra_operands[1] = lod;
-      num_extra_operands = 2;
+      extra_operands[++num_extra_operands] = lod;
+      operand_mask |= SpvImageOperandsLodMask;
+   }
+   if (sample) {
+      extra_operands[++num_extra_operands] = sample;
+      operand_mask |= SpvImageOperandsSampleMask;
+   }
+
+   /* finalize num_extra_operands / extra_operands */
+   if (num_extra_operands > 0) {
+      extra_operands[0] = operand_mask;
+      num_extra_operands++;
    }
 
    spirv_buffer_prepare(&b->instructions, 5 + num_extra_operands);
@@ -677,10 +750,9 @@ non_aggregate_type_hash(const void *arg)
 {
    const struct spirv_type *type = arg;
 
-   uint32_t hash = _mesa_fnv32_1a_offset_bias;
-   hash = _mesa_fnv32_1a_accumulate(hash, type->op);
-   hash = _mesa_fnv32_1a_accumulate_block(hash, type->args, sizeof(uint32_t) *
-                                          type->num_args);
+   uint32_t hash = 0;
+   hash = XXH32(&type->op, sizeof(type->op), hash);
+   hash = XXH32(type->args, sizeof(uint32_t) * type->num_args, hash);
    return hash;
 }
 
@@ -883,11 +955,10 @@ const_hash(const void *arg)
 {
    const struct spirv_const *key = arg;
 
-   uint32_t hash = _mesa_fnv32_1a_offset_bias;
-   hash = _mesa_fnv32_1a_accumulate(hash, key->op);
-   hash = _mesa_fnv32_1a_accumulate(hash, key->type);
-   hash = _mesa_fnv32_1a_accumulate_block(hash, key->args, sizeof(uint32_t) *
-                                          key->num_args);
+   uint32_t hash = 0;
+   hash = XXH32(&key->op, sizeof(key->op), hash);
+   hash = XXH32(&key->type, sizeof(key->type), hash);
+   hash = XXH32(key->args, sizeof(uint32_t) * key->num_args, hash);
    return hash;
 }
 

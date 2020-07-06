@@ -67,7 +67,7 @@ blorp_vf_invalidate_for_vb_48b_transitions(struct blorp_batch *batch,
                                            unsigned num_vbs);
 
 UNUSED static struct blorp_address
-blorp_get_workaround_page(struct blorp_batch *batch);
+blorp_get_workaround_address(struct blorp_batch *batch);
 
 static void
 blorp_alloc_binding_table(struct blorp_batch *batch, unsigned num_entries,
@@ -234,7 +234,7 @@ emit_urb_config(struct blorp_batch *batch,
    blorp_emit(batch, GENX(PIPE_CONTROL), pc) {
       pc.DepthStallEnable  = true;
       pc.PostSyncOperation = WriteImmediateData;
-      pc.Address           = blorp_get_workaround_page(batch);
+      pc.Address           = blorp_get_workaround_address(batch);
    }
 #endif
 
@@ -1350,6 +1350,11 @@ blorp_emit_pipeline(struct blorp_batch *batch,
    blorp_emit_ps_config(batch, params);
 
    blorp_emit_cc_viewport(batch);
+
+#if GEN_GEN >= 12
+   /* Disable Primitive Replication. */
+   blorp_emit(batch, GENX(3DSTATE_PRIMITIVE_REPLICATION), pr);
+#endif
 }
 
 /******** This is the end of the pipeline setup code ********/
@@ -1693,7 +1698,7 @@ blorp_emit_depth_stencil_config(struct blorp_batch *batch,
     */
    blorp_emit(batch, GENX(PIPE_CONTROL), pc) {
       pc.PostSyncOperation = WriteImmediateData;
-      pc.Address = blorp_get_workaround_page(batch);
+      pc.Address = blorp_get_workaround_address(batch);
    }
 #endif
 }
@@ -1839,7 +1844,7 @@ blorp_emit_gen8_hiz_op(struct blorp_batch *batch,
     */
    blorp_emit(batch, GENX(PIPE_CONTROL), pc) {
       pc.PostSyncOperation = WriteImmediateData;
-      pc.Address = blorp_get_workaround_page(batch);
+      pc.Address = blorp_get_workaround_address(batch);
    }
 
 

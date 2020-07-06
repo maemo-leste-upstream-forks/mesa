@@ -33,37 +33,36 @@
 
 /* Hardcode some GPU info that are needed for the driver or for some tools. */
 static const struct {
-	enum radeon_family family;
 	uint32_t pci_id;
 	uint32_t num_render_backends;
 } gpu_info[] = {
-	{ CHIP_TAHITI, 0x6780, 8 },
-	{ CHIP_PITCAIRN, 0x6800, 8, },
-	{ CHIP_VERDE, 0x6820, 4 },
-	{ CHIP_OLAND, 0x6060, 2 },
-	{ CHIP_HAINAN, 0x6660, 2 },
-	{ CHIP_BONAIRE, 0x6640, 4 },
-	{ CHIP_KAVERI, 0x1304, 2 },
-	{ CHIP_KABINI, 0x9830, 2 },
-	{ CHIP_HAWAII, 0x67A0, 16 },
-	{ CHIP_TONGA, 0x6920, 8 },
-	{ CHIP_ICELAND, 0x6900, 2 },
-	{ CHIP_CARRIZO, 0x9870, 2 },
-	{ CHIP_FIJI, 0x7300, 16 },
-	{ CHIP_STONEY, 0x98E4, 2 },
-	{ CHIP_POLARIS10, 0x67C0, 8 },
-	{ CHIP_POLARIS11, 0x67E0, 4 },
-	{ CHIP_POLARIS12, 0x6980, 4 },
-	{ CHIP_VEGAM, 0x694C, 4 },
-	{ CHIP_VEGA10, 0x6860, 16 },
-	{ CHIP_VEGA12, 0x69A0, 8 },
-	{ CHIP_VEGA20, 0x66A0, 16 },
-	{ CHIP_RAVEN, 0x15DD, 2 },
-	{ CHIP_RENOIR, 0x1636, 2 },
-	{ CHIP_ARCTURUS, 0x738C, 2 },
-	{ CHIP_NAVI10, 0x7310, 16 },
-	{ CHIP_NAVI12, 0x7360, 8 },
-	{ CHIP_NAVI14, 0x7340, 8 },
+	[CHIP_TAHITI] = { 0x6780, 8 },
+	[CHIP_PITCAIRN] = { 0x6800, 8, },
+	[CHIP_VERDE] = { 0x6820, 4 },
+	[CHIP_OLAND] = { 0x6060, 2 },
+	[CHIP_HAINAN] = { 0x6660, 2 },
+	[CHIP_BONAIRE] = { 0x6640, 4 },
+	[CHIP_KAVERI] = { 0x1304, 2 },
+	[CHIP_KABINI] = { 0x9830, 2 },
+	[CHIP_HAWAII] = { 0x67A0, 16 },
+	[CHIP_TONGA] = { 0x6920, 8 },
+	[CHIP_ICELAND] = { 0x6900, 2 },
+	[CHIP_CARRIZO] = { 0x9870, 2 },
+	[CHIP_FIJI] = { 0x7300, 16 },
+	[CHIP_STONEY] = { 0x98E4, 2 },
+	[CHIP_POLARIS10] = { 0x67C0, 8 },
+	[CHIP_POLARIS11] = { 0x67E0, 4 },
+	[CHIP_POLARIS12] = { 0x6980, 4 },
+	[CHIP_VEGAM] = { 0x694C, 4 },
+	[CHIP_VEGA10] = { 0x6860, 16 },
+	[CHIP_VEGA12] = { 0x69A0, 8 },
+	[CHIP_VEGA20] = { 0x66A0, 16 },
+	[CHIP_RAVEN] = { 0x15DD, 2 },
+	[CHIP_RENOIR] = { 0x1636, 2 },
+	[CHIP_ARCTURUS] = { 0x738C, 2 },
+	[CHIP_NAVI10] = { 0x7310, 16 },
+	[CHIP_NAVI12] = { 0x7360, 8 },
+	[CHIP_NAVI14] = { 0x7340, 8 },
 };
 
 static void radv_null_winsys_query_info(struct radeon_winsys *rws,
@@ -81,7 +80,9 @@ static void radv_null_winsys_query_info(struct radeon_winsys *rws,
 			info->family = i;
 			info->name = "OVERRIDDEN";
 
-			if (i >= CHIP_NAVI10)
+			if (i >= CHIP_SIENNA)
+				info->chip_class = GFX10_3;
+			else if (i >= CHIP_NAVI10)
 				info->chip_class = GFX10;
 			else if (i >= CHIP_VEGA10)
 				info->chip_class = GFX9;
@@ -102,8 +103,14 @@ static void radv_null_winsys_query_info(struct radeon_winsys *rws,
 	info->pci_id = gpu_info[info->family].pci_id;
 	info->has_syncobj_wait_for_submit = true;
 	info->max_se = 4;
-	info->max_wave64_per_simd = info->family >= CHIP_POLARIS10 &&
-				    info->family <= CHIP_VEGAM ? 8 : 10;
+	if (info->chip_class >= GFX10_3)
+		info->max_wave64_per_simd = 16;
+	else if (info->chip_class >= GFX10)
+		info->max_wave64_per_simd = 20;
+	else if (info->family >= CHIP_POLARIS10 && info->family <= CHIP_VEGAM)
+		info->max_wave64_per_simd = 8;
+	else
+		info->max_wave64_per_simd = 10;
 
 	if (info->chip_class >= GFX10)
 		info->num_physical_sgprs_per_simd = 128 * info->max_wave64_per_simd * 2;

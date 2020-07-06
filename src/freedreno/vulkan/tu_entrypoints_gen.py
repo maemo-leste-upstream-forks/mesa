@@ -27,7 +27,7 @@ import copy
 import functools
 import math
 import os
-import xml.etree.cElementTree as et
+import xml.etree.ElementTree as et
 
 from collections import OrderedDict, namedtuple
 from mako.template import Template
@@ -75,7 +75,7 @@ struct tu_dispatch_table {
 #ifdef ${e.guard}
   % endif
   % for layer in LAYERS:
-  ${e.return_type} ${e.prefixed_name(layer)}(${e.decl_params()});
+  VKAPI_ATTR ${e.return_type} ${e.prefixed_name(layer)}(${e.decl_params()});
   % endfor
   % if e.guard is not None:
 #endif // ${e.guard}

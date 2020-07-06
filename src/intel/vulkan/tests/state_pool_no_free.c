@@ -21,11 +21,10 @@
  * IN THE SOFTWARE.
  */
 
-#undef NDEBUG
-
 #include <pthread.h>
 
 #include "anv_private.h"
+#include "test_common.h"
 
 #define NUM_THREADS 16
 #define STATES_PER_THREAD 1024
@@ -64,7 +63,7 @@ static void run_test()
 
    pthread_mutex_init(&device.mutex, NULL);
    anv_bo_cache_init(&device.bo_cache);
-   anv_state_pool_init(&state_pool, &device, 4096, 64);
+   anv_state_pool_init(&state_pool, &device, 4096, 0, 64);
 
    pthread_barrier_init(&barrier, NULL, NUM_THREADS);
 
@@ -103,7 +102,7 @@ static void run_test()
          break;
 
       /* That next element had better be higher than the previous highest */
-      assert(jobs[max_thread_idx].offsets[next[max_thread_idx]] > highest);
+      ASSERT(jobs[max_thread_idx].offsets[next[max_thread_idx]] > highest);
 
       highest = jobs[max_thread_idx].offsets[next[max_thread_idx]];
       next[max_thread_idx]++;
@@ -113,7 +112,7 @@ static void run_test()
    pthread_mutex_destroy(&device.mutex);
 }
 
-int main(int argc, char **argv)
+int main(void)
 {
    for (unsigned i = 0; i < NUM_RUNS; i++)
       run_test();

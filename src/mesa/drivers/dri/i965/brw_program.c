@@ -30,7 +30,6 @@
   */
 
 #include <pthread.h>
-#include "util/imports.h"
 #include "main/glspirv.h"
 #include "program/prog_parameter.h"
 #include "program/prog_print.h"
@@ -73,7 +72,8 @@ brw_nir_lower_uniforms(nir_shader *nir, bool is_scalar)
    }
 }
 
-static struct gl_program *brwNewProgram(struct gl_context *ctx, GLenum target,
+static struct gl_program *brwNewProgram(struct gl_context *ctx,
+                                        gl_shader_stage stage,
                                         GLuint id, bool is_arb_asm);
 
 nir_shader *
@@ -106,7 +106,8 @@ brw_create_nir(struct brw_context *brw,
       }
       assert (nir);
 
-      nir_remove_dead_variables(nir, nir_var_shader_in | nir_var_shader_out);
+      nir_remove_dead_variables(nir, nir_var_shader_in | nir_var_shader_out,
+                                NULL);
       nir_validate_shader(nir, "after glsl_to_nir or spirv_to_nir");
       NIR_PASS_V(nir, nir_lower_io_to_temporaries,
                  nir_shader_get_entrypoint(nir), true, false);
@@ -160,8 +161,6 @@ brw_create_nir(struct brw_context *brw,
       }
    }
 
-   NIR_PASS_V(nir, brw_nir_lower_uniforms, is_scalar);
-
    return nir;
 }
 
@@ -182,6 +181,7 @@ brw_nir_lower_resources(nir_shader *nir, struct gl_shader_program *shader_prog,
                         struct gl_program *prog,
                         const struct gen_device_info *devinfo)
 {
+   NIR_PASS_V(nir, brw_nir_lower_uniforms, nir->options->lower_to_scalar);
    NIR_PASS_V(prog->nir, gl_nir_lower_samplers, shader_prog);
    prog->info.textures_used = prog->nir->info.textures_used;
    prog->info.textures_used_by_txf = prog->nir->info.textures_used_by_txf;
@@ -220,7 +220,8 @@ get_new_program_id(struct intel_screen *screen)
    return p_atomic_inc_return(&screen->program_id);
 }
 
-static struct gl_program *brwNewProgram(struct gl_context *ctx, GLenum target,
+static struct gl_program *brwNewProgram(struct gl_context *ctx,
+                                        gl_shader_stage stage,
                                         GLuint id, bool is_arb_asm)
 {
    struct brw_context *brw = brw_context(ctx);
@@ -229,7 +230,7 @@ static struct gl_program *brwNewProgram(struct gl_context *ctx, GLenum target,
    if (prog) {
       prog->id = get_new_program_id(brw->screen);
 
-      return _mesa_init_gl_program(&prog->program, target, id, is_arb_asm);
+      return _mesa_init_gl_program(&prog->program, stage, id, is_arb_asm);
    }
 
    return NULL;

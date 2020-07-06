@@ -62,6 +62,7 @@
 #include "util/u_atomic.h"
 #include "util/u_surface.h"
 #include "util/list.h"
+#include "util/u_memory.h"
 
 struct hash_table;
 struct st_manager_private
@@ -893,6 +894,8 @@ st_api_create_context(struct st_api *stapi, struct st_manager *smapi,
       return NULL;
    }
 
+   _mesa_initialize();
+
    /* Create a hash table for the framebuffer interface objects
     * if it has not been created for this st manager.
     */
@@ -980,6 +983,8 @@ st_api_create_context(struct st_api *stapi, struct st_manager *smapi,
          return NULL;
       }
    }
+
+   st->can_scissor_clear = !!st->pipe->screen->get_param(st->pipe->screen, PIPE_CAP_CLEAR_SCISSORED);
 
    st->invalidate_on_gl_viewport =
       smapi->get_param(smapi, ST_MANAGER_BROKEN_INVALIDATE);
@@ -1243,7 +1248,7 @@ st_manager_add_color_renderbuffer(struct st_context *st,
    st_framebuffer_update_attachments(stfb);
 
    /*
-    * Force a call to the state tracker manager to validate the
+    * Force a call to the frontend manager to validate the
     * new renderbuffer. It might be that there is a window system
     * renderbuffer available.
     */

@@ -110,12 +110,16 @@ CXX_SOURCES = \
 	sfn/sfn_instruction_alu.h \
 	sfn/sfn_instruction_base.cpp \
 	sfn/sfn_instruction_base.h \
+	sfn/sfn_instruction_block.cpp \
+	sfn/sfn_instruction_block.h \
 	sfn/sfn_instruction_cf.cpp \
 	sfn/sfn_instruction_cf.h \
 	sfn/sfn_instruction_export.cpp \
 	sfn/sfn_instruction_export.h \
 	sfn/sfn_instruction_fetch.cpp \
 	sfn/sfn_instruction_fetch.h \
+	sfn/sfn_instruction_lds.cpp \
+	sfn/sfn_instruction_lds.h \
 	sfn/sfn_instruction_gds.cpp \
 	sfn/sfn_instruction_gds.h \
 	sfn/sfn_instruction_misc.cpp \
@@ -130,6 +134,7 @@ CXX_SOURCES = \
 	sfn/sfn_nir.h \
 	sfn/sfn_nir_lower_fs_out_to_vector.cpp \
 	sfn/sfn_nir_lower_fs_out_to_vector.h \
+	sfn/sfn_nir_lower_tess_io.cpp \
 	sfn/sfn_nir_vectorize_vs_inputs.c \
 	sfn/sfn_shader_base.cpp \
 	sfn/sfn_shader_base.h \
@@ -139,6 +144,10 @@ CXX_SOURCES = \
 	sfn/sfn_shader_fragment.h \
 	sfn/sfn_shader_geometry.cpp \
 	sfn/sfn_shader_geometry.h \
+	sfn/sfn_shader_tcs.cpp \
+        sfn/sfn_shader_tcs.h \
+        sfn/sfn_shader_tess_eval.cpp \
+        sfn/sfn_shader_tess_eval.h \
 	sfn/sfn_shader_vertex.cpp \
 	sfn/sfn_shader_vertex.h \
 	sfn/sfn_shaderio.cpp \
@@ -148,7 +157,9 @@ CXX_SOURCES = \
 	sfn/sfn_value_gpr.cpp \
 	sfn/sfn_value_gpr.h \
 	sfn/sfn_valuepool.cpp \
-	sfn/sfn_valuepool.h
+	sfn/sfn_valuepool.h \
+	sfn/sfn_vertexstageexport.cpp \
+        sfn/sfn_vertexstageexport.h
 
 R600_GENERATED_FILES = \
 	egd_tables.h

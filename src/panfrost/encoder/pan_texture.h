@@ -31,6 +31,7 @@
 #include <stdbool.h>
 #include "util/format/u_format.h"
 #include "panfrost-job.h"
+#include "pan_bo.h"
 
 struct panfrost_slice {
         unsigned offset;
@@ -45,6 +46,7 @@ struct panfrost_slice {
          * is its offset/stride? */
         unsigned checksum_offset;
         unsigned checksum_stride;
+        struct panfrost_bo *checksum_bo;
 
         /* Has anything been written to this slice? */
         bool initialized;
@@ -67,7 +69,7 @@ panfrost_afbc_header_size(unsigned width, unsigned height);
 /* mali_texture_descriptor */
 
 unsigned
-panfrost_estimate_texture_size(
+panfrost_estimate_texture_payload_size(
                 unsigned first_level, unsigned last_level,
                 unsigned first_layer, unsigned last_layer,
                 enum mali_texture_type type, enum mali_texture_layout layout);
@@ -87,6 +89,22 @@ panfrost_new_texture(
         mali_ptr base,
         struct panfrost_slice *slices);
 
+void
+panfrost_new_texture_bifrost(
+        struct bifrost_texture_descriptor *descriptor,
+        uint16_t width, uint16_t height,
+        uint16_t depth, uint16_t array_size,
+        enum pipe_format format,
+        enum mali_texture_type type,
+        enum mali_texture_layout layout,
+        unsigned first_level, unsigned last_level,
+        unsigned first_layer, unsigned last_layer,
+        unsigned cube_stride,
+        unsigned swizzle,
+        mali_ptr base,
+        struct panfrost_slice *slices,
+        struct panfrost_bo *payload);
+
 
 unsigned
 panfrost_get_layer_stride(struct panfrost_slice *slices, bool is_3d, unsigned cube_stride, unsigned level);
@@ -96,8 +114,12 @@ panfrost_texture_offset(struct panfrost_slice *slices, bool is_3d, unsigned cube
 
 /* Formats */
 
-enum mali_format
-panfrost_find_format(const struct util_format_description *desc);
+struct panfrost_format {
+        enum mali_format hw;
+        unsigned bind;
+};
+
+extern struct panfrost_format panfrost_pipe_format_table[PIPE_FORMAT_COUNT];
 
 bool
 panfrost_is_z24s8_variant(enum pipe_format fmt);
@@ -128,5 +150,15 @@ panfrost_get_default_swizzle(unsigned components)
                 unreachable("Invalid number of components");
         }
 }
+
+static inline unsigned
+panfrost_bifrost_swizzle(unsigned components)
+{
+        /* Set all components to 0 and force w if needed */
+        return components < 4 ? 0x10 : 0x00;
+}
+
+enum mali_format
+panfrost_format_to_bifrost_blend(const struct util_format_description *desc);
 
 #endif

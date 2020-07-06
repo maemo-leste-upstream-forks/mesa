@@ -25,6 +25,7 @@
 #include <inttypes.h>
 #include "util/format/u_format.h"
 #include "util/crc32.h"
+#include "util/u_helpers.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
 #include "util/ralloc.h"
@@ -1608,11 +1609,8 @@ ntq_setup_inputs(struct vc4_compile *c)
                 if (c->stage == QSTAGE_FRAG) {
                         if (var->data.location == VARYING_SLOT_POS) {
                                 emit_fragcoord_input(c, loc);
-                        } else if (var->data.location == VARYING_SLOT_PNTC ||
-                                   (var->data.location >= VARYING_SLOT_VAR0 &&
-                                    (c->fs_key->point_sprite_mask &
-                                     (1 << (var->data.location -
-                                            VARYING_SLOT_VAR0))))) {
+                        } else if (util_varying_is_point_coord(var->data.location,
+                                                               c->fs_key->point_sprite_mask)) {
                                 c->inputs[loc * 4 + 0] = c->point_x;
                                 c->inputs[loc * 4 + 1] = c->point_y;
                         } else {
@@ -1775,7 +1773,7 @@ ntq_emit_intrinsic(struct vc4_compile *c, nir_intrinsic_instr *instr)
                 break;
 
         case nir_intrinsic_load_user_clip_plane:
-                for (int i = 0; i < instr->num_components; i++) {
+                for (int i = 0; i < nir_intrinsic_dest_components(instr); i++) {
                         ntq_store_dest(c, &instr->dest, i,
                                        qir_uniform(c, QUNIFORM_USER_CLIP_PLANE,
                                                    nir_intrinsic_ucp_id(instr) *
@@ -2466,7 +2464,7 @@ vc4_shader_state_create(struct pipe_context *pctx,
                         tgsi_dump(cso->tokens, 0);
                         fprintf(stderr, "\n");
                 }
-                s = tgsi_to_nir(cso->tokens, pctx->screen);
+                s = tgsi_to_nir(cso->tokens, pctx->screen, false);
         }
 
         if (s->info.stage == MESA_SHADER_VERTEX)
@@ -2482,7 +2480,7 @@ vc4_shader_state_create(struct pipe_context *pctx,
 
         vc4_optimize_nir(s);
 
-        NIR_PASS_V(s, nir_remove_dead_variables, nir_var_function_temp);
+        NIR_PASS_V(s, nir_remove_dead_variables, nir_var_function_temp, NULL);
 
         /* Garbage collect dead instructions */
         nir_sweep(s);

@@ -25,7 +25,7 @@
  *
  **************************************************************************/
 
-#include "util/imports.h"
+
 #include "main/accum.h"
 #include "main/api_exec.h"
 #include "main/context.h"
@@ -85,6 +85,7 @@
 #include "util/u_inlines.h"
 #include "util/u_upload_mgr.h"
 #include "util/u_vbuf.h"
+#include "util/u_memory.h"
 #include "cso_cache/cso_context.h"
 #include "compiler/glsl/glsl_parser_extras.h"
 
@@ -218,13 +219,6 @@ st_invalidate_state(struct gl_context *ctx)
 
       if (new_state & _NEW_FOG)
          st->dirty |= ST_NEW_FS_STATE;
-
-      if (new_state & _NEW_FRAG_CLAMP) {
-         if (st->clamp_frag_color_in_shader)
-            st->dirty |= ST_NEW_FS_STATE;
-         else
-            st->dirty |= ST_NEW_RASTERIZER;
-      }
    }
 
    if (new_state & (_NEW_LIGHT |
@@ -399,21 +393,27 @@ free_zombie_shaders(struct st_context *st)
 
       switch (entry->type) {
       case PIPE_SHADER_VERTEX:
+         st->pipe->bind_vs_state(st->pipe, NULL);
          st->pipe->delete_vs_state(st->pipe, entry->shader);
          break;
       case PIPE_SHADER_FRAGMENT:
+         st->pipe->bind_fs_state(st->pipe, NULL);
          st->pipe->delete_fs_state(st->pipe, entry->shader);
          break;
       case PIPE_SHADER_GEOMETRY:
+         st->pipe->bind_gs_state(st->pipe, NULL);
          st->pipe->delete_gs_state(st->pipe, entry->shader);
          break;
       case PIPE_SHADER_TESS_CTRL:
+         st->pipe->bind_tcs_state(st->pipe, NULL);
          st->pipe->delete_tcs_state(st->pipe, entry->shader);
          break;
       case PIPE_SHADER_TESS_EVAL:
+         st->pipe->bind_tes_state(st->pipe, NULL);
          st->pipe->delete_tes_state(st->pipe, entry->shader);
          break;
       case PIPE_SHADER_COMPUTE:
+         st->pipe->bind_compute_state(st->pipe, NULL);
          st->pipe->delete_compute_state(st->pipe, entry->shader);
          break;
       default:
@@ -535,6 +535,12 @@ st_init_driver_flags(struct st_context *st)
    f->NewClipControl = ST_NEW_VIEWPORT | ST_NEW_RASTERIZER;
    f->NewClipPlane = ST_NEW_CLIP_STATE;
 
+   if (st->clamp_frag_color_in_shader) {
+      f->NewFragClamp = ST_NEW_FS_STATE;
+   } else {
+      f->NewFragClamp = ST_NEW_RASTERIZER;
+   }
+
    if (st->clamp_frag_depth_in_shader) {
       f->NewClipControl |= ST_NEW_VS_STATE | ST_NEW_GS_STATE |
                            ST_NEW_TES_STATE;
@@ -585,8 +591,20 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
     * profile, so that u_vbuf is bypassed completely if there is nothing else
     * to do.
     */
-   unsigned cso_flags =
-      ctx->API == API_OPENGL_CORE ? CSO_NO_USER_VERTEX_BUFFERS : 0;
+   unsigned cso_flags;
+   switch (ctx->API) {
+   case API_OPENGL_CORE:
+      cso_flags = CSO_NO_USER_VERTEX_BUFFERS;
+      break;
+   case API_OPENGLES:
+   case API_OPENGLES2:
+      cso_flags = CSO_NO_64B_VERTEX_BUFFERS;
+      break;
+   default:
+      cso_flags = 0;
+      break;
+   }
+
    st->cso_context = cso_create_context(pipe, cso_flags);
 
    st_init_atoms(st);
@@ -1064,12 +1082,12 @@ st_destroy_context(struct st_context *st)
    simple_mtx_destroy(&st->zombie_sampler_views.mutex);
    simple_mtx_destroy(&st->zombie_shaders.mutex);
 
-   st_reference_prog(st, &st->fp, NULL);
-   st_reference_prog(st, &st->gp, NULL);
-   st_reference_prog(st, &st->vp, NULL);
-   st_reference_prog(st, &st->tcp, NULL);
-   st_reference_prog(st, &st->tep, NULL);
-   st_reference_prog(st, &st->cp, NULL);
+   st_release_program(st, &st->fp);
+   st_release_program(st, &st->gp);
+   st_release_program(st, &st->vp);
+   st_release_program(st, &st->tcp);
+   st_release_program(st, &st->tep);
+   st_release_program(st, &st->cp);
 
    /* release framebuffer in the winsys buffers list */
    LIST_FOR_EACH_ENTRY_SAFE_REV(stfb, next, &st->winsys_buffers, head) {
