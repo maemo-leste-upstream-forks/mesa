@@ -181,7 +181,7 @@ with_dri_r200 = dri_drivers.contains('r200')
 with_dri_nouveau = dri_drivers.contains('nouveau')
 with_dri_swrast = dri_drivers.contains('swrast')
 
-with_dri = dri_drivers.length() != 0
+with_dri = dri_drivers.length() != 0 and dri_drivers != ['']
 
 gallium_drivers = get_option('gallium-drivers')
 if gallium_drivers.contains('auto')
@@ -228,7 +228,7 @@ with_gallium_swr = gallium_drivers.contains('swr')
 with_gallium_lima = gallium_drivers.contains('lima')
 with_gallium_zink = gallium_drivers.contains('zink')
 
-with_gallium = gallium_drivers.length() != 0
+with_gallium = gallium_drivers.length() != 0 and gallium_drivers != ['']
 
 if with_gallium and system_has_kms_drm
   _glx = get_option('glx')
@@ -261,7 +261,7 @@ endif
 with_intel_vk = _vulkan_drivers.contains('intel')
 with_amd_vk = _vulkan_drivers.contains('amd')
 with_freedreno_vk = _vulkan_drivers.contains('freedreno')
-with_any_vk = _vulkan_drivers.length() != 0
+with_any_vk = _vulkan_drivers.length() != 0 and _vulkan_drivers != ['']
 
 if with_dri_swrast and (with_gallium_softpipe or with_gallium_swr)
   error('Only one swrast provider can be built')
@@ -314,7 +314,13 @@ with_platform_haiku = _platforms.contains('haiku')
 with_platform_surfaceless = _platforms.contains('surfaceless')
 with_platform_windows = _platforms.contains('windows')
 
-if _platforms.length() != 0
+with_platforms = false
+if _platforms.length() != 0 and _platforms != ['']
+  # sanity check that list contains no empty strings
+  if _platforms.contains('')
+    error('Invalid argument list given to -Dplatforms, please fix.')
+  endif
+  with_platforms = true
   egl_native_platform = _platforms[0]
 endif
 
@@ -393,14 +399,14 @@ endif
 if _egl == 'auto'
   with_egl = (
     not ['darwin', 'windows'].contains(host_machine.system()) and
-    with_dri and with_shared_glapi and _platforms.length() != 0
+    with_dri and with_shared_glapi and with_platforms
   )
 elif _egl == 'enabled'
   if not with_dri
     error('EGL requires dri')
   elif not with_shared_glapi
     error('EGL requires shared-glapi')
-  elif _platforms.length() == 0
+  elif not with_platforms
     error('No platforms specified, consider -Dplatforms=drm,x11,surfaceless at least')
   elif not ['disabled', 'dri'].contains(with_glx)
     error('EGL requires dri, but a GLX is being built without dri')
@@ -1888,7 +1894,7 @@ if with_egl
   lines += 'EGL drivers:     ' + ' '.join(egl_drivers)
 endif
 lines += 'GBM:             ' + (with_gbm ? 'yes' : 'no')
-if _platforms.length() != 0
+if with_platforms
   lines += 'EGL/Vulkan/VL platforms:   ' + ' '.join(_platforms)
 endif
 
