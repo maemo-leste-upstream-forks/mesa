@@ -473,6 +473,9 @@ struct dri2_egl_surface
    /* surfaceless and device */
    __DRIimage *front;
    unsigned int visual;
+#ifdef HAVE_DRM_PLATFORM
+   struct gbm_bo *front_bo;
+#endif
 
 #ifdef HAVE_WAYLAND_PLATFORM
    void                 *swrast_front;
