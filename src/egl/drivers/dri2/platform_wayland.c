@@ -392,6 +392,9 @@ resize_callback(struct wl_egl_window *wl_win, void *data)
    struct dri2_egl_display *dri2_dpy =
       dri2_egl_display(dri2_surf->base.Resource.Display);
 
+   dri2_surf->dx = wl_win->dx;
+   dri2_surf->dy = wl_win->dy;
+
    if (dri2_surf->base.Width == wl_win->width &&
        dri2_surf->base.Height == wl_win->height)
       return;
@@ -1255,8 +1258,6 @@ update_buffers(struct dri2_egl_display *dri2_dpy,
 
       dri2_surf->base.Width  = dri2_surf->wl_win->width;
       dri2_surf->base.Height = dri2_surf->wl_win->height;
-      dri2_surf->dx = dri2_surf->wl_win->dx;
-      dri2_surf->dy = dri2_surf->wl_win->dy;
    }
 
    if (dri2_surf->resized || dri2_surf->received_dmabuf_feedback) {
