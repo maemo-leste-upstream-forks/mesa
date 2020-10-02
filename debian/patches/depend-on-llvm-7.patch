@@ -1,5 +1,23 @@
+diff --git a/debian/patches/depend-on-llvm-7.patch b/debian/patches/depend-on-llvm-7.patch
+index e7cbdd5ebbd..e69de29bb2d 100644
+--- a/debian/patches/depend-on-llvm-7.patch
++++ b/debian/patches/depend-on-llvm-7.patch
+@@ -1,13 +0,0 @@
+-diff --git a/meson.build b/meson.build
+-index bd6a1fcd495..388b01f36b1 100644
+---- a/meson.build
+-+++ b/meson.build
+-@@ -1451,7 +1451,7 @@ if with_gallium_opencl
+- endif
+- 
+- if with_amd_vk or with_gallium_radeonsi or with_gallium_opencl
+--  _llvm_version = '>= 8.0.0'
+-+  _llvm_version = '>= 7.0.0'
+- elif with_gallium_swr
+-   _llvm_version = '>= 6.0.0'
+- else
 diff --git a/meson.build b/meson.build
-index bd6a1fcd495..388b01f36b1 100644
+index be89f862df7..a3f039b2d3e 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -1451,7 +1451,7 @@ if with_gallium_opencl

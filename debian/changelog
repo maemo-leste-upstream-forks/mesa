@@ -1,28 +1,155 @@
-mesa (20.3.0-1) unstable; urgency=medium
+mesa (20.2.0-1) experimental; urgency=medium
 
-  * Merge latest upstream mesa
+  * New upstream release.
+  * control: Add libclang-cpp11-dev to build-depends. (Closes: #954849)
 
- -- Ivan J. <parazyd@dyne.org>  Fri, 02 Oct 2020 13:37:38 +0200
+ -- Timo Aaltonen <tjaalton@debian.org>  Tue, 29 Sep 2020 11:07:13 +0300
 
-mesa (20.2.0-1) unstable; urgency=medium
+mesa (20.2.0~rc4-2) experimental; urgency=medium
 
-  * Revert d32144602c1dfd507f07774ce906dc25d2697da0
+  * Migrate to llvm/clang-11.
+  * path_max.diff: Updated. (Closes: #969040)
 
- -- Ivan J. <parazyd@dyne.org>  Mon, 06 Jul 2020 14:56:04 +0200
+ -- Timo Aaltonen <tjaalton@debian.org>  Thu, 17 Sep 2020 12:07:08 +0300
 
-mesa (20.1.0-2) unstable; urgency=medium
+mesa (20.2.0~rc4-1) experimental; urgency=medium
 
-  * Merge latest upstream mesa
+  * New upstream prerelease.
+  * rules: Move radv rule up to fix build on non-intel archs.
 
- -- Ivan J. <parazyd@dyne.org>  Mon, 06 Jul 2020 13:51:30 +0200
+ -- Timo Aaltonen <tjaalton@debian.org>  Fri, 04 Sep 2020 19:32:58 +0300
 
-mesa (20.1.0-1) unstable; urgency=medium
+mesa (20.2.0~rc2-1) experimental; urgency=medium
 
-  * Merge latest upstream mesa.
-  * Depend on LLVM 7.
-  * Update debian/control versions to what is available in leste beowulf.
+  * New upstream release candidate.
+  * rules: Get rid of trailing commas in *_DRIVERS options.
+  * control: Bump libglvnd build-dep.
+  * Update mesa-common-dev.docs.
 
- -- Ivan J. <parazyd@dyne.org>  Tue, 31 Mar 2020 17:49:22 +0200
+ -- Timo Aaltonen <tjaalton@debian.org>  Fri, 14 Aug 2020 18:30:42 +0300
+
+mesa (20.1.7-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Fri, 04 Sep 2020 14:45:01 +0300
+
+mesa (20.1.6-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Thu, 27 Aug 2020 21:08:41 +0300
+
+mesa (20.1.5-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Mon, 10 Aug 2020 10:32:11 +0300
+
+mesa (20.1.4-1) unstable; urgency=medium
+
+  * New upstream release.
+  * fix-ppc64el.patch: Dropped, upstream.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Tue, 28 Jul 2020 15:59:19 +0300
+
+mesa (20.1.2-1) unstable; urgency=medium
+
+  * New upstream release. (Closes: #963677)
+  * mesa-vulkan-drivers: Add support for device-select-layer.
+  * control, rules: Enable valgrind where supported. (Closes: #890846)
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Thu, 25 Jun 2020 10:24:29 +0300
+
+mesa (20.1.1-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Thu, 11 Jun 2020 11:06:50 +0300
+
+mesa (20.1.0-1) experimental; urgency=medium
+
+  * New upstream release.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Thu, 28 May 2020 13:14:52 +0300
+
+mesa (20.1.0~rc4-1) experimental; urgency=medium
+
+  * New upstream snapshot.
+  * fix-build-with-llvm-10.diff: Dropped, upstream.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Fri, 22 May 2020 09:17:06 +0300
+
+mesa (20.1.0~rc1-1) experimental; urgency=medium
+
+  * New upstream snapshot.
+  * fix-build-with-llvm-10.diff: Refreshed.
+  * signing-key: Add key from Eric Engeström.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Tue, 05 May 2020 12:47:17 +0300
+
+mesa (20.0.7-1) unstable; urgency=medium
+
+  * New upstream release.
+  * src_glx_dri_common.h.diff: A new attempt to fix hurd ftbfs. (Closes:
+    #960197)
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Fri, 22 May 2020 08:36:18 +0300
+
+mesa (20.0.6-3) unstable; urgency=medium
+
+  * src_glx_dri_common.h.diff: Dropped, breaks the build.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Fri, 08 May 2020 12:44:12 +0300
+
+mesa (20.0.6-2) unstable; urgency=medium
+
+  [ Timo Aaltonen ]
+  * control: Bump libdrm-dev build-dep.
+
+  [ Svante Signell ]
+  * src_glx_dri_common.h.diff: Fix build on Hurd. (Closes: #959975)
+
+  [ Frédéric Bonnard ]
+  * Fix ppc64el FTBFS. (Closes: #959943)
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Fri, 08 May 2020 11:00:10 +0300
+
+mesa (20.0.6-1) unstable; urgency=medium
+
+  * New upstream release.
+  * patches: Drop upstreamed patches, refresh llvm-10 build-fix.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Tue, 05 May 2020 10:37:18 +0300
+
+mesa (20.0.4-2) unstable; urgency=medium
+
+  * fix-build-with-llvm-10.diff: Add a patch to fix build with Polly,
+    and build with llvm-10 again. (Closes: #956004)
+  * iris-drop-cache-coherent-cpu-mapping.diff: Fix corruption with iris
+    (Closes: #954311) (LP: #1864274)
+  * gallium-fix-bob-compute-shaders.diff: Fix vaapi with bob
+    deinterlacing. (LP: #1867188)
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Wed, 15 Apr 2020 10:16:24 +0300
+
+mesa (20.0.4-1) unstable; urgency=medium
+
+  * New upstream release.
+  * path_max.diff, libglx-mesa0.symbols.hurd: Fix build on Hurd.
+    (Closes: #955351)
+  * upstream/signing-key.asc: Added Eric Engestrom's key.
+  * source/local-options: Update extend-diff-ignore.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Sun, 05 Apr 2020 23:39:55 +0300
+
+mesa (20.0.2-1) unstable; urgency=medium
+
+  * New upstream release.
+  * control: Revert to building with llvm/clang-9, until it builds with
+    10.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Thu, 19 Mar 2020 16:03:53 +0200
 
 mesa (20.0.1-2) experimental; urgency=medium
 
