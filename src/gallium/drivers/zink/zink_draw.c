@@ -11,6 +11,7 @@
 #include "util/u_helpers.h"
 #include "util/u_inlines.h"
 #include "util/u_prim.h"
+#include "util/u_prim_restart.h"
 
 static VkDescriptorSet
 allocate_descriptor_set(struct zink_screen *screen,
@@ -159,19 +160,18 @@ zink_bind_vertex_buffers(struct zink_batch *batch, struct zink_context *ctx)
 static struct zink_gfx_program *
 get_gfx_program(struct zink_context *ctx)
 {
-   if (ctx->dirty_program) {
+   if (ctx->dirty_shader_stages) {
       struct hash_entry *entry = _mesa_hash_table_search(ctx->program_cache,
                                                          ctx->gfx_stages);
       if (!entry) {
          struct zink_gfx_program *prog;
-         prog = zink_create_gfx_program(zink_screen(ctx->base.screen),
-                                                     ctx->gfx_stages);
-         entry = _mesa_hash_table_insert(ctx->program_cache, prog->stages, prog);
+         prog = zink_create_gfx_program(ctx, ctx->gfx_stages);
+         entry = _mesa_hash_table_insert(ctx->program_cache, prog->shaders, prog);
          if (!entry)
             return NULL;
       }
       ctx->curr_program = entry->data;
-      ctx->dirty_program = false;
+      ctx->dirty_shader_stages = 0;
    }
 
    assert(ctx->curr_program);
@@ -197,6 +197,12 @@ line_width_needed(enum pipe_prim_type reduced_prim,
    }
 }
 
+static inline bool
+restart_supported(enum pipe_prim_type mode)
+{
+    return mode == PIPE_PRIM_LINE_STRIP || mode == PIPE_PRIM_TRIANGLE_STRIP || mode == PIPE_PRIM_TRIANGLE_FAN;
+}
+
 void
 zink_draw_vbo(struct pipe_context *pctx,
               const struct pipe_draw_info *dinfo)
@@ -204,13 +210,19 @@ zink_draw_vbo(struct pipe_context *pctx,
    struct zink_context *ctx = zink_context(pctx);
    struct zink_screen *screen = zink_screen(pctx->screen);
    struct zink_rasterizer_state *rast_state = ctx->rast_state;
+   struct zink_depth_stencil_alpha_state *dsa_state = ctx->dsa_state;
    struct zink_so_target *so_target = zink_so_target(dinfo->count_from_stream_output);
    VkBuffer counter_buffers[PIPE_MAX_SO_OUTPUTS];
    VkDeviceSize counter_buffer_offsets[PIPE_MAX_SO_OUTPUTS] = {};
+   bool need_index_buffer_unref = false;
 
+
+   if (dinfo->primitive_restart && !restart_supported(dinfo->mode)) {
+       util_draw_vbo_without_prim_restart(pctx, dinfo);
+       return;
+   }
    if (dinfo->mode >= PIPE_PRIM_QUADS ||
-       dinfo->mode == PIPE_PRIM_LINE_LOOP ||
-       (dinfo->index_size == 1 && !screen->have_EXT_index_type_uint8)) {
+       dinfo->mode == PIPE_PRIM_LINE_LOOP) {
       if (!u_trim_pipe_prim(dinfo->mode, (unsigned *)&dinfo->count))
          return;
 
@@ -222,6 +234,10 @@ zink_draw_vbo(struct pipe_context *pctx,
    struct zink_gfx_program *gfx_program = get_gfx_program(ctx);
    if (!gfx_program)
       return;
+
+   if (ctx->gfx_pipeline_state.primitive_restart != !!dinfo->primitive_restart)
+      ctx->gfx_pipeline_state.hash = 0;
+   ctx->gfx_pipeline_state.primitive_restart = !!dinfo->primitive_restart;
 
    VkPipeline pipeline = zink_get_gfx_pipeline(screen, gfx_program,
                                                &ctx->gfx_pipeline_state,
@@ -250,13 +266,20 @@ zink_draw_vbo(struct pipe_context *pctx,
    unsigned index_offset = 0;
    struct pipe_resource *index_buffer = NULL;
    if (dinfo->index_size > 0) {
-      if (dinfo->has_user_indices) {
-         if (!util_upload_index_buffer(pctx, dinfo, &index_buffer, &index_offset, 4)) {
-            debug_printf("util_upload_index_buffer() failed\n");
-            return;
-         }
-      } else
-         index_buffer = dinfo->index.resource;
+       uint32_t restart_index = util_prim_restart_index_from_size(dinfo->index_size);
+       if ((dinfo->primitive_restart && (dinfo->restart_index != restart_index)) ||
+           (!screen->info.have_EXT_index_type_uint8 && dinfo->index_size == 8)) {
+          util_translate_prim_restart_ib(pctx, dinfo, &index_buffer);
+          need_index_buffer_unref = true;
+       } else {
+          if (dinfo->has_user_indices) {
+             if (!util_upload_index_buffer(pctx, dinfo, &index_buffer, &index_offset, 4)) {
+                debug_printf("util_upload_index_buffer() failed\n");
+                return;
+             }
+          } else
+             index_buffer = dinfo->index.resource;
+       }
    }
 
    VkWriteDescriptorSet wds[PIPE_SHADER_TYPES * PIPE_MAX_CONSTANT_BUFFERS + PIPE_SHADER_TYPES * PIPE_MAX_SHADER_SAMPLER_VIEWS];
@@ -275,7 +298,7 @@ zink_draw_vbo(struct pipe_context *pctx,
       if (i == MESA_SHADER_VERTEX && ctx->num_so_targets) {
          for (unsigned i = 0; i < ctx->num_so_targets; i++) {
             struct zink_so_target *t = zink_so_target(ctx->so_targets[i]);
-            t->stride = shader->stream_output.stride[i] * sizeof(uint32_t);
+            t->stride = shader->streamout.so_info.stride[i] * sizeof(uint32_t);
          }
       }
 
@@ -283,7 +306,7 @@ zink_draw_vbo(struct pipe_context *pctx,
          int index = shader->bindings[j].index;
          if (shader->bindings[j].type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
             assert(ctx->ubos[i][index].buffer_size > 0);
-            assert(ctx->ubos[i][index].buffer_size <= screen->props.limits.maxUniformBufferRange);
+            assert(ctx->ubos[i][index].buffer_size <= screen->info.props.limits.maxUniformBufferRange);
             assert(ctx->ubos[i][index].buffer);
             struct zink_resource *res = zink_resource(ctx->ubos[i][index].buffer);
             buffer_infos[num_buffer_info].buffer = res->buffer;
@@ -348,6 +371,7 @@ zink_draw_vbo(struct pipe_context *pctx,
       batch = zink_batch_rp(ctx);
       assert(batch->descs_left >= gfx_program->num_descriptors);
    }
+   zink_batch_reference_program(batch, ctx->curr_program);
 
    VkDescriptorSet desc_set = allocate_descriptor_set(screen, batch,
                                                       gfx_program);
@@ -370,25 +394,37 @@ zink_draw_vbo(struct pipe_context *pctx,
       }
    }
 
-   vkCmdSetViewport(batch->cmdbuf, 0, ctx->num_viewports, ctx->viewports);
+   vkCmdSetViewport(batch->cmdbuf, 0, ctx->gfx_pipeline_state.num_viewports, ctx->viewports);
    if (ctx->rast_state->base.scissor)
-      vkCmdSetScissor(batch->cmdbuf, 0, ctx->num_viewports, ctx->scissors);
+      vkCmdSetScissor(batch->cmdbuf, 0, ctx->gfx_pipeline_state.num_viewports, ctx->scissors);
    else if (ctx->fb_state.width && ctx->fb_state.height) {
-      VkRect2D fb_scissor = {};
-      fb_scissor.extent.width = ctx->fb_state.width;
-      fb_scissor.extent.height = ctx->fb_state.height;
-      vkCmdSetScissor(batch->cmdbuf, 0, 1, &fb_scissor);
+      VkRect2D fb_scissor[ctx->gfx_pipeline_state.num_viewports];
+      for (unsigned i = 0; i < ctx->gfx_pipeline_state.num_viewports; i++) {
+         fb_scissor[i].offset.x = fb_scissor[i].offset.y = 0;
+         fb_scissor[i].extent.width = ctx->fb_state.width;
+         fb_scissor[i].extent.height = ctx->fb_state.height;
+      }
+      vkCmdSetScissor(batch->cmdbuf, 0, ctx->gfx_pipeline_state.num_viewports, fb_scissor);
    }
 
    if (line_width_needed(reduced_prim, rast_state->hw_state.polygon_mode)) {
-      if (screen->feats.wideLines || ctx->line_width == 1.0f)
+      if (screen->info.feats.features.wideLines || ctx->line_width == 1.0f)
          vkCmdSetLineWidth(batch->cmdbuf, ctx->line_width);
       else
          debug_printf("BUG: wide lines not supported, needs fallback!");
    }
 
-   vkCmdSetStencilReference(batch->cmdbuf, VK_STENCIL_FACE_FRONT_BIT, ctx->stencil_ref.ref_value[0]);
-   vkCmdSetStencilReference(batch->cmdbuf, VK_STENCIL_FACE_BACK_BIT, ctx->stencil_ref.ref_value[1]);
+   if (dsa_state->base.stencil[0].enabled) {
+      if (dsa_state->base.stencil[1].enabled) {
+         vkCmdSetStencilReference(batch->cmdbuf, VK_STENCIL_FACE_FRONT_BIT,
+                                  ctx->stencil_ref.ref_value[0]);
+         vkCmdSetStencilReference(batch->cmdbuf, VK_STENCIL_FACE_BACK_BIT,
+                                  ctx->stencil_ref.ref_value[1]);
+      } else
+         vkCmdSetStencilReference(batch->cmdbuf,
+                                  VK_STENCIL_FACE_FRONT_AND_BACK,
+                                  ctx->stencil_ref.ref_value[0]);
+   }
 
    if (depth_bias)
       vkCmdSetDepthBias(batch->cmdbuf, rast_state->offset_units, rast_state->offset_clamp, rast_state->offset_scale);
@@ -425,9 +461,13 @@ zink_draw_vbo(struct pipe_context *pctx,
 
    if (dinfo->index_size > 0) {
       VkIndexType index_type;
-      switch (dinfo->index_size) {
+      unsigned index_size = dinfo->index_size;
+      if (need_index_buffer_unref)
+         /* index buffer will have been promoted from uint8 to uint16 in this case */
+         index_size = MAX2(index_size, 2);
+      switch (index_size) {
       case 1:
-         assert(screen->have_EXT_index_type_uint8);
+         assert(screen->info.have_EXT_index_type_uint8);
          index_type = VK_INDEX_TYPE_UINT8_EXT;
          break;
       case 2:
@@ -444,19 +484,19 @@ zink_draw_vbo(struct pipe_context *pctx,
       zink_batch_reference_resoure(batch, res);
       vkCmdDrawIndexed(batch->cmdbuf,
          dinfo->count, dinfo->instance_count,
-         dinfo->start, dinfo->index_bias, dinfo->start_instance);
+         need_index_buffer_unref ? 0 : dinfo->start, dinfo->index_bias, dinfo->start_instance);
    } else {
-      if (so_target && screen->tf_props.transformFeedbackDraw) {
+      if (so_target && screen->info.tf_props.transformFeedbackDraw) {
          zink_batch_reference_resoure(batch, zink_resource(so_target->counter_buffer));
          screen->vk_CmdDrawIndirectByteCountEXT(batch->cmdbuf, dinfo->instance_count, dinfo->start_instance,
                                        zink_resource(so_target->counter_buffer)->buffer, so_target->counter_buffer_offset, 0,
-                                       MIN2(so_target->stride, screen->tf_props.maxTransformFeedbackBufferDataStride));
+                                       MIN2(so_target->stride, screen->info.tf_props.maxTransformFeedbackBufferDataStride));
       }
       else
          vkCmdDraw(batch->cmdbuf, dinfo->count, dinfo->instance_count, dinfo->start, dinfo->start_instance);
    }
 
-   if (dinfo->index_size > 0 && dinfo->has_user_indices)
+   if (dinfo->index_size > 0 && (dinfo->has_user_indices || need_index_buffer_unref))
       pipe_resource_reference(&index_buffer, NULL);
 
    if (ctx->num_so_targets) {

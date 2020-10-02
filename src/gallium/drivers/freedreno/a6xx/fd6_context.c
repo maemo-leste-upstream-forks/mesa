@@ -47,6 +47,7 @@ fd6_context_destroy(struct pipe_context *pctx)
 	struct fd6_context *fd6_ctx = fd6_context(fd_context(pctx));
 
 	u_upload_destroy(fd6_ctx->border_color_uploader);
+	pipe_resource_reference(&fd6_ctx->border_color_buf, NULL);
 
 	fd_context_destroy(pctx);
 
@@ -225,7 +226,7 @@ PC_UNKNOWN_9805:
 	 * here. */
 	pctx->delete_rasterizer_state = fd6_rasterizer_state_delete;
 	pctx->delete_blend_state = fd6_blend_state_delete;
-	pctx->delete_depth_stencil_alpha_state = fd6_depth_stencil_alpha_state_delete;
+	pctx->delete_depth_stencil_alpha_state = fd6_zsa_state_delete;
 
 	/* initial sizes for VSC buffers (or rather the per-pipe sizes
 	 * which is used to derive entire buffer size:

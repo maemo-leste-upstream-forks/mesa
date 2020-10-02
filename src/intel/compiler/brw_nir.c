@@ -163,9 +163,8 @@ brw_nir_lower_vs_inputs(nir_shader *nir,
                         const uint8_t *vs_attrib_wa_flags)
 {
    /* Start with the location of the variable's base. */
-   foreach_list_typed(nir_variable, var, node, &nir->inputs) {
+   nir_foreach_shader_in_variable(var, nir)
       var->data.driver_location = var->data.location;
-   }
 
    /* Now use nir_lower_io to walk dereference chains.  Attribute arrays are
     * loaded as one vec4 or dvec4 per element (or matrix column), depending on
@@ -290,9 +289,8 @@ void
 brw_nir_lower_vue_inputs(nir_shader *nir,
                          const struct brw_vue_map *vue_map)
 {
-   foreach_list_typed(nir_variable, var, node, &nir->inputs) {
+   nir_foreach_shader_in_variable(var, nir)
       var->data.driver_location = var->data.location;
-   }
 
    /* Inputs are stored in vec4 slots, so use type_size_vec4(). */
    nir_lower_io(nir, nir_var_shader_in, type_size_vec4,
@@ -343,9 +341,8 @@ brw_nir_lower_vue_inputs(nir_shader *nir,
 void
 brw_nir_lower_tes_inputs(nir_shader *nir, const struct brw_vue_map *vue_map)
 {
-   foreach_list_typed(nir_variable, var, node, &nir->inputs) {
+   nir_foreach_shader_in_variable(var, nir)
       var->data.driver_location = var->data.location;
-   }
 
    nir_lower_io(nir, nir_var_shader_in, type_size_vec4,
                 nir_lower_io_lower_64bit_to_32);
@@ -372,7 +369,7 @@ brw_nir_lower_fs_inputs(nir_shader *nir,
                         const struct gen_device_info *devinfo,
                         const struct brw_wm_prog_key *key)
 {
-   foreach_list_typed(nir_variable, var, node, &nir->inputs) {
+   nir_foreach_shader_in_variable(var, nir) {
       var->data.driver_location = var->data.location;
 
       /* Apply default interpolation mode.
@@ -416,7 +413,7 @@ brw_nir_lower_fs_inputs(nir_shader *nir,
 void
 brw_nir_lower_vue_outputs(nir_shader *nir)
 {
-   nir_foreach_variable(var, &nir->outputs) {
+   nir_foreach_shader_out_variable(var, nir) {
       var->data.driver_location = var->data.location;
    }
 
@@ -428,7 +425,7 @@ void
 brw_nir_lower_tcs_outputs(nir_shader *nir, const struct brw_vue_map *vue_map,
                           GLenum tes_primitive_mode)
 {
-   nir_foreach_variable(var, &nir->outputs) {
+   nir_foreach_shader_out_variable(var, nir) {
       var->data.driver_location = var->data.location;
    }
 
@@ -454,7 +451,7 @@ brw_nir_lower_tcs_outputs(nir_shader *nir, const struct brw_vue_map *vue_map,
 void
 brw_nir_lower_fs_outputs(nir_shader *nir)
 {
-   nir_foreach_variable(var, &nir->outputs) {
+   nir_foreach_shader_out_variable(var, nir) {
       var->data.driver_location =
          SET_FIELD(var->data.index, BRW_NIR_FRAG_OUTPUT_INDEX) |
          SET_FIELD(var->data.location, BRW_NIR_FRAG_OUTPUT_LOCATION);
@@ -475,13 +472,40 @@ static nir_variable_mode
 brw_nir_no_indirect_mask(const struct brw_compiler *compiler,
                          gl_shader_stage stage)
 {
+   const struct gen_device_info *devinfo = compiler->devinfo;
+   const bool is_scalar = compiler->scalar_stage[stage];
    nir_variable_mode indirect_mask = 0;
 
-   if (compiler->glsl_compiler_options[stage].EmitNoIndirectInput)
+   switch (stage) {
+   case MESA_SHADER_VERTEX:
+   case MESA_SHADER_FRAGMENT:
       indirect_mask |= nir_var_shader_in;
-   if (compiler->glsl_compiler_options[stage].EmitNoIndirectOutput)
+      break;
+
+   case MESA_SHADER_GEOMETRY:
+      if (!is_scalar)
+         indirect_mask |= nir_var_shader_in;
+      break;
+
+   default:
+      /* Everything else can handle indirect inputs */
+      break;
+   }
+
+   if (is_scalar && stage != MESA_SHADER_TESS_CTRL)
       indirect_mask |= nir_var_shader_out;
-   if (compiler->glsl_compiler_options[stage].EmitNoIndirectTemp)
+
+   /* On HSW+, we allow indirects in scalar shaders.  They get implemented
+    * using nir_lower_vars_to_explicit_types and nir_lower_explicit_io in
+    * brw_postprocess_nir.
+    *
+    * We haven't plumbed through the indirect scratch messages on gen6 or
+    * earlier so doing indirects via scratch doesn't work there. On gen7 and
+    * earlier the scratch space size is limited to 12kB.  If we allowed
+    * indirects as scratch all the time, we may easily exceed this limit
+    * without having any fallback.
+    */
+   if (is_scalar && devinfo->gen <= 7 && !devinfo->is_haswell)
       indirect_mask |= nir_var_function_temp;
 
    return indirect_mask;
@@ -491,8 +515,15 @@ void
 brw_nir_optimize(nir_shader *nir, const struct brw_compiler *compiler,
                  bool is_scalar, bool allow_copies)
 {
-   nir_variable_mode indirect_mask =
+   nir_variable_mode loop_indirect_mask =
       brw_nir_no_indirect_mask(compiler, nir->info.stage);
+
+   /* We can handle indirects via scratch messages.  However, they are
+    * expensive so we'd rather not if we can avoid it.  Have loop unrolling
+    * try to get rid of them.
+    */
+   if (is_scalar)
+      loop_indirect_mask |= nir_var_function_temp;
 
    bool progress;
    unsigned lower_flrp =
@@ -519,6 +550,8 @@ brw_nir_optimize(nir_shader *nir, const struct brw_compiler *compiler,
 
       if (is_scalar) {
          OPT(nir_lower_alu_to_scalar, NULL, NULL);
+      } else {
+         OPT(nir_opt_shrink_vectors);
       }
 
       OPT(nir_copy_prop);
@@ -564,8 +597,7 @@ brw_nir_optimize(nir_shader *nir, const struct brw_compiler *compiler,
       if (lower_flrp != 0) {
          if (OPT(nir_lower_flrp,
                  lower_flrp,
-                 false /* always_precise */,
-                 compiler->devinfo->gen >= 6)) {
+                 false /* always_precise */)) {
             OPT(nir_opt_constant_folding);
          }
 
@@ -587,7 +619,7 @@ brw_nir_optimize(nir_shader *nir, const struct brw_compiler *compiler,
       OPT(nir_opt_if, false);
       OPT(nir_opt_conditional_discard);
       if (nir->options->max_unroll_iterations != 0) {
-         OPT(nir_opt_loop_unroll, indirect_mask);
+         OPT(nir_opt_loop_unroll, loop_indirect_mask);
       }
       OPT(nir_opt_remove_phis);
       OPT(nir_opt_undef);
@@ -653,6 +685,8 @@ brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
 
    const bool is_scalar = compiler->scalar_stage[nir->info.stage];
 
+   nir_validate_ssa_dominance(nir, "before brw_preprocess_nir");
+
    if (is_scalar) {
       OPT(nir_lower_alu_to_scalar, NULL, NULL);
    }
@@ -691,7 +725,7 @@ brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
    brw_nir_optimize(nir, compiler, is_scalar, true);
 
    OPT(nir_lower_doubles, softfp64, nir->options->lower_doubles_options);
-   OPT(nir_lower_int64, nir->options->lower_int64_options);
+   OPT(nir_lower_int64);
 
    OPT(nir_lower_bit_size, lower_bit_size_callback, (void *)compiler);
 
@@ -710,6 +744,7 @@ brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
    }
 
    OPT(nir_lower_system_values);
+   OPT(nir_lower_compute_system_values, NULL);
 
    const nir_lower_subgroups_options subgroups_options = {
       .ballot_bit_size = 32,
@@ -722,32 +757,25 @@ brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
 
    OPT(nir_lower_clip_cull_distance_arrays);
 
-   if ((devinfo->gen >= 8 || devinfo->is_haswell) && is_scalar) {
-      /* TODO: Yes, we could in theory do this on gen6 and earlier.  However,
-       * that would require plumbing through support for these indirect
-       * scratch read/write messages with message registers and that's just a
-       * pain.  Also, the primary benefit of this is for compute shaders which
-       * won't run on gen6 and earlier anyway.
-       *
-       * On gen7 and earlier the scratch space size is limited to 12kB.
-       * By enabling this optimization we may easily exceed this limit without
-       * having any fallback.
-       *
-       * The threshold of 128B was chosen semi-arbitrarily.  The idea is that
-       * 128B per channel on a SIMD8 program is 32 registers or 25% of the
-       * register file.  Any array that large is likely to cause pressure
-       * issues.  Also, this value is sufficiently high that the benchmarks
-       * known to suffer from large temporary array issues are helped but
-       * nothing else in shader-db is hurt except for maybe that one kerbal
-       * space program shader.
-       */
-      OPT(nir_lower_vars_to_scratch, nir_var_function_temp, 128,
-          glsl_get_natural_size_align_bytes);
-   }
-
    nir_variable_mode indirect_mask =
       brw_nir_no_indirect_mask(compiler, nir->info.stage);
-   OPT(nir_lower_indirect_derefs, indirect_mask);
+   OPT(nir_lower_indirect_derefs, indirect_mask, UINT32_MAX);
+
+   /* Even in cases where we can handle indirect temporaries via scratch, we
+    * it can still be expensive.  Lower indirects on small arrays to
+    * conditional load/stores.
+    *
+    * The threshold of 16 was chosen semi-arbitrarily.  The idea is that an
+    * indirect on an array of 16 elements is about 30 instructions at which
+    * point, you may be better off doing a send.  With a SIMD8 program, 16
+    * floats is 1/8 of the entire register file.  Any array larger than that
+    * is likely to cause pressure issues.  Also, this value is sufficiently
+    * high that the benchmarks known to suffer from large temporary array
+    * issues are helped but nothing else in shader-db is hurt except for maybe
+    * that one kerbal space program shader.
+    */
+   if (is_scalar && !(indirect_mask & nir_var_function_temp))
+      OPT(nir_lower_indirect_derefs, nir_var_function_temp, 16);
 
    /* Lower array derefs of vectors for SSBO and UBO loads.  For both UBOs and
     * SSBOs, our back-end is capable of loading an entire vec4 at a time and
@@ -797,9 +825,11 @@ brw_nir_link_shaders(const struct brw_compiler *compiler,
        * varyings we have demoted here.
        */
       NIR_PASS_V(producer, nir_lower_indirect_derefs,
-                 brw_nir_no_indirect_mask(compiler, producer->info.stage));
+                 brw_nir_no_indirect_mask(compiler, producer->info.stage),
+                 UINT32_MAX);
       NIR_PASS_V(consumer, nir_lower_indirect_derefs,
-                 brw_nir_no_indirect_mask(compiler, consumer->info.stage));
+                 brw_nir_no_indirect_mask(compiler, consumer->info.stage),
+                 UINT32_MAX);
 
       brw_nir_optimize(producer, compiler, p_is_scalar, false);
       brw_nir_optimize(consumer, compiler, c_is_scalar, false);
@@ -825,8 +855,9 @@ brw_nir_link_shaders(const struct brw_compiler *compiler,
 }
 
 static bool
-brw_nir_should_vectorize_mem(unsigned align, unsigned bit_size,
-                             unsigned num_components, unsigned high_offset,
+brw_nir_should_vectorize_mem(unsigned align_mul, unsigned align_offset,
+                             unsigned bit_size,
+                             unsigned num_components,
                              nir_intrinsic_instr *low,
                              nir_intrinsic_instr *high)
 {
@@ -842,6 +873,13 @@ brw_nir_should_vectorize_mem(unsigned align, unsigned bit_size,
     */
    if (num_components > 4)
       return false;
+
+
+   uint32_t align;
+   if (align_offset)
+      align = 1 << (ffs(align_offset) - 1);
+   else
+      align = align_mul;
 
    if (align < bit_size / 8)
       return false;
@@ -899,6 +937,17 @@ brw_vectorize_lower_mem_access(nir_shader *nir,
    }
 }
 
+static bool
+nir_shader_has_local_variables(const nir_shader *nir)
+{
+   nir_foreach_function(func, nir) {
+      if (func->impl && !exec_list_is_empty(&func->impl->locals))
+         return true;
+   }
+
+   return false;
+}
+
 /* Prepare the given shader for codegen
  *
  * This function is intended to be called right before going into the actual
@@ -926,9 +975,17 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
 
    brw_nir_optimize(nir, compiler, is_scalar, false);
 
+   if (is_scalar && nir_shader_has_local_variables(nir)) {
+      OPT(nir_lower_vars_to_explicit_types, nir_var_function_temp,
+          glsl_get_natural_size_align_bytes);
+      OPT(nir_lower_explicit_io, nir_var_function_temp,
+          nir_address_format_32bit_offset);
+      brw_nir_optimize(nir, compiler, is_scalar, false);
+   }
+
    brw_vectorize_lower_mem_access(nir, compiler, is_scalar);
 
-   if (OPT(nir_lower_int64, nir->options->lower_int64_options))
+   if (OPT(nir_lower_int64))
       brw_nir_optimize(nir, compiler, is_scalar, false);
 
    if (devinfo->gen >= 6) {
@@ -1006,6 +1063,8 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
       nir_print_shader(nir, stderr);
    }
 
+   nir_validate_ssa_dominance(nir, "before nir_convert_from_ssa");
+
    OPT(nir_convert_from_ssa, true);
 
    if (!is_scalar) {
@@ -1076,6 +1135,8 @@ brw_nir_apply_sampler_key(nir_shader *nir,
    tex_options.lower_xy_uxvx_external = key_tex->xy_uxvx_image_mask;
    tex_options.lower_ayuv_external = key_tex->ayuv_image_mask;
    tex_options.lower_xyuv_external = key_tex->xyuv_image_mask;
+   tex_options.bt709_external = key_tex->bt709_mask;
+   tex_options.bt2020_external = key_tex->bt2020_mask;
 
    /* Setup array of scaling factors for each texture. */
    memcpy(&tex_options.scale_factors, &key_tex->scale_factors,
@@ -1186,8 +1247,8 @@ brw_cmod_for_nir_comparison(nir_op op)
    case nir_op_b32all_iequal4:
       return BRW_CONDITIONAL_Z;
 
-   case nir_op_fne:
-   case nir_op_fne32:
+   case nir_op_fneu:
+   case nir_op_fneu32:
    case nir_op_ine:
    case nir_op_ine32:
    case nir_op_b32any_fnequal2:

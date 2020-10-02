@@ -39,6 +39,7 @@ static const struct {
    const char *name;
    int pci_id;
 } name_map[] = {
+   { "lpt", 0x27a2 },
    { "brw", 0x2a02 },
    { "g4x", 0x2a42 },
    { "ilk", 0x0042 },
@@ -80,6 +81,11 @@ gen_device_name_to_pci_device_id(const char *name)
 
    return -1;
 }
+
+static const struct gen_device_info gen_device_info_gen3 = {
+   .gen = 3,
+   .simulator_id = -1,
+};
 
 static const struct gen_device_info gen_device_info_i965 = {
    .gen = 4,
@@ -910,83 +916,46 @@ static const struct gen_device_info gen_device_info_icl_gt0_5 = {
    .simulator_id = 19,
 };
 
-static const struct gen_device_info gen_device_info_ehl_7 = {
+#define GEN11_LP_FEATURES                           \
+   .is_elkhartlake = true,                          \
+   .urb = {                                         \
+      GEN11_URB_MIN_MAX_ENTRIES,                    \
+   },                                               \
+   .disable_ccs_repack = true,                      \
+   .simulator_id = 28
+
+static const struct gen_device_info gen_device_info_ehl_4x8 = {
    GEN11_FEATURES(1, 1, subslices(4), 4),
-   .is_elkhartlake = true,
-   .urb = {
-      .min_entries = {
-         [MESA_SHADER_VERTEX]    = 64,
-         [MESA_SHADER_TESS_EVAL] = 34,
-      },
-      .max_entries = {
-         [MESA_SHADER_VERTEX]    = 2384,
-         [MESA_SHADER_TESS_CTRL] = 1032,
-         [MESA_SHADER_TESS_EVAL] = 2384,
-         [MESA_SHADER_GEOMETRY]  = 1032,
-      },
-   },
-   .disable_ccs_repack = true,
-   .simulator_id = 28,
+   GEN11_LP_FEATURES,
 };
 
-static const struct gen_device_info gen_device_info_ehl_6 = {
+static const struct gen_device_info gen_device_info_ehl_4x6 = {
    GEN11_FEATURES(1, 1, subslices(4), 4),
-   .is_elkhartlake = true,
-   .urb = {
-      .min_entries = {
-         [MESA_SHADER_VERTEX]    = 64,
-         [MESA_SHADER_TESS_EVAL] = 34,
-      },
-      .max_entries = {
-         [MESA_SHADER_VERTEX]    = 2384,
-         [MESA_SHADER_TESS_CTRL] = 1032,
-         [MESA_SHADER_TESS_EVAL] = 2384,
-         [MESA_SHADER_GEOMETRY]  = 1032,
-      },
-   },
-   .disable_ccs_repack = true,
+   GEN11_LP_FEATURES,
    .num_eu_per_subslice = 6,
-   .simulator_id = 28,
 };
 
-static const struct gen_device_info gen_device_info_ehl_5 = {
+static const struct gen_device_info gen_device_info_ehl_4x5 = {
    GEN11_FEATURES(1, 1, subslices(4), 4),
-   .is_elkhartlake = true,
-   .urb = {
-      .min_entries = {
-         [MESA_SHADER_VERTEX]    = 64,
-         [MESA_SHADER_TESS_EVAL] = 34,
-      },
-      .max_entries = {
-         [MESA_SHADER_VERTEX]    = 2384,
-         [MESA_SHADER_TESS_CTRL] = 1032,
-         [MESA_SHADER_TESS_EVAL] = 2384,
-         [MESA_SHADER_GEOMETRY]  = 1032,
-      },
-   },
-   .disable_ccs_repack = true,
-   .num_eu_per_subslice = 4,
-   .simulator_id = 28,
+   GEN11_LP_FEATURES,
+   .num_eu_per_subslice = 5,
 };
 
-static const struct gen_device_info gen_device_info_ehl_4 = {
+static const struct gen_device_info gen_device_info_ehl_4x4 = {
+   GEN11_FEATURES(1, 1, subslices(4), 4),
+   GEN11_LP_FEATURES,
+   .num_eu_per_subslice = 4,
+};
+
+static const struct gen_device_info gen_device_info_ehl_2x8 = {
    GEN11_FEATURES(1, 1, subslices(2), 4),
-   .is_elkhartlake = true,
-   .urb = {
-      .min_entries = {
-         [MESA_SHADER_VERTEX]    = 64,
-         [MESA_SHADER_TESS_EVAL] = 34,
-      },
-      .max_entries = {
-         [MESA_SHADER_VERTEX]    = 2384,
-         [MESA_SHADER_TESS_CTRL] = 1032,
-         [MESA_SHADER_TESS_EVAL] = 2384,
-         [MESA_SHADER_GEOMETRY]  = 1032,
-      },
-   },
-   .disable_ccs_repack = true,
+   GEN11_LP_FEATURES,
+};
+
+static const struct gen_device_info gen_device_info_ehl_2x4 = {
+   GEN11_FEATURES(1, 1, subslices(2), 4),
+   GEN11_LP_FEATURES,
    .num_eu_per_subslice =4,
-   .simulator_id = 28,
 };
 
 #define GEN12_URB_MIN_MAX_ENTRIES                   \
@@ -1292,6 +1261,12 @@ gen_get_device_info_from_pci_id(int pci_id,
       case id: *devinfo = gen_device_info_##family; break;
 #include "pci_ids/i965_pci_ids.h"
 #include "pci_ids/iris_pci_ids.h"
+
+#undef CHIPSET
+#define CHIPSET(id, fam_str, name) \
+      case id: *devinfo = gen_device_info_gen3; break;
+#include "pci_ids/i915_pci_ids.h"
+
    default:
       fprintf(stderr, "Driver does not support the 0x%x PCI ID.\n", pci_id);
       return false;

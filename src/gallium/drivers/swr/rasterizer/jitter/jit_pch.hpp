@@ -30,7 +30,7 @@
 
 #pragma once
 
-#if defined(_WIN32)
+#if defined(_MSC_VER)
 #pragma warning(disable : 4146 4244 4267 4800 4996)
 #endif
 
@@ -135,6 +135,18 @@ static inline llvm::AttributeSet GetFuncAttribSet(llvm::LLVMContext&       ctx,
                                                   const llvm::AttrBuilder& b)
 {
     return llvm::AttributeSet::get(ctx, Attrib_FunctionIndex, b);
+}
+#endif
+
+#if LLVM_VERSION_MAJOR >= 12
+static inline llvm::VectorType* getVectorType(llvm::Type *ElementType, unsigned NumElements)
+{
+    return llvm::VectorType::get(ElementType, NumElements, false);
+}
+#else
+static inline llvm::VectorType* getVectorType(llvm::Type *ElementType, unsigned NumElements)
+{
+    return llvm::VectorType::get(ElementType, NumElements);
 }
 #endif
 

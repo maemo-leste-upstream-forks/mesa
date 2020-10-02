@@ -57,6 +57,8 @@
 #include "a5xx/fd5_screen.h"
 #include "a6xx/fd6_screen.h"
 
+/* for fd_get_driver/device_uuid() */
+#include "common/freedreno_uuid.h"
 
 #include "ir3/ir3_nir.h"
 #include "ir3/ir3_compiler.h"
@@ -198,6 +200,8 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_TEXTURE_BARRIER:
 	case PIPE_CAP_INVALIDATE_BUFFER:
 	case PIPE_CAP_RGB_OVERRIDE_DST_ALPHA_BLEND:
+	case PIPE_CAP_GLSL_TESS_LEVELS_AS_INPUTS:
+	case PIPE_CAP_NIR_COMPACT_ARRAYS:
 		return 1;
 
 	case PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY:
@@ -228,7 +232,6 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_PCI_BUS:
 	case PIPE_CAP_PCI_DEVICE:
 	case PIPE_CAP_PCI_FUNCTION:
-	case PIPE_CAP_DEPTH_CLIP_DISABLE_SEPARATE:
 		return 0;
 
 	case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
@@ -258,10 +261,13 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 		return is_a6xx(screen);
 
 	case PIPE_CAP_DEPTH_CLIP_DISABLE:
-		return is_a3xx(screen) || is_a4xx(screen);
+		return is_a3xx(screen) || is_a4xx(screen) || is_a6xx(screen);
+
+	case PIPE_CAP_DEPTH_CLIP_DISABLE_SEPARATE:
+		return is_a6xx(screen);
 
 	case PIPE_CAP_POLYGON_OFFSET_CLAMP:
-		return is_a5xx(screen) || is_a6xx(screen);
+		return is_a4xx(screen) || is_a5xx(screen) || is_a6xx(screen);
 
 	case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
 		if (is_a3xx(screen)) return 16;
@@ -294,7 +300,7 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 		return is_a4xx(screen);
 
 	case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
-		return 64;
+		return is_a2xx(screen) ? 64 : 32;
 
 	case PIPE_CAP_GLSL_FEATURE_LEVEL:
 	case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
@@ -449,8 +455,12 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 		return 10;
 	case PIPE_CAP_UMA:
 		return 1;
+	case PIPE_CAP_MEMOBJ:
+		return fd_device_version(screen->dev) >= FD_VERSION_MEMORY_FD;
 	case PIPE_CAP_NATIVE_FENCE_FD:
 		return fd_device_version(screen->dev) >= FD_VERSION_FENCE_FD;
+	case PIPE_CAP_FENCE_SIGNAL:
+		return screen->has_syncobj;
 	default:
 		return u_pipe_screen_get_param_defaults(pscreen, param);
 	}
@@ -570,8 +580,9 @@ fd_screen_get_shader_param(struct pipe_screen *pscreen,
 	case PIPE_SHADER_CAP_INTEGERS:
 		return is_ir3(screen) ? 1 : 0;
 	case PIPE_SHADER_CAP_INT64_ATOMICS:
-        case PIPE_SHADER_CAP_FP16_DERIVATIVES:
-        case PIPE_SHADER_CAP_INT16:
+	case PIPE_SHADER_CAP_FP16_DERIVATIVES:
+	case PIPE_SHADER_CAP_INT16:
+	case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
 		return 0;
 	case PIPE_SHADER_CAP_FP16:
 		return ((is_a5xx(screen) || is_a6xx(screen)) &&
@@ -817,6 +828,20 @@ static void _fd_fence_ref(struct pipe_screen *pscreen,
 	fd_fence_ref(ptr, pfence);
 }
 
+static void
+fd_screen_get_device_uuid(struct pipe_screen *pscreen, char *uuid)
+{
+	struct fd_screen *screen = fd_screen(pscreen);
+
+	fd_get_device_uuid(uuid, screen->gpu_id);
+}
+
+static void
+fd_screen_get_driver_uuid(struct pipe_screen *pscreen, char *uuid)
+{
+	fd_get_driver_uuid(uuid);
+}
+
 struct pipe_screen *
 fd_screen_create(struct fd_device *dev, struct renderonly *ro)
 {
@@ -856,7 +881,7 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro)
 		DBG("could not get GMEM size");
 		goto fail;
 	}
-	screen->gmemsize_bytes = val;
+	screen->gmemsize_bytes = env_var_as_unsigned("FD_MESA_GMEM", val);
 
 	if (fd_device_version(dev) >= FD_VERSION_GMEM_BASE) {
 		fd_pipe_get_param(screen->pipe, FD_GMEM_BASE, &screen->gmem_base);
@@ -908,6 +933,8 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro)
 
 	if (fd_device_version(dev) >= FD_VERSION_ROBUSTNESS)
 		screen->has_robustness = true;
+
+	screen->has_syncobj = fd_has_syncobj(screen->dev);
 
 	struct sysinfo si;
 	sysinfo(&si);
@@ -1023,6 +1050,9 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro)
 	pscreen->fence_get_fd = fd_fence_get_fd;
 
 	pscreen->query_dmabuf_modifiers = fd_screen_query_dmabuf_modifiers;
+
+	pscreen->get_device_uuid = fd_screen_get_device_uuid;
+	pscreen->get_driver_uuid = fd_screen_get_driver_uuid;
 
 	slab_create_parent(&screen->transfer_pool, sizeof(struct fd_transfer), 16);
 

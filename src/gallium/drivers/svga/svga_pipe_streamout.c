@@ -92,7 +92,7 @@ svga_define_stream_output(struct svga_context *svga,
                                           bufSize);
       if (!declBuf)
          return PIPE_ERROR;
-      map = sws->buffer_map(sws, declBuf, PIPE_TRANSFER_WRITE);
+      map = sws->buffer_map(sws, declBuf, PIPE_MAP_WRITE);
       if (!map) {
          sws->buffer_destroy(sws, declBuf);
          return PIPE_ERROR;
@@ -180,7 +180,7 @@ svga_create_stream_output(struct svga_context *svga,
    memset(strides, 0, sizeof(strides));
    memset(dstOffset, 0, sizeof(dstOffset));
 
-   SVGA_DBG(DEBUG_STREAMOUT, "%s: num_outputs\n",
+   SVGA_DBG(DEBUG_STREAMOUT, "%s: num_outputs=%d\n",
             __FUNCTION__, info->num_outputs);
 
    for (i = 0, numDecls = 0; i < info->num_outputs; i++, numDecls++) {

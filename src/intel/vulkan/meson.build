@@ -155,7 +155,7 @@ if with_platform_wayland
   libanv_files += files('anv_wsi_wayland.c')
 endif
 
-if with_platform_drm
+if system_has_kms_drm and not with_platform_android
   anv_flags += '-DVK_USE_PLATFORM_DISPLAY_KHR'
   libanv_files += files('anv_wsi_display.c')
 endif
@@ -204,17 +204,27 @@ libvulkan_intel = shared_library(
   ],
   c_args : anv_flags,
   gnu_symbol_visibility : 'hidden',
-  link_args : ['-Wl,--build-id=sha1', ld_args_bsymbolic, ld_args_gc_sections],
+  link_args : [ld_args_build_id, ld_args_bsymbolic, ld_args_gc_sections],
   install : true,
 )
 
 if with_symbols_check
+  if get_option('buildtype') == 'debug'  # Same rule as `-DDEBUG` in /meson.build
+    _extra_args = [
+      '--ignore-symbol', 'anv_dump_start',
+      '--ignore-symbol', 'anv_dump_finish',
+    ]
+  else
+    _extra_args = []
+  endif
+
   test(
     'anv symbols check',
     symbols_check,
     args : [
       '--lib', libvulkan_intel,
       '--symbols-file', vulkan_icd_symbols,
+      _extra_args,
       symbols_check_args,
     ],
     suite : ['intel'],

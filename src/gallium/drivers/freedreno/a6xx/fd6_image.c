@@ -95,12 +95,11 @@ static void translate_image(struct fd6_image *img, const struct pipe_image_view 
 		img->buffer = false;
 
 		unsigned lvl = pimg->u.tex.level;
-		struct fdl_slice *slice = fd_resource_slice(rsc, lvl);
 		unsigned layers = pimg->u.tex.last_layer - pimg->u.tex.first_layer + 1;
 
 		img->ubwc_offset = fd_resource_ubwc_offset(rsc, lvl, pimg->u.tex.first_layer);
 		img->offset = fd_resource_offset(rsc, lvl, pimg->u.tex.first_layer);
-		img->pitch  = slice->pitch;
+		img->pitch  = fd_resource_pitch(rsc, lvl);
 
 		switch (prsc->target) {
 		case PIPE_TEXTURE_RECT:
@@ -119,7 +118,7 @@ static void translate_image(struct fd6_image *img, const struct pipe_image_view 
 			img->depth = layers;
 			break;
 		case PIPE_TEXTURE_3D:
-			img->array_pitch = slice->size0;
+			img->array_pitch = fd_resource_slice(rsc, lvl)->size0;
 			img->depth  = u_minify(prsc->depth0, lvl);
 			break;
 		default:
@@ -181,7 +180,8 @@ static void emit_image_tex(struct fd_ringbuffer *ring, struct fd6_image *img)
 		A6XX_TEX_CONST_2_TYPE(img->type) |
 		A6XX_TEX_CONST_2_PITCH(img->pitch));
 	OUT_RING(ring, A6XX_TEX_CONST_3_ARRAY_PITCH(img->array_pitch) |
-		COND(ubwc_enabled, A6XX_TEX_CONST_3_FLAG | A6XX_TEX_CONST_3_TILE_ALL));
+		COND(ubwc_enabled, A6XX_TEX_CONST_3_FLAG) |
+		COND(rsc->layout.tile_all, A6XX_TEX_CONST_3_TILE_ALL));
 	if (img->bo) {
 		OUT_RELOC(ring, img->bo, img->offset,
 				(uint64_t)A6XX_TEX_CONST_5_DEPTH(img->depth) << 32, 0);
@@ -193,15 +193,13 @@ static void emit_image_tex(struct fd_ringbuffer *ring, struct fd6_image *img)
 	OUT_RING(ring, 0x00000000);   /* texconst6 */
 
 	if (ubwc_enabled) {
-		struct fdl_slice *ubwc_slice = &rsc->layout.ubwc_slices[img->level];
-
 		uint32_t block_width, block_height;
 		fdl6_get_ubwc_blockwidth(&rsc->layout, &block_width, &block_height);
 
 		OUT_RELOC(ring, rsc->bo, img->ubwc_offset, 0, 0);
 		OUT_RING(ring, A6XX_TEX_CONST_9_FLAG_BUFFER_ARRAY_PITCH(rsc->layout.ubwc_layer_size >> 2));
 		OUT_RING(ring,
-				A6XX_TEX_CONST_10_FLAG_BUFFER_PITCH(ubwc_slice->pitch) |
+				A6XX_TEX_CONST_10_FLAG_BUFFER_PITCH(fdl_ubwc_pitch(&rsc->layout, img->level)) |
 				A6XX_TEX_CONST_10_FLAG_BUFFER_LOGW(util_logbase2_ceil(DIV_ROUND_UP(img->width, block_width))) |
 				A6XX_TEX_CONST_10_FLAG_BUFFER_LOGH(util_logbase2_ceil(DIV_ROUND_UP(img->height, block_height))));
 	} else {
@@ -268,10 +266,9 @@ static void emit_image_ssbo(struct fd_ringbuffer *ring, struct fd6_image *img)
 	OUT_RING(ring, 0x00000000);
 
 	if (ubwc_enabled) {
-		struct fdl_slice *ubwc_slice = &rsc->layout.ubwc_slices[img->level];
 		OUT_RELOC(ring, rsc->bo, img->ubwc_offset, 0, 0);
 		OUT_RING(ring, A6XX_IBO_9_FLAG_BUFFER_ARRAY_PITCH(rsc->layout.ubwc_layer_size >> 2));
-		OUT_RING(ring, A6XX_IBO_10_FLAG_BUFFER_PITCH(ubwc_slice->pitch));
+		OUT_RING(ring, A6XX_IBO_10_FLAG_BUFFER_PITCH(fdl_ubwc_pitch(&rsc->layout, img->level)));
 	} else {
 		OUT_RING(ring, 0x00000000);
 		OUT_RING(ring, 0x00000000);

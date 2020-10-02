@@ -341,21 +341,18 @@ panfrost_constant_mask(unsigned *factors, unsigned num_factors)
 
 bool
 panfrost_make_fixed_blend_mode(
-        const struct pipe_rt_blend_state *blend,
-        struct mali_blend_equation *out,
-        unsigned *constant_mask,
-        unsigned colormask)
+        struct pipe_rt_blend_state blend,
+        struct mali_blend_equation_packed *out,
+        unsigned *constant_mask)
 {
-        /* Gallium and Mali represent colour masks identically. XXX: Static
-         * assert for future proof */
-
-        out->color_mask = colormask;
-
         /* If no blending is enabled, default back on `replace` mode */
 
-        if (!blend->blend_enable) {
-                out->rgb_mode = 0x122;
-                out->alpha_mode = 0x122;
+        if (!blend.blend_enable) {
+                pan_pack(out, BLEND_EQUATION, cfg) {
+                        cfg.color_mask = blend.colormask;
+                        cfg.rgb_mode = cfg.alpha_mode = 0x122;
+                }
+
                 return true;
         }
 
@@ -364,8 +361,8 @@ panfrost_make_fixed_blend_mode(
          * fixed-function blending */
 
         unsigned factors[] = {
-                blend->rgb_src_factor, blend->rgb_dst_factor,
-                blend->alpha_src_factor, blend->alpha_dst_factor,
+                blend.rgb_src_factor, blend.rgb_dst_factor,
+                blend.alpha_src_factor, blend.alpha_dst_factor,
         };
 
         *constant_mask = panfrost_constant_mask(factors, ARRAY_SIZE(factors));
@@ -376,17 +373,20 @@ panfrost_make_fixed_blend_mode(
         unsigned alpha_mode = 0;
 
         if (!panfrost_make_fixed_blend_part(
-                    blend->rgb_func, blend->rgb_src_factor, blend->rgb_dst_factor,
+                    blend.rgb_func, blend.rgb_src_factor, blend.rgb_dst_factor,
                     &rgb_mode))
                 return false;
 
         if (!panfrost_make_fixed_blend_part(
-                    blend->alpha_func, blend->alpha_src_factor, blend->alpha_dst_factor,
+                    blend.alpha_func, blend.alpha_src_factor, blend.alpha_dst_factor,
                     &alpha_mode))
                 return false;
 
-        out->rgb_mode = rgb_mode;
-        out->alpha_mode = alpha_mode;
+        pan_pack(out, BLEND_EQUATION, cfg) {
+                cfg.color_mask = blend.colormask;
+                cfg.rgb_mode = rgb_mode;
+                cfg.alpha_mode = alpha_mode;
+        }
 
         return true;
 }

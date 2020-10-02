@@ -86,6 +86,7 @@ public:
    uint32_t chan() const {return m_chan;}
 
    void set_chan(uint32_t chan);
+   virtual void set_pin_to_channel() { assert(0 && "Only GPRs can be pinned to a channel ");}
    void print(std::ostream& os, const PrintFlags& flags) const;
 
    void print(std::ostream& os) const;
@@ -185,6 +186,8 @@ public:
    UniformValue(uint32_t sel, uint32_t chan, PValue addr);
    uint32_t sel() const override;
    uint32_t kcache_bank() const;
+   PValue addr() const {return m_addr;}
+   void reset_addr(PValue v) {m_addr = v;}
 private:
    void do_print(std::ostream& os) const override;
    bool is_equal_to(const Value& other) const override;

@@ -30,6 +30,7 @@
 #include <xcb/xcb.h>
 #include <xcb/dri3.h>
 #include <xcb/present.h>
+#include <xcb/xfixes.h>
 
 #include <X11/Xlib-xcb.h>
 
@@ -908,6 +909,7 @@ int64_t
 loader_dri3_swap_buffers_msc(struct loader_dri3_drawable *draw,
                              int64_t target_msc, int64_t divisor,
                              int64_t remainder, unsigned flush_flags,
+                             const int *rects, int n_rects,
                              bool force_copy)
 {
    struct loader_dri3_buffer *back;
@@ -967,7 +969,7 @@ loader_dri3_swap_buffers_msc(struct loader_dri3_drawable *draw,
        */
       ++draw->send_sbc;
       if (target_msc == 0 && divisor == 0 && remainder == 0)
-         target_msc = draw->msc + draw->swap_interval *
+         target_msc = draw->msc + abs(draw->swap_interval) *
                       (draw->send_sbc - draw->recv_sbc);
       else if (divisor == 0 && remainder > 0) {
          /* From the GLX_OML_sync_control spec:
@@ -987,11 +989,19 @@ loader_dri3_swap_buffers_msc(struct loader_dri3_drawable *draw,
        *     "If <interval> is set to a value of 0, buffer swaps are not
        *      synchronized to a video frame."
        *
+       * From GLX_EXT_swap_control_tear:
+       *
+       *     "If <interval> is negative, the minimum number of video frames
+       *      between buffer swaps is the absolute value of <interval>. In this
+       *      case, if abs(<interval>) video frames have already passed from
+       *      the previous swap when the swap is ready to be performed, the
+       *      swap will occur without synchronization to a video frame."
+       *
        * Implementation note: It is possible to enable triple buffering
        * behaviour by not using XCB_PRESENT_OPTION_ASYNC, but this should not be
        * the default.
        */
-      if (draw->swap_interval == 0)
+      if (draw->swap_interval <= 0)
           options |= XCB_PRESENT_OPTION_ASYNC;
 
       /* If we need to populate the new back, but need to reuse the back
@@ -1006,12 +1016,29 @@ loader_dri3_swap_buffers_msc(struct loader_dri3_drawable *draw,
 #endif
       back->busy = 1;
       back->last_swap = draw->send_sbc;
+
+      xcb_xfixes_region_t region = 0;
+      xcb_rectangle_t xcb_rects[64];
+
+      if (n_rects > 0 && n_rects <= ARRAY_SIZE(xcb_rects)) {
+         for (int i = 0; i < n_rects; i++) {
+            const int *rect = &rects[i * 4];
+            xcb_rects[i].x = rect[0];
+            xcb_rects[i].y = draw->height - rect[1] - rect[3];
+            xcb_rects[i].width = rect[2];
+            xcb_rects[i].height = rect[3];
+         }
+
+         region = xcb_generate_id(draw->conn);
+         xcb_xfixes_create_region(draw->conn, region, n_rects, xcb_rects);
+      }
+
       xcb_present_pixmap(draw->conn,
                          draw->drawable,
                          back->pixmap,
                          (uint32_t) draw->send_sbc,
                          0,                                    /* valid */
-                         0,                                    /* update */
+                         region,                               /* update */
                          0,                                    /* x_off */
                          0,                                    /* y_off */
                          None,                                 /* target_crtc */
@@ -1022,6 +1049,9 @@ loader_dri3_swap_buffers_msc(struct loader_dri3_drawable *draw,
                          divisor,
                          remainder, 0, NULL);
       ret = (int64_t) draw->send_sbc;
+
+      if (region)
+         xcb_xfixes_destroy_region(draw->conn, region);
 
       /* Schedule a server-side back-preserving blit if necessary.
        * This happens iff all conditions below are satisfied:

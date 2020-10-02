@@ -56,6 +56,7 @@ struct amdgpu_cs_buffer {
 };
 
 enum ib_type {
+   IB_PREAMBLE,
    IB_MAIN,
    IB_PARALLEL_COMPUTE,
    IB_NUM,
@@ -151,6 +152,7 @@ struct amdgpu_cs {
 
    struct util_queue_fence flush_completed;
    struct pipe_fence_handle *next_fence;
+   struct pb_buffer *preamble_ib_bo;
 };
 
 struct amdgpu_fence {
@@ -280,6 +282,5 @@ void amdgpu_add_fences(struct amdgpu_winsys_bo *bo,
                        struct pipe_fence_handle **fences);
 void amdgpu_cs_sync_flush(struct radeon_cmdbuf *rcs);
 void amdgpu_cs_init_functions(struct amdgpu_screen_winsys *ws);
-void amdgpu_cs_submit_ib(void *job, int thread_index);
 
 #endif

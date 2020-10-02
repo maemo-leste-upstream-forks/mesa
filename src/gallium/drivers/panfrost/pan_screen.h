@@ -37,9 +37,8 @@
 #include "util/bitset.h"
 #include "util/set.h"
 
-#include <panfrost-misc.h>
 #include "pan_device.h"
-#include "pan_allocate.h"
+#include "pan_pool.h"
 
 struct panfrost_batch;
 struct panfrost_context;
@@ -63,7 +62,6 @@ pan_device(struct pipe_screen *p)
 }
 
 struct panfrost_fence *
-panfrost_fence_create(struct panfrost_context *ctx,
-                      struct util_dynarray *fences);
+panfrost_fence_create(struct panfrost_context *ctx, uint32_t syncobj);
 
 #endif /* PAN_SCREEN_H */

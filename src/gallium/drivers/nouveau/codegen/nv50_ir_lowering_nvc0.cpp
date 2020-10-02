@@ -1734,9 +1734,10 @@ NVC0LoweringPass::handleCasExch(Instruction *cas, bool needCctl)
       // happen elsewhere in the universe.
       // Also, it sometimes returns the new value instead of the old one
       // under mysterious circumstances.
-      Value *dreg = bld.getSSA(8);
+      DataType ty = typeOfSize(typeSizeof(cas->dType) * 2);
+      Value *dreg = bld.getSSA(typeSizeof(ty));
       bld.setPosition(cas, false);
-      bld.mkOp2(OP_MERGE, TYPE_U64, dreg, cas->getSrc(1), cas->getSrc(2));
+      bld.mkOp2(OP_MERGE, ty, dreg, cas->getSrc(1), cas->getSrc(2));
       cas->setSrc(1, dreg);
       cas->setSrc(2, dreg);
    }
@@ -2822,7 +2823,7 @@ NVC0LoweringPass::readTessCoord(LValue *dst, int c)
       y = dst;
    } else {
       assert(c == 2);
-      if (prog->driver->prop.tp.domain != PIPE_PRIM_TRIANGLES) {
+      if (prog->driver_out->prop.tp.domain != PIPE_PRIM_TRIANGLES) {
          bld.mkMov(dst, bld.loadImm(NULL, 0));
          return;
       }
@@ -2931,7 +2932,7 @@ NVC0LoweringPass::handleRDSV(Instruction *i)
       ld->subOp = NV50_IR_SUBOP_PIXLD_SAMPLEID;
       Value *offset = calculateSampleOffset(sampleID);
 
-      assert(prog->driver->prop.fp.readsSampleLocations);
+      assert(prog->driver_out->prop.fp.readsSampleLocations);
 
       if (targ->getChipset() >= NVISA_GM200_CHIPSET) {
          bld.mkLoad(TYPE_F32,
@@ -2965,7 +2966,7 @@ NVC0LoweringPass::handleRDSV(Instruction *i)
          bld.mkOp2v(OP_AND, TYPE_U32, bld.getSSA(), ld->getDef(0),
                     bld.mkOp2v(OP_SHL, TYPE_U32, bld.getSSA(),
                                bld.loadImm(NULL, 1), sampleid->getDef(0)));
-      if (prog->driver->prop.fp.persampleInvocation) {
+      if (prog->persampleInvocation) {
          bld.mkMov(i->getDef(0), masked);
       } else {
          bld.mkOp3(OP_SELP, TYPE_U32, i->getDef(0), ld->getDef(0), masked,
@@ -3166,7 +3167,7 @@ NVC0LoweringPass::handlePIXLD(Instruction *i)
    if (targ->getChipset() < NVISA_GM200_CHIPSET)
       return;
 
-   assert(prog->driver->prop.fp.readsSampleLocations);
+   assert(prog->driver_out->prop.fp.readsSampleLocations);
 
    bld.mkLoad(TYPE_F32,
               i->getDef(0),

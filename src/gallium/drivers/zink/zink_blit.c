@@ -4,6 +4,7 @@
 #include "zink_screen.h"
 
 #include "util/u_blitter.h"
+#include "util/u_surface.h"
 #include "util/format/u_format.h"
 
 static bool
@@ -11,6 +12,7 @@ blit_resolve(struct zink_context *ctx, const struct pipe_blit_info *info)
 {
    if (util_format_get_mask(info->dst.format) != info->mask ||
        util_format_get_mask(info->src.format) != info->mask ||
+       util_format_is_depth_or_stencil(info->dst.format) ||
        info->scissor_enable ||
        info->alpha_blend ||
        info->render_condition_enable)
@@ -29,13 +31,7 @@ blit_resolve(struct zink_context *ctx, const struct pipe_blit_info *info)
    zink_batch_reference_resoure(batch, src);
    zink_batch_reference_resoure(batch, dst);
 
-   if (src->layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
-      zink_resource_barrier(batch->cmdbuf, src, src->aspect,
-                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-
-   if (dst->layout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
-      zink_resource_barrier(batch->cmdbuf, dst, dst->aspect,
-                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+   zink_resource_setup_transfer_layouts(batch, src, dst);
 
    VkImageResolve region = {};
 
@@ -79,6 +75,10 @@ blit_native(struct zink_context *ctx, const struct pipe_blit_info *info)
        info->dst.format != info->src.format)
       return false;
 
+   /* vkCmdBlitImage must not be used for multisampled source or destination images. */
+   if (info->src.resource->nr_samples > 1 || info->dst.resource->nr_samples > 1)
+      return false;
+
    struct zink_resource *src = zink_resource(info->src.resource);
    struct zink_resource *dst = zink_resource(info->dst.resource);
 
@@ -91,35 +91,7 @@ blit_native(struct zink_context *ctx, const struct pipe_blit_info *info)
    zink_batch_reference_resoure(batch, src);
    zink_batch_reference_resoure(batch, dst);
 
-   if (src == dst) {
-      /* The Vulkan 1.1 specification says the following about valid usage
-       * of vkCmdBlitImage:
-       *
-       * "srcImageLayout must be VK_IMAGE_LAYOUT_SHARED_PRESENT_KHR,
-       *  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL or VK_IMAGE_LAYOUT_GENERAL"
-       *
-       * and:
-       *
-       * "dstImageLayout must be VK_IMAGE_LAYOUT_SHARED_PRESENT_KHR,
-       *  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL or VK_IMAGE_LAYOUT_GENERAL"
-       *
-       * Since we cant have the same image in two states at the same time,
-       * we're effectively left with VK_IMAGE_LAYOUT_SHARED_PRESENT_KHR or
-       * VK_IMAGE_LAYOUT_GENERAL. And since this isn't a present-related
-       * operation, VK_IMAGE_LAYOUT_GENERAL seems most appropriate.
-       */
-      if (src->layout != VK_IMAGE_LAYOUT_GENERAL)
-         zink_resource_barrier(batch->cmdbuf, src, src->aspect,
-                               VK_IMAGE_LAYOUT_GENERAL);
-   } else {
-      if (src->layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
-         zink_resource_barrier(batch->cmdbuf, src, src->aspect,
-                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-
-      if (dst->layout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
-         zink_resource_barrier(batch->cmdbuf, dst, dst->aspect,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-   }
+   zink_resource_setup_transfer_layouts(batch, src, dst);
 
    VkImageBlit region = {};
    region.srcSubresource.aspectMask = src->aspect;
@@ -182,6 +154,12 @@ zink_blit(struct pipe_context *pctx,
          return;
    }
 
+   struct zink_resource *src = zink_resource(info->src.resource);
+   struct zink_resource *dst = zink_resource(info->dst.resource);
+   /* if we're copying between resources with matching aspects then we can probably just copy_region */
+   if (src->aspect == dst->aspect && util_try_blit_via_copy_region(pctx, info))
+      return;
+
    if (!util_blitter_is_blit_supported(ctx->blitter, info)) {
       debug_printf("blit unsupported %s -> %s\n",
               util_format_short_name(info->src.resource->format),
@@ -190,7 +168,7 @@ zink_blit(struct pipe_context *pctx,
    }
 
    util_blitter_save_blend(ctx->blitter, ctx->gfx_pipeline_state.blend_state);
-   util_blitter_save_depth_stencil_alpha(ctx->blitter, ctx->gfx_pipeline_state.depth_stencil_alpha_state);
+   util_blitter_save_depth_stencil_alpha(ctx->blitter, ctx->dsa_state);
    util_blitter_save_vertex_elements(ctx->blitter, ctx->element_state);
    util_blitter_save_stencil_ref(ctx->blitter, &ctx->stencil_ref);
    util_blitter_save_rasterizer(ctx->blitter, ctx->rast_state);

@@ -27,16 +27,15 @@
 
 #include "pipe/p_state.h"
 #include "pipe/p_defines.h"
-#include <panfrost-job.h>
+#include <midgard_pack.h>
 
 struct panfrost_blend_state;
 
 bool
 panfrost_make_fixed_blend_mode(
-        const struct pipe_rt_blend_state *blend,
-        struct mali_blend_equation *out,
-        unsigned *constant_mask,
-        unsigned colormask);
+        const struct pipe_rt_blend_state blend,
+        struct mali_blend_equation_packed *out,
+        unsigned *constant_mask);
 
 bool
 panfrost_can_fixed_blend(enum pipe_format format);

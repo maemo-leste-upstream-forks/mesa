@@ -32,6 +32,7 @@
 #include "perfcntrs/freedreno_perfcntr.h"
 
 #include "pipe/p_screen.h"
+#include "util/debug.h"
 #include "util/u_memory.h"
 #include "util/slab.h"
 #include "util/simple_mtx.h"
@@ -76,6 +77,7 @@ struct fd_screen {
 	uint32_t priority_mask;
 	bool has_timestamp;
 	bool has_robustness;
+	bool has_syncobj;
 
 	unsigned num_perfcntr_groups;
 	const struct fd_perfcntr_group *perfcntr_groups;

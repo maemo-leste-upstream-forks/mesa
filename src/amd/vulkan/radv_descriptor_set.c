@@ -57,13 +57,14 @@ static int binding_compare(const void* av, const void *bv)
 
 static VkDescriptorSetLayoutBinding *
 create_sorted_bindings(const VkDescriptorSetLayoutBinding *bindings, unsigned count) {
-	VkDescriptorSetLayoutBinding *sorted_bindings = malloc(count * sizeof(VkDescriptorSetLayoutBinding));
+	VkDescriptorSetLayoutBinding *sorted_bindings = malloc(MAX2(count * sizeof(VkDescriptorSetLayoutBinding), 1));
 	if (!sorted_bindings)
 		return NULL;
 
-	memcpy(sorted_bindings, bindings, count * sizeof(VkDescriptorSetLayoutBinding));
-
-	qsort(sorted_bindings, count, sizeof(VkDescriptorSetLayoutBinding), binding_compare);
+	if (count) {
+		memcpy(sorted_bindings, bindings, count * sizeof(VkDescriptorSetLayoutBinding));
+		qsort(sorted_bindings, count, sizeof(VkDescriptorSetLayoutBinding), binding_compare);
+	}
 
 	return sorted_bindings;
 }
@@ -901,22 +902,25 @@ static void write_buffer_descriptor(struct radv_device *device,
 	range = align(range, 4);
 
 	va += buffer_info->offset + buffer->offset;
+
+	uint32_t rsrc_word3 = S_008F0C_DST_SEL_X(V_008F0C_SQ_SEL_X) |
+			      S_008F0C_DST_SEL_Y(V_008F0C_SQ_SEL_Y) |
+			      S_008F0C_DST_SEL_Z(V_008F0C_SQ_SEL_Z) |
+			      S_008F0C_DST_SEL_W(V_008F0C_SQ_SEL_W);
+
+	if (device->physical_device->rad_info.chip_class >= GFX10) {
+		rsrc_word3 |= S_008F0C_FORMAT(V_008F0C_IMG_FORMAT_32_FLOAT) |
+			      S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_RAW) |
+			      S_008F0C_RESOURCE_LEVEL(1);
+	} else {
+		rsrc_word3 |= S_008F0C_NUM_FORMAT(V_008F0C_BUF_NUM_FORMAT_FLOAT) |
+			      S_008F0C_DATA_FORMAT(V_008F0C_BUF_DATA_FORMAT_32);
+	}
+
 	dst[0] = va;
 	dst[1] = S_008F04_BASE_ADDRESS_HI(va >> 32);
 	dst[2] = range;
-	dst[3] = S_008F0C_DST_SEL_X(V_008F0C_SQ_SEL_X) |
-		S_008F0C_DST_SEL_Y(V_008F0C_SQ_SEL_Y) |
-		S_008F0C_DST_SEL_Z(V_008F0C_SQ_SEL_Z) |
-		S_008F0C_DST_SEL_W(V_008F0C_SQ_SEL_W);
-
-	if (device->physical_device->rad_info.chip_class >= GFX10) {
-		dst[3] |= S_008F0C_FORMAT(V_008F0C_IMG_FORMAT_32_FLOAT) |
-			  S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_RAW) |
-			  S_008F0C_RESOURCE_LEVEL(1);
-	} else {
-		dst[3] |= S_008F0C_NUM_FORMAT(V_008F0C_BUF_NUM_FORMAT_FLOAT) |
-			  S_008F0C_DATA_FORMAT(V_008F0C_BUF_DATA_FORMAT_32);
-	}
+	dst[3] = rsrc_word3;
 
 	if (cmd_buffer)
 		radv_cs_add_buffer(device->ws, cmd_buffer->cs, buffer->bo);
@@ -944,8 +948,10 @@ static void write_dynamic_buffer_descriptor(struct radv_device *device,
 	uint64_t va;
 	unsigned size;
 
-	if (!buffer)
+	if (!buffer) {
+		range->va = 0;
 		return;
+	}
 
 	va = radv_buffer_get_va(buffer->bo);
 	size = buffer_info->range;

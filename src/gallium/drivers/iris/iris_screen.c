@@ -51,6 +51,7 @@
 #include "iris_pipe.h"
 #include "iris_resource.h"
 #include "iris_screen.h"
+#include "compiler/glsl_types.h"
 #include "intel/compiler/brw_compiler.h"
 #include "intel/common/gen_gem.h"
 #include "intel/common/gen_l3_config.h"
@@ -408,6 +409,7 @@ iris_get_shader_param(struct pipe_screen *pscreen,
    case PIPE_SHADER_CAP_FP16:
    case PIPE_SHADER_CAP_FP16_DERIVATIVES:
    case PIPE_SHADER_CAP_INT16:
+   case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
       return 0;
    case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
    case PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS:
@@ -421,7 +423,7 @@ iris_get_shader_param(struct pipe_screen *pscreen,
    case PIPE_SHADER_CAP_PREFERRED_IR:
       return PIPE_SHADER_IR_NIR;
    case PIPE_SHADER_CAP_SUPPORTED_IRS:
-      return 1 << PIPE_SHADER_IR_NIR;
+      return (1 << PIPE_SHADER_IR_NIR);
    case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED:
       return 1;
@@ -458,9 +460,6 @@ iris_get_compute_param(struct pipe_screen *pscreen,
 } while (0)
 
    switch (param) {
-   case PIPE_COMPUTE_CAP_ADDRESS_BITS:
-      RET((uint32_t []){ 32 });
-
    case PIPE_COMPUTE_CAP_IR_TARGET:
       if (ret)
          strcpy(ret, "gen");
@@ -486,12 +485,11 @@ iris_get_compute_param(struct pipe_screen *pscreen,
       /* MaxComputeSharedMemorySize */
       RET((uint64_t []) { 64 * 1024 });
 
-   case PIPE_COMPUTE_CAP_IMAGES_SUPPORTED:
-      RET((uint32_t []) { 1 });
-
    case PIPE_COMPUTE_CAP_SUBGROUP_SIZE:
       RET((uint32_t []) { BRW_SUBGROUP_SIZE });
 
+   case PIPE_COMPUTE_CAP_ADDRESS_BITS:
+   case PIPE_COMPUTE_CAP_IMAGES_SUPPORTED:
    case PIPE_COMPUTE_CAP_MAX_MEM_ALLOC_SIZE:
    case PIPE_COMPUTE_CAP_MAX_CLOCK_FREQUENCY:
    case PIPE_COMPUTE_CAP_MAX_COMPUTE_UNITS:
@@ -524,6 +522,7 @@ iris_get_timestamp(struct pipe_screen *pscreen)
 void
 iris_screen_destroy(struct iris_screen *screen)
 {
+   glsl_type_singleton_decref();
    iris_bo_unreference(screen->workaround_bo);
    u_transfer_helper_destroy(screen->base.transfer_helper);
    iris_bufmgr_unref(screen->bufmgr);
@@ -674,7 +673,7 @@ iris_screen_create(int fd, const struct pipe_screen_config *config)
     *
     * Checking the last feature availability will include all previous ones.
     */
-   if (!iris_getparam_integer(fd, I915_PARAM_HAS_CONTEXT_ISOLATION)) {
+   if (iris_getparam_integer(fd, I915_PARAM_HAS_CONTEXT_ISOLATION) <= 0) {
       debug_error("Kernel is too old for Iris. Consider upgrading to kernel v4.16.\n");
       return NULL;
    }
@@ -777,6 +776,8 @@ iris_screen_create(int fd, const struct pipe_screen_config *config)
    pscreen->query_memory_info = iris_query_memory_info;
    pscreen->get_driver_query_group_info = iris_get_monitor_group_info;
    pscreen->get_driver_query_info = iris_get_monitor_info;
+
+   glsl_type_singleton_init_or_ref();
 
    return pscreen;
 }

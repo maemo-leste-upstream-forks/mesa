@@ -470,16 +470,16 @@ enum isl_format iris_image_view_get_format(struct iris_context *ice,
 static inline bool
 iris_resource_unfinished_aux_import(struct iris_resource *res)
 {
-   return res->base.next != NULL && res->mod_info &&
+   return res->aux.bo == NULL && res->mod_info &&
       res->mod_info->aux_usage != ISL_AUX_USAGE_NONE;
 }
 
 void iris_resource_finish_aux_import(struct pipe_screen *pscreen,
                                      struct iris_resource *res);
 
-bool iris_has_color_unresolved(const struct iris_resource *res,
-                               unsigned start_level, unsigned num_levels,
-                               unsigned start_layer, unsigned num_layers);
+bool iris_has_invalid_primary(const struct iris_resource *res,
+                              unsigned start_level, unsigned num_levels,
+                              unsigned start_layer, unsigned num_layers);
 
 void iris_resource_check_level_layer(const struct iris_resource *res,
                                      uint32_t level, uint32_t layer);

@@ -29,7 +29,7 @@
 static void mark_sampler_desc(const nir_variable *var,
 			      struct radv_shader_info *info)
 {
-	info->desc_set_used_mask |= (1 << var->data.descriptor_set);
+	info->desc_set_used_mask |= (1u << var->data.descriptor_set);
 }
 
 static void mark_ls_output(struct radv_shader_info *info,
@@ -204,6 +204,45 @@ gather_intrinsic_store_deref_info(const nir_shader *nir,
 }
 
 static void
+gather_intrinsic_store_output_info(const nir_shader *nir,
+				   const nir_intrinsic_instr *instr,
+				   struct radv_shader_info *info)
+{
+	unsigned idx = nir_intrinsic_io_semantics(instr).location;
+	unsigned num_slots = nir_intrinsic_io_semantics(instr).num_slots;
+	unsigned component = nir_intrinsic_component(instr);
+	unsigned write_mask = nir_intrinsic_write_mask(instr);
+	uint8_t *output_usage_mask = NULL;
+
+	if (instr->src[0].ssa->bit_size == 64)
+		write_mask = widen_writemask(write_mask);
+
+	switch (nir->info.stage) {
+	case MESA_SHADER_VERTEX:
+		output_usage_mask = info->vs.output_usage_mask;
+		break;
+	case MESA_SHADER_TESS_EVAL:
+		output_usage_mask = info->tes.output_usage_mask;
+		break;
+	case MESA_SHADER_TESS_CTRL:
+		/* TODO: Gather tess outputs for LLVM. */
+		break;
+	case MESA_SHADER_GEOMETRY:
+		output_usage_mask = info->gs.output_usage_mask;
+		break;
+	default:
+		break;
+	}
+
+	if (output_usage_mask) {
+		for (unsigned i = 0; i < num_slots; i++) {
+			output_usage_mask[idx + i] |=
+				((write_mask >> (i * 4)) & 0xf) << component;
+		}
+	}
+}
+
+static void
 gather_push_constant_info(const nir_shader *nir,
 			  const nir_intrinsic_instr *instr,
 			  struct radv_shader_info *info)
@@ -288,7 +327,7 @@ gather_intrinsic_info(const nir_shader *nir, const nir_intrinsic_instr *instr,
 		gather_push_constant_info(nir, instr, info);
 		break;
 	case nir_intrinsic_vulkan_resource_index:
-		info->desc_set_used_mask |= (1 << nir_intrinsic_desc_set(instr));
+		info->desc_set_used_mask |= (1u << nir_intrinsic_desc_set(instr));
 		break;
 	case nir_intrinsic_image_deref_load:
 	case nir_intrinsic_image_deref_store:
@@ -332,6 +371,17 @@ gather_intrinsic_info(const nir_shader *nir, const nir_intrinsic_instr *instr,
 	case nir_intrinsic_ssbo_atomic_xor:
 	case nir_intrinsic_ssbo_atomic_exchange:
 	case nir_intrinsic_ssbo_atomic_comp_swap:
+	case nir_intrinsic_store_global:
+	case nir_intrinsic_global_atomic_add:
+	case nir_intrinsic_global_atomic_imin:
+	case nir_intrinsic_global_atomic_umin:
+	case nir_intrinsic_global_atomic_imax:
+	case nir_intrinsic_global_atomic_umax:
+	case nir_intrinsic_global_atomic_and:
+	case nir_intrinsic_global_atomic_or:
+	case nir_intrinsic_global_atomic_xor:
+	case nir_intrinsic_global_atomic_exchange:
+	case nir_intrinsic_global_atomic_comp_swap:
 		set_writes_memory(nir, info);
 		break;
 	case nir_intrinsic_load_deref:
@@ -352,6 +402,9 @@ gather_intrinsic_info(const nir_shader *nir, const nir_intrinsic_instr *instr,
 	case nir_intrinsic_deref_atomic_comp_swap: {
 		if (nir_src_as_deref(instr->src[0])->mode & (nir_var_mem_global | nir_var_mem_ssbo))
 			set_writes_memory(nir, info);
+		break;
+	case nir_intrinsic_store_output:
+		gather_intrinsic_store_output_info(nir, instr, info);
 		break;
 	}
 	default:
@@ -403,7 +456,7 @@ gather_info_input_decl_vs(const nir_shader *nir, const nir_variable *var,
 	unsigned attrib_count = glsl_count_attribute_slots(var->type, true);
 	int idx = var->data.location;
 
-	if (idx >= VERT_ATTRIB_GENERIC0 && idx <= VERT_ATTRIB_GENERIC15)
+	if (idx >= VERT_ATTRIB_GENERIC0 && idx < VERT_ATTRIB_GENERIC0 + MAX_VERTEX_ATTRIBS)
 		info->vs.has_vertex_buffers = true;
 
 	for (unsigned i = 0; i < attrib_count; ++i) {
@@ -679,14 +732,14 @@ radv_nir_shader_info_pass(const struct nir_shader *nir,
 		info->loads_dynamic_offsets = true;
 	}
 
-	nir_foreach_variable(variable, &nir->inputs)
+	nir_foreach_shader_in_variable(variable, nir)
 		gather_info_input_decl(nir, variable, info, key);
 
 	nir_foreach_block(block, func->impl) {
 		gather_info_block(nir, block, info);
 	}
 
-	nir_foreach_variable(variable, &nir->outputs)
+	nir_foreach_shader_out_variable(variable, nir)
 		gather_info_output_decl(nir, variable, info, key);
 
 	if (nir->info.stage == MESA_SHADER_VERTEX ||
@@ -846,6 +899,18 @@ radv_nir_shader_info_pass(const struct nir_shader *nir,
 	info->float_controls_mode = nir->info.float_controls_execution_mode;
 
 	if (nir->info.stage == MESA_SHADER_FRAGMENT) {
+		/* If the i-th output is used, all previous outputs must be
+		 * non-zero to match the target format.
+		 * TODO: compact MRT to avoid holes and to remove this
+		 * workaround.
+		 */
+		unsigned num_targets = (util_last_bit(info->ps.cb_shader_mask) + 3) / 4;
+		for (unsigned i = 0; i < num_targets; i++) {
+			if (!(info->ps.cb_shader_mask & (0xfu << (i * 4)))) {
+				info->ps.cb_shader_mask |= 0xfu << (i * 4);
+			}
+		}
+
 		if (key->fs.is_dual_src) {
 			info->ps.cb_shader_mask |= (info->ps.cb_shader_mask & 0xf) << 4;
 		}

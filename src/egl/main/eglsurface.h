@@ -182,22 +182,19 @@ _eglInitSurface(_EGLSurface *surf, _EGLDisplay *disp, EGLint type,
 
 
 extern EGLBoolean
-_eglQuerySurface(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surf, EGLint attribute, EGLint *value);
+_eglQuerySurface(_EGLDisplay *disp, _EGLSurface *surf, EGLint attribute, EGLint *value);
 
 
 extern EGLBoolean
-_eglSurfaceAttrib(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surf, EGLint attribute, EGLint value);
+_eglSurfaceAttrib(_EGLDisplay *disp, _EGLSurface *surf, EGLint attribute, EGLint value);
 
 
 extern EGLBoolean
-_eglBindTexImage(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surf, EGLint buffer);
+_eglBindTexImage(_EGLDisplay *disp, _EGLSurface *surf, EGLint buffer);
 
 extern EGLBoolean
-_eglReleaseTexImage(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surf, EGLint buffer);
+_eglReleaseTexImage(_EGLDisplay *disp, _EGLSurface *surf, EGLint buffer);
 
-
-extern EGLBoolean
-_eglSwapInterval(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surf, EGLint interval);
 
 extern EGLBoolean
 _eglSurfaceHasMutableRenderBuffer(_EGLSurface *surf);

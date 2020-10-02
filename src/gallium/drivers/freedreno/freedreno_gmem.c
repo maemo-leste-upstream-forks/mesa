@@ -24,6 +24,7 @@
  *    Rob Clark <robclark@freedesktop.org>
  */
 
+#include "util/debug.h"
 #include "pipe/p_state.h"
 #include "util/hash_table.h"
 #include "util/u_dump.h"
@@ -326,6 +327,11 @@ gmem_stateobj_init(struct fd_screen *screen, struct gmem_key *key)
 			tpp_x += 1;
 	}
 
+#ifdef DEBUG
+	tpp_x = env_var_as_unsigned("TPP_X", tpp_x);
+	tpp_y = env_var_as_unsigned("TPP_Y", tpp_x);
+#endif
+
 	gmem->maxpw = tpp_x;
 	gmem->maxph = tpp_y;
 
@@ -597,6 +603,7 @@ render_tiles(struct fd_batch *batch, struct fd_gmem_stateobj *gmem)
 		} else {
 			ctx->screen->emit_ib(batch->gmem, batch->draw);
 		}
+
 		fd_log(batch, "TILE[%d]: END DRAW IB", i);
 		fd_reset_wfi(batch);
 
@@ -705,6 +712,7 @@ fd_gmem_render_tiles(struct fd_batch *batch)
 
 	if (batch->nondraw) {
 		DBG("%p: rendering non-draw", batch);
+		render_sysmem(batch);
 		ctx->stats.batch_nondraw++;
 	} else if (sysmem) {
 		fd_log(batch, "%p: rendering sysmem %ux%u (%s/%s), num_draws=%u",

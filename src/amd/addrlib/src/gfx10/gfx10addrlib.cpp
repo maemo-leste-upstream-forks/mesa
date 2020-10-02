@@ -513,7 +513,6 @@ ADDR_E_RETURNCODE Gfx10Lib::HwlComputeCmaskAddrFromCoord(
     ADDR2_COMPUTE_CMASK_INFO_INPUT input = {};
     input.size            = sizeof(input);
     input.cMaskFlags      = pIn->cMaskFlags;
-    input.colorFlags      = pIn->colorFlags;
     input.unalignedWidth  = Max(pIn->unalignedWidth,  1u);
     input.unalignedHeight = Max(pIn->unalignedHeight, 1u);
     input.numSlices       = Max(pIn->numSlices,       1u);
@@ -923,12 +922,35 @@ ChipFamily Gfx10Lib::HwlConvertChipFamily(
         case FAMILY_NV:
             m_settings.isDcn2 = 1;
 
-            if (ASICREV_IS_SIENNA_M(chipRevision))
+            if (ASICREV_IS_SIENNA_CICHLID(chipRevision))
+            {
+                m_settings.supportRbPlus   = 1;
+                m_settings.dccUnsup3DSwDis = 0;
+            }
+
+            if (ASICREV_IS_NAVY_FLOUNDER(chipRevision))
+            {
+                m_settings.supportRbPlus   = 1;
+                m_settings.dccUnsup3DSwDis = 0;
+            }
+
+            if (ASICREV_IS_DIMGREY_CAVEFISH(chipRevision))
             {
                 m_settings.supportRbPlus   = 1;
                 m_settings.dccUnsup3DSwDis = 0;
             }
             break;
+
+        case FAMILY_VGH:
+            m_settings.isDcn2 = 1;
+
+            if (ASICREV_IS_VANGOGH(chipRevision))
+            {
+                m_settings.supportRbPlus   = 1;
+                m_settings.dccUnsup3DSwDis = 0;
+            }
+            break;
+
         default:
             ADDR_ASSERT(!"Unknown chip family");
             break;

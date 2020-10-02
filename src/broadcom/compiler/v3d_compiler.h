@@ -261,6 +261,13 @@ enum quniform_contents {
 
         QUNIFORM_ALPHA_REF,
 
+        QUNIFORM_LINE_WIDTH,
+
+        /* The line width sent to hardware. This includes the expanded width
+         * when anti-aliasing is enabled.
+         */
+        QUNIFORM_AA_LINE_WIDTH,
+
         /* Number of workgroups passed to glDispatchCompute in the dimension
          * selected by the data value.
          */
@@ -345,6 +352,7 @@ struct v3d_fs_key {
         bool depth_enabled;
         bool is_points;
         bool is_lines;
+        bool line_smoothing;
         bool alpha_test;
         bool point_coord_upper_left;
         bool light_twoside;
@@ -481,6 +489,12 @@ vir_after_block(struct qblock *block)
         return (struct vir_cursor){ vir_cursor_addtail, &block->instructions };
 }
 
+enum v3d_compilation_result {
+        V3D_COMPILATION_SUCCEEDED,
+        V3D_COMPILATION_FAILED_REGISTER_ALLOCATION,
+        V3D_COMPILATION_FAILED,
+};
+
 /**
  * Compiler state saved across compiler invocations, for any expensive global
  * setup.
@@ -542,6 +556,11 @@ struct v3d_compile {
         bool uses_center_w;
         bool writes_z;
         bool uses_implicit_point_line_varyings;
+
+        /* Whether we are using the fallback scheduler. This will be set after
+         * register allocation has failed once.
+         */
+        bool fallback_scheduler;
 
         /* State for whether we're executing on each channel currently.  0 if
          * yes, otherwise a block number + 1 that the channel jumped to.
@@ -658,7 +677,7 @@ struct v3d_compile {
         bool emitted_tlb_load;
         bool lock_scoreboard_on_first_thrsw;
 
-        bool failed;
+        enum v3d_compilation_result compilation_result;
 
         bool tmu_dirty_rcl;
 };
@@ -789,6 +808,7 @@ uint64_t *v3d_compile(const struct v3d_compiler *compiler,
                       int program_id, int variant_id,
                       uint32_t *final_assembly_size);
 
+uint32_t v3d_prog_data_size(gl_shader_stage stage);
 void v3d_nir_to_vir(struct v3d_compile *c);
 
 void vir_compile_destroy(struct v3d_compile *c);
@@ -860,6 +880,7 @@ bool vir_opt_small_immediates(struct v3d_compile *c);
 bool vir_opt_vpm(struct v3d_compile *c);
 void v3d_nir_lower_blend(nir_shader *s, struct v3d_compile *c);
 void v3d_nir_lower_io(nir_shader *s, struct v3d_compile *c);
+void v3d_nir_lower_line_smooth(nir_shader *shader);
 void v3d_nir_lower_logic_ops(nir_shader *s, struct v3d_compile *c);
 void v3d_nir_lower_scratch(nir_shader *s);
 void v3d_nir_lower_txf_ms(nir_shader *s, struct v3d_compile *c);
@@ -1063,6 +1084,7 @@ VIR_A_ALU0(YCD)
 VIR_A_ALU0(MSF)
 VIR_A_ALU0(REVF)
 VIR_A_ALU0(BARRIERID)
+VIR_A_ALU0(SAMPID)
 VIR_A_NODST_1(VPMSETUP)
 VIR_A_NODST_0(VPMWT)
 VIR_A_ALU2(FCMP)

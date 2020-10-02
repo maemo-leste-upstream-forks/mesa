@@ -589,11 +589,12 @@ store_tcs_output(struct ac_shader_abi *abi,
 		 LLVMValueRef param_index,
 		 unsigned const_index,
 		 LLVMValueRef src,
-		 unsigned writemask)
+		 unsigned writemask,
+		 unsigned component,
+		 unsigned driver_location)
 {
 	struct radv_shader_context *ctx = radv_shader_context_from_abi(abi);
 	const unsigned location = var->data.location;
-	unsigned component = var->data.location_frac;
 	const bool is_patch = var->data.patch;
 	const bool is_compact = var->data.compact;
 	LLVMValueRef dw_addr;
@@ -1367,7 +1368,7 @@ handle_vs_input_decl(struct radv_shader_context *ctx,
 static void
 handle_vs_inputs(struct radv_shader_context *ctx,
                  struct nir_shader *nir) {
-	nir_foreach_variable(variable, &nir->inputs)
+	nir_foreach_shader_in_variable(variable, nir)
 		handle_vs_input_decl(ctx, variable);
 }
 
@@ -1377,7 +1378,7 @@ prepare_interp_optimize(struct radv_shader_context *ctx,
 {
 	bool uses_center = false;
 	bool uses_centroid = false;
-	nir_foreach_variable(variable, &nir->inputs) {
+	nir_foreach_shader_in_variable(variable, nir) {
 		if (glsl_get_base_type(glsl_without_array(variable->type)) != GLSL_TYPE_FLOAT ||
 		    variable->data.sample)
 			continue;
@@ -2011,8 +2012,12 @@ handle_vs_outputs_post(struct radv_shader_context *ctx,
 		outputs[noutput].slot_name = VARYING_SLOT_PRIMITIVE_ID;
 		outputs[noutput].slot_index = 0;
 		outputs[noutput].usage_mask = 0x1;
-		outputs[noutput].values[0] =
-			ac_get_arg(&ctx->ac, ctx->args->vs_prim_id);
+		if (ctx->stage == MESA_SHADER_TESS_EVAL)
+			outputs[noutput].values[0] =
+				ac_get_arg(&ctx->ac, ctx->args->ac.tes_patch_id);
+		else
+			outputs[noutput].values[0] =
+				ac_get_arg(&ctx->ac, ctx->args->vs_prim_id);
 		for (unsigned j = 1; j < 4; j++)
 			outputs[noutput].values[j] = ctx->ac.f32_0;
 		noutput++;
@@ -3586,7 +3591,8 @@ handle_fs_outputs_post(struct radv_shader_context *ctx)
 			values[j] = ac_to_float(&ctx->ac,
 						radv_load_output(ctx, i, j));
 
-		bool ret = si_export_mrt_color(ctx, values, index,
+		bool ret = si_export_mrt_color(ctx, values,
+					       i - FRAG_RESULT_DATA0,
 					       &color_args[index]);
 		if (ret)
 			index++;
@@ -4089,7 +4095,7 @@ LLVMModuleRef ac_translate_nir_to_llvm(struct ac_llvm_compiler *ac_llvm,
 			ac_emit_barrier(&ctx.ac, ctx.stage);
 		}
 
-		nir_foreach_variable(variable, &shaders[i]->outputs)
+		nir_foreach_shader_out_variable(variable, shaders[i])
 			scan_shader_output_decl(&ctx, variable, shaders[i], shaders[i]->info.stage);
 
 		ac_setup_rings(&ctx);
@@ -4141,8 +4147,9 @@ LLVMModuleRef ac_translate_nir_to_llvm(struct ac_llvm_compiler *ac_llvm,
 			unsigned tcs_num_outputs = util_last_bit64(ctx.args->shader_info->tcs.outputs_written);
 			unsigned tcs_num_patch_outputs = util_last_bit64(ctx.args->shader_info->tcs.patch_outputs_written);
 			args->shader_info->tcs.num_patches = ctx.tcs_num_patches;
-			args->shader_info->tcs.lds_size =
+			args->shader_info->tcs.num_lds_blocks =
 				calculate_tess_lds_size(
+					ctx.args->options->chip_class,
 					ctx.args->options->key.tcs.input_vertices,
 					ctx.shader->info.tess.tcs_vertices_out,
 					ctx.tcs_num_inputs,
@@ -4407,7 +4414,7 @@ radv_compile_gs_copy_shader(struct ac_llvm_compiler *ac_llvm,
 
 	ac_setup_rings(&ctx);
 
-	nir_foreach_variable(variable, &geom_shader->outputs) {
+	nir_foreach_shader_out_variable(variable, geom_shader) {
 		scan_shader_output_decl(&ctx, variable, geom_shader, MESA_SHADER_VERTEX);
 		ac_handle_shader_output_decl(&ctx.ac, &ctx.abi, geom_shader,
 					     variable, MESA_SHADER_VERTEX);

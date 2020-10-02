@@ -82,18 +82,28 @@ struct panfrost_query {
 
 struct panfrost_fence {
         struct pipe_reference reference;
-        struct util_dynarray syncfds;
+        uint32_t syncobj;
+        bool signaled;
+};
+
+struct panfrost_streamout_target {
+        struct pipe_stream_output_target base;
+        uint32_t offset;
 };
 
 struct panfrost_streamout {
         struct pipe_stream_output_target *targets[PIPE_MAX_SO_BUFFERS];
-        uint32_t offsets[PIPE_MAX_SO_BUFFERS];
         unsigned num_targets;
 };
 
 struct panfrost_context {
         /* Gallium context */
         struct pipe_context base;
+
+        /* Upload manager for small resident GPU-internal data structures, like
+         * sampler descriptors. We use an upload manager since the minimum BO
+         * size from the kernel is 4kb */
+        struct u_upload_mgr *state_uploader;
 
         /* Bound job batch and map of panfrost_batch_key to job batches */
         struct panfrost_batch *batch;
@@ -118,6 +128,7 @@ struct panfrost_context {
 
         unsigned vertex_count;
         unsigned instance_count;
+        unsigned offset_start;
         enum pipe_prim_type active_prim;
 
         /* If instancing is enabled, vertex count padded for instance; if
@@ -161,8 +172,12 @@ struct panfrost_context {
         struct pipe_viewport_state pipe_viewport;
         struct pipe_scissor_state scissor;
         struct pipe_blend_color blend_color;
-        struct pipe_depth_stencil_alpha_state *depth_stencil;
+        struct panfrost_zsa_state *depth_stencil;
         struct pipe_stencil_ref stencil_ref;
+        unsigned sample_mask;
+        unsigned min_samples;
+
+        struct panfrost_blend_state blit_blend;
 };
 
 /* Corresponds to the CSO */
@@ -172,19 +187,28 @@ struct panfrost_rasterizer {
 };
 
 /* Variants bundle together to form the backing CSO, bundling multiple
- * shaders with varying emulated features baked in (alpha test
- * parameters, etc) */
+ * shaders with varying emulated features baked in */
 
 /* A shader state corresponds to the actual, current variant of the shader */
 struct panfrost_shader_state {
         /* Compiled, mapped descriptor, ready for the hardware */
         bool compiled;
 
+        /* Uploaded shader descriptor (TODO: maybe stuff the packed unuploaded
+         * bits in a union to save some memory?) */
+
+        struct {
+                struct pipe_resource *rsrc;
+                uint32_t offset;
+        } upload;
+
+        struct mali_shader_packed shader;
+        struct mali_midgard_properties_packed properties;
+        struct mali_preload_packed preload;
+
         /* Non-descript information */
-        int uniform_count;
-        unsigned uniform_cutoff;
+        unsigned uniform_count;
         unsigned work_reg_count;
-        unsigned attribute_count;
         bool can_discard;
         bool writes_point_size;
         bool writes_depth;
@@ -203,7 +227,7 @@ struct panfrost_shader_state {
         /* For Bifrost - output type for each RT */
         enum bifrost_shader_type blend_types[BIFROST_MAX_RENDER_TARGET_COUNT];
 
-        unsigned int varying_count;
+        unsigned attribute_count, varying_count, ubo_count;
         enum mali_format varyings[PIPE_MAX_ATTRIBS];
         gl_varying_slot varyings_loc[PIPE_MAX_ATTRIBS];
         struct pipe_stream_output_info stream_output;
@@ -212,17 +236,14 @@ struct panfrost_shader_state {
         unsigned sysval_count;
         unsigned sysval[MAX_SYSVAL_COUNT];
 
-        /* Information on this particular shader variant */
-        struct pipe_alpha_state alpha_state;
-
-        uint16_t point_sprite_mask;
-        unsigned point_sprite_upper_left : 1;
-
         /* Should we enable helper invocations */
         bool helper_invocations;
 
-        unsigned first_tag;
+        /* GPU-executable memory */
         struct panfrost_bo *bo;
+
+        BITSET_WORD outputs_read;
+        enum pipe_format rt_formats[8];
 };
 
 /* A collection of varyings (the CSO) */
@@ -250,13 +271,22 @@ struct panfrost_vertex_state {
         unsigned num_elements;
 
         struct pipe_vertex_element pipe[PIPE_MAX_ATTRIBS];
-        struct mali_attr_meta hw[PIPE_MAX_ATTRIBS];
+        unsigned formats[PIPE_MAX_ATTRIBS];
+};
+
+struct panfrost_zsa_state {
+        struct pipe_depth_stencil_alpha_state base;
+
+        /* Precomputed stencil state */
+        struct mali_stencil_packed stencil_front;
+        struct mali_stencil_packed stencil_back;
+        u8 stencil_mask_front;
+        u8 stencil_mask_back;
 };
 
 struct panfrost_sampler_state {
         struct pipe_sampler_state base;
-        struct mali_sampler_descriptor midgard_hw;
-        struct bifrost_sampler_descriptor bifrost_hw;
+        struct mali_midgard_sampler_packed hw;
 };
 
 /* Misnomer: Sampler view corresponds to textures, not samplers */
@@ -264,15 +294,21 @@ struct panfrost_sampler_state {
 struct panfrost_sampler_view {
         struct pipe_sampler_view base;
         struct panfrost_bo *bo;
-        struct bifrost_texture_descriptor *bifrost_descriptor;
+        struct mali_bifrost_texture_packed bifrost_descriptor;
         mali_ptr texture_bo;
-        enum mali_texture_layout layout;
+        uint64_t modifier;
 };
 
 static inline struct panfrost_context *
 pan_context(struct pipe_context *pcontext)
 {
         return (struct panfrost_context *) pcontext;
+}
+
+static inline struct panfrost_streamout_target *
+pan_so_target(struct pipe_stream_output_target *target)
+{
+        return (struct panfrost_streamout_target *)target;
 }
 
 static inline struct panfrost_shader_state *
@@ -290,15 +326,8 @@ panfrost_get_shader_state(struct panfrost_context *ctx,
 struct pipe_context *
 panfrost_create_context(struct pipe_screen *screen, void *priv, unsigned flags);
 
-void
-panfrost_invalidate_frame(struct panfrost_context *ctx);
-
 bool
 panfrost_writes_point_size(struct panfrost_context *ctx);
-
-void
-panfrost_vertex_state_upd_attr_offs(struct panfrost_context *ctx,
-                                    struct mali_vertex_tiler_postfix *vertex_postfix);
 
 struct panfrost_transfer
 panfrost_vertex_tiler_job(struct panfrost_context *ctx, bool is_tiler);
@@ -318,8 +347,10 @@ panfrost_attach_mfbd(struct panfrost_batch *batch, unsigned vertex_count);
 void
 panfrost_attach_sfbd(struct panfrost_batch *batch, unsigned vertex_count);
 
-struct midgard_tiler_descriptor
-panfrost_emit_midg_tiler(struct panfrost_batch *batch, unsigned vertex_count);
+void
+panfrost_emit_midg_tiler(struct panfrost_batch *batch,
+                         struct mali_midgard_tiler_packed *tp,
+                         unsigned vertex_count);
 
 mali_ptr
 panfrost_fragment_job(struct panfrost_batch *batch, bool has_draws);
@@ -331,9 +362,6 @@ panfrost_shader_compile(struct panfrost_context *ctx,
                         gl_shader_stage stage,
                         struct panfrost_shader_state *state,
                         uint64_t *outputs_written);
-
-unsigned
-panfrost_ubo_count(struct panfrost_context *ctx, enum pipe_shader_type stage);
 
 void
 panfrost_create_sampler_view_bo(struct panfrost_sampler_view *so,

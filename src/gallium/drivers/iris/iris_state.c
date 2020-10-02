@@ -667,7 +667,8 @@ emit_pipeline_select(struct iris_batch *batch, uint32_t pipeline)
 
    iris_emit_cmd(batch, GENX(PIPELINE_SELECT), sel) {
 #if GEN_GEN >= 9
-      sel.MaskBits = 3;
+      sel.MaskBits = GEN_GEN >= 12 ? 0x13 : 3;
+      sel.MediaSamplerDOPClockGateEnable = GEN_GEN >= 12;
 #endif
       sel.PipelineSelection = pipeline;
    }
@@ -906,6 +907,32 @@ init_aux_map_state(struct iris_batch *batch);
 #endif
 
 /**
+ * Upload initial GPU state for any kind of context.
+ *
+ * These need to happen for both render and compute.
+ */
+static void
+iris_init_common_context(struct iris_batch *batch)
+{
+#if GEN_GEN == 11
+   uint32_t reg_val;
+
+   iris_pack_state(GENX(SAMPLER_MODE), &reg_val, reg) {
+      reg.HeaderlessMessageforPreemptableContexts = 1;
+      reg.HeaderlessMessageforPreemptableContextsMask = 1;
+   }
+   iris_emit_lri(batch, SAMPLER_MODE, reg_val);
+
+   /* Bit 1 must be set in HALF_SLICE_CHICKEN7. */
+   iris_pack_state(GENX(HALF_SLICE_CHICKEN7), &reg_val, reg) {
+      reg.EnabledTexelOffsetPrecisionFix = 1;
+      reg.EnabledTexelOffsetPrecisionFixMask = 1;
+   }
+   iris_emit_lri(batch, HALF_SLICE_CHICKEN7, reg_val);
+#endif
+}
+
+/**
  * Upload the initial GPU state for a render context.
  *
  * This sets some invariant state that needs to be programmed a particular
@@ -925,6 +952,8 @@ iris_init_render_context(struct iris_batch *batch)
 
    init_state_base_address(batch);
 
+   iris_init_common_context(batch);
+
 #if GEN_GEN >= 9
    iris_pack_state(GENX(CS_DEBUG_MODE2), &reg_val, reg) {
       reg.CONSTANT_BUFFERAddressOffsetDisable = true;
@@ -943,6 +972,8 @@ iris_init_render_context(struct iris_batch *batch)
    iris_pack_state(GENX(CACHE_MODE_1), &reg_val, reg) {
       reg.FloatBlendOptimizationEnable = true;
       reg.FloatBlendOptimizationEnableMask = true;
+      reg.MSCRAWHazardAvoidanceBit = true;
+      reg.MSCRAWHazardAvoidanceBitMask = true;
       reg.PartialResolveDisableInVC = true;
       reg.PartialResolveDisableInVCMask = true;
    }
@@ -960,19 +991,6 @@ iris_init_render_context(struct iris_batch *batch)
       reg.TCDisable = true;
    }
    iris_emit_lri(batch, TCCNTLREG, reg_val);
-
-   iris_pack_state(GENX(SAMPLER_MODE), &reg_val, reg) {
-      reg.HeaderlessMessageforPreemptableContexts = 1;
-      reg.HeaderlessMessageforPreemptableContextsMask = 1;
-   }
-   iris_emit_lri(batch, SAMPLER_MODE, reg_val);
-
-   /* Bit 1 must be set in HALF_SLICE_CHICKEN7. */
-   iris_pack_state(GENX(HALF_SLICE_CHICKEN7), &reg_val, reg) {
-      reg.EnabledTexelOffsetPrecisionFix = 1;
-      reg.EnabledTexelOffsetPrecisionFixMask = 1;
-   }
-   iris_emit_lri(batch, HALF_SLICE_CHICKEN7, reg_val);
 
    /* Hardware specification recommends disabling repacking for the
     * compatibility with decompression mechanism in display controller.
@@ -1052,6 +1070,8 @@ iris_init_compute_context(struct iris_batch *batch)
    iris_emit_l3_config(batch, batch->screen->l3_config_cs);
 
    init_state_base_address(batch);
+
+   iris_init_common_context(batch);
 
 #if GEN_GEN == 12
    emit_pipeline_select(batch, GPGPU);
@@ -2845,6 +2865,39 @@ iris_set_sampler_views(struct pipe_context *ctx,
                                    : IRIS_DIRTY_RENDER_RESOLVES_AND_FLUSHES;
 }
 
+static void
+iris_set_compute_resources(struct pipe_context *ctx,
+                           unsigned start, unsigned count,
+                           struct pipe_surface **resources)
+{
+   assert(count == 0);
+}
+
+static void
+iris_set_global_binding(struct pipe_context *ctx,
+                        unsigned start_slot, unsigned count,
+                        struct pipe_resource **resources,
+                        uint32_t **handles)
+{
+   struct iris_context *ice = (struct iris_context *) ctx;
+
+   assert(start_slot + count <= IRIS_MAX_GLOBAL_BINDINGS);
+   for (unsigned i = 0; i < count; i++) {
+      if (resources && resources[i]) {
+         pipe_resource_reference(&ice->state.global_bindings[start_slot + i],
+                                 resources[i]);
+         struct iris_resource *res = (void *) resources[i];
+         uint64_t addr = res->bo->gtt_offset;
+         memcpy(handles[i], &addr, sizeof(addr));
+      } else {
+         pipe_resource_reference(&ice->state.global_bindings[start_slot + i],
+                                 NULL);
+      }
+   }
+
+   ice->state.stage_dirty |= IRIS_STAGE_DIRTY_BINDINGS_CS;
+}
+
 /**
  * The pipe->set_tess_state() driver hook.
  */
@@ -3188,26 +3241,35 @@ iris_set_constant_buffer(struct pipe_context *ctx,
 
 static void
 upload_sysvals(struct iris_context *ice,
-                gl_shader_stage stage)
+               gl_shader_stage stage,
+               const struct pipe_grid_info *grid)
 {
    UNUSED struct iris_genx_state *genx = ice->state.genx;
    struct iris_shader_state *shs = &ice->state.shaders[stage];
 
    struct iris_compiled_shader *shader = ice->shaders.prog[stage];
-   if (!shader || shader->num_system_values == 0)
+   if (!shader || (shader->num_system_values == 0 &&
+                   shader->kernel_input_size == 0))
       return;
 
    assert(shader->num_cbufs > 0);
 
    unsigned sysval_cbuf_index = shader->num_cbufs - 1;
    struct pipe_shader_buffer *cbuf = &shs->constbuf[sysval_cbuf_index];
-   unsigned upload_size = shader->num_system_values * sizeof(uint32_t);
-   uint32_t *map = NULL;
+   unsigned system_values_start =
+      ALIGN(shader->kernel_input_size, sizeof(uint32_t));
+   unsigned upload_size = system_values_start +
+                          shader->num_system_values * sizeof(uint32_t);
+   void *map = NULL;
 
    assert(sysval_cbuf_index < PIPE_MAX_CONSTANT_BUFFERS);
    u_upload_alloc(ice->ctx.const_uploader, 0, upload_size, 64,
-                  &cbuf->buffer_offset, &cbuf->buffer, (void **) &map);
+                  &cbuf->buffer_offset, &cbuf->buffer, &map);
 
+   if (shader->kernel_input_size > 0)
+      memcpy(map, grid->input, shader->kernel_input_size);
+
+   uint32_t *sysval_map = map + system_values_start;
    for (int i = 0; i < shader->num_system_values; i++) {
       uint32_t sysval = shader->system_values[i];
       uint32_t value = 0;
@@ -3256,7 +3318,7 @@ upload_sysvals(struct iris_context *ice,
          assert(!"unhandled system value");
       }
 
-      *map++ = value;
+      *sysval_map++ = value;
    }
 
    cbuf->buffer_size = upload_size;
@@ -4767,7 +4829,6 @@ iris_populate_binding_table(struct iris_context *ice,
                             bool pin_only)
 {
    const struct iris_binder *binder = &ice->state.binder;
-   struct iris_uncompiled_shader *ish = ice->shaders.uncompiled[stage];
    struct iris_compiled_shader *shader = ice->shaders.prog[stage];
    if (!shader)
       return;
@@ -4850,25 +4911,9 @@ iris_populate_binding_table(struct iris_context *ice,
    }
 
    foreach_surface_used(i, IRIS_SURFACE_GROUP_UBO) {
-      uint32_t addr;
-
-      if (i == bt->sizes[IRIS_SURFACE_GROUP_UBO] - 1) {
-         if (ish->const_data) {
-            iris_use_pinned_bo(batch, iris_resource_bo(ish->const_data), false,
-                               IRIS_DOMAIN_OTHER_READ);
-            iris_use_pinned_bo(batch, iris_resource_bo(ish->const_data_state.res),
-                               false, IRIS_DOMAIN_NONE);
-            addr = ish->const_data_state.offset;
-         } else {
-            /* This can only happen with INTEL_DISABLE_COMPACT_BINDING_TABLE=1. */
-            addr = use_null_surface(batch, ice);
-         }
-      } else {
-         addr = use_ubo_ssbo(batch, ice, &shs->constbuf[i],
-                             &shs->constbuf_surf_state[i], false,
-                             IRIS_DOMAIN_OTHER_READ);
-      }
-
+      uint32_t addr = use_ubo_ssbo(batch, ice, &shs->constbuf[i],
+                                   &shs->constbuf_surf_state[i], false,
+                                   IRIS_DOMAIN_OTHER_READ);
       push_bt_entry(addr);
    }
 
@@ -5608,7 +5653,7 @@ iris_upload_dirty_render_state(struct iris_context *ice,
          continue;
 
       if (shs->sysvals_need_upload)
-         upload_sysvals(ice, stage);
+         upload_sysvals(ice, stage, NULL);
 
       struct push_bos push_bos = {};
       setup_constant_buffers(ice, batch, stage, &push_bos);
@@ -6658,7 +6703,8 @@ iris_upload_gpgpu_walker(struct iris_context *ice,
    }
 
    /* TODO: Combine subgroup-id with cbuf0 so we can push regular uniforms */
-   if (stage_dirty & IRIS_STAGE_DIRTY_CS) {
+   if ((stage_dirty & IRIS_STAGE_DIRTY_CS) ||
+       cs_prog_data->local_size[0] == 0 /* Variable local group size */) {
       uint32_t curbe_data_offset = 0;
       assert(cs_prog_data->push.cross_thread.dwords == 0 &&
              cs_prog_data->push.per_thread.dwords == 1 &&
@@ -6678,6 +6724,15 @@ iris_upload_gpgpu_walker(struct iris_context *ice,
          curbe.CURBETotalDataLength = ALIGN(push_const_size, 64);
          curbe.CURBEDataStartAddress = curbe_data_offset;
       }
+   }
+
+   for (unsigned i = 0; i < IRIS_MAX_GLOBAL_BINDINGS; i++) {
+      struct pipe_resource *res = ice->state.global_bindings[i];
+      if (!res)
+         continue;
+
+      iris_use_pinned_bo(batch, iris_resource_bo(res),
+                         true, IRIS_DOMAIN_NONE);
    }
 
    if (stage_dirty & (IRIS_STAGE_DIRTY_SAMPLER_STATES_CS |
@@ -6746,9 +6801,10 @@ iris_upload_compute_state(struct iris_context *ice,
     */
    iris_use_pinned_bo(batch, ice->state.binder.bo, false, IRIS_DOMAIN_NONE);
 
-   if ((stage_dirty & IRIS_STAGE_DIRTY_CONSTANTS_CS) &&
-       shs->sysvals_need_upload)
-      upload_sysvals(ice, MESA_SHADER_COMPUTE);
+   if (((stage_dirty & IRIS_STAGE_DIRTY_CONSTANTS_CS) &&
+        shs->sysvals_need_upload) ||
+       shader->kernel_input_size > 0)
+      upload_sysvals(ice, MESA_SHADER_COMPUTE, grid);
 
    if (stage_dirty & IRIS_STAGE_DIRTY_BINDINGS_CS)
       iris_populate_binding_table(ice, batch, MESA_SHADER_COMPUTE, false);
@@ -7710,6 +7766,8 @@ genX(init_state)(struct iris_context *ice)
    ctx->set_shader_buffers = iris_set_shader_buffers;
    ctx->set_shader_images = iris_set_shader_images;
    ctx->set_sampler_views = iris_set_sampler_views;
+   ctx->set_compute_resources = iris_set_compute_resources;
+   ctx->set_global_binding = iris_set_global_binding;
    ctx->set_tess_state = iris_set_tess_state;
    ctx->set_framebuffer_state = iris_set_framebuffer_state;
    ctx->set_polygon_stipple = iris_set_polygon_stipple;

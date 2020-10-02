@@ -70,13 +70,13 @@ enum bi_class {
         BI_MOV,
         BI_REDUCE_FMA,
         BI_SELECT,
-        BI_SHIFT,
         BI_STORE,
         BI_STORE_VAR,
         BI_SPECIAL, /* _FAST on supported GPUs */
         BI_TABLE,
         BI_TEX,
         BI_ROUND,
+        BI_IMUL,
         BI_NUM_CLASSES
 };
 
@@ -139,20 +139,44 @@ struct bi_load_vary {
  *
  * We define our own enum of conditions since the conditions in the hardware
  * packed in crazy ways that would make manipulation unweildly (meaning changes
- * based on port swapping, etc), so we defer dealing with that until emit time.
+ * based on slot swapping, etc), so we defer dealing with that until emit time.
  * Likewise, we expose NIR types instead of the crazy branch types, although
  * the restrictions do eventually apply of course. */
 
 struct bi_block;
 
+/* Sync with gen-pack.py */
 enum bi_cond {
-        BI_COND_ALWAYS,
+        BI_COND_ALWAYS = 0,
         BI_COND_LT,
         BI_COND_LE,
         BI_COND_GE,
         BI_COND_GT,
         BI_COND_EQ,
         BI_COND_NE,
+};
+
+/* Segments, as synced with ISA. Used as an immediate in LOAD/STORE
+ * instructions for address calculation, and directly in SEG_ADD/SEG_SUB
+ * instructions. */
+
+enum bi_segment {
+        /* No segment (use global addressing, offset from GPU VA 0x0) */
+        BI_SEGMENT_NONE = 1,
+
+        /* Within workgroup local memory (shared memory). Relative to
+         * wls_base_pointer in the draw's thread storage descriptor */
+        BI_SEGMENT_WLS = 2,
+
+        /* Within one of the bound uniform buffers. Low 32-bits are the index
+         * within the uniform buffer; high 32-bits are the index of the uniform
+         * buffer itself. Relative to the uniform_array_pointer indexed within
+         * the draw's uniform remap table indexed by the high 32-bits. */
+        BI_SEGMENT_UBO = 4,
+
+        /* Within thread local storage (for spilling). Relative to
+         * tls_base_pointer in the draw's thread storage descriptor */
+        BI_SEGMENT_TLS = 7
 };
 
 /* Opcodes within a class */
@@ -170,6 +194,10 @@ enum bi_bitwise_op {
 enum bi_imath_op {
         BI_IMATH_ADD,
         BI_IMATH_SUB,
+};
+
+enum bi_imul_op {
+        BI_IMUL_IMUL,
 };
 
 enum bi_table_op {
@@ -200,6 +228,7 @@ enum bi_special_op {
          * exp2() in GL. In the first argument, it takes f2i_rte(x * 2^24). In
          * the second, it takes x itself. */
         BI_SPECIAL_EXP2_LOW,
+        BI_SPECIAL_IABS,
 };
 
 enum bi_tex_op {
@@ -209,7 +238,8 @@ enum bi_tex_op {
 };
 
 struct bi_bitwise {
-        bool src_invert[2];
+        bool dest_invert;
+        bool src1_invert;
         bool rshift; /* false for lshift */
 };
 
@@ -217,6 +247,10 @@ struct bi_texture {
         /* Constant indices. Indirect would need to be in src[..] like normal,
          * we can reserve some sentinels there for that for future. */
         unsigned texture_index, sampler_index;
+
+        /* Should the LOD be computed based on neighboring pixels? Only valid
+         * in fragment shaders. */
+        bool compute_lod;
 };
 
 typedef struct {
@@ -258,6 +292,9 @@ typedef struct {
         /* Source types if required by the class */
         nir_alu_type src_types[BIR_SRC_COUNT];
 
+        /* register_format if applicable */
+        nir_alu_type format;
+
         /* If the source type is 8-bit or 16-bit such that SIMD is possible,
          * and the class has BI_SWIZZLABLE, this is a swizzle in the usual
          * sense. On non-SIMD instructions, it can be used for component
@@ -269,6 +306,9 @@ typedef struct {
 
         /* The comparison op. BI_COND_ALWAYS may not be valid. */
         enum bi_cond cond;
+
+        /* For memory ops, base address */
+        enum bi_segment segment;
 
         /* A class-specific op from which the actual opcode can be derived
          * (along with the above information) */
@@ -282,6 +322,7 @@ typedef struct {
                 enum bi_frexp_op frexp;
                 enum bi_tex_op texture;
                 enum bi_imath_op imath;
+                enum bi_imul_op imul;
 
                 /* For FMA/ADD, should we add a biased exponent? */
                 bool mscale;
@@ -301,21 +342,17 @@ typedef struct {
         };
 } bi_instruction;
 
-/* Represents the assignment of ports for a given bi_bundle */
+/* Represents the assignment of slots for a given bi_bundle */
 
 typedef struct {
-        /* Register to assign to each port */
-        unsigned port[4];
+        /* Register to assign to each slot */
+        unsigned slot[4];
 
-        /* Read ports can be disabled */
+        /* Read slots can be disabled */
         bool enabled[2];
 
-        /* Should we write FMA? what about ADD? If only a single port is
-         * enabled it is in port 2, else ADD/FMA is 2/3 respectively */
-        bool write_fma, write_add;
-
-        /* Should we read with port 3? */
-        bool read_port3;
+        /* Configuration for slots 2/3 */
+        struct bifrost_reg_ctrl_23 slot23;
 
         /* Packed uniform/constant */
         uint8_t uniform_constant;
@@ -326,7 +363,7 @@ typedef struct {
 
 /* A bi_bundle contains two paired instruction pointers. If a slot is unfilled,
  * leave it NULL; the emitter will fill in a nop. Instructions reference
- * registers via ports which are assigned per bundle.
+ * registers via slots which are assigned per bundle.
  */
 
 typedef struct {

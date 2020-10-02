@@ -1637,6 +1637,21 @@ void handle_operands(std::map<PhysReg, copy_operation>& copy_map, lower_context*
    ctx->program->statistics[statistic_copies] += ctx->instructions.size() - num_instructions_before;
 }
 
+void emit_set_mode(Builder& bld, float_mode new_mode, bool set_round, bool set_denorm)
+{
+   if (bld.program->chip_class >= GFX10) {
+      if (set_round)
+         bld.sopp(aco_opcode::s_round_mode, -1, new_mode.round);
+      if (set_denorm)
+         bld.sopp(aco_opcode::s_denorm_mode, -1, new_mode.denorm);
+   } else if (set_round || set_denorm) {
+      /* "((size - 1) << 11) | register" (MODE is encoded as register 1) */
+      Instruction *instr = bld.sopk(aco_opcode::s_setreg_imm32_b32, Operand(new_mode.val), (7 << 11) | 1).instr;
+      /* has to be a literal */
+      instr->operands[0].setFixed(PhysReg{255});
+   }
+}
+
 void lower_to_hw_instr(Program* program)
 {
    Block *discard_block = NULL;
@@ -1648,28 +1663,28 @@ void lower_to_hw_instr(Program* program)
       ctx.program = program;
       Builder bld(program, &ctx.instructions);
 
-      bool set_mode = i == 0 && block->fp_mode.val != program->config->float_mode;
-      for (unsigned pred : block->linear_preds) {
-         if (program->blocks[pred].fp_mode.val != block->fp_mode.val) {
-            set_mode = true;
-            break;
+      float_mode config_mode;
+      config_mode.val = program->config->float_mode;
+
+      bool set_round = i == 0 && block->fp_mode.round != config_mode.round;
+      bool set_denorm = i == 0 && block->fp_mode.denorm != config_mode.denorm;
+      if (block->kind & block_kind_top_level) {
+         for (unsigned pred : block->linear_preds) {
+            if (program->blocks[pred].fp_mode.round != block->fp_mode.round)
+               set_round = true;
+            if (program->blocks[pred].fp_mode.denorm != block->fp_mode.denorm)
+               set_denorm = true;
          }
       }
-      if (set_mode) {
-         /* only allow changing modes at top-level blocks so this doesn't break
-          * the "jump over empty blocks" optimization */
-         assert(block->kind & block_kind_top_level);
-         uint32_t mode = block->fp_mode.val;
-         /* "((size - 1) << 11) | register" (MODE is encoded as register 1) */
-         Instruction *instr = bld.sopk(aco_opcode::s_setreg_imm32_b32, Operand(mode), (7 << 11) | 1).instr;
-         /* has to be a literal */
-         instr->operands[0].setFixed(PhysReg{255});
-      }
+      /* only allow changing modes at top-level blocks so this doesn't break
+       * the "jump over empty blocks" optimization */
+      assert((!set_round && !set_denorm) || (block->kind & block_kind_top_level));
+      emit_set_mode(bld, block->fp_mode, set_round, set_denorm);
 
       for (size_t j = 0; j < block->instructions.size(); j++) {
          aco_ptr<Instruction>& instr = block->instructions[j];
          aco_ptr<Instruction> mov;
-         if (instr->format == Format::PSEUDO) {
+         if (instr->format == Format::PSEUDO && instr->opcode != aco_opcode::p_unit_test) {
             Pseudo_instruction *pi = (Pseudo_instruction*)instr.get();
 
             switch (instr->opcode)
@@ -1788,7 +1803,7 @@ void lower_to_hw_instr(Program* program)
                //TODO: exec can be zero here with block_kind_discard
 
                assert(instr->operands[0].physReg() == scc);
-               bld.sopp(aco_opcode::s_cbranch_scc0, instr->operands[0], discard_block->index);
+               bld.sopp(aco_opcode::s_cbranch_scc0, Definition(exec, s2), instr->operands[0], discard_block->index);
 
                discard_block->linear_preds.push_back(block->index);
                block->linear_succs.push_back(discard_block->index);
@@ -1839,6 +1854,7 @@ void lower_to_hw_instr(Program* program)
                   emit_gfx10_wave64_bpermute(program, instr, bld);
                else
                   unreachable("Current hardware supports ds_bpermute, don't emit p_bpermute.");
+               break;
             }
             default:
                break;
@@ -1857,28 +1873,28 @@ void lower_to_hw_instr(Program* program)
             switch (instr->opcode) {
                case aco_opcode::p_branch:
                   assert(block->linear_succs[0] == branch->target[0]);
-                  bld.sopp(aco_opcode::s_branch, branch->target[0]);
+                  bld.sopp(aco_opcode::s_branch, branch->definitions[0], branch->target[0]);
                   break;
                case aco_opcode::p_cbranch_nz:
                   assert(block->linear_succs[1] == branch->target[0]);
                   if (branch->operands[0].physReg() == exec)
-                     bld.sopp(aco_opcode::s_cbranch_execnz, branch->target[0]);
+                     bld.sopp(aco_opcode::s_cbranch_execnz, branch->definitions[0], branch->target[0]);
                   else if (branch->operands[0].physReg() == vcc)
-                     bld.sopp(aco_opcode::s_cbranch_vccnz, branch->target[0]);
+                     bld.sopp(aco_opcode::s_cbranch_vccnz, branch->definitions[0], branch->target[0]);
                   else {
                      assert(branch->operands[0].physReg() == scc);
-                     bld.sopp(aco_opcode::s_cbranch_scc1, branch->target[0]);
+                     bld.sopp(aco_opcode::s_cbranch_scc1, branch->definitions[0], branch->target[0]);
                   }
                   break;
                case aco_opcode::p_cbranch_z:
                   assert(block->linear_succs[1] == branch->target[0]);
                   if (branch->operands[0].physReg() == exec)
-                     bld.sopp(aco_opcode::s_cbranch_execz, branch->target[0]);
+                     bld.sopp(aco_opcode::s_cbranch_execz, branch->definitions[0], branch->target[0]);
                   else if (branch->operands[0].physReg() == vcc)
-                     bld.sopp(aco_opcode::s_cbranch_vccz, branch->target[0]);
+                     bld.sopp(aco_opcode::s_cbranch_vccz, branch->definitions[0], branch->target[0]);
                   else {
                      assert(branch->operands[0].physReg() == scc);
-                     bld.sopp(aco_opcode::s_cbranch_scc0, branch->target[0]);
+                     bld.sopp(aco_opcode::s_cbranch_scc0, branch->definitions[0], branch->target[0]);
                   }
                   break;
                default:
@@ -1893,6 +1909,29 @@ void lower_to_hw_instr(Program* program)
                            reduce->operands[2].physReg(), // vtmp
                            reduce->definitions[2].physReg(), // sitmp
                            reduce->operands[0], reduce->definitions[0]);
+         } else if (instr->format == Format::PSEUDO_BARRIER) {
+            Pseudo_barrier_instruction* barrier = static_cast<Pseudo_barrier_instruction*>(instr.get());
+
+            /* Anything larger than a workgroup isn't possible. Anything
+             * smaller requires no instructions and this pseudo instruction
+             * would only be included to control optimizations. */
+            bool emit_s_barrier = barrier->exec_scope == scope_workgroup &&
+                                  program->workgroup_size > program->wave_size;
+
+            bld.insert(std::move(instr));
+            if (emit_s_barrier)
+               bld.sopp(aco_opcode::s_barrier);
+         } else if (instr->opcode == aco_opcode::p_cvt_f16_f32_rtne) {
+            float_mode new_mode = block->fp_mode;
+            new_mode.round16_64 = fp_round_ne;
+            bool set_round = new_mode.round != block->fp_mode.round;
+
+            emit_set_mode(bld, new_mode, set_round, false);
+
+            instr->opcode = aco_opcode::v_cvt_f16_f32;
+            ctx.instructions.emplace_back(std::move(instr));
+
+            emit_set_mode(bld, block->fp_mode, set_round, false);
          } else {
             ctx.instructions.emplace_back(std::move(instr));
          }

@@ -39,6 +39,7 @@
 #include "lp_state.h"
 #include "lp_debug.h"
 #include "frontend/sw_winsys.h"
+#include "lp_flush.h"
 
 
 static void *
@@ -137,6 +138,9 @@ llvmpipe_set_sampler_views(struct pipe_context *pipe,
          debug_printf("Illegal setting of sampler_view %d created in another "
                       "context\n", i);
       }
+
+      if (views[i])
+         llvmpipe_flush_resource(pipe, views[i]->texture, 0, true, false, false, "sampler_view");
       pipe_sampler_view_reference(&llvmpipe->sampler_views[shader][start + i],
                                   views[i]);
    }
@@ -329,7 +333,7 @@ prepare_shader_sampling(
             struct llvmpipe_screen *screen = llvmpipe_screen(tex->screen);
             struct sw_winsys *winsys = screen->winsys;
             addr = winsys->displaytarget_map(winsys, lp_tex->dt,
-                                                PIPE_TRANSFER_READ);
+                                                PIPE_MAP_READ);
             row_stride[0] = lp_tex->row_stride[0];
             img_stride[0] = lp_tex->img_stride[0];
             mip_offsets[0] = 0;
@@ -470,7 +474,7 @@ prepare_shader_images(
             struct llvmpipe_screen *screen = llvmpipe_screen(img->screen);
             struct sw_winsys *winsys = screen->winsys;
             addr = winsys->displaytarget_map(winsys, lp_img->dt,
-                                                PIPE_TRANSFER_READ);
+                                                PIPE_MAP_READ);
             row_stride = lp_img->row_stride[0];
             img_stride = lp_img->img_stride[0];
             sample_stride = 0;

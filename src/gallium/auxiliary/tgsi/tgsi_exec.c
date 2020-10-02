@@ -379,6 +379,16 @@ micro_dfrac(union tgsi_double_channel *dst,
 }
 
 static void
+micro_dflr(union tgsi_double_channel *dst,
+           const union tgsi_double_channel *src)
+{
+   dst->d[0] = floor(src->d[0]);
+   dst->d[1] = floor(src->d[1]);
+   dst->d[2] = floor(src->d[2]);
+   dst->d[3] = floor(src->d[3]);
+}
+
+static void
 micro_dldexp(union tgsi_double_channel *dst,
              const union tgsi_double_channel *src0,
              union tgsi_exec_channel *src1)
@@ -1181,14 +1191,8 @@ tgsi_exec_machine_bind_shader(
                                    * sizeof(struct tgsi_full_declaration));
             maxDeclarations += 10;
          }
-         if (parse.FullToken.FullDeclaration.Declaration.File == TGSI_FILE_OUTPUT) {
-            unsigned reg;
-            for (reg = parse.FullToken.FullDeclaration.Range.First;
-                 reg <= parse.FullToken.FullDeclaration.Range.Last;
-                 ++reg) {
-               ++mach->NumOutputs;
-            }
-         }
+         if (parse.FullToken.FullDeclaration.Declaration.File == TGSI_FILE_OUTPUT)
+            mach->NumOutputs = MAX2(mach->NumOutputs, parse.FullToken.FullDeclaration.Range.Last + 1);
          else if (parse.FullToken.FullDeclaration.Declaration.File == TGSI_FILE_SYSTEM_VALUE) {
             const struct tgsi_full_declaration *decl = &parse.FullToken.FullDeclaration;
             mach->SysSemanticToIndex[decl->Semantic.Name] = decl->Range.First;
@@ -6108,6 +6112,10 @@ exec_instruction(
 
    case TGSI_OPCODE_DFRAC:
       exec_double_unary(mach, inst, micro_dfrac);
+      break;
+
+   case TGSI_OPCODE_DFLR:
+      exec_double_unary(mach, inst, micro_dflr);
       break;
 
    case TGSI_OPCODE_DLDEXP:

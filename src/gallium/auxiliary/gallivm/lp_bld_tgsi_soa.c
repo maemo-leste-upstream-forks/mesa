@@ -1255,6 +1255,7 @@ emit_fetch_tcs_input(
                                               vertex_index,
                                               reg->Register.Indirect,
                                               attrib_index,
+                                              FALSE,
                                               swizzle_index,
                                               bld_base->info->output_semantic_name[reg->Register.Index]);
    } else {
@@ -1263,6 +1264,7 @@ emit_fetch_tcs_input(
                                              vertex_index,
                                              reg->Register.Indirect,
                                              attrib_index,
+                                             FALSE,
                                              swizzle_index);
    }
 
@@ -1277,6 +1279,7 @@ emit_fetch_tcs_input(
                                                   vertex_index,
                                                   reg->Register.Indirect,
                                                   attrib_index,
+                                                  FALSE,
                                                   swizzle_index,
                                                   bld_base->info->output_semantic_name[reg->Register.Index]);
       } else {
@@ -1285,6 +1288,7 @@ emit_fetch_tcs_input(
                                                  vertex_index,
                                                  reg->Register.Indirect,
                                                  attrib_index,
+                                                 FALSE,
                                                  swizzle_index);
       }
       assert(res2);
@@ -1358,6 +1362,7 @@ emit_fetch_tes_input(
                                        vertex_index,
                                        reg->Register.Indirect,
                                        attrib_index,
+                                       FALSE,
                                        swizzle_index);
    }
 
@@ -1377,6 +1382,7 @@ emit_fetch_tes_input(
                                              vertex_index,
                                              reg->Register.Indirect,
                                              attrib_index,
+                                             FALSE,
                                              swizzle_index);
       }
       assert(res2);
@@ -1763,6 +1769,7 @@ emit_store_tcs_output(struct lp_build_tgsi_context *bld_base,
                                           vertex_index,
                                           reg->Register.Indirect,
                                           attrib_index,
+                                          false,
                                           channel_index,
                                           value,
                                           mask_vec(bld_base));
@@ -3969,6 +3976,7 @@ emit_vertex(
       bld->gs_iface->emit_vertex(bld->gs_iface, &bld->bld_base.base,
                                  bld->outputs,
                                  total_emitted_vertices_vec,
+                                 mask,
                                  stream_id);
       increment_vec_ptr_by_mask(bld_base, bld->emitted_vertices_vec_ptr,
                                 mask);
@@ -4014,7 +4022,7 @@ end_primitive_masked(struct lp_build_tgsi_context * bld_base,
                                    total_emitted_vertices_vec,
                                    emitted_vertices_vec,
                                    emitted_prims_vec,
-                                   mask_vec(bld_base));
+                                   mask_vec(bld_base), 0);
 
 #if DUMP_GS_EMITS
       lp_build_print_value(bld->bld_base.base.gallivm,

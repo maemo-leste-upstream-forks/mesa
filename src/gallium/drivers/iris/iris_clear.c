@@ -44,7 +44,7 @@ iris_is_color_fast_clear_compatible(struct iris_context *ice,
    const struct gen_device_info *devinfo = &batch->screen->devinfo;
 
    if (isl_format_has_int_channel(format)) {
-      perf_debug(&ice->dbg, "Integer fast clear not enabled for %s",
+      perf_debug(&ice->dbg, "Integer fast clear not enabled for %s\n",
                  isl_format_get_name(format));
       return false;
    }
@@ -163,6 +163,7 @@ convert_fast_clear_color(struct iris_context *ice,
       for (int i = 0; i < 4; i++) {
          unsigned bits = util_format_get_component_bits(
             format, UTIL_FORMAT_COLORSPACE_RGB, i);
+         assert(bits > 0);
          if (bits < 32) {
             int32_t max = (1 << (bits - 1)) - 1;
             int32_t min = -(1 << (bits - 1));
@@ -583,7 +584,7 @@ clear_depth_stencil(struct iris_context *ice,
    /* At this point, we might have fast cleared the depth buffer. So if there's
     * no stencil clear pending, return early.
     */
-   if (!(clear_depth || clear_stencil)) {
+   if (!(clear_depth || (clear_stencil && stencil_res))) {
       return;
    }
 
@@ -717,16 +718,16 @@ iris_clear_texture(struct pipe_context *ctx,
       iris_resource_finish_aux_import(ctx->screen, res);
 
    if (util_format_is_depth_or_stencil(p_res->format)) {
-      const struct util_format_description *fmt_desc =
-         util_format_description(p_res->format);
+      const struct util_format_unpack_description *unpack =
+         util_format_unpack_description(p_res->format);
 
       float depth = 0.0;
       uint8_t stencil = 0;
 
-      if (fmt_desc->unpack_z_float)
+      if (unpack->unpack_z_float)
          util_format_unpack_z_float(p_res->format, &depth, data, 1);
 
-      if (fmt_desc->unpack_s_8uint)
+      if (unpack->unpack_s_8uint)
          util_format_unpack_s_8uint(p_res->format, &stencil, data, 1);
 
       clear_depth_stencil(ice, p_res, level, box, true, true, true,

@@ -43,6 +43,8 @@
 #include "fd3_format.h"
 #include "fd3_zsa.h"
 
+#define emit_const_user fd3_emit_const_user
+#define emit_const_bo fd3_emit_const_bo
 #include "ir3_const.h"
 
 static const enum adreno_state_block sb[] = {
@@ -55,45 +57,50 @@ static const enum adreno_state_block sb[] = {
  * sizedwords:     size of const value buffer
  */
 static void
-fd3_emit_const(struct fd_ringbuffer *ring, gl_shader_stage type,
-		uint32_t regid, uint32_t offset, uint32_t sizedwords,
-		const uint32_t *dwords, struct pipe_resource *prsc)
+fd3_emit_const_user(struct fd_ringbuffer *ring,
+		const struct ir3_shader_variant *v,
+		uint32_t regid, uint32_t sizedwords, const uint32_t *dwords)
 {
-	uint32_t i, sz;
-	enum adreno_state_src src;
+	emit_const_asserts(ring, v, regid, sizedwords);
 
-	debug_assert((regid % 4) == 0);
-	debug_assert((sizedwords % 4) == 0);
-
-	if (prsc) {
-		sz = 0;
-		src = SS_INDIRECT;
-	} else {
-		sz = sizedwords;
-		src = SS_DIRECT;
-	}
-
-	OUT_PKT3(ring, CP_LOAD_STATE, 2 + sz);
+	OUT_PKT3(ring, CP_LOAD_STATE, 2 + sizedwords);
 	OUT_RING(ring, CP_LOAD_STATE_0_DST_OFF(regid/2) |
-			CP_LOAD_STATE_0_STATE_SRC(src) |
-			CP_LOAD_STATE_0_STATE_BLOCK(sb[type]) |
+			CP_LOAD_STATE_0_STATE_SRC(SS_DIRECT) |
+			CP_LOAD_STATE_0_STATE_BLOCK(sb[v->type]) |
 			CP_LOAD_STATE_0_NUM_UNIT(sizedwords/2));
-	if (prsc) {
-		struct fd_bo *bo = fd_resource(prsc)->bo;
-		OUT_RELOC(ring, bo, offset,
-				CP_LOAD_STATE_1_STATE_TYPE(ST_CONSTANTS), 0);
-	} else {
-		OUT_RING(ring, CP_LOAD_STATE_1_EXT_SRC_ADDR(0) |
-				CP_LOAD_STATE_1_STATE_TYPE(ST_CONSTANTS));
-		dwords = (uint32_t *)&((uint8_t *)dwords)[offset];
-	}
-	for (i = 0; i < sz; i++) {
+	OUT_RING(ring, CP_LOAD_STATE_1_EXT_SRC_ADDR(0) |
+			CP_LOAD_STATE_1_STATE_TYPE(ST_CONSTANTS));
+	for (int i = 0; i < sizedwords; i++)
 		OUT_RING(ring, dwords[i]);
-	}
 }
 
 static void
-fd3_emit_const_bo(struct fd_ringbuffer *ring, gl_shader_stage type,
+fd3_emit_const_bo(struct fd_ringbuffer *ring, const struct ir3_shader_variant *v,
+		uint32_t regid, uint32_t offset, uint32_t sizedwords,
+		struct fd_bo *bo)
+{
+	uint32_t dst_off = regid / 2;
+	/* The blob driver aligns all const uploads dst_off to 64.  We've been
+	 * successfully aligning to 8 vec4s as const_upload_unit so far with no
+	 * ill effects.
+	 */
+	assert(dst_off % 16 == 0);
+	uint32_t num_unit = sizedwords / 2;
+	assert(num_unit % 2 == 0);
+
+	emit_const_asserts(ring, v, regid, sizedwords);
+
+	OUT_PKT3(ring, CP_LOAD_STATE, 2);
+	OUT_RING(ring, CP_LOAD_STATE_0_DST_OFF(dst_off) |
+			CP_LOAD_STATE_0_STATE_SRC(SS_INDIRECT) |
+			CP_LOAD_STATE_0_STATE_BLOCK(sb[v->type]) |
+			CP_LOAD_STATE_0_NUM_UNIT(num_unit));
+	OUT_RELOC(ring, bo, offset,
+			CP_LOAD_STATE_1_STATE_TYPE(ST_CONSTANTS), 0);
+}
+
+static void
+fd3_emit_const_ptrs(struct fd_ringbuffer *ring, gl_shader_stage type,
 		uint32_t regid, uint32_t num, struct pipe_resource **prscs, uint32_t *offsets)
 {
 	uint32_t anum = align(num, 4);
@@ -127,26 +134,14 @@ is_stateobj(struct fd_ringbuffer *ring)
 	return false;
 }
 
-void
-emit_const(struct fd_ringbuffer *ring,
-		const struct ir3_shader_variant *v, uint32_t dst_offset,
-		uint32_t offset, uint32_t size, const void *user_buffer,
-		struct pipe_resource *buffer)
-{
-	/* TODO inline this */
-	assert(dst_offset + size <= v->constlen * 4);
-	fd3_emit_const(ring, v->type, dst_offset,
-			offset, size, user_buffer, buffer);
-}
-
 static void
-emit_const_bo(struct fd_ringbuffer *ring,
+emit_const_ptrs(struct fd_ringbuffer *ring,
 		const struct ir3_shader_variant *v, uint32_t dst_offset,
 		uint32_t num, struct pipe_resource **prscs, uint32_t *offsets)
 {
 	/* TODO inline this */
 	assert(dst_offset + num <= v->constlen * 4);
-	fd3_emit_const_bo(ring, v->type, dst_offset, num, prscs, offsets);
+	fd3_emit_const_ptrs(ring, v->type, dst_offset, num, prscs, offsets);
 }
 
 #define VERT_TEX_OFF    0
@@ -336,7 +331,6 @@ fd3_emit_gmem_restore_tex(struct fd_ringbuffer *ring,
 
 		/* note: PIPE_BUFFER disallowed for surfaces */
 		unsigned lvl = psurf[i]->u.tex.level;
-		struct fdl_slice *slice = fd_resource_slice(rsc, lvl);
 
 		debug_assert(psurf[i]->u.tex.first_layer == psurf[i]->u.tex.last_layer);
 
@@ -345,10 +339,9 @@ fd3_emit_gmem_restore_tex(struct fd_ringbuffer *ring,
 				 A3XX_TEX_CONST_0_TYPE(A3XX_TEX_2D) |
 				 fd3_tex_swiz(format,  PIPE_SWIZZLE_X, PIPE_SWIZZLE_Y,
 							  PIPE_SWIZZLE_Z, PIPE_SWIZZLE_W));
-		OUT_RING(ring, A3XX_TEX_CONST_1_FETCHSIZE(TFETCH_DISABLE) |
-				 A3XX_TEX_CONST_1_WIDTH(psurf[i]->width) |
-				 A3XX_TEX_CONST_1_HEIGHT(psurf[i]->height));
-		OUT_RING(ring, A3XX_TEX_CONST_2_PITCH(slice->pitch) |
+		OUT_RING(ring, A3XX_TEX_CONST_1_WIDTH(psurf[i]->width) |
+				A3XX_TEX_CONST_1_HEIGHT(psurf[i]->height));
+		OUT_RING(ring, A3XX_TEX_CONST_2_PITCH(fd_resource_pitch(rsc, lvl)) |
 				 A3XX_TEX_CONST_2_INDX(BASETABLE_SZ * i));
 		OUT_RING(ring, 0x00000000);
 	}

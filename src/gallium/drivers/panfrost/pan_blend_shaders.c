@@ -123,6 +123,12 @@ nir_make_options(const struct pipe_blend_state *blend, unsigned i)
         return options;
 }
 
+static nir_ssa_def *
+nir_iclamp(nir_builder *b, nir_ssa_def *v, int32_t lo, int32_t hi)
+{
+        return nir_imin(b, nir_imax(b, v, nir_imm_int(b, lo)), nir_imm_int(b, hi));
+}
+
 struct panfrost_blend_shader
 panfrost_compile_blend_shader(
         struct panfrost_context *ctx,
@@ -159,10 +165,14 @@ panfrost_compile_blend_shader(
         /* Create the blend variables */
 
         nir_variable *c_src = nir_variable_create(shader, nir_var_shader_in, glsl_vector_type(GLSL_TYPE_FLOAT, 4), "gl_Color");
+        nir_variable *c_src1 = nir_variable_create(shader, nir_var_shader_in, glsl_vector_type(GLSL_TYPE_FLOAT, 4), "gl_Color1");
         nir_variable *c_out = nir_variable_create(shader, nir_var_shader_out, glsl_vector_type(g, 4), "gl_FragColor");
 
         c_src->data.location = VARYING_SLOT_COL0;
+        c_src1->data.location = VARYING_SLOT_VAR0;
         c_out->data.location = FRAG_RESULT_COLOR;
+
+        c_src1->data.driver_location = 1;
 
         /* Setup nir_builder */
 
@@ -173,35 +183,40 @@ panfrost_compile_blend_shader(
 
         /* Setup inputs */
 
-        nir_ssa_def *s_src = nir_load_var(b, c_src);
+        nir_ssa_def *s_src[] = {nir_load_var(b, c_src), nir_load_var(b, c_src1)};
 
-        if (T == nir_type_float16)
-                s_src = nir_f2f16(b, s_src);
-        else if (T == nir_type_int16)
-                s_src = nir_i2i16(b, s_src);
-        else if (T == nir_type_uint16)
-                s_src = nir_u2u16(b, s_src);
-        else if (T == nir_type_int8)
-                s_src = nir_i2i8(b, s_src);
-        else if (T == nir_type_uint8)
-                s_src = nir_u2u8(b, s_src);
+        for (int i = 0; i < ARRAY_SIZE(s_src); ++i) {
+                if (T == nir_type_float16)
+                        s_src[i] = nir_f2f16(b, s_src[i]);
+                else if (T == nir_type_int16)
+                        s_src[i] = nir_i2i16(b, nir_iclamp(b, s_src[i], -32768, 32767));
+                else if (T == nir_type_uint16)
+                        s_src[i] = nir_u2u16(b, nir_umin(b, s_src[i], nir_imm_int(b, 65535)));
+                else if (T == nir_type_int8)
+                        s_src[i] = nir_i2i8(b, nir_iclamp(b, s_src[i], -128, 127));
+                else if (T == nir_type_uint8)
+                        s_src[i] = nir_u2u8(b, nir_umin(b, s_src[i], nir_imm_int(b, 255)));
+        }
 
         /* Build a trivial blend shader */
-        nir_store_var(b, c_out, s_src, 0xFF);
+        nir_store_var(b, c_out, s_src[0], 0xFF);
 
         nir_lower_blend_options options =
                 nir_make_options(cso, rt);
         options.format = format;
+        options.src1 = s_src[1];
 
         if (T == nir_type_float16)
                 options.half = true;
 
         NIR_PASS_V(shader, nir_lower_blend, options);
-        NIR_PASS_V(shader, pan_lower_framebuffer, format_desc, dev->quirks);
 
         /* Compile the built shader */
 
-        panfrost_program program;
+        panfrost_program program = {
+           .rt_formats = {format}
+        };
+
         midgard_compile_shader_nir(shader, &program, true, rt, dev->gpu_id, false);
 
         /* Allow us to patch later */
@@ -209,6 +224,7 @@ panfrost_compile_blend_shader(
         res.first_tag = program.first_tag;
         res.size = program.compiled.size;
         res.buffer = program.compiled.data;
+        res.work_count = program.work_register_count;
 
         return res;
 }

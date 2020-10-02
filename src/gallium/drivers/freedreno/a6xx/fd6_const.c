@@ -25,82 +25,93 @@
 #include "fd6_const.h"
 #include "fd6_pack.h"
 
+#define emit_const_user fd6_emit_const_user
+#define emit_const_bo fd6_emit_const_bo
 #include "ir3_const.h"
 
 /* regid:          base const register
  * prsc or dwords: buffer containing constant values
  * sizedwords:     size of const value buffer
  */
-static void
-fd6_emit_const(struct fd_ringbuffer *ring, gl_shader_stage type,
-		uint32_t regid, uint32_t offset, uint32_t sizedwords,
-		const uint32_t *dwords, struct pipe_resource *prsc)
+void
+fd6_emit_const_user(struct fd_ringbuffer *ring,
+		const struct ir3_shader_variant *v, uint32_t regid,
+		uint32_t sizedwords, const uint32_t *dwords)
 {
-	if (prsc) {
-		struct fd_bo *bo = fd_resource(prsc)->bo;
+	emit_const_asserts(ring, v, regid, sizedwords);
 
-		if (fd6_geom_stage(type)) {
-			OUT_PKT(ring, CP_LOAD_STATE6_GEOM,
-					CP_LOAD_STATE6_0(
-							.dst_off     = regid/4,
-							.state_type  = ST6_CONSTANTS,
-							.state_src   = SS6_INDIRECT,
-							.state_block = fd6_stage2shadersb(type),
-							.num_unit    = DIV_ROUND_UP(sizedwords, 4)
-						),
-					CP_LOAD_STATE6_EXT_SRC_ADDR(
-							.bo          = bo,
-							.bo_offset   = offset
-						)
-				);
-		} else {
-			OUT_PKT(ring, CP_LOAD_STATE6_FRAG,
-					CP_LOAD_STATE6_0(
-							.dst_off     = regid/4,
-							.state_type  = ST6_CONSTANTS,
-							.state_src   = SS6_INDIRECT,
-							.state_block = fd6_stage2shadersb(type),
-							.num_unit    = DIV_ROUND_UP(sizedwords, 4)
-						),
-					CP_LOAD_STATE6_EXT_SRC_ADDR(
-							.bo          = bo,
-							.bo_offset   = offset
-						)
-				);
-		}
+	/* NOTE we cheat a bit here, since we know mesa is aligning
+	 * the size of the user buffer to 16 bytes.  And we want to
+	 * cut cycles in a hot path.
+	 */
+	uint32_t align_sz = align(sizedwords, 4);
+
+	if (fd6_geom_stage(v->type)) {
+		OUT_PKTBUF(ring, CP_LOAD_STATE6_GEOM, dwords, align_sz,
+				CP_LOAD_STATE6_0(
+					.dst_off     = regid/4,
+					.state_type  = ST6_CONSTANTS,
+					.state_src   = SS6_DIRECT,
+					.state_block = fd6_stage2shadersb(v->type),
+					.num_unit    = DIV_ROUND_UP(sizedwords, 4)
+					),
+				CP_LOAD_STATE6_1(),
+				CP_LOAD_STATE6_2()
+			);
 	} else {
-		/* NOTE we cheat a bit here, since we know mesa is aligning
-		 * the size of the user buffer to 16 bytes.  And we want to
-		 * cut cycles in a hot path.
-		 */
-		uint32_t align_sz = align(sizedwords, 4);
-		dwords = (uint32_t *)&((uint8_t *)dwords)[offset];
+		OUT_PKTBUF(ring, CP_LOAD_STATE6_FRAG, dwords, align_sz,
+				CP_LOAD_STATE6_0(
+					.dst_off     = regid/4,
+					.state_type  = ST6_CONSTANTS,
+					.state_src   = SS6_DIRECT,
+					.state_block = fd6_stage2shadersb(v->type),
+					.num_unit    = DIV_ROUND_UP(sizedwords, 4)
+					),
+				CP_LOAD_STATE6_1(),
+				CP_LOAD_STATE6_2()
+			);
+	}
+}
+void
+fd6_emit_const_bo(struct fd_ringbuffer *ring,
+		const struct ir3_shader_variant *v, uint32_t regid,
+		uint32_t offset, uint32_t sizedwords, struct fd_bo *bo)
+{
+	uint32_t dst_off = regid / 4;
+	assert(dst_off % 4 == 0);
+	uint32_t num_unit = DIV_ROUND_UP(sizedwords, 4);
+	assert(num_unit % 4 == 0);
 
-		if (fd6_geom_stage(type)) {
-			OUT_PKTBUF(ring, CP_LOAD_STATE6_GEOM, dwords, align_sz,
-					CP_LOAD_STATE6_0(
-							.dst_off     = regid/4,
-							.state_type  = ST6_CONSTANTS,
-							.state_src   = SS6_DIRECT,
-							.state_block = fd6_stage2shadersb(type),
-							.num_unit    = DIV_ROUND_UP(sizedwords, 4)
-						),
-					CP_LOAD_STATE6_1(),
-					CP_LOAD_STATE6_2()
-				);
-		} else {
-			OUT_PKTBUF(ring, CP_LOAD_STATE6_FRAG, dwords, align_sz,
-					CP_LOAD_STATE6_0(
-							.dst_off     = regid/4,
-							.state_type  = ST6_CONSTANTS,
-							.state_src   = SS6_DIRECT,
-							.state_block = fd6_stage2shadersb(type),
-							.num_unit    = DIV_ROUND_UP(sizedwords, 4)
-						),
-					CP_LOAD_STATE6_1(),
-					CP_LOAD_STATE6_2()
-				);
-		}
+	emit_const_asserts(ring, v, regid, sizedwords);
+
+	if (fd6_geom_stage(v->type)) {
+		OUT_PKT(ring, CP_LOAD_STATE6_GEOM,
+				CP_LOAD_STATE6_0(
+					.dst_off     = dst_off,
+					.state_type  = ST6_CONSTANTS,
+					.state_src   = SS6_INDIRECT,
+					.state_block = fd6_stage2shadersb(v->type),
+					.num_unit    = num_unit,
+					),
+				CP_LOAD_STATE6_EXT_SRC_ADDR(
+					.bo          = bo,
+					.bo_offset   = offset
+					)
+			);
+	} else {
+		OUT_PKT(ring, CP_LOAD_STATE6_FRAG,
+				CP_LOAD_STATE6_0(
+					.dst_off     = dst_off,
+					.state_type  = ST6_CONSTANTS,
+					.state_src   = SS6_INDIRECT,
+					.state_block = fd6_stage2shadersb(v->type),
+					.num_unit    = num_unit,
+					),
+				CP_LOAD_STATE6_EXT_SRC_ADDR(
+					.bo          = bo,
+					.bo_offset   = offset
+					)
+			);
 	}
 }
 
@@ -110,20 +121,8 @@ is_stateobj(struct fd_ringbuffer *ring)
 	return true;
 }
 
-void
-emit_const(struct fd_ringbuffer *ring,
-		const struct ir3_shader_variant *v, uint32_t dst_offset,
-		uint32_t offset, uint32_t size, const void *user_buffer,
-		struct pipe_resource *buffer)
-{
-	/* TODO inline this */
-	assert(dst_offset + size <= v->constlen * 4);
-	fd6_emit_const(ring, v->type, dst_offset,
-			offset, size, user_buffer, buffer);
-}
-
 static void
-emit_const_bo(struct fd_ringbuffer *ring,
+emit_const_ptrs(struct fd_ringbuffer *ring,
 		const struct ir3_shader_variant *v, uint32_t dst_offset,
 		uint32_t num, struct pipe_resource **prscs, uint32_t *offsets)
 {
@@ -155,7 +154,7 @@ emit_stage_tess_consts(struct fd_ringbuffer *ring, struct ir3_shader_variant *v,
 	const unsigned regid = const_state->offsets.primitive_param;
 	int size = MIN2(1 + regid, v->constlen) - regid;
 	if (size > 0)
-		fd6_emit_const(ring, v->type, regid * 4, 0, num_params, params, NULL);
+		fd6_emit_const_user(ring, v, regid * 4, num_params, params);
 }
 
 static void
@@ -273,7 +272,7 @@ fd6_emit_ubos(struct fd_context *ctx, const struct ir3_shader_variant *v,
 					0);
 		} else {
 			OUT_RING(ring, 0xbad00000 | (i << 16));
-			OUT_RING(ring, 0xbad00000 | (i << 16));
+			OUT_RING(ring, A6XX_UBO_1_SIZE(0));
 		}
 	}
 }

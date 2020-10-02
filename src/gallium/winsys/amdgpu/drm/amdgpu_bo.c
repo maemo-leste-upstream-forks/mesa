@@ -47,8 +47,6 @@ struct amdgpu_sparse_backing_chunk {
    uint32_t begin, end;
 };
 
-static void amdgpu_bo_unmap(struct pb_buffer *buf);
-
 static bool amdgpu_bo_wait(struct pb_buffer *_buf, uint64_t timeout,
                            enum radeon_bo_usage usage)
 {
@@ -240,8 +238,8 @@ static void amdgpu_clean_up_buffer_managers(struct amdgpu_winsys *ws)
 {
    for (unsigned i = 0; i < NUM_SLAB_ALLOCATORS; i++) {
       pb_slabs_reclaim(&ws->bo_slabs[i]);
-      if (ws->secure)
-        pb_slabs_reclaim(&ws->bo_slabs_encrypted[i]);
+      if (ws->info.has_tmz_support)
+         pb_slabs_reclaim(&ws->bo_slabs_encrypted[i]);
    }
 
    pb_cache_release_all_buffers(&ws->bo_cache);
@@ -272,7 +270,7 @@ static bool amdgpu_bo_do_map(struct amdgpu_winsys_bo *bo, void **cpu)
 
 void *amdgpu_bo_map(struct pb_buffer *buf,
                     struct radeon_cmdbuf *rcs,
-                    enum pipe_transfer_usage usage)
+                    enum pipe_map_flags usage)
 {
    struct amdgpu_winsys_bo *bo = (struct amdgpu_winsys_bo*)buf;
    struct amdgpu_winsys_bo *real;
@@ -281,10 +279,10 @@ void *amdgpu_bo_map(struct pb_buffer *buf,
    assert(!bo->sparse);
 
    /* If it's not unsynchronized bo_map, flush CS if needed and then wait. */
-   if (!(usage & PIPE_TRANSFER_UNSYNCHRONIZED)) {
+   if (!(usage & PIPE_MAP_UNSYNCHRONIZED)) {
       /* DONTBLOCK doesn't make sense with UNSYNCHRONIZED. */
-      if (usage & PIPE_TRANSFER_DONTBLOCK) {
-         if (!(usage & PIPE_TRANSFER_WRITE)) {
+      if (usage & PIPE_MAP_DONTBLOCK) {
+         if (!(usage & PIPE_MAP_WRITE)) {
             /* Mapping for read.
              *
              * Since we are mapping for read, we don't need to wait
@@ -318,7 +316,7 @@ void *amdgpu_bo_map(struct pb_buffer *buf,
       } else {
          uint64_t time = os_time_get_nano();
 
-         if (!(usage & PIPE_TRANSFER_WRITE)) {
+         if (!(usage & PIPE_MAP_WRITE)) {
             /* Mapping for read.
              *
              * Since we are mapping for read, we don't need to wait
@@ -372,7 +370,7 @@ void *amdgpu_bo_map(struct pb_buffer *buf,
       offset = bo->va - real->va;
    }
 
-   if (usage & RADEON_TRANSFER_TEMPORARY) {
+   if (usage & RADEON_MAP_TEMPORARY) {
       if (real->is_user_ptr) {
          cpu = real->cpu_ptr;
       } else {
@@ -400,7 +398,7 @@ void *amdgpu_bo_map(struct pb_buffer *buf,
    return (uint8_t*)cpu + offset;
 }
 
-static void amdgpu_bo_unmap(struct pb_buffer *buf)
+void amdgpu_bo_unmap(struct pb_buffer *buf)
 {
    struct amdgpu_winsys_bo *bo = (struct amdgpu_winsys_bo*)buf;
    struct amdgpu_winsys_bo *real;
@@ -414,7 +412,7 @@ static void amdgpu_bo_unmap(struct pb_buffer *buf)
    assert(real->u.real.map_count != 0 && "too many unmaps");
    if (p_atomic_dec_zero(&real->u.real.map_count)) {
       assert(!real->cpu_ptr &&
-             "too many unmaps or forgot RADEON_TRANSFER_TEMPORARY flag");
+             "too many unmaps or forgot RADEON_MAP_TEMPORARY flag");
 
       if (real->initial_domain & RADEON_DOMAIN_VRAM)
          real->ws->mapped_vram -= real->base.size;
@@ -523,8 +521,19 @@ static struct amdgpu_winsys_bo *amdgpu_create_bo(struct amdgpu_winsys *ws,
    if (ws->zero_all_vram_allocs &&
        (request.preferred_heap & AMDGPU_GEM_DOMAIN_VRAM))
       request.flags |= AMDGPU_GEM_CREATE_VRAM_CLEARED;
-   if ((flags & RADEON_FLAG_ENCRYPTED) && ws->secure)
+   if ((flags & RADEON_FLAG_ENCRYPTED) &&
+       ws->info.has_tmz_support) {
       request.flags |= AMDGPU_GEM_CREATE_ENCRYPTED;
+
+      if (!(flags & RADEON_FLAG_DRIVER_INTERNAL)) {
+         struct amdgpu_screen_winsys *sws_iter;
+         simple_mtx_lock(&ws->sws_list_lock);
+         for (sws_iter = ws->sws_list; sws_iter; sws_iter = sws_iter->next) {
+            *((bool*) &sws_iter->base.uses_secure_bos) = true;
+         }
+         simple_mtx_unlock(&ws->sws_list_lock);
+      }
+   }
 
    r = amdgpu_bo_alloc(ws->dev, &request, &buf_handle);
    if (r) {
@@ -621,7 +630,7 @@ bool amdgpu_bo_can_reclaim_slab(void *priv, struct pb_slab_entry *entry)
 static struct pb_slabs *get_slabs(struct amdgpu_winsys *ws, uint64_t size,
                                   enum radeon_bo_flag flags)
 {
-   struct pb_slabs *bo_slabs = ((flags & RADEON_FLAG_ENCRYPTED) && ws->secure) ?
+   struct pb_slabs *bo_slabs = ((flags & RADEON_FLAG_ENCRYPTED) && ws->info.has_tmz_support) ?
       ws->bo_slabs_encrypted : ws->bo_slabs;
    /* Find the correct slab allocator for the given size. */
    for (unsigned i = 0; i < NUM_SLAB_ALLOCATORS; i++) {
@@ -674,7 +683,7 @@ static struct pb_slab *amdgpu_bo_slab_alloc(void *priv, unsigned heap,
    if (encrypted)
       flags |= RADEON_FLAG_ENCRYPTED;
 
-   struct pb_slabs *slabs = (flags & RADEON_FLAG_ENCRYPTED && ws->secure) ?
+   struct pb_slabs *slabs = ((flags & RADEON_FLAG_ENCRYPTED) && ws->info.has_tmz_support) ?
       ws->bo_slabs_encrypted : ws->bo_slabs;
 
    /* Determine the slab buffer size. */
@@ -1293,7 +1302,7 @@ amdgpu_bo_create(struct amdgpu_winsys *ws,
    /* Sparse buffers must have NO_CPU_ACCESS set. */
    assert(!(flags & RADEON_FLAG_SPARSE) || flags & RADEON_FLAG_NO_CPU_ACCESS);
 
-   struct pb_slabs *slabs = (flags & RADEON_FLAG_ENCRYPTED && ws->secure) ?
+   struct pb_slabs *slabs = ((flags & RADEON_FLAG_ENCRYPTED) && ws->info.has_tmz_support) ?
       ws->bo_slabs_encrypted : ws->bo_slabs;
    struct pb_slabs *last_slab = &slabs[NUM_SLAB_ALLOCATORS - 1];
    unsigned max_slab_entry_size = 1 << (last_slab->min_order + last_slab->num_orders - 1);

@@ -456,9 +456,6 @@ brw_instruction_name(const struct gen_device_info *devinfo, enum opcode op)
    case VS_OPCODE_PULL_CONSTANT_LOAD_GEN7:
       return "pull_constant_load_gen7";
 
-   case VS_OPCODE_SET_SIMD4X2_HEADER_GEN9:
-      return "set_simd4x2_header_gen9";
-
    case VS_OPCODE_UNPACK_FLAGS_SIMD4X2:
       return "unpack_flags_simd4x2";
 
@@ -502,6 +499,8 @@ brw_instruction_name(const struct gen_device_info *devinfo, enum opcode op)
       return "usub_sat";
    case SHADER_OPCODE_MOV_INDIRECT:
       return "mov_indirect";
+   case SHADER_OPCODE_MOV_RELOC_IMM:
+      return "mov_reloc_imm";
 
    case VEC4_OPCODE_URB_READ:
       return "urb_read";
@@ -1373,6 +1372,8 @@ brw_compile_tes(const struct brw_compiler *compiler,
 
       g.generate_code(v.cfg, 8, v.shader_stats,
                       v.performance_analysis.require(), stats);
+
+      g.add_const_data(nir->constant_data, nir->constant_data_size);
 
       assembly = g.get_assembly();
    } else {

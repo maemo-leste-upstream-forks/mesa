@@ -34,7 +34,9 @@
 
 #include "freedreno_log.h"
 #include "freedreno_resource.h"
+#include "freedreno_state.h"
 #include "freedreno_query_hw.h"
+#include "common/freedreno_guardband.h"
 
 #include "fd6_emit.h"
 #include "fd6_blend.h"
@@ -345,7 +347,7 @@ fd6_emit_textures(struct fd_pipe *pipe, struct fd_ringbuffer *ring,
 			OUT_RING(state, sampler->texsamp0);
 			OUT_RING(state, sampler->texsamp1);
 			OUT_RING(state, sampler->texsamp2 |
-				A6XX_TEX_SAMP_2_BCOLOR_OFFSET((i + bcolor_offset) * sizeof(struct bcolor_entry)));
+				A6XX_TEX_SAMP_2_BCOLOR(i + bcolor_offset));
 			OUT_RING(state, sampler->texsamp3);
 			needs_border |= sampler->needs_border;
 		}
@@ -588,7 +590,10 @@ compute_ztest_mode(struct fd6_emit *emit, bool lrz_valid)
 	struct fd6_zsa_stateobj *zsa = fd6_zsa_stateobj(ctx->zsa);
 	const struct ir3_shader_variant *fs = emit->fs;
 
-	if (fs->no_earlyz || fs->writes_pos) {
+	if (fs->shader->nir->info.fs.early_fragment_tests)
+		return A6XX_EARLY_Z;
+
+	if (fs->no_earlyz || fs->writes_pos || !zsa->base.depth.enabled) {
 		return A6XX_LATE_Z;
 	} else if ((fs->has_kill || zsa->alpha_test) &&
 			(zsa->base.depth.writemask || !pfb->zsbuf)) {
@@ -819,13 +824,13 @@ fd6_emit_state(struct fd_ringbuffer *ring, struct fd6_emit *emit)
 		fd6_emit_take_group(emit, state, FD6_GROUP_VBO, ENABLE_ALL);
 	}
 
-	if (dirty & FD_DIRTY_ZSA) {
-		struct fd6_zsa_stateobj *zsa = fd6_zsa_stateobj(ctx->zsa);
+	if (dirty & (FD_DIRTY_ZSA | FD_DIRTY_RASTERIZER)) {
+		struct fd_ringbuffer *state =
+			fd6_zsa_state(ctx,
+					util_format_is_pure_integer(pipe_surface_format(pfb->cbufs[0])),
+					fd_depth_clamp_enabled(ctx));
 
-		if (util_format_is_pure_integer(pipe_surface_format(pfb->cbufs[0])))
-			fd6_emit_add_group(emit, zsa->stateobj_no_alpha, FD6_GROUP_ZSA, ENABLE_ALL);
-		else
-			fd6_emit_add_group(emit, zsa->stateobj, FD6_GROUP_ZSA, ENABLE_ALL);
+		fd6_emit_add_group(emit, state, FD6_GROUP_ZSA, ENABLE_ALL);
 	}
 
 	if (dirty & (FD_DIRTY_ZSA | FD_DIRTY_BLEND | FD_DIRTY_PROG)) {
@@ -860,11 +865,11 @@ fd6_emit_state(struct fd_ringbuffer *ring, struct fd6_emit *emit)
 		struct pipe_scissor_state *scissor = fd_context_get_scissor(ctx);
 
 		OUT_REG(ring,
-				A6XX_GRAS_SC_SCREEN_SCISSOR_TL_0(
+				A6XX_GRAS_SC_SCREEN_SCISSOR_TL(0,
 					.x = scissor->minx,
 					.y = scissor->miny
 				),
-				A6XX_GRAS_SC_SCREEN_SCISSOR_BR_0(
+				A6XX_GRAS_SC_SCREEN_SCISSOR_BR(0,
 					.x = MAX2(scissor->maxx, 1) - 1,
 					.y = MAX2(scissor->maxy, 1) - 1
 				)
@@ -882,33 +887,55 @@ fd6_emit_state(struct fd_ringbuffer *ring, struct fd6_emit *emit)
 		struct pipe_scissor_state *scissor = &ctx->viewport_scissor;
 
 		OUT_REG(ring,
-				A6XX_GRAS_CL_VPORT_XOFFSET_0(ctx->viewport.translate[0]),
-				A6XX_GRAS_CL_VPORT_XSCALE_0(ctx->viewport.scale[0]),
-				A6XX_GRAS_CL_VPORT_YOFFSET_0(ctx->viewport.translate[1]),
-				A6XX_GRAS_CL_VPORT_YSCALE_0(ctx->viewport.scale[1]),
-				A6XX_GRAS_CL_VPORT_ZOFFSET_0(ctx->viewport.translate[2]),
-				A6XX_GRAS_CL_VPORT_ZSCALE_0(ctx->viewport.scale[2])
+				A6XX_GRAS_CL_VPORT_XOFFSET(0, ctx->viewport.translate[0]),
+				A6XX_GRAS_CL_VPORT_XSCALE(0, ctx->viewport.scale[0]),
+				A6XX_GRAS_CL_VPORT_YOFFSET(0, ctx->viewport.translate[1]),
+				A6XX_GRAS_CL_VPORT_YSCALE(0, ctx->viewport.scale[1]),
+				A6XX_GRAS_CL_VPORT_ZOFFSET(0, ctx->viewport.translate[2]),
+				A6XX_GRAS_CL_VPORT_ZSCALE(0, ctx->viewport.scale[2])
 			);
 
 		OUT_REG(ring,
-				A6XX_GRAS_SC_VIEWPORT_SCISSOR_TL_0(
+				A6XX_GRAS_SC_VIEWPORT_SCISSOR_TL(0,
 					.x = scissor->minx,
 					.y = scissor->miny
 				),
-				A6XX_GRAS_SC_VIEWPORT_SCISSOR_BR_0(
+				A6XX_GRAS_SC_VIEWPORT_SCISSOR_BR(0,
 					.x = MAX2(scissor->maxx, 1) - 1,
 					.y = MAX2(scissor->maxy, 1) - 1
 				)
 			);
 
-		unsigned guardband_x = fd_calc_guardband(scissor->maxx - scissor->minx);
-		unsigned guardband_y = fd_calc_guardband(scissor->maxy - scissor->miny);
+		unsigned guardband_x =
+			fd_calc_guardband(ctx->viewport.translate[0], ctx->viewport.scale[0],
+							  false);
+		unsigned guardband_y =
+			fd_calc_guardband(ctx->viewport.translate[1], ctx->viewport.scale[1],
+							  false);
 
 		OUT_REG(ring, A6XX_GRAS_CL_GUARDBAND_CLIP_ADJ(
 					.horz = guardband_x,
 					.vert = guardband_y
 				)
 			);
+	}
+
+	/* The clamp ranges are only used when the rasterizer wants depth
+	 * clamping.
+	 */
+	if ((dirty & (FD_DIRTY_VIEWPORT | FD_DIRTY_RASTERIZER)) &&
+			fd_depth_clamp_enabled(ctx)) {
+		float zmin, zmax;
+		util_viewport_zmin_zmax(&ctx->viewport, ctx->rasterizer->clip_halfz,
+				&zmin, &zmax);
+
+		OUT_REG(ring,
+				A6XX_GRAS_CL_Z_CLAMP_MIN(0, zmin),
+				A6XX_GRAS_CL_Z_CLAMP_MAX(0, zmax));
+
+		OUT_REG(ring,
+				A6XX_RB_Z_CLAMP_MIN(zmin),
+				A6XX_RB_Z_CLAMP_MAX(zmax));
 	}
 
 	if (dirty & FD_DIRTY_PROG) {
@@ -1130,8 +1157,20 @@ fd6_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
 
 	fd6_cache_inv(batch, ring);
 
-	OUT_PKT4(ring, REG_A6XX_HLSQ_UPDATE_CNTL, 1);
-	OUT_RING(ring, 0xfffff);
+	OUT_REG(ring, A6XX_HLSQ_INVALIDATE_CMD(
+			.vs_state = true,
+			.hs_state = true,
+			.ds_state = true,
+			.gs_state = true,
+			.fs_state = true,
+			.cs_state = true,
+			.gfx_ibo = true,
+			.cs_ibo = true,
+			.gfx_shared_const = true,
+			.cs_shared_const = true,
+			.gfx_bindless = 0x1f,
+			.cs_bindless = 0x1f
+		));
 
 	OUT_WFI5(ring);
 
@@ -1150,11 +1189,11 @@ fd6_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
 	WRITE(REG_A6XX_SP_UNKNOWN_AE03, 0x1430);
 	WRITE(REG_A6XX_SP_IBO_COUNT, 0);
 	WRITE(REG_A6XX_SP_UNKNOWN_B182, 0);
-	WRITE(REG_A6XX_HLSQ_UNKNOWN_BB11, 0);
+	WRITE(REG_A6XX_HLSQ_SHARED_CONSTS, 0);
 	WRITE(REG_A6XX_UCHE_UNKNOWN_0E12, 0x3200000);
 	WRITE(REG_A6XX_UCHE_CLIENT_PF, 4);
 	WRITE(REG_A6XX_RB_UNKNOWN_8E01, 0x1);
-	WRITE(REG_A6XX_SP_UNKNOWN_AB00, 0x5);
+	WRITE(REG_A6XX_SP_MODE_CONTROL, A6XX_SP_MODE_CONTROL_CONSTANT_DEMOTION_ENABLE | 4);
 	WRITE(REG_A6XX_VFD_ADD_OFFSET, A6XX_VFD_ADD_OFFSET_VERTEX);
 	WRITE(REG_A6XX_RB_UNKNOWN_8811, 0x00000010);
 	WRITE(REG_A6XX_PC_MODE_CNTL, 0x1f);
@@ -1172,23 +1211,22 @@ fd6_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
 	WRITE(REG_A6XX_RB_UNKNOWN_881E, 0);
 	WRITE(REG_A6XX_RB_UNKNOWN_88F0, 0);
 
-	WRITE(REG_A6XX_VPC_UNKNOWN_9236,
-		  A6XX_VPC_UNKNOWN_9236_POINT_COORD_INVERT(0));
+	WRITE(REG_A6XX_VPC_POINT_COORD_INVERT,
+		  A6XX_VPC_POINT_COORD_INVERT(0).value);
 	WRITE(REG_A6XX_VPC_UNKNOWN_9300, 0);
 
-	WRITE(REG_A6XX_VPC_SO_OVERRIDE, A6XX_VPC_SO_OVERRIDE_SO_DISABLE);
+	WRITE(REG_A6XX_VPC_SO_DISABLE, A6XX_VPC_SO_DISABLE(true).value);
 
-	WRITE(REG_A6XX_PC_UNKNOWN_9990, 0);
 	WRITE(REG_A6XX_PC_UNKNOWN_9980, 0);
 
-	WRITE(REG_A6XX_PC_UNKNOWN_9B07, 0);
+	WRITE(REG_A6XX_PC_MULTIVIEW_CNTL, 0);
 
 	WRITE(REG_A6XX_SP_UNKNOWN_A81B, 0);
 
 	WRITE(REG_A6XX_SP_UNKNOWN_B183, 0);
 
 	WRITE(REG_A6XX_GRAS_UNKNOWN_8099, 0);
-	WRITE(REG_A6XX_GRAS_UNKNOWN_809B, 0);
+	WRITE(REG_A6XX_GRAS_VS_LAYER_CNTL, 0);
 	WRITE(REG_A6XX_GRAS_UNKNOWN_80A0, 2);
 	WRITE(REG_A6XX_GRAS_UNKNOWN_80AF, 0);
 	WRITE(REG_A6XX_VPC_UNKNOWN_9210, 0);
@@ -1211,7 +1249,7 @@ fd6_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
 	OUT_PKT4(ring, REG_A6XX_VFD_MODE_CNTL, 1);
 	OUT_RING(ring, 0x00000000);   /* VFD_MODE_CNTL */
 
-	WRITE(REG_A6XX_VFD_UNKNOWN_A008, 0);
+	WRITE(REG_A6XX_VFD_MULTIVIEW_CNTL, 0);
 
 	OUT_PKT4(ring, REG_A6XX_PC_MODE_CNTL, 1);
 	OUT_RING(ring, 0x0000001f);   /* PC_MODE_CNTL */

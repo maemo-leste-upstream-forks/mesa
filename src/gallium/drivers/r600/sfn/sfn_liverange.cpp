@@ -358,6 +358,11 @@ register_live_range temp_access::get_required_live_range()
          break;
    }
    result.is_array_elm = is_array_element;
+
+   /* This fixes a few tests, but it is not clear why. */
+   if (result.end != result.begin)
+      ++result.end;
+
    return result;
 }
 
@@ -812,6 +817,10 @@ void LiverangeEvaluator::record_read(const Value& src, bool is_array_elm)
    } else if (src.type() == Value::gpr_array_value) {
       const GPRArrayValue& v = static_cast<const GPRArrayValue&>(src);
       v.record_read(*this);
+   } else if (src.type() == Value::kconst) {
+      const UniformValue& v = static_cast<const UniformValue&>(src);
+      if (v.addr())
+         record_read(*v.addr(),is_array_elm);
    }
 }
 
@@ -829,6 +838,10 @@ void LiverangeEvaluator::record_write(const Value& src, bool is_array_elm)
    } else if (src.type() == Value::gpr_array_value) {
       const GPRArrayValue& v = static_cast<const GPRArrayValue&>(src);
       v.record_write(*this);
+   } else if (src.type() == Value::kconst) {
+      const UniformValue& v = static_cast<const UniformValue&>(src);
+      if (v.addr())
+         record_write(*v.addr(),is_array_elm);
    }
 }
 

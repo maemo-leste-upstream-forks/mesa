@@ -74,6 +74,7 @@ static const struct debug_named_value debug_options[] = {
    {"no_singlebuffer",ETNA_DBG_NO_SINGLEBUF, "Disable single buffer feature"},
    {"nir",            ETNA_DBG_NIR, "use new NIR compiler"},
    {"deqp",           ETNA_DBG_DEQP, "Hacks to run dEQP GLES3 tests"}, /* needs MESA_GLES_VERSION_OVERRIDE=3.0 */
+   {"nocache",        ETNA_DBG_NOCACHE,    "Disable shader cache"},
    DEBUG_NAMED_VALUE_END
 };
 
@@ -87,6 +88,9 @@ etna_screen_destroy(struct pipe_screen *pscreen)
 
    if (screen->perfmon)
       etna_perfmon_del(screen->perfmon);
+
+   if (screen->compiler)
+      etna_compiler_destroy(screen->compiler);
 
    if (screen->pipe)
       etna_pipe_del(screen->pipe);
@@ -352,6 +356,7 @@ etna_screen_get_shader_param(struct pipe_screen *pscreen,
    case PIPE_SHADER_CAP_FP16:
    case PIPE_SHADER_CAP_FP16_DERIVATIVES:
    case PIPE_SHADER_CAP_INT16:
+   case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
       return 0;
    case PIPE_SHADER_CAP_INTEGERS:
       return DBG_ENABLED(ETNA_DBG_NIR) && screen->specs.halti >= 2;
@@ -462,16 +467,9 @@ gpu_supports_render_format(struct etna_screen *screen, enum pipe_format format,
    if (fmt == ETNA_NO_MATCH)
       return false;
 
-   /* Validate MSAA; number of samples must be allowed, and render target
-    * must have MSAA'able format. */
-   if (sample_count > 1) {
-      if (!VIV_FEATURE(screen, chipFeatures, MSAA))
+   /* MSAA is broken */
+   if (sample_count > 1)
          return false;
-      if (!translate_samples_to_xyscale(sample_count, NULL, NULL))
-         return false;
-      if (translate_ts_format(format) == ETNA_NO_MATCH)
-         return false;
-   }
 
    if (format == PIPE_FORMAT_R8_UNORM)
       return VIV_FEATURE(screen, chipMinorFeatures5, HALTI5);
@@ -886,6 +884,15 @@ etna_get_compiler_options(struct pipe_screen *pscreen,
    return &etna_screen(pscreen)->options;
 }
 
+static struct disk_cache *
+etna_get_disk_shader_cache(struct pipe_screen *pscreen)
+{
+   struct etna_screen *screen = etna_screen(pscreen);
+   struct etna_compiler *compiler = screen->compiler;
+
+   return compiler->disk_cache;
+}
+
 struct pipe_screen *
 etna_screen_create(struct etna_device *dev, struct etna_gpu *gpu,
                    struct renderonly *ro)
@@ -997,7 +1004,9 @@ etna_screen_create(struct etna_device *dev, struct etna_gpu *gpu,
       .lower_fpow = true,
       .lower_sub = true,
       .lower_ftrunc = true,
-      .fuse_ffma = true,
+      .fuse_ffma16 = true,
+      .fuse_ffma32 = true,
+      .fuse_ffma64 = true,
       .lower_bitops = true,
       .lower_all_io_to_temps = true,
       .vertex_id_zero_based = true,
@@ -1030,6 +1039,7 @@ etna_screen_create(struct etna_device *dev, struct etna_gpu *gpu,
    pscreen->get_paramf = etna_screen_get_paramf;
    pscreen->get_shader_param = etna_screen_get_shader_param;
    pscreen->get_compiler_options = etna_get_compiler_options;
+   pscreen->get_disk_shader_cache = etna_get_disk_shader_cache;
 
    pscreen->get_name = etna_screen_get_name;
    pscreen->get_vendor = etna_screen_get_vendor;
@@ -1039,6 +1049,10 @@ etna_screen_create(struct etna_device *dev, struct etna_gpu *gpu,
    pscreen->context_create = etna_context_create;
    pscreen->is_format_supported = etna_screen_is_format_supported;
    pscreen->query_dmabuf_modifiers = etna_screen_query_dmabuf_modifiers;
+
+   screen->compiler = etna_compiler_create(etna_screen_get_name(pscreen));
+   if (!screen->compiler)
+      goto fail;
 
    etna_fence_screen_init(pscreen);
    etna_query_screen_init(pscreen);

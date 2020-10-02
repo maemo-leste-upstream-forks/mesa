@@ -343,8 +343,6 @@ public:
 
    const struct brw_vue_map *input_vue_map;
 
-   int *param_size;
-
    BRW_ANALYSIS(live_analysis, brw::fs_live_variables,
                 backend_shader *) live_analysis;
    BRW_ANALYSIS(regpressure_analysis, brw::register_pressure,
@@ -478,6 +476,7 @@ public:
                      struct shader_stats shader_stats,
                      const brw::performance &perf,
                      struct brw_compile_stats *stats);
+   void add_const_data(void *data, unsigned size);
    const unsigned *get_assembly();
 
 private:

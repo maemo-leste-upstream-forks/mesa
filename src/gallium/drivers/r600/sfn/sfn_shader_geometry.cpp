@@ -66,7 +66,8 @@ bool GeometryShaderFromNir::do_emit_store_deref(const nir_variable *out_var, nir
    auto ir = new MemRingOutIntruction(cf_mem_ring, mem_write_ind, out_value,
                                       4 * out_var->data.driver_location,
                                       instr->num_components, m_export_base);
-   emit_instruction(ir);
+
+   streamout_data[out_var->data.location] = ir;
 
    return true;
 }
@@ -267,6 +268,14 @@ bool GeometryShaderFromNir::emit_vertex(nir_intrinsic_instr* instr, bool cut)
    int stream = nir_intrinsic_stream_id(instr);
    assert(stream < 4);
 
+   for(auto v: streamout_data) {
+      if (stream == 0 || v.first != VARYING_SLOT_POS) {
+         v.second->patch_ring(stream);
+         emit_instruction(v.second);
+      } else
+         delete v.second;
+   }
+   streamout_data.clear();
    emit_instruction(new EmitVertex(stream, cut));
 
    if (!cut)
@@ -282,18 +291,15 @@ bool GeometryShaderFromNir::emit_load_from_array(nir_intrinsic_instr* instr,
 {
    auto dest = vec_from_nir(instr->dest, instr->num_components);
 
-   const nir_load_const_instr* literal_index = nullptr;
-
-   if (array_deref.index->is_ssa)
-      literal_index = get_literal_constant(array_deref.index->ssa->index);
+   auto literal_index = nir_src_as_const_value(*array_deref.index);
 
    if (!literal_index) {
       sfn_log << SfnLog::err << "GS: Indirect input addressing not (yet) supported\n";
       return false;
    }
-   assert(literal_index->value[0].u32 < 6);
-   PValue addr = m_per_vertex_offsets[literal_index->value[0].u32];
+   assert(literal_index->u32 < 6);
 
+   PValue addr = m_per_vertex_offsets[literal_index->u32];
    auto fetch = new FetchInstruction(vc_fetch, no_index_offset, dest, addr,
                                      16 * array_deref.var->data.driver_location,
                                      R600_GS_RING_CONST_BUFFER, PValue(), bim_none, true);

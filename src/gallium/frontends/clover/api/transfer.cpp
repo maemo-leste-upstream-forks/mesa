@@ -204,31 +204,57 @@ namespace {
    /// convertible to \a void *.
    ///
    template<typename T>
-   struct _map {
-      static mapping
-      get(command_queue &q, T obj, cl_map_flags flags,
-          size_t offset, size_t size) {
-         return { q, obj->resource(q), flags, true,
-                  {{ offset }}, {{ size, 1, 1 }} };
+   struct _map;
+
+   template<>
+   struct _map<image*> {
+      _map(command_queue &q, image *img, cl_map_flags flags,
+           vector_t offset, vector_t pitch, vector_t region) :
+         map(q, img->resource(q), flags, true, offset, region),
+         pitch(map.pitch())
+      { }
+
+      template<typename T>
+      operator T *() const {
+         return static_cast<T *>(map);
       }
+
+      mapping map;
+      vector_t pitch;
    };
 
    template<>
-   struct _map<void *> {
-      static void *
-      get(command_queue &q, void *obj, cl_map_flags flags,
-          size_t offset, size_t size) {
-         return (char *)obj + offset;
+   struct _map<buffer*> {
+      _map(command_queue &q, buffer *mem, cl_map_flags flags,
+           vector_t offset, vector_t pitch, vector_t region) :
+         map(q, mem->resource(q), flags, true,
+             {{ dot(pitch, offset) }}, {{ size(pitch, region) }}),
+         pitch(pitch)
+      { }
+
+      template<typename T>
+      operator T *() const {
+         return static_cast<T *>(map);
       }
+
+      mapping map;
+      vector_t pitch;
    };
 
-   template<>
-   struct _map<const void *> {
-      static const void *
-      get(command_queue &q, const void *obj, cl_map_flags flags,
-          size_t offset, size_t size) {
-         return (const char *)obj + offset;
+   template<typename P>
+   struct _map<P *> {
+      _map(command_queue &q, P *ptr, cl_map_flags flags,
+           vector_t offset, vector_t pitch, vector_t region) :
+         ptr((P *)((char *)ptr + dot(pitch, offset))), pitch(pitch)
+      { }
+
+      template<typename T>
+      operator T *() const {
+         return static_cast<T *>(ptr);
       }
+
+      P *ptr;
+      vector_t pitch;
    };
 
    ///
@@ -242,20 +268,19 @@ namespace {
                 S src_obj, const vector_t &src_orig, const vector_t &src_pitch,
                 const vector_t &region) {
       return [=, &q](event &) {
-         auto dst = _map<T>::get(q, dst_obj, CL_MAP_WRITE,
-                                 dot(dst_pitch, dst_orig),
-                                 size(dst_pitch, region));
-         auto src = _map<S>::get(q, src_obj, CL_MAP_READ,
-                                 dot(src_pitch, src_orig),
-                                 size(src_pitch, region));
+         _map<T> dst = { q, dst_obj, CL_MAP_WRITE,
+                         dst_orig, dst_pitch, region };
+         _map<S> src = { q, src_obj, CL_MAP_READ,
+                         src_orig, src_pitch, region };
+         assert(src.pitch[0] == dst.pitch[0]);
          vector_t v = {};
 
          for (v[2] = 0; v[2] < region[2]; ++v[2]) {
             for (v[1] = 0; v[1] < region[1]; ++v[1]) {
                std::memcpy(
-                  static_cast<char *>(dst) + dot(dst_pitch, v),
-                  static_cast<const char *>(src) + dot(src_pitch, v),
-                  src_pitch[0] * region[0]);
+                  static_cast<char *>(dst) + dot(dst.pitch, v),
+                  static_cast<const char *>(src) + dot(src.pitch, v),
+                  src.pitch[0] * region[0]);
             }
          }
       };
@@ -413,6 +438,50 @@ clEnqueueWriteBufferRect(cl_command_queue d_q, cl_mem d_mem, cl_bool blocking,
 
    if (blocking)
        hev().wait_signalled();
+
+   ret_object(rd_ev, hev);
+   return CL_SUCCESS;
+
+} catch (error &e) {
+   return e.get();
+}
+
+CLOVER_API cl_int
+clEnqueueFillBuffer(cl_command_queue d_queue, cl_mem d_mem,
+                    const void *pattern, size_t pattern_size,
+                    size_t offset, size_t size,
+                    cl_uint num_deps, const cl_event *d_deps,
+                    cl_event *rd_ev) try {
+   auto &q = obj(d_queue);
+   auto &mem = obj<buffer>(d_mem);
+   auto deps = objs<wait_list_tag>(d_deps, num_deps);
+   vector_t region = { size, 1, 1 };
+   vector_t dst_origin = { offset };
+   auto dst_pitch = pitch(region, {{ 1 }});
+
+   validate_common(q, deps);
+   validate_object(q, mem, dst_origin, dst_pitch, region);
+
+   if (!pattern)
+      return CL_INVALID_VALUE;
+
+   if (!util_is_power_of_two_nonzero(pattern_size) ||
+      pattern_size > 128 || size % pattern_size
+      || offset % pattern_size) {
+      return CL_INVALID_VALUE;
+   }
+
+   auto sub = dynamic_cast<sub_buffer *>(&mem);
+   if (sub && sub->offset() % q.device().mem_base_addr_align()) {
+      return CL_MISALIGNED_SUB_BUFFER_OFFSET;
+   }
+
+   std::string data = std::string((char *)pattern, pattern_size);
+   auto hev = create<hard_event>(
+      q, CL_COMMAND_FILL_BUFFER, deps,
+      [=, &q, &mem](event &) {
+         mem.resource(q).clear(q, offset, size, &data[0], data.size());
+      });
 
    ret_object(rd_ev, hev);
    return CL_SUCCESS;

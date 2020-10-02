@@ -120,7 +120,8 @@ genX(init_device_state)(struct anv_device *device)
 
    anv_batch_emit(&batch, GENX(PIPELINE_SELECT), ps) {
 #if GEN_GEN >= 9
-      ps.MaskBits = 3;
+      ps.MaskBits = GEN_GEN >= 12 ? 0x13 : 3;
+      ps.MediaSamplerDOPClockGateEnable = GEN_GEN >= 12;
 #endif
       ps.PipelineSelection = _3D;
    }
@@ -130,6 +131,8 @@ genX(init_device_state)(struct anv_device *device)
    anv_pack_struct(&cache_mode_1, GENX(CACHE_MODE_1),
                    .FloatBlendOptimizationEnable = true,
                    .FloatBlendOptimizationEnableMask = true,
+                   .MSCRAWHazardAvoidanceBit = true,
+                   .MSCRAWHazardAvoidanceBitMask = true,
                    .PartialResolveDisableInVC = true,
                    .PartialResolveDisableInVCMask = true);
 

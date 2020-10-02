@@ -247,12 +247,12 @@ brw_begin_perf_query(struct gl_context *ctx,
 
    DBG("Begin(%d)\n", o->Id);
 
-   gen_perf_begin_query(perf_ctx, obj);
+   bool ret = gen_perf_begin_query(perf_ctx, obj);
 
    if (INTEL_DEBUG & DEBUG_PERFMON)
       dump_perf_queries(brw);
 
-   return true;
+   return ret;
 }
 
 /**
@@ -323,7 +323,7 @@ brw_get_perf_query_data(struct gl_context *ctx,
     */
    assert(o->Ready);
 
-   gen_perf_get_query_data(brw->perf_ctx, obj,
+   gen_perf_get_query_data(brw->perf_ctx, obj, &brw->batch,
                            data_size, data, bytes_written);
 }
 

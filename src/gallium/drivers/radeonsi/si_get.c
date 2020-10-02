@@ -35,10 +35,7 @@
 
 static const char *si_get_vendor(struct pipe_screen *pscreen)
 {
-   /* Don't change this. Games such as Alien Isolation are broken if this
-    * returns "Advanced Micro Devices, Inc."
-    */
-   return "X.Org";
+   return "AMD";
 }
 
 static const char *si_get_device_vendor(struct pipe_screen *pscreen)
@@ -163,6 +160,8 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_DRAW_INFO_START_WITH_USER_INDICES:
    case PIPE_CAP_ALPHA_TO_COVERAGE_DITHER_CONTROL:
    case PIPE_CAP_MAP_UNSYNCHRONIZED_THREAD_SAFE:
+   case PIPE_CAP_NO_CLIP_ON_COPY_TEX:
+   case PIPE_CAP_SHADER_ATOMIC_INT64:
       return 1;
 
    case PIPE_CAP_GLSL_ZERO_INIT:
@@ -215,6 +214,8 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_MAX_SHADER_BUFFER_SIZE:
       /* Align it down to 256 bytes. I've chosen the number randomly. */
       return ROUND_DOWN_TO(MIN2(sscreen->info.max_alloc_size, INT_MAX), 256);
+   case PIPE_CAP_MAX_TEXTURE_MB:
+      return sscreen->info.max_alloc_size / (1024 * 1024);
 
    case PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY:
    case PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY:
@@ -401,7 +402,7 @@ static int si_get_shader_param(struct pipe_screen *pscreen, enum pipe_shader_typ
    case PIPE_SHADER_CAP_MAX_TEMPS:
       return 256; /* Max native temporaries. */
    case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
-      return si_get_param(pscreen, PIPE_CAP_MAX_SHADER_BUFFER_SIZE);
+      return 1 << 26; /* 64 MB */
    case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
       return SI_NUM_CONST_BUFFERS;
    case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
@@ -431,32 +432,15 @@ static int si_get_shader_param(struct pipe_screen *pscreen, enum pipe_shader_typ
    case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
+   case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR: /* lowered in finalize_nir */
+   case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR: /* lowered in finalize_nir */
       return 1;
-
-   case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
-      /* TODO: Indirect indexing of GS inputs is unimplemented. */
-      if (shader == PIPE_SHADER_GEOMETRY)
-         return 0;
-
-      if (shader == PIPE_SHADER_VERTEX && !sscreen->llvm_has_working_vgpr_indexing)
-         return 0;
-
-      /* TCS and TES load inputs directly from LDS or offchip
-       * memory, so indirect indexing is always supported.
-       * PS has to support indirect indexing, because we can't
-       * lower that to TEMPs for INTERP instructions.
-       */
-      return 1;
-
-   case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
-      return sscreen->llvm_has_working_vgpr_indexing ||
-             /* TCS stores outputs directly to memory. */
-             shader == PIPE_SHADER_TESS_CTRL;
 
    /* Unsupported boolean features. */
    case PIPE_SHADER_CAP_FP16:
    case PIPE_SHADER_CAP_FP16_DERIVATIVES:
    case PIPE_SHADER_CAP_INT16:
+   case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
    case PIPE_SHADER_CAP_SUBROUTINES:
    case PIPE_SHADER_CAP_SUPPORTED_IRS:
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
@@ -466,37 +450,13 @@ static int si_get_shader_param(struct pipe_screen *pscreen, enum pipe_shader_typ
    return 0;
 }
 
-static const struct nir_shader_compiler_options nir_options = {
-   .lower_scmp = true,
-   .lower_flrp32 = true,
-   .lower_flrp64 = true,
-   .lower_fsat = true,
-   .lower_fdiv = true,
-   .lower_bitfield_insert_to_bitfield_select = true,
-   .lower_bitfield_extract = true,
-   .lower_sub = true,
-   .fuse_ffma = true,
-   .lower_fmod = true,
-   .lower_pack_snorm_4x8 = true,
-   .lower_pack_unorm_4x8 = true,
-   .lower_unpack_snorm_2x16 = true,
-   .lower_unpack_snorm_4x8 = true,
-   .lower_unpack_unorm_2x16 = true,
-   .lower_unpack_unorm_4x8 = true,
-   .lower_extract_byte = true,
-   .lower_extract_word = true,
-   .lower_rotate = true,
-   .lower_to_scalar = true,
-   .optimize_sample_mask_in = true,
-   .max_unroll_iterations = 32,
-   .use_interpolated_input_intrinsics = true,
-};
-
 static const void *si_get_compiler_options(struct pipe_screen *screen, enum pipe_shader_ir ir,
                                            enum pipe_shader_type shader)
 {
+   struct si_screen *sscreen = (struct si_screen *)screen;
+
    assert(ir == PIPE_SHADER_IR_NIR);
-   return &nir_options;
+   return &sscreen->nir_options;
 }
 
 static void si_get_driver_uuid(struct pipe_screen *pscreen, char *uuid)
@@ -648,7 +608,7 @@ static int si_get_video_param(struct pipe_screen *screen, enum pipe_video_profil
       if (profile == PIPE_VIDEO_PROFILE_HEVC_MAIN_10)
          return PIPE_FORMAT_P010;
       else if (profile == PIPE_VIDEO_PROFILE_VP9_PROFILE2)
-         return PIPE_FORMAT_P016;
+         return PIPE_FORMAT_P010;
       else
          return PIPE_FORMAT_NV12;
 
@@ -709,7 +669,7 @@ static bool si_vid_is_format_supported(struct pipe_screen *screen, enum pipe_for
 
    /* Vp9 profile 2 supports 10 bit decoding using P016 */
    if (profile == PIPE_VIDEO_PROFILE_VP9_PROFILE2)
-      return format == PIPE_FORMAT_P016;
+      return (format == PIPE_FORMAT_P010) || (format == PIPE_FORMAT_P016);
 
    /* we can only handle this one with UVD */
    if (profile != PIPE_VIDEO_PROFILE_UNKNOWN)
@@ -967,4 +927,56 @@ void si_init_screen_get_functions(struct si_screen *sscreen)
    }
 
    si_init_renderer_string(sscreen);
+
+   const struct nir_shader_compiler_options nir_options = {
+      .lower_scmp = true,
+      .lower_flrp16 = true,
+      .lower_flrp32 = true,
+      .lower_flrp64 = true,
+      .lower_fsat = true,
+      .lower_fdiv = true,
+      .lower_bitfield_insert_to_bitfield_select = true,
+      .lower_bitfield_extract = true,
+      .lower_sub = true,
+      /*        |---------------------------------- Performance & Availability --------------------------------|
+       *        |MAD/MAC/MADAK/MADMK|MAD_LEGACY|MAC_LEGACY|    FMA     |FMAC/FMAAK/FMAMK|FMA_LEGACY|PK_FMA_F16,|Best choice
+       * Arch   |    F32,F16,F64    | F32,F16  | F32,F16  |F32,F16,F64 |    F32,F16     | F32,F16  |PK_FMAC_F16|F16,F32,F64
+       * ------------------------------------------------------------------------------------------------------------------
+       * gfx6,7 |     1 , - , -     |  1 , -   |  1 , -   |1/4, - ,1/16|     - , -      |  - , -   |   - , -   | - ,MAD,FMA
+       * gfx8   |     1 , 1 , -     |  1 , -   |  - , -   |1/4, 1 ,1/16|     - , -      |  - , -   |   - , -   |MAD,MAD,FMA
+       * gfx9   |     1 , 1 , -     |  1 , -   |  1 , -   | 1 , 1 ,1/16|     - , -      |  - , 1   |   2 , -   |FMA,MAD,FMA
+       * gfx10  |     1 , 1 , -     |  1 , -   |  1 , -   | 1 , 1 ,1/16|     1 , 1      |  - , -   |   2 , 2   |FMA,MAD,FMA
+       * gfx10.3|     - , - , -     |  - , -   |  - , -   | 1 , 1 ,1/16|     1 , 1      |  1 , -   |   2 , 2   |  all FMA
+       *
+       * Tahiti, Hawaii, Carrizo, Vega20: FMA_F32 is full rate, FMA_F64 is 1/4
+       *
+       * gfx8 prefers MAD for F16 because of MAC/MADAK/MADMK.
+       * gfx9 and newer prefer FMA for F16 because of the packed instruction.
+       * gfx10 and older prefer MAD for F32 because of the legacy instruction.
+       */
+      .lower_ffma16 = sscreen->info.chip_class < GFX9,
+      .lower_ffma32 = sscreen->info.chip_class < GFX10_3,
+      .lower_ffma64 = false,
+      .fuse_ffma16 = sscreen->info.chip_class >= GFX9,
+      .fuse_ffma32 = sscreen->info.chip_class >= GFX10_3,
+      .fuse_ffma64 = true,
+      .lower_fmod = true,
+      .lower_pack_snorm_4x8 = true,
+      .lower_pack_unorm_4x8 = true,
+      .lower_unpack_snorm_2x16 = true,
+      .lower_unpack_snorm_4x8 = true,
+      .lower_unpack_unorm_2x16 = true,
+      .lower_unpack_unorm_4x8 = true,
+      .lower_extract_byte = true,
+      .lower_extract_word = true,
+      .lower_rotate = true,
+      .lower_to_scalar = true,
+      .optimize_sample_mask_in = true,
+      .max_unroll_iterations = 32,
+      .use_interpolated_input_intrinsics = true,
+      .lower_uniforms_to_ubo = true,
+      .support_16bit_alu = sscreen->info.has_packed_math_16bit,
+      .vectorize_vec2_16bit = sscreen->info.has_packed_math_16bit,
+   };
+   sscreen->nir_options = nir_options;
 }

@@ -376,6 +376,7 @@ namespace {
       case BRW_OPCODE_CMP:
       case BRW_OPCODE_ADD:
       case BRW_OPCODE_MUL:
+      case SHADER_OPCODE_MOV_RELOC_IMM:
          if (devinfo->gen >= 11) {
             return calculate_desc(info, unit_fpu, 0, 2, 0, 0, 2,
                                   0, 10, 6, 14, 0, 0);
@@ -822,15 +823,6 @@ namespace {
                                   4 /* XXX */, 0,
                                   0, 12 /* XXX */, 8 /* XXX */, 18 /* XXX */,
                                   0, 0);
-
-      case VS_OPCODE_SET_SIMD4X2_HEADER_GEN9:
-         if (devinfo->gen >= 8)
-            return calculate_desc(info, unit_fpu, 12 /* XXX */, 0, 0,
-                                  4 /* XXX */, 0,
-                                  0, 8 /* XXX */, 4 /* XXX */, 12 /* XXX */,
-                                  0, 0);
-         else
-            abort();
 
       case VS_OPCODE_UNPACK_FLAGS_SIMD4X2:
       case TCS_OPCODE_GET_INSTANCE_ID:
@@ -1522,9 +1514,19 @@ namespace {
        *       difference is the worst-case scenario branch_weight used for
        *       SIMD32 which accounts for the possibility of a dynamically
        *       uniform branch becoming divergent in SIMD32.
+       *
+       *       Note that we provide slightly more pessimistic weights on
+       *       Gen12+ for SIMD32, since the effective warp size on that
+       *       platform is 2x the SIMD width due to EU fusion, which increases
+       *       the likelihood of divergent control flow in comparison to
+       *       previous generations, giving narrower SIMD modes a performance
+       *       advantage in several test-cases with non-uniform discard jumps.
        */
       const float branch_weight = (dispatch_width > 16 ? 1.0 : 0.5);
+      const float discard_weight = (dispatch_width > 16 || s->devinfo->gen < 12 ?
+                                    1.0 : 0.5);
       const float loop_weight = 10;
+      unsigned discard_count = 0;
       unsigned elapsed = 0;
       state st;
 
@@ -1538,6 +1540,8 @@ namespace {
 
             if (inst->opcode == BRW_OPCODE_ENDIF)
                st.weight /= branch_weight;
+            else if (inst->opcode == FS_OPCODE_PLACEHOLDER_HALT && discard_count)
+               st.weight /= discard_weight;
 
             elapsed += (st.unit_ready[unit_fe] - clock0) * st.weight;
 
@@ -1547,6 +1551,8 @@ namespace {
                st.weight *= loop_weight;
             else if (inst->opcode == BRW_OPCODE_WHILE)
                st.weight /= loop_weight;
+            else if (inst->opcode == FS_OPCODE_DISCARD_JUMP && !discard_count++)
+               st.weight *= discard_weight;
          }
 
          p.block_latency[block->num] = elapsed - elapsed0;

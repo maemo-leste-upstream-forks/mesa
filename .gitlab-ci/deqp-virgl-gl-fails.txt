@@ -39,7 +39,6 @@ dEQP-GLES3.functional.clipping.triangle_vertex.clip_two.clip_neg_y_neg_z_and_neg
 dEQP-GLES3.functional.clipping.triangle_vertex.clip_two.clip_pos_y_pos_z_and_neg_x_neg_y_neg_z
 dEQP-GLES3.functional.draw.random.105
 dEQP-GLES3.functional.draw.random.114
-dEQP-GLES3.functional.draw.random.124
 dEQP-GLES3.functional.draw.random.135
 dEQP-GLES3.functional.draw.random.144
 dEQP-GLES3.functional.draw.random.155
@@ -86,8 +85,6 @@ dEQP-GLES3.functional.rasterization.interpolation.basic.lines_wide
 dEQP-GLES3.functional.rasterization.interpolation.projected.line_loop_wide
 dEQP-GLES3.functional.rasterization.interpolation.projected.line_strip_wide
 dEQP-GLES3.functional.rasterization.interpolation.projected.lines_wide
-dEQP-GLES3.functional.vertex_arrays.single_attribute.normalize.int2_10_10_10.components4_quads1
-dEQP-GLES3.functional.vertex_arrays.single_attribute.normalize.int2_10_10_10.components4_quads256
 dEQP-GLES31.functional.atomic_counter.dec.1_counter_100_calls_10_threads
 dEQP-GLES31.functional.atomic_counter.dec.1_counter_100_calls_1_thread
 dEQP-GLES31.functional.atomic_counter.dec.1_counter_1_call_10_threads
@@ -640,7 +637,6 @@ dEQP-GLES31.functional.draw_indirect.compute_interop.separate.drawelements_compu
 dEQP-GLES31.functional.draw_indirect.compute_interop.separate.drawelements_compute_data_and_indices
 dEQP-GLES31.functional.draw_indirect.compute_interop.separate.drawelements_compute_indices
 dEQP-GLES31.functional.draw_indirect.random.20
-dEQP-GLES31.functional.fbo.no_attachments.maximums.all
 dEQP-GLES31.functional.image_load_store.2d_array.atomic.add_r32i_result
 dEQP-GLES31.functional.image_load_store.2d_array.atomic.add_r32i_return_value
 dEQP-GLES31.functional.image_load_store.2d_array.atomic.add_r32ui_result
@@ -4789,7 +4785,6 @@ KHR-GL31.transform_feedback.capture_vertex_interleaved_test
 KHR-GL31.transform_feedback.capture_vertex_separate_test
 KHR-GL31.transform_feedback.discard_vertex_test
 KHR-GL31.transform_feedback.draw_xfb_instanced_test
-KHR-GL31.transform_feedback.draw_xfb_stream_test
 KHR-GL31.transform_feedback.draw_xfb_stream_instanced_test
 KHR-GL31.transform_feedback.query_vertex_interleaved_test
 KHR-GL31.transform_feedback.query_vertex_separate_test
@@ -4797,7 +4792,6 @@ KHR-GL32.transform_feedback.capture_vertex_interleaved_test
 KHR-GL32.transform_feedback.capture_vertex_separate_test
 KHR-GL32.transform_feedback.discard_vertex_test
 KHR-GL32.transform_feedback.draw_xfb_instanced_test
-KHR-GL32.transform_feedback.draw_xfb_stream_test
 KHR-GL32.transform_feedback.draw_xfb_stream_instanced_test
 KHR-GL32.transform_feedback_overflow_query_ARB.advanced-single-stream-interleaved-attribs
 KHR-GL32.transform_feedback_overflow_query_ARB.advanced-single-stream-separate-attribs

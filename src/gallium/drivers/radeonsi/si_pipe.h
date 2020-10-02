@@ -123,6 +123,7 @@
 #define SI_RESOURCE_FLAG_MICRO_TILE_MODE_GET(x)                                                    \
    (((x) >> SI_RESOURCE_FLAG_MICRO_TILE_MODE_SHIFT) & 0x3)
 #define SI_RESOURCE_FLAG_UNCACHED          (PIPE_RESOURCE_FLAG_DRV_PRIV << 12)
+#define SI_RESOURCE_FLAG_DRIVER_INTERNAL   (PIPE_RESOURCE_FLAG_DRV_PRIV << 13)
 
 enum si_clear_code
 {
@@ -141,12 +142,12 @@ enum si_clear_code
 enum
 {
    /* Shader logging options: */
-   DBG_VS = PIPE_SHADER_VERTEX,
-   DBG_PS = PIPE_SHADER_FRAGMENT,
-   DBG_GS = PIPE_SHADER_GEOMETRY,
-   DBG_TCS = PIPE_SHADER_TESS_CTRL,
-   DBG_TES = PIPE_SHADER_TESS_EVAL,
-   DBG_CS = PIPE_SHADER_COMPUTE,
+   DBG_VS = MESA_SHADER_VERTEX,
+   DBG_TCS = MESA_SHADER_TESS_CTRL,
+   DBG_TES = MESA_SHADER_TESS_EVAL,
+   DBG_GS = MESA_SHADER_GEOMETRY,
+   DBG_PS = MESA_SHADER_FRAGMENT,
+   DBG_CS = MESA_SHADER_COMPUTE,
    DBG_NO_IR,
    DBG_NO_NIR,
    DBG_NO_ASM,
@@ -161,7 +162,6 @@ enum
    DBG_W64_GE,
    DBG_W64_PS,
    DBG_W64_CS,
-   DBG_KILL_PS_INF_INTERP,
 
    /* Shader compiler options (with no effect on the shader cache): */
    DBG_CHECK_IR,
@@ -184,6 +184,7 @@ enum
    DBG_CHECK_VM,
    DBG_RESERVE_VMID,
    DBG_ZERO_VRAM,
+   DBG_SHADOW_REGS,
 
    /* 3D engine options: */
    DBG_NO_GFX,
@@ -209,6 +210,8 @@ enum
    DBG_NO_DCC_FB,
    DBG_NO_DCC_MSAA,
    DBG_NO_FMASK,
+
+   DBG_TMZ,
 
    DBG_COUNT
 };
@@ -382,6 +385,8 @@ struct si_texture {
    unsigned ps_draw_ratio;
    /* The number of clears since the last DCC usage analysis. */
    unsigned num_slow_clears;
+
+   struct si_resource *dcc_retile_buffer;
 };
 
 struct si_surface {
@@ -432,7 +437,7 @@ struct si_mmio_counter {
 };
 
 union si_mmio_counters {
-   struct {
+   struct si_mmio_counters_named {
       /* For global GPU load including SDMA. */
       struct si_mmio_counter gpu;
 
@@ -463,7 +468,8 @@ union si_mmio_counters {
       struct si_mmio_counter cp_dma;
       struct si_mmio_counter scratch_ram;
    } named;
-   unsigned array[0];
+
+   unsigned array[sizeof(struct si_mmio_counters_named) / sizeof(unsigned)];
 };
 
 struct si_memory_object {
@@ -487,6 +493,7 @@ struct si_screen {
    struct disk_cache *disk_shader_cache;
 
    struct radeon_info info;
+   struct nir_shader_compiler_options nir_options;
    uint64_t debug_flags;
    char renderer_string[183];
 
@@ -509,6 +516,8 @@ struct si_screen {
    unsigned eqaa_force_coverage_samples;
    unsigned eqaa_force_z_samples;
    unsigned eqaa_force_color_samples;
+   unsigned pbb_context_states_per_bin;
+   unsigned pbb_persistent_states_per_bin;
    bool has_draw_indirect_multi;
    bool has_out_of_order_rast;
    bool assume_no_z_fights;
@@ -518,8 +527,6 @@ struct si_screen {
    bool llvm_has_working_vgpr_indexing;
    bool use_ngg;
    bool use_ngg_culling;
-   bool always_use_ngg_culling_all;
-   bool always_use_ngg_culling_tess;
    bool use_ngg_streamout;
 
    struct {
@@ -700,7 +707,6 @@ struct si_framebuffer {
    ubyte nr_color_samples; /* at most 8xAA */
    ubyte compressed_cb_mask;
    ubyte uncompressed_cb_mask;
-   ubyte displayable_dcc_cb_mask;
    ubyte color_is_int8;
    ubyte color_is_int10;
    ubyte dirty_cbufs;
@@ -711,8 +717,6 @@ struct si_framebuffer {
    bool CB_has_shader_readable_metadata;
    bool DB_has_shader_readable_metadata;
    bool all_DCC_pipe_aligned;
-   bool color_big_page;
-   bool zs_big_page;
 };
 
 enum si_quant_mode
@@ -902,6 +906,7 @@ struct si_context {
    struct pipe_fence_handle *last_gfx_fence;
    struct pipe_fence_handle *last_sdma_fence;
    struct si_resource *eop_bug_scratch;
+   struct si_resource *eop_bug_scratch_tmz;
    struct u_upload_mgr *cached_gtt_allocator;
    struct threaded_context *tc;
    struct u_suballocator *allocator_zeroed_memory;
@@ -911,6 +916,7 @@ struct si_context {
    struct u_log_context *log;
    void *query_result_shader;
    void *sh_query_result_shader;
+   struct si_resource *shadowed_regs;
 
    void (*emit_cache_flush)(struct si_context *ctx);
 
@@ -944,6 +950,7 @@ struct si_context {
    struct si_shader_ctx_state fixed_func_tcs_shader;
    /* Offset 0: EOP flush number; Offset 4: GDS prim restart counter */
    struct si_resource *wait_mem_scratch;
+   struct si_resource *wait_mem_scratch_tmz;
    unsigned wait_mem_number;
    uint16_t prefetch_L2_mask;
 
@@ -1014,6 +1021,8 @@ struct si_context {
 
    /* Precomputed states. */
    struct si_pm4_state *cs_preamble_state;
+   struct si_pm4_state *cs_preamble_tess_rings;
+   struct si_pm4_state *cs_preamble_tess_rings_tmz;
    struct si_pm4_state *cs_preamble_gs_rings;
    bool cs_preamble_has_vgt_flush;
    struct si_pm4_state *vgt_shader_config[SI_NUM_VGT_STAGES_STATES];
@@ -1055,6 +1064,7 @@ struct si_context {
    struct pipe_resource *esgs_ring;
    struct pipe_resource *gsvs_ring;
    struct pipe_resource *tess_rings;
+   struct pipe_resource *tess_rings_tmz;
    union pipe_color_union *border_color_table; /* in CPU memory, any endian */
    struct si_resource *border_color_buffer;
    union pipe_color_union *border_color_map; /* in VRAM (slow access), little endian */
@@ -1367,6 +1377,9 @@ void si_cp_copy_data(struct si_context *sctx, struct radeon_cmdbuf *cs, unsigned
                      struct si_resource *dst, unsigned dst_offset, unsigned src_sel,
                      struct si_resource *src, unsigned src_offset);
 
+/* si_cp_reg_shadowing.c */
+void si_init_cp_reg_shadowing(struct si_context *sctx);
+
 /* si_debug.c */
 void si_save_cs(struct radeon_winsys *ws, struct radeon_cmdbuf *cs, struct radeon_saved_cs *saved,
                 bool get_buffer_list);
@@ -1414,7 +1427,7 @@ void si_init_screen_get_functions(struct si_screen *sscreen);
 void si_flush_gfx_cs(struct si_context *ctx, unsigned flags, struct pipe_fence_handle **fence);
 void si_allocate_gds(struct si_context *ctx);
 void si_set_tracked_regs_to_clear_state(struct si_context *ctx);
-void si_begin_new_gfx_cs(struct si_context *ctx);
+void si_begin_new_gfx_cs(struct si_context *ctx, bool first_cs);
 void si_need_gfx_cs_space(struct si_context *ctx);
 void si_unref_sdma_uploads(struct si_context *sctx);
 
@@ -1651,9 +1664,9 @@ static inline struct si_shader *si_get_vs_state(struct si_context *sctx)
    return vs->current ? vs->current : NULL;
 }
 
-static inline bool si_can_dump_shader(struct si_screen *sscreen, unsigned processor)
+static inline bool si_can_dump_shader(struct si_screen *sscreen, gl_shader_stage stage)
 {
-   return sscreen->debug_flags & (1 << processor);
+   return sscreen->debug_flags & (1 << stage);
 }
 
 static inline bool si_get_strmout_en(struct si_context *sctx)
@@ -1773,7 +1786,7 @@ static inline unsigned si_get_total_colormask(struct si_context *sctx)
    unsigned colormask =
       sctx->framebuffer.colorbuf_enabled_4bit & sctx->queued.named.blend->cb_target_mask;
 
-   if (!ps->info.properties[TGSI_PROPERTY_FS_COLOR0_WRITES_ALL_CBUFS])
+   if (!ps->info.color0_writes_all_cbufs)
       colormask &= ps->colors_written_4bit;
    else if (!ps->colors_written_4bit)
       colormask = 0; /* color0 writes all cbufs, but it's not written */
@@ -1881,19 +1894,19 @@ static inline bool si_compute_prim_discard_enabled(struct si_context *sctx)
 }
 
 static inline unsigned si_get_wave_size(struct si_screen *sscreen,
-                                        enum pipe_shader_type shader_type, bool ngg, bool es,
+                                        gl_shader_stage stage, bool ngg, bool es,
                                         bool gs_fast_launch, bool prim_discard_cs)
 {
-   if (shader_type == PIPE_SHADER_COMPUTE)
+   if (stage == MESA_SHADER_COMPUTE)
       return sscreen->compute_wave_size;
-   else if (shader_type == PIPE_SHADER_FRAGMENT)
+   else if (stage == MESA_SHADER_FRAGMENT)
       return sscreen->ps_wave_size;
    else if (gs_fast_launch)
       return 32; /* GS fast launch hangs with Wave64, so always use Wave32. */
-   else if ((shader_type == PIPE_SHADER_VERTEX && prim_discard_cs) || /* only Wave64 implemented */
-            (shader_type == PIPE_SHADER_VERTEX && es && !ngg) ||
-            (shader_type == PIPE_SHADER_TESS_EVAL && es && !ngg) ||
-            (shader_type == PIPE_SHADER_GEOMETRY && !ngg)) /* legacy GS only supports Wave64 */
+   else if ((stage == MESA_SHADER_VERTEX && prim_discard_cs) || /* only Wave64 implemented */
+            (stage == MESA_SHADER_VERTEX && es && !ngg) ||
+            (stage == MESA_SHADER_TESS_EVAL && es && !ngg) ||
+            (stage == MESA_SHADER_GEOMETRY && !ngg)) /* legacy GS only supports Wave64 */
       return 64;
    else
       return sscreen->ge_wave_size;
@@ -1901,7 +1914,8 @@ static inline unsigned si_get_wave_size(struct si_screen *sscreen,
 
 static inline unsigned si_get_shader_wave_size(struct si_shader *shader)
 {
-   return si_get_wave_size(shader->selector->screen, shader->selector->type, shader->key.as_ngg,
+   return si_get_wave_size(shader->selector->screen, shader->selector->info.stage,
+                           shader->key.as_ngg,
                            shader->key.as_es,
                            shader->key.opt.ngg_culling & SI_NGG_CULL_GS_FAST_LAUNCH_ALL,
                            shader->key.opt.vs_as_prim_discard_cs);
@@ -1909,5 +1923,10 @@ static inline unsigned si_get_shader_wave_size(struct si_shader *shader)
 
 #define PRINT_ERR(fmt, args...)                                                                    \
    fprintf(stderr, "EE %s:%d %s - " fmt, __FILE__, __LINE__, __func__, ##args)
+
+struct pipe_resource *si_buffer_from_winsys_buffer(struct pipe_screen *screen,
+                                                   const struct pipe_resource *templ,
+                                                   struct pb_buffer *imported_buf,
+                                                   bool dedicated);
 
 #endif

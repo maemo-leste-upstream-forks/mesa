@@ -153,7 +153,7 @@ static void map_msg_fb_it_buf(struct ruvd_decoder *dec)
 
 	/* and map it for CPU access */
 	ptr = dec->ws->buffer_map(buf->res->buf, dec->cs,
-                                  PIPE_TRANSFER_WRITE | RADEON_TRANSFER_TEMPORARY);
+                                  PIPE_MAP_WRITE | RADEON_MAP_TEMPORARY);
 
 	/* calc buffer offsets */
 	dec->msg = (struct ruvd_msg *)ptr;
@@ -178,6 +178,7 @@ static void send_msg_buf(struct ruvd_decoder *dec)
 
 	/* unmap the buffer */
 	dec->ws->buffer_unmap(buf->res->buf);
+	dec->bs_ptr = NULL;
 	dec->msg = NULL;
 	dec->fb = NULL;
 	dec->it = NULL;
@@ -841,7 +842,7 @@ static void ruvd_begin_frame(struct pipe_video_codec *decoder,
 	dec->bs_size = 0;
 	dec->bs_ptr = dec->ws->buffer_map(
 		dec->bs_buffers[dec->cur_buffer].res->buf,
-		dec->cs, PIPE_TRANSFER_WRITE | RADEON_TRANSFER_TEMPORARY);
+		dec->cs, PIPE_MAP_WRITE | RADEON_MAP_TEMPORARY);
 }
 
 /**
@@ -888,14 +889,15 @@ static void ruvd_decode_bitstream(struct pipe_video_codec *decoder,
 
 		if (new_size > buf->res->buf->size) {
 			dec->ws->buffer_unmap(buf->res->buf);
+			dec->bs_ptr = NULL;
 			if (!rvid_resize_buffer(dec->screen, dec->cs, buf, new_size)) {
 				RVID_ERR("Can't resize bitstream buffer!");
 				return;
 			}
 
 			dec->bs_ptr = dec->ws->buffer_map(buf->res->buf, dec->cs,
-							  PIPE_TRANSFER_WRITE |
-							  RADEON_TRANSFER_TEMPORARY);
+							  PIPE_MAP_WRITE |
+							  RADEON_MAP_TEMPORARY);
 			if (!dec->bs_ptr)
 				return;
 
@@ -938,6 +940,7 @@ static void ruvd_end_frame(struct pipe_video_codec *decoder,
 	bs_size = align(dec->bs_size, 128);
 	memset(dec->bs_ptr, 0, bs_size - dec->bs_size);
 	dec->ws->buffer_unmap(bs_buf->res->buf);
+	dec->bs_ptr = NULL;
 
 	map_msg_fb_it_buf(dec);
 	dec->msg->size = sizeof(*dec->msg);

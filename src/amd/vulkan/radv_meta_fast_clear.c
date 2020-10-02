@@ -58,7 +58,7 @@ build_dcc_decompress_compute_shader(struct radv_device *dev)
 	output_img->data.binding = 1;
 
 	nir_ssa_def *invoc_id = nir_load_local_invocation_id(&b);
-	nir_ssa_def *wg_id = nir_load_work_group_id(&b);
+	nir_ssa_def *wg_id = nir_load_work_group_id(&b, 32);
 	nir_ssa_def *block_size = nir_imm_ivec4(&b,
 						b.shader->info.cs.local_size[0],
 						b.shader->info.cs.local_size[1],
@@ -83,11 +83,8 @@ build_dcc_decompress_compute_shader(struct radv_device *dev)
 	nir_ssa_dest_init(&tex->instr, &tex->dest, 4, 32, "tex");
 	nir_builder_instr_insert(&b, &tex->instr);
 
-	nir_intrinsic_instr *membar = nir_intrinsic_instr_create(b.shader, nir_intrinsic_memory_barrier);
-	nir_builder_instr_insert(&b, &membar->instr);
-
-	nir_intrinsic_instr *bar = nir_intrinsic_instr_create(b.shader, nir_intrinsic_control_barrier);
-	nir_builder_instr_insert(&b, &bar->instr);
+	nir_scoped_barrier(&b, NIR_SCOPE_WORKGROUP, NIR_SCOPE_WORKGROUP,
+			   NIR_MEMORY_ACQ_REL, nir_var_mem_ssbo);
 
 	nir_ssa_def *outval = &tex->dest.ssa;
 	nir_intrinsic_instr *store = nir_intrinsic_instr_create(b.shader, nir_intrinsic_image_deref_store);

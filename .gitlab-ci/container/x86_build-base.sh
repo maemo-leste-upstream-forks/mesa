@@ -8,6 +8,8 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get install -y \
         ca-certificates \
         gnupg \
+        python3-pip \
+        python3-setuptools \
         unzip \
         wget
 
@@ -30,6 +32,7 @@ apt-get install -y --no-remove \
         g++ \
         g++-mingw-w64-x86-64 \
         gcc \
+        git \
         libclang-9-dev \
         libclc-dev \
         libelf-dev \
@@ -58,7 +61,9 @@ apt-get install -y --no-remove \
         python-mako \
         python3-mako \
         python3-pil \
+        python3-pip \
         python3-requests \
+        python3-setuptools \
         qemu-user \
         scons \
         wine64-development \
@@ -73,9 +78,11 @@ apt-get install -y --no-remove -t buster-backports \
         libllvm8 \
         meson
 
+# Needed for ci-fairy, this revision is able to upload files to MinIO
+pip3 install git+http://gitlab.freedesktop.org/freedesktop/ci-templates@6f5af7e5574509726c79109e3c147cee95e81366
 
-# for the vulkan overlay layer
-wget https://github.com/KhronosGroup/glslang/releases/download/master-tot/glslang-master-linux-Release.zip
+# for the vulkan overlay layer and ACO tests
+wget https://github.com/KhronosGroup/glslang/releases/download/SDK-candidate-26-Jul-2020/glslang-master-linux-Release.zip
 unzip glslang-master-linux-Release.zip bin/glslangValidator
 install -m755 bin/glslangValidator /usr/local/bin/
 rm bin/glslangValidator glslang-master-linux-Release.zip
@@ -85,7 +92,6 @@ rm bin/glslangValidator glslang-master-linux-Release.zip
 
 apt-get purge -y \
         gnupg \
-        unzip \
-        wget
+        unzip
 
 . .gitlab-ci/container/container_post_build.sh

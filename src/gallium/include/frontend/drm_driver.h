@@ -19,8 +19,9 @@ struct drm_driver_descriptor
    const char *driver_name;
 
    /**
-    * Pointer to the XML string describing driver-specific driconf options.
-    * Use DRI_CONF_* macros to create the string.
+    * Pointer to the XML string fragment describing driver-specific driconf
+    * options.  Use DRI_CONF_* macros to create the string, do not wrap in
+    * DRI_CONF_BEGIN/END.
     */
    const char **driconf_xml;
 
@@ -35,15 +36,5 @@ struct drm_driver_descriptor
 };
 
 extern const struct drm_driver_descriptor driver_descriptor;
-
-/**
- * Instantiate a drm_driver_descriptor struct.
- */
-#define DRM_DRIVER_DESCRIPTOR(driver_name_str, driconf, func)  \
-const struct drm_driver_descriptor driver_descriptor = {       \
-   .driver_name = driver_name_str,                             \
-   .driconf_xml = driconf,                                     \
-   .create_screen = func,                                      \
-};
 
 #endif

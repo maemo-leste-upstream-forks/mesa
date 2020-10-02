@@ -53,10 +53,13 @@ __fd6_setup_rasterizer_stateobj(struct fd_context *ctx,
 
 	OUT_REG(ring,
 		A6XX_GRAS_CL_CNTL(
+			.znear_clip_disable = !cso->depth_clip_near,
+			.zfar_clip_disable = !cso->depth_clip_far,
+			.unk5 = !cso->depth_clip_near || !cso->depth_clip_far,
 			.vp_clip_code_ignore = 1,
 			.zero_gb_scale_z = cso->clip_halfz
 			),
-		A6XX_GRAS_UNKNOWN_8001());
+		A6XX_GRAS_VS_CL_CNTL());
 
 	OUT_REG(ring,
 		A6XX_GRAS_SU_CNTL(
@@ -107,8 +110,8 @@ __fd6_setup_rasterizer_stateobj(struct fd_context *ctx,
 		break;
 	}
 
-	OUT_REG(ring, A6XX_VPC_POLYGON_MODE(.mode = mode));
-	OUT_REG(ring, A6XX_PC_POLYGON_MODE(.mode = mode));
+	OUT_REG(ring, A6XX_VPC_POLYGON_MODE(mode));
+	OUT_REG(ring, A6XX_PC_POLYGON_MODE(mode));
 
 	return ring;
 }

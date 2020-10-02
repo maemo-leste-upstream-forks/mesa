@@ -39,9 +39,8 @@ struct pipe_debug_callback;
 
 struct si_shader_output_values {
    LLVMValueRef values[4];
-   unsigned semantic_name;
-   unsigned semantic_index;
    ubyte vertex_stream[4];
+   ubyte semantic;
 };
 
 struct si_shader_context {
@@ -49,7 +48,7 @@ struct si_shader_context {
    struct si_shader *shader;
    struct si_screen *screen;
 
-   unsigned type; /* PIPE_SHADER_* specifies the type of shader. */
+   gl_shader_stage stage;
 
    /* For clamping the non-constant index in resource indexing: */
    unsigned num_const_buffers;
@@ -219,13 +218,14 @@ void gfx10_emit_ngg_epilogue(struct ac_shader_abi *abi, unsigned max_outputs, LL
 void gfx10_ngg_gs_emit_vertex(struct si_shader_context *ctx, unsigned stream, LLVMValueRef *addrs);
 void gfx10_ngg_gs_emit_prologue(struct si_shader_context *ctx);
 void gfx10_ngg_gs_emit_epilogue(struct si_shader_context *ctx);
+unsigned gfx10_ngg_get_scratch_dw_size(struct si_shader *shader);
 bool gfx10_ngg_calculate_subgroup_info(struct si_shader *shader);
 
 /* si_shader_llvm.c */
 bool si_compile_llvm(struct si_screen *sscreen, struct si_shader_binary *binary,
                      struct ac_shader_config *conf, struct ac_llvm_compiler *compiler,
                      struct ac_llvm_context *ac, struct pipe_debug_callback *debug,
-                     enum pipe_shader_type shader_type, const char *name, bool less_optimized);
+                     gl_shader_stage stage, const char *name, bool less_optimized);
 void si_llvm_context_init(struct si_shader_context *ctx, struct si_screen *sscreen,
                           struct ac_llvm_compiler *compiler, unsigned wave_size);
 void si_llvm_create_func(struct si_shader_context *ctx, const char *name, LLVMTypeRef *return_types,
@@ -242,8 +242,6 @@ LLVMValueRef si_insert_input_ret_float(struct si_shader_context *ctx, LLVMValueR
 LLVMValueRef si_insert_input_ptr(struct si_shader_context *ctx, LLVMValueRef ret,
                                  struct ac_arg param, unsigned return_index);
 LLVMValueRef si_prolog_get_rw_buffers(struct si_shader_context *ctx);
-LLVMValueRef si_build_gather_64bit(struct si_shader_context *ctx, LLVMTypeRef type,
-                                   LLVMValueRef val1, LLVMValueRef val2);
 void si_llvm_emit_barrier(struct si_shader_context *ctx);
 void si_llvm_declare_esgs_ring(struct si_shader_context *ctx);
 void si_init_exec_from_input(struct si_shader_context *ctx, struct ac_arg param,

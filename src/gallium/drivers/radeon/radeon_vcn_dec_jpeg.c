@@ -260,7 +260,7 @@ static void send_cmd_target_direct(struct radeon_decoder *dec, struct pb_buffer 
    set_reg_jpeg(dec, vcnipUVD_JPEG_INT_EN, COND0, TYPE0, 0xFFFFFFFE);
 
    // start engine command
-   set_reg_jpeg(dec, vcnipUVD_JPEG_CNTL, COND0, TYPE0, 0xE);
+   set_reg_jpeg(dec, vcnipUVD_JPEG_CNTL, COND0, TYPE0, 0x6);
 
    // wait for job completion, wait for job JBSI fetch done
    set_reg_jpeg(dec, vcnipUVD_JRBC_IB_REF_DATA, COND0, TYPE0, (dec->jpg.bsd_size >> 2));
@@ -288,6 +288,7 @@ void send_cmd_jpeg(struct radeon_decoder *dec, struct pipe_video_buffer *target,
 
    memset(dec->bs_ptr, 0, align(dec->bs_size, 128) - dec->bs_size);
    dec->ws->buffer_unmap(bs_buf->res->buf);
+   dec->bs_ptr = NULL;
 
    dt = radeon_jpeg_get_decode_param(dec, target, picture);
 

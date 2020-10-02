@@ -470,13 +470,7 @@ VkResult anv_CreateDescriptorSetLayout(
       case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
       case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
          set_layout->binding[b].dynamic_offset_index = dynamic_offset_count;
-         anv_foreach_stage(s, binding->stageFlags) {
-            STATIC_ASSERT(MAX_DYNAMIC_BUFFERS <=
-                          sizeof(set_layout->stage_dynamic_offsets[s]) * 8);
-            set_layout->stage_dynamic_offsets[s] |=
-               BITFIELD_RANGE(set_layout->binding[b].dynamic_offset_index,
-                              binding->descriptorCount);
-         }
+         set_layout->dynamic_offset_stages[dynamic_offset_count] = binding->stageFlags;
          dynamic_offset_count += binding->descriptorCount;
          assert(dynamic_offset_count < MAX_DYNAMIC_BUFFERS);
          break;
@@ -850,6 +844,7 @@ anv_descriptor_pool_alloc_set(struct anv_descriptor_pool *pool,
 {
    if (size <= pool->size - pool->next) {
       *set = (struct anv_descriptor_set *) (pool->data + pool->next);
+      (*set)->size = size;
       pool->next += size;
       return VK_SUCCESS;
    } else {
@@ -860,6 +855,7 @@ anv_descriptor_pool_alloc_set(struct anv_descriptor_pool *pool,
          if (size <= entry->size) {
             *link = entry->next;
             *set = (struct anv_descriptor_set *) entry;
+            (*set)->size = entry->size;
             return VK_SUCCESS;
          }
          link = &entry->next;
@@ -979,7 +975,6 @@ anv_descriptor_set_create(struct anv_device *device,
    set->layout = layout;
    anv_descriptor_set_layout_ref(layout);
 
-   set->size = size;
    set->buffer_views =
       (struct anv_buffer_view *) &set->descriptors[layout->size];
    set->buffer_view_count = layout->buffer_view_count;

@@ -429,7 +429,7 @@ _eglInitSurface(_EGLSurface *surf, _EGLDisplay *disp, EGLint type,
 
 
 EGLBoolean
-_eglQuerySurface(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surface,
+_eglQuerySurface(_EGLDisplay *disp, _EGLSurface *surface,
                  EGLint attribute, EGLint *value)
 {
    switch (attribute) {
@@ -534,7 +534,7 @@ _eglQuerySurface(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surface,
          return _eglError(EGL_BAD_ATTRIBUTE, "eglQuerySurface");
 
       _EGLContext *ctx = _eglGetCurrentContext();
-      EGLint result = drv->API.QueryBufferAge(drv, disp, surface);
+      EGLint result = disp->Driver->QueryBufferAge(disp, surface);
       /* error happened */
       if (result < 0)
          return EGL_FALSE;
@@ -593,7 +593,7 @@ _eglQuerySurface(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surface,
  * Default fallback routine - drivers might override this.
  */
 EGLBoolean
-_eglSurfaceAttrib(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surface,
+_eglSurfaceAttrib(_EGLDisplay *disp, _EGLSurface *surface,
                   EGLint attribute, EGLint value)
 {
    EGLint confval;
@@ -718,8 +718,7 @@ _eglSurfaceAttrib(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surface,
 
 
 EGLBoolean
-_eglBindTexImage(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surface,
-                 EGLint buffer)
+_eglBindTexImage(_EGLDisplay *disp, _EGLSurface *surface, EGLint buffer)
 {
    EGLint texture_type = EGL_PBUFFER_BIT;
 
@@ -748,8 +747,7 @@ _eglBindTexImage(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surface,
 }
 
 EGLBoolean
-_eglReleaseTexImage(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surf,
-                    EGLint buffer)
+_eglReleaseTexImage(_EGLDisplay *disp, _EGLSurface *surf, EGLint buffer)
 {
    /* Just do basic error checking and return success/fail.
     * Drivers must implement the real stuff.
@@ -780,14 +778,6 @@ _eglReleaseTexImage(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surf,
 
    surf->BoundToTexture = EGL_FALSE;
 
-   return EGL_TRUE;
-}
-
-
-EGLBoolean
-_eglSwapInterval(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surf,
-                 EGLint interval)
-{
    return EGL_TRUE;
 }
 

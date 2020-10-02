@@ -66,7 +66,7 @@ struct panfrost_blend_shader_final {
 };
 
 struct panfrost_blend_equation_final {
-        struct mali_blend_equation *equation;
+        struct mali_blend_equation_packed equation;
         float constant;
 };
 
@@ -75,10 +75,13 @@ struct panfrost_blend_rt {
          * fixed-function configuration for this blend state */
 
         bool has_fixed_function;
-        struct mali_blend_equation equation;
+        struct mali_blend_equation_packed equation;
 
         /* Mask of blend color components read */
         unsigned constant_mask;
+
+        /* Properties of the blend mode */
+        bool opaque, load_dest, no_colour;
 
         /* Regardless of fixed-function blending, this is a map of pipe_format
          * to panfrost_blend_shader */
@@ -99,8 +102,11 @@ struct panfrost_blend_final {
         /* Set for a shader, clear for an equation */
         bool is_shader;
 
-        /* Clear if the destination needs to be loaded from the tilebuffer */
-        bool no_blending;
+        /* Set if this is the replace mode */
+        bool opaque;
+
+        /* Set if destination is loaded */
+        bool load_dest;
 
         /* Set if the colour mask is 0x0 (nothing is written) */
         bool no_colour;
@@ -116,5 +122,12 @@ panfrost_blend_context_init(struct pipe_context *pipe);
 
 struct panfrost_blend_final
 panfrost_get_blend_for_context(struct panfrost_context *ctx, unsigned rt, struct panfrost_bo **bo, unsigned *shader_offset);
+
+struct panfrost_blend_shader *
+panfrost_get_blend_shader(
+        struct panfrost_context *ctx,
+        struct panfrost_blend_state *blend,
+        enum pipe_format fmt,
+        unsigned rt);
 
 #endif

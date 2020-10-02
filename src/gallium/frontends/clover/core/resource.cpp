@@ -64,6 +64,14 @@ resource::copy(command_queue &q, const vector &origin, const vector &region,
                                 box(src_res.offset + src_origin, region));
 }
 
+void
+resource::clear(command_queue &q, const size_t origin, const size_t size,
+                const void *pattern, const size_t pattern_size) {
+   auto p = offset[0] + origin;
+
+   q.pipe->clear_buffer(q.pipe, pipe, p, size, pattern, pattern_size);
+}
+
 void *
 resource::add_map(command_queue &q, cl_map_flags flags, bool blocking,
                   const vector &origin, const vector &region) {
@@ -119,8 +127,6 @@ root_resource::root_resource(clover::device &dev, memory_obj &obj,
                              command_queue &q, const std::string &data) :
    resource(dev, obj) {
    pipe_resource info {};
-   const bool user_ptr_support = dev.pipe->get_param(dev.pipe,
-         PIPE_CAP_RESOURCE_FROM_USER_MEMORY);
 
    if (image *img = dynamic_cast<image *>(&obj)) {
       info.format = translate_format(img->format());
@@ -139,7 +145,7 @@ root_resource::root_resource(clover::device &dev, memory_obj &obj,
                 PIPE_BIND_COMPUTE_RESOURCE |
                 PIPE_BIND_GLOBAL);
 
-   if (obj.flags() & CL_MEM_USE_HOST_PTR && user_ptr_support) {
+   if (obj.flags() & CL_MEM_USE_HOST_PTR && dev.allows_user_pointers()) {
       // Page alignment is normally required for this, just try, hope for the
       // best and fall back if it fails.
       pipe = dev.pipe->resource_from_user_memory(dev.pipe, &info, obj.host_ptr());
@@ -161,10 +167,10 @@ root_resource::root_resource(clover::device &dev, memory_obj &obj,
       unsigned cpp = util_format_get_blocksize(info.format);
 
       if (pipe->target == PIPE_BUFFER)
-         q.pipe->buffer_subdata(q.pipe, pipe, PIPE_TRANSFER_WRITE,
+         q.pipe->buffer_subdata(q.pipe, pipe, PIPE_MAP_WRITE,
                                 0, info.width0, data_ptr);
       else
-         q.pipe->texture_subdata(q.pipe, pipe, 0, PIPE_TRANSFER_WRITE,
+         q.pipe->texture_subdata(q.pipe, pipe, 0, PIPE_MAP_WRITE,
                                  rect, data_ptr, cpp * info.width0,
                                  cpp * info.width0 * info.height0);
    }
@@ -191,11 +197,11 @@ mapping::mapping(command_queue &q, resource &r,
                  const resource::vector &origin,
                  const resource::vector &region) :
    pctx(q.pipe), pres(NULL) {
-   unsigned usage = ((flags & CL_MAP_WRITE ? PIPE_TRANSFER_WRITE : 0 ) |
-                     (flags & CL_MAP_READ ? PIPE_TRANSFER_READ : 0 ) |
+   unsigned usage = ((flags & CL_MAP_WRITE ? PIPE_MAP_WRITE : 0 ) |
+                     (flags & CL_MAP_READ ? PIPE_MAP_READ : 0 ) |
                      (flags & CL_MAP_WRITE_INVALIDATE_REGION ?
-                      PIPE_TRANSFER_DISCARD_RANGE : 0) |
-                     (!blocking ? PIPE_TRANSFER_UNSYNCHRONIZED : 0));
+                      PIPE_MAP_DISCARD_RANGE : 0) |
+                     (!blocking ? PIPE_MAP_UNSYNCHRONIZED : 0));
 
    p = pctx->transfer_map(pctx, r.pipe, 0, usage,
                           box(origin + r.offset, region), &pxfer);
@@ -228,4 +234,14 @@ mapping::operator=(mapping m) {
    std::swap(pres, m.pres);
    std::swap(p, m.p);
    return *this;
+}
+
+resource::vector
+mapping::pitch() const
+{
+   return {
+      util_format_get_blocksize(pres->format),
+      pxfer->stride,
+      pxfer->layer_stride,
+   };
 }

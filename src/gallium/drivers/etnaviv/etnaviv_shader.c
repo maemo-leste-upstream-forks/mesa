@@ -29,11 +29,13 @@
 #include "etnaviv_compiler.h"
 #include "etnaviv_context.h"
 #include "etnaviv_debug.h"
+#include "etnaviv_disk_cache.h"
 #include "etnaviv_screen.h"
 #include "etnaviv_util.h"
 
 #include "tgsi/tgsi_parse.h"
 #include "nir/tgsi_to_nir.h"
+#include "util/u_atomic.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
 
@@ -352,6 +354,10 @@ create_variant(struct etna_shader *shader, struct etna_shader_key key)
 
    v->shader = shader;
    v->key = key;
+   v->id = ++shader->variant_count;
+
+   if (etna_disk_cache_retrieve(shader->compiler, v))
+      return v;
 
    ret = etna_compile_shader(v);
    if (!ret) {
@@ -359,7 +365,7 @@ create_variant(struct etna_shader *shader, struct etna_shader_key key)
       goto fail;
    }
 
-   v->id = ++shader->variant_count;
+   etna_disk_cache_store(shader->compiler, v);
 
    return v;
 
@@ -395,14 +401,15 @@ etna_create_shader_state(struct pipe_context *pctx,
 {
    struct etna_context *ctx = etna_context(pctx);
    struct etna_screen *screen = ctx->screen;
+   struct etna_compiler *compiler = screen->compiler;
    struct etna_shader *shader = CALLOC_STRUCT(etna_shader);
 
    if (!shader)
       return NULL;
 
-   static uint32_t id;
-   shader->id = id++;
+   shader->id = p_atomic_inc_return(&compiler->shader_count);
    shader->specs = &screen->specs;
+   shader->compiler = screen->compiler;
 
    if (DBG_ENABLED(ETNA_DBG_NIR))
       shader->nir = (pss->type == PIPE_SHADER_IR_NIR) ? pss->ir.nir :
@@ -410,7 +417,7 @@ etna_create_shader_state(struct pipe_context *pctx,
    else
       shader->tokens = tgsi_dup_tokens(pss->tokens);
 
-
+   etna_disk_cache_init_shader_key(compiler, shader);
 
    if (etna_mesa_debug & ETNA_DBG_SHADERDB) {
       /* if shader-db run, create a standard variant immediately

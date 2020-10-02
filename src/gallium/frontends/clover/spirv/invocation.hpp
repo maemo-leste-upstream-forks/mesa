@@ -23,6 +23,8 @@
 #ifndef CLOVER_SPIRV_INVOCATION_HPP
 #define CLOVER_SPIRV_INVOCATION_HPP
 
+#include <unordered_set>
+
 #include "core/context.hpp"
 #include "core/module.hpp"
 #include "core/program.hpp"
@@ -36,11 +38,12 @@ namespace clover {
       // warnings and errors are appended to |r_log|.
       bool is_valid_spirv(const std::vector<char> &binary,
                           const std::string &opencl_version,
-                          std::string &r_log);
+                          std::string &r_log, bool validate = true);
 
       // Creates a clover module out of the given SPIR-V binary.
       module compile_program(const std::vector<char> &binary,
-                             const device &dev, std::string &r_log);
+                             const device &dev, std::string &r_log,
+                             bool validate = true);
 
       // Combines multiple clover modules into a single one, resolving
       // link dependencies between them.
@@ -50,6 +53,16 @@ namespace clover {
       // Returns a textual representation of the given binary.
       std::string print_module(const std::vector<char> &binary,
                                const std::string &opencl_version);
+
+      // Returns a set of supported SPIR-V extensions.
+      std::unordered_set<std::string> supported_extensions();
+
+      // Returns a vector (sorted in increasing order) of supported SPIR-V
+      // versions.
+      std::vector<uint32_t> supported_versions();
+
+      // Load the SPIR-V for the CLC module.
+      module load_clc(const device &dev);
    }
 }
 

@@ -169,7 +169,11 @@ create_pass_manager(struct gallivm_state *gallivm)
        */
       LLVMAddReassociatePass(gallivm->passmgr);
       LLVMAddPromoteMemoryToRegisterPass(gallivm->passmgr);
+#if LLVM_VERSION_MAJOR <= 11
       LLVMAddConstantPropagationPass(gallivm->passmgr);
+#else
+      LLVMAddInstructionSimplifyPass(gallivm->passmgr);
+#endif
       LLVMAddInstructionCombiningPass(gallivm->passmgr);
       LLVMAddGVNPass(gallivm->passmgr);
    }
@@ -718,4 +722,9 @@ gallivm_jit_function(struct gallivm_state *gallivm,
    }
 
    return jit_func;
+}
+
+unsigned gallivm_get_perf_flags(void)
+{
+   return gallivm_perf;
 }

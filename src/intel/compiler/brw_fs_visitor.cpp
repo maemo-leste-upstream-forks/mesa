@@ -845,7 +845,7 @@ fs_visitor::emit_cs_terminate()
    assert(devinfo->gen >= 7);
 
    /* We are getting the thread ID from the compute shader header */
-   assert(stage == MESA_SHADER_COMPUTE);
+   assert(stage == MESA_SHADER_COMPUTE || stage == MESA_SHADER_KERNEL);
 
    /* We can't directly send from g0, since sends with EOT have to use
     * g112-127. So, copy it to a virtual register, The register allocator will
@@ -880,7 +880,7 @@ fs_visitor::emit_barrier()
    }
 
    /* We are getting the barrier ID from the compute shader header */
-   assert(stage == MESA_SHADER_COMPUTE);
+   assert(stage == MESA_SHADER_COMPUTE || stage == MESA_SHADER_KERNEL);
 
    fs_reg payload = fs_reg(VGRF, alloc.allocate(1), BRW_REGISTER_TYPE_UD);
 
@@ -950,9 +950,11 @@ fs_visitor::init()
    this->prog_data = this->stage_prog_data;
 
    this->failed = false;
+   this->fail_msg = NULL;
 
    this->nir_locals = NULL;
    this->nir_ssa_values = NULL;
+   this->nir_system_values = NULL;
 
    memset(&this->payload, 0, sizeof(this->payload));
    this->source_depth_to_render_target = false;

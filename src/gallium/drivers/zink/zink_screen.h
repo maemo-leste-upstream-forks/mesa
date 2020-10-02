@@ -24,6 +24,8 @@
 #ifndef ZINK_SCREEN_H
 #define ZINK_SCREEN_H
 
+#include "zink_device_info.h"
+
 #include "pipe/p_screen.h"
 #include "util/slab.h"
 
@@ -45,21 +47,13 @@ struct zink_screen {
    VkInstance instance;
    VkPhysicalDevice pdev;
 
-   VkPhysicalDeviceProperties props;
-   VkPhysicalDeviceFeatures feats;
-   VkPhysicalDeviceMemoryProperties mem_props;
-   VkPhysicalDeviceTransformFeedbackPropertiesEXT tf_props;
-
-   bool have_KHR_maintenance1;
-   bool have_KHR_external_memory_fd;
-   bool have_EXT_conditional_rendering;
-   bool have_EXT_transform_feedback;
-   bool have_EXT_index_type_uint8;
+   struct zink_device_info info;
 
    bool have_X8_D24_UNORM_PACK32;
    bool have_D24_UNORM_S8_UINT;
 
    uint32_t gfx_queue;
+   uint32_t timestamp_valid_bits;
    VkDevice dev;
 
    PFN_vkGetMemoryFdKHR vk_GetMemoryFdKHR;
@@ -72,6 +66,9 @@ struct zink_screen {
    PFN_vkCmdBeginQueryIndexedEXT vk_CmdBeginQueryIndexedEXT;
    PFN_vkCmdEndQueryIndexedEXT vk_CmdEndQueryIndexedEXT;
    PFN_vkCmdDrawIndirectByteCountEXT vk_CmdDrawIndirectByteCountEXT;
+
+   PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT vk_GetPhysicalDeviceCalibrateableTimeDomainsEXT;
+   PFN_vkGetCalibratedTimestampsEXT vk_GetCalibratedTimestampsEXT;
 };
 
 static inline struct zink_screen *

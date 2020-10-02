@@ -237,7 +237,8 @@ static int si_init_surface(struct si_screen *sscreen, struct radeon_surf *surfac
    if (!is_flushed_depth && is_depth) {
       flags |= RADEON_SURF_ZBUFFER;
 
-      if (sscreen->debug_flags & DBG(NO_HYPERZ)) {
+      if ((sscreen->debug_flags & DBG(NO_HYPERZ)) ||
+          (ptex->bind & PIPE_BIND_SHARED) || is_imported) {
          flags |= RADEON_SURF_NO_HTILE;
       } else if (tc_compatible_htile &&
                  (sscreen->info.chip_class >= GFX9 || array_mode == RADEON_SURF_MODE_2D)) {
@@ -534,6 +535,7 @@ static void si_reallocate_texture_inplace(struct si_context *sctx, struct si_tex
    tex->dcc_gather_statistics = new_tex->dcc_gather_statistics;
    si_resource_reference(&tex->dcc_separate_buffer, new_tex->dcc_separate_buffer);
    si_resource_reference(&tex->last_dcc_separate_buffer, new_tex->last_dcc_separate_buffer);
+   si_resource_reference(&tex->dcc_retile_buffer, new_tex->dcc_retile_buffer);
 
    if (new_bind_flag == PIPE_BIND_LINEAR) {
       assert(!tex->surface.htile_offset);
@@ -813,6 +815,7 @@ static void si_texture_destroy(struct pipe_screen *screen, struct pipe_resource 
    pb_reference(&resource->buf, NULL);
    si_resource_reference(&tex->dcc_separate_buffer, NULL);
    si_resource_reference(&tex->last_dcc_separate_buffer, NULL);
+   si_resource_reference(&tex->dcc_retile_buffer, NULL);
    FREE(tex);
 }
 
@@ -1145,41 +1148,48 @@ static struct si_texture *si_texture_create_object(struct pipe_screen *screen,
             }
          }
       }
+   }
 
-      /* Initialize displayable DCC that requires the retile blit. */
-      if (tex->surface.dcc_retile_map_offset) {
+   /* Initialize displayable DCC that requires the retile blit. */
+   if (tex->surface.display_dcc_offset) {
+      if (!(surface->flags & RADEON_SURF_IMPORTED)) {
          /* Uninitialized DCC can hang the display hw.
           * Clear to white to indicate that. */
          si_screen_clear_buffer(sscreen, &tex->buffer.b.b, tex->surface.display_dcc_offset,
                                 tex->surface.u.gfx9.display_dcc_size, DCC_CLEAR_COLOR_1111);
-
-         /* Upload the DCC retile map.
-          * Use a staging buffer for the upload, because
-          * the buffer backing the texture is unmappable.
-          */
-         bool use_uint16 = tex->surface.u.gfx9.dcc_retile_use_uint16;
-         unsigned num_elements = tex->surface.u.gfx9.dcc_retile_num_elements;
-         unsigned dcc_retile_map_size = num_elements * (use_uint16 ? 2 : 4);
-         struct si_resource *buf = si_aligned_buffer_create(screen, 0, PIPE_USAGE_STREAM,
-                                                            dcc_retile_map_size,
-                                                            sscreen->info.tcc_cache_line_size);
-         void *map = sscreen->ws->buffer_map(buf->buf, NULL, PIPE_TRANSFER_WRITE);
-
-         /* Upload the retile map into the staging buffer. */
-         memcpy(map, tex->surface.u.gfx9.dcc_retile_map, dcc_retile_map_size);
-
-         /* Copy the staging buffer to the buffer backing the texture. */
-         struct si_context *sctx = (struct si_context *)sscreen->aux_context;
-
-         assert(tex->surface.dcc_retile_map_offset <= UINT_MAX);
-         simple_mtx_lock(&sscreen->aux_context_lock);
-         si_sdma_copy_buffer(sctx, &tex->buffer.b.b, &buf->b.b, tex->surface.dcc_retile_map_offset,
-                             0, buf->b.b.width0);
-         sscreen->aux_context->flush(sscreen->aux_context, NULL, 0);
-         simple_mtx_unlock(&sscreen->aux_context_lock);
-
-         si_resource_reference(&buf, NULL);
       }
+
+      /* Upload the DCC retile map.
+       * Use a staging buffer for the upload, because
+       * the buffer backing the texture is unmappable.
+       */
+      bool use_uint16 = tex->surface.u.gfx9.dcc_retile_use_uint16;
+      unsigned num_elements = tex->surface.u.gfx9.dcc_retile_num_elements;
+      unsigned dcc_retile_map_size = num_elements * (use_uint16 ? 2 : 4);
+
+      tex->dcc_retile_buffer = si_aligned_buffer_create(screen,
+                                                        SI_RESOURCE_FLAG_DRIVER_INTERNAL, PIPE_USAGE_DEFAULT,
+                                                        dcc_retile_map_size,
+                                                        sscreen->info.tcc_cache_line_size);
+      struct si_resource *buf = si_aligned_buffer_create(screen,
+                                                         SI_RESOURCE_FLAG_DRIVER_INTERNAL, PIPE_USAGE_STREAM,
+                                                         dcc_retile_map_size,
+                                                         sscreen->info.tcc_cache_line_size);
+      void *map = sscreen->ws->buffer_map(buf->buf, NULL, PIPE_MAP_WRITE);
+
+      /* Upload the retile map into the staging buffer. */
+      memcpy(map, tex->surface.u.gfx9.dcc_retile_map, dcc_retile_map_size);
+
+      /* Copy the staging buffer to the buffer backing the texture. */
+      struct si_context *sctx = (struct si_context *)sscreen->aux_context;
+
+      simple_mtx_lock(&sscreen->aux_context_lock);
+      si_sdma_copy_buffer(sctx, &tex->dcc_retile_buffer->b.b, &buf->b.b, 0,
+                          0, buf->b.b.width0);
+      sscreen->aux_context->flush(sscreen->aux_context, NULL, 0);
+      simple_mtx_unlock(&sscreen->aux_context_lock);
+
+      si_resource_reference(&buf, NULL);
    }
 
    /* Initialize the CMASK base register value. */
@@ -1257,7 +1267,7 @@ static enum radeon_surf_mode si_choose_tiling(struct si_screen *sscreen,
       if (templ->target == PIPE_TEXTURE_1D || templ->target == PIPE_TEXTURE_1D_ARRAY ||
           /* Only very thin and long 2D textures should benefit from
            * linear_aligned. */
-          (templ->width0 > 8 && templ->height0 <= 2))
+          templ->height0 <= 2)
          return RADEON_SURF_MODE_LINEAR_ALIGNED;
 
       /* Textures likely to be mapped often. */
@@ -1587,7 +1597,7 @@ static bool si_can_invalidate_texture(struct si_screen *sscreen, struct si_textu
                                       unsigned transfer_usage, const struct pipe_box *box)
 {
    return !tex->buffer.b.is_shared && !(tex->surface.flags & RADEON_SURF_IMPORTED) &&
-          !(transfer_usage & PIPE_TRANSFER_READ) && tex->buffer.b.b.last_level == 0 &&
+          !(transfer_usage & PIPE_MAP_READ) && tex->buffer.b.b.last_level == 0 &&
           util_texrange_covers_whole_level(&tex->buffer.b.b, 0, box->x, box->y, box->z, box->width,
                                            box->height, box->depth);
 }
@@ -1626,20 +1636,8 @@ static void *si_texture_transfer_map(struct pipe_context *ctx, struct pipe_resou
    assert(!(texture->flags & SI_RESOURCE_FLAG_FORCE_LINEAR));
    assert(box->width && box->height && box->depth);
 
-   /* If we are uploading into FP16 or R11G11B10_FLOAT via a blit, CB clobbers NaNs,
-    * so in order to preserve them exactly, we have to use the compute blit.
-    * The compute blit is used only when the destination doesn't have DCC, so
-    * disable it here, which is kinda a hack.
-    *
-    * This makes KHR-GL45.texture_view.view_classes pass on gfx9.
-    * gfx10 has the same issue, but the test doesn't use a large enough texture
-    * to enable DCC and fail, so it always passes.
-    */
-   const struct util_format_description *desc = util_format_description(texture->format);
-   if (vi_dcc_enabled(tex, level) &&
-       desc->channel[0].type == UTIL_FORMAT_TYPE_FLOAT &&
-       desc->channel[0].size < 32)
-      si_texture_disable_dcc(sctx, tex);
+   if (tex->buffer.flags & RADEON_FLAG_ENCRYPTED)
+      return NULL;
 
    if (tex->is_depth) {
       /* Depth textures use staging unconditionally. */
@@ -1667,7 +1665,7 @@ static void *si_texture_transfer_map(struct pipe_context *ctx, struct pipe_resou
        */
       if (!tex->surface.is_linear || (tex->buffer.flags & RADEON_FLAG_ENCRYPTED))
          use_staging_texture = true;
-      else if (usage & PIPE_TRANSFER_READ)
+      else if (usage & PIPE_MAP_READ)
          use_staging_texture =
             tex->buffer.domains & RADEON_DOMAIN_VRAM || tex->buffer.flags & RADEON_FLAG_GTT_WC;
       /* Write & linear only: */
@@ -1692,8 +1690,8 @@ static void *si_texture_transfer_map(struct pipe_context *ctx, struct pipe_resou
    if (use_staging_texture) {
       struct pipe_resource resource;
       struct si_texture *staging;
-      unsigned bo_usage = usage & PIPE_TRANSFER_READ ? PIPE_USAGE_STAGING : PIPE_USAGE_STREAM;
-      unsigned bo_flags = SI_RESOURCE_FLAG_FORCE_LINEAR;
+      unsigned bo_usage = usage & PIPE_MAP_READ ? PIPE_USAGE_STAGING : PIPE_USAGE_STREAM;
+      unsigned bo_flags = SI_RESOURCE_FLAG_FORCE_LINEAR | SI_RESOURCE_FLAG_DRIVER_INTERNAL;
 
       /* The pixel shader has a bad access pattern for linear textures.
        * If a pixel shader is used to blit to/from staging, don't disable caches.
@@ -1705,7 +1703,7 @@ static void *si_texture_transfer_map(struct pipe_context *ctx, struct pipe_resou
           !tex->is_depth &&
           !util_format_is_compressed(texture->format) &&
           /* Texture uploads with DCC use the pixel shader to blit */
-          (!(usage & PIPE_TRANSFER_WRITE) || !vi_dcc_enabled(tex, level)))
+          (!(usage & PIPE_MAP_WRITE) || !vi_dcc_enabled(tex, level)))
          bo_flags |= SI_RESOURCE_FLAG_UNCACHED;
 
       si_init_temp_resource_from_box(&resource, texture, box, level, bo_usage,
@@ -1730,10 +1728,10 @@ static void *si_texture_transfer_map(struct pipe_context *ctx, struct pipe_resou
       si_texture_get_offset(sctx->screen, staging, 0, NULL, &trans->b.b.stride,
                             &trans->b.b.layer_stride);
 
-      if (usage & PIPE_TRANSFER_READ)
+      if (usage & PIPE_MAP_READ)
          si_copy_to_staging_texture(ctx, trans);
       else
-         usage |= PIPE_TRANSFER_UNSYNCHRONIZED;
+         usage |= PIPE_MAP_UNSYNCHRONIZED;
 
       buf = trans->staging;
    } else {
@@ -1747,7 +1745,7 @@ static void *si_texture_transfer_map(struct pipe_context *ctx, struct pipe_resou
     * we don't run out of the CPU address space.
     */
    if (sizeof(void *) == 4)
-      usage |= RADEON_TRANSFER_TEMPORARY;
+      usage |= RADEON_MAP_TEMPORARY;
 
    if (!(map = si_buffer_map_sync_with_rings(sctx, buf, usage)))
       goto fail_trans;
@@ -1778,7 +1776,7 @@ static void si_texture_transfer_unmap(struct pipe_context *ctx, struct pipe_tran
       sctx->ws->buffer_unmap(buf->buf);
    }
 
-   if ((transfer->usage & PIPE_TRANSFER_WRITE) && stransfer->staging)
+   if ((transfer->usage & PIPE_MAP_WRITE) && stransfer->staging)
       si_copy_from_staging_texture(ctx, stransfer);
 
    if (stransfer->staging) {
@@ -2273,17 +2271,26 @@ static void si_memobj_destroy(struct pipe_screen *screen, struct pipe_memory_obj
    free(memobj);
 }
 
-static struct pipe_resource *si_texture_from_memobj(struct pipe_screen *screen,
+static struct pipe_resource *si_resource_from_memobj(struct pipe_screen *screen,
                                                     const struct pipe_resource *templ,
                                                     struct pipe_memory_object *_memobj,
                                                     uint64_t offset)
 {
    struct si_screen *sscreen = (struct si_screen *)screen;
    struct si_memory_object *memobj = (struct si_memory_object *)_memobj;
-   struct pipe_resource *tex = si_texture_from_winsys_buffer(
-      sscreen, templ, memobj->buf, memobj->stride, offset,
-      PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE | PIPE_HANDLE_USAGE_SHADER_WRITE, memobj->b.dedicated);
-   if (!tex)
+   struct pipe_resource *res;
+
+   if (templ->target == PIPE_BUFFER)
+      res = si_buffer_from_winsys_buffer(screen, templ, memobj->buf,
+                                         memobj->b.dedicated);
+   else
+      res = si_texture_from_winsys_buffer(sscreen, templ, memobj->buf,
+                                          memobj->stride,
+                                          offset,
+                                          PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE | PIPE_HANDLE_USAGE_SHADER_WRITE,
+                                          memobj->b.dedicated);
+
+   if (!res)
       return NULL;
 
    /* si_texture_from_winsys_buffer doesn't increment refcount of
@@ -2291,7 +2298,7 @@ static struct pipe_resource *si_texture_from_memobj(struct pipe_screen *screen,
     */
    struct pb_buffer *buf = NULL;
    pb_reference(&buf, memobj->buf);
-   return tex;
+   return res;
 }
 
 static bool si_check_resource_capability(struct pipe_screen *screen, struct pipe_resource *resource,
@@ -2319,7 +2326,7 @@ void si_init_screen_texture_functions(struct si_screen *sscreen)
    sscreen->b.resource_get_handle = si_texture_get_handle;
    sscreen->b.resource_get_param = si_resource_get_param;
    sscreen->b.resource_get_info = si_texture_get_info;
-   sscreen->b.resource_from_memobj = si_texture_from_memobj;
+   sscreen->b.resource_from_memobj = si_resource_from_memobj;
    sscreen->b.memobj_create_from_handle = si_memobj_from_handle;
    sscreen->b.memobj_destroy = si_memobj_destroy;
    sscreen->b.check_resource_capability = si_check_resource_capability;

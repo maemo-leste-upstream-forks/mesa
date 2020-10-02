@@ -97,12 +97,19 @@ void si_flush_gfx_cs(struct si_context *ctx, unsigned flags, struct pipe_fence_h
    } else if (ctx->chip_class == GFX6) {
       /* The kernel flushes L2 before shaders are finished. */
       wait_flags |= wait_ps_cs;
-   } else if (!(flags & RADEON_FLUSH_START_NEXT_GFX_IB_NOW)) {
+   } else if (!(flags & RADEON_FLUSH_START_NEXT_GFX_IB_NOW) ||
+              ((flags & RADEON_FLUSH_TOGGLE_SECURE_SUBMISSION) &&
+                !ws->cs_is_secure(cs))) {
+      /* TODO: this workaround fixes subtitles rendering with mpv -vo=vaapi and
+       * tmz but shouldn't be necessary.
+       */
       wait_flags |= wait_ps_cs;
    }
 
    /* Drop this flush if it's a no-op. */
-   if (!radeon_emitted(cs, ctx->initial_gfx_cs_size) && (!wait_flags || !ctx->gfx_last_ib_is_busy))
+   if (!radeon_emitted(cs, ctx->initial_gfx_cs_size) &&
+       (!wait_flags || !ctx->gfx_last_ib_is_busy) &&
+       !(flags & RADEON_FLUSH_TOGGLE_SECURE_SUBMISSION))
       return;
 
    if (ctx->b.get_device_reset_status(&ctx->b) != PIPE_NO_RESET)
@@ -251,7 +258,7 @@ void si_flush_gfx_cs(struct si_context *ctx, unsigned flags, struct pipe_fence_h
    if (ctx->current_saved_cs)
       si_saved_cs_reference(&ctx->current_saved_cs, NULL);
 
-   si_begin_new_gfx_cs(ctx);
+   si_begin_new_gfx_cs(ctx, false);
    ctx->gfx_flush_in_progress = false;
 }
 
@@ -306,8 +313,8 @@ void si_allocate_gds(struct si_context *sctx)
    /* 4 streamout GDS counters.
     * We need 256B (64 dw) of GDS, otherwise streamout hangs.
     */
-   sctx->gds = ws->buffer_create(ws, 256, 4, RADEON_DOMAIN_GDS, 0);
-   sctx->gds_oa = ws->buffer_create(ws, 4, 1, RADEON_DOMAIN_OA, 0);
+   sctx->gds = ws->buffer_create(ws, 256, 4, RADEON_DOMAIN_GDS, RADEON_FLAG_DRIVER_INTERNAL);
+   sctx->gds_oa = ws->buffer_create(ws, 4, 1, RADEON_DOMAIN_OA, RADEON_FLAG_DRIVER_INTERNAL);
 
    assert(sctx->gds && sctx->gds_oa);
    si_add_gds_to_buffer_list(sctx);
@@ -383,8 +390,19 @@ void si_set_tracked_regs_to_clear_state(struct si_context *ctx)
    ctx->last_gs_out_prim = 0; /* cleared by CLEAR_STATE */
 }
 
-void si_begin_new_gfx_cs(struct si_context *ctx)
+void si_begin_new_gfx_cs(struct si_context *ctx, bool first_cs)
 {
+   bool is_secure = false;
+
+   if (unlikely(radeon_uses_secure_bos(ctx->ws))) {
+      /* Disable features that don't work with TMZ:
+       *   - primitive discard
+       */
+      ctx->prim_discard_vertex_count_threshold = UINT_MAX;
+
+      is_secure = ctx->ws->cs_is_secure(ctx->gfx_cs);
+   }
+
    if (ctx->is_debug)
       si_begin_gfx_cs_debug(ctx);
 
@@ -405,10 +423,18 @@ void si_begin_new_gfx_cs(struct si_context *ctx)
 
    radeon_add_to_buffer_list(ctx, ctx->gfx_cs, ctx->border_color_buffer,
                              RADEON_USAGE_READ, RADEON_PRIO_BORDER_COLORS);
+   if (ctx->shadowed_regs) {
+      radeon_add_to_buffer_list(ctx, ctx->gfx_cs, ctx->shadowed_regs,
+                                RADEON_USAGE_READWRITE,
+                                RADEON_PRIO_DESCRIPTORS);
+   }
 
-   ctx->cs_shader_state.initialized = false;
    si_add_all_descriptors_to_bo_list(ctx);
-   si_shader_pointers_mark_dirty(ctx);
+
+   if (first_cs || !ctx->shadowed_regs) {
+      si_shader_pointers_mark_dirty(ctx);
+      ctx->cs_shader_state.initialized = false;
+   }
 
    if (!ctx->has_graphics) {
       ctx->initial_gfx_cs_size = ctx->gfx_cs->current.cdw;
@@ -416,17 +442,22 @@ void si_begin_new_gfx_cs(struct si_context *ctx)
    }
 
    if (ctx->tess_rings) {
-      radeon_add_to_buffer_list(ctx, ctx->gfx_cs, si_resource(ctx->tess_rings),
+      radeon_add_to_buffer_list(ctx, ctx->gfx_cs,
+                                unlikely(is_secure) ? si_resource(ctx->tess_rings_tmz) : si_resource(ctx->tess_rings),
                                 RADEON_USAGE_READWRITE, RADEON_PRIO_SHADER_RINGS);
    }
 
    /* set all valid group as dirty so they get reemited on
     * next draw command
     */
-   si_pm4_reset_emitted(ctx);
+   si_pm4_reset_emitted(ctx, first_cs);
 
    /* The CS initialization should be emitted before everything else. */
-   si_pm4_emit(ctx, ctx->cs_preamble_state);
+   if (ctx->cs_preamble_state)
+      si_pm4_emit(ctx, ctx->cs_preamble_state);
+   if (ctx->cs_preamble_tess_rings)
+      si_pm4_emit(ctx, unlikely(is_secure) ? ctx->cs_preamble_tess_rings_tmz :
+         ctx->cs_preamble_tess_rings);
    if (ctx->cs_preamble_gs_rings)
       si_pm4_emit(ctx, ctx->cs_preamble_gs_rings);
 
@@ -447,8 +478,9 @@ void si_begin_new_gfx_cs(struct si_context *ctx)
 
    /* CLEAR_STATE disables all colorbuffers, so only enable bound ones. */
    bool has_clear_state = ctx->screen->info.has_clear_state;
-   if (has_clear_state) {
-      ctx->framebuffer.dirty_cbufs = u_bit_consecutive(0, ctx->framebuffer.state.nr_cbufs);
+   if (has_clear_state || ctx->shadowed_regs) {
+      ctx->framebuffer.dirty_cbufs =
+            u_bit_consecutive(0, ctx->framebuffer.state.nr_cbufs);
       /* CLEAR_STATE disables the zbuffer, so only enable it if it's bound. */
       ctx->framebuffer.dirty_zsbuf = ctx->framebuffer.state.zsbuf != NULL;
    } else {
@@ -456,38 +488,71 @@ void si_begin_new_gfx_cs(struct si_context *ctx)
       ctx->framebuffer.dirty_zsbuf = true;
    }
    /* This should always be marked as dirty to set the framebuffer scissor
-    * at least. */
+    * at least.
+    *
+    * Even with shadowed registers, we have to add buffers to the buffer list.
+    * All of these do that.
+    */
    si_mark_atom_dirty(ctx, &ctx->atoms.s.framebuffer);
-
-   si_mark_atom_dirty(ctx, &ctx->atoms.s.clip_regs);
-   /* CLEAR_STATE sets zeros. */
-   if (!has_clear_state || ctx->clip_state.any_nonzeros)
-      si_mark_atom_dirty(ctx, &ctx->atoms.s.clip_state);
-   ctx->sample_locs_num_samples = 0;
-   si_mark_atom_dirty(ctx, &ctx->atoms.s.msaa_sample_locs);
-   si_mark_atom_dirty(ctx, &ctx->atoms.s.msaa_config);
-   /* CLEAR_STATE sets 0xffff. */
-   if (!has_clear_state || ctx->sample_mask != 0xffff)
-      si_mark_atom_dirty(ctx, &ctx->atoms.s.sample_mask);
-   si_mark_atom_dirty(ctx, &ctx->atoms.s.cb_render_state);
-   /* CLEAR_STATE sets zeros. */
-   if (!has_clear_state || ctx->blend_color.any_nonzeros)
-      si_mark_atom_dirty(ctx, &ctx->atoms.s.blend_color);
-   si_mark_atom_dirty(ctx, &ctx->atoms.s.db_render_state);
-   if (ctx->chip_class >= GFX9)
-      si_mark_atom_dirty(ctx, &ctx->atoms.s.dpbb_state);
-   si_mark_atom_dirty(ctx, &ctx->atoms.s.stencil_ref);
-   si_mark_atom_dirty(ctx, &ctx->atoms.s.spi_map);
-   if (!ctx->screen->use_ngg_streamout)
-      si_mark_atom_dirty(ctx, &ctx->atoms.s.streamout_enable);
    si_mark_atom_dirty(ctx, &ctx->atoms.s.render_cond);
-   /* CLEAR_STATE disables all window rectangles. */
-   if (!has_clear_state || ctx->num_window_rectangles > 0)
-      si_mark_atom_dirty(ctx, &ctx->atoms.s.window_rectangles);
-
-   si_mark_atom_dirty(ctx, &ctx->atoms.s.guardband);
-   si_mark_atom_dirty(ctx, &ctx->atoms.s.scissors);
    si_mark_atom_dirty(ctx, &ctx->atoms.s.viewports);
+
+   if (first_cs || !ctx->shadowed_regs) {
+      /* These don't add any buffers, so skip them with shadowing. */
+      si_mark_atom_dirty(ctx, &ctx->atoms.s.clip_regs);
+      /* CLEAR_STATE sets zeros. */
+      if (!has_clear_state || ctx->clip_state.any_nonzeros)
+         si_mark_atom_dirty(ctx, &ctx->atoms.s.clip_state);
+      ctx->sample_locs_num_samples = 0;
+      si_mark_atom_dirty(ctx, &ctx->atoms.s.msaa_sample_locs);
+      si_mark_atom_dirty(ctx, &ctx->atoms.s.msaa_config);
+      /* CLEAR_STATE sets 0xffff. */
+      if (!has_clear_state || ctx->sample_mask != 0xffff)
+         si_mark_atom_dirty(ctx, &ctx->atoms.s.sample_mask);
+      si_mark_atom_dirty(ctx, &ctx->atoms.s.cb_render_state);
+      /* CLEAR_STATE sets zeros. */
+      if (!has_clear_state || ctx->blend_color.any_nonzeros)
+         si_mark_atom_dirty(ctx, &ctx->atoms.s.blend_color);
+      si_mark_atom_dirty(ctx, &ctx->atoms.s.db_render_state);
+      if (ctx->chip_class >= GFX9)
+         si_mark_atom_dirty(ctx, &ctx->atoms.s.dpbb_state);
+      si_mark_atom_dirty(ctx, &ctx->atoms.s.stencil_ref);
+      si_mark_atom_dirty(ctx, &ctx->atoms.s.spi_map);
+      if (!ctx->screen->use_ngg_streamout)
+         si_mark_atom_dirty(ctx, &ctx->atoms.s.streamout_enable);
+      /* CLEAR_STATE disables all window rectangles. */
+      if (!has_clear_state || ctx->num_window_rectangles > 0)
+         si_mark_atom_dirty(ctx, &ctx->atoms.s.window_rectangles);
+      si_mark_atom_dirty(ctx, &ctx->atoms.s.guardband);
+      si_mark_atom_dirty(ctx, &ctx->atoms.s.scissors);
+
+      /* Invalidate various draw states so that they are emitted before
+       * the first draw call. */
+      si_invalidate_draw_sh_constants(ctx);
+      ctx->last_index_size = -1;
+      ctx->last_primitive_restart_en = -1;
+      ctx->last_restart_index = SI_RESTART_INDEX_UNKNOWN;
+      ctx->last_prim = -1;
+      ctx->last_multi_vgt_param = -1;
+      ctx->last_vs_state = ~0;
+      ctx->last_ls = NULL;
+      ctx->last_tcs = NULL;
+      ctx->last_tes_sh_base = -1;
+      ctx->last_num_tcs_input_cp = -1;
+      ctx->last_ls_hs_config = -1; /* impossible value */
+      ctx->last_binning_enabled = -1;
+
+      if (has_clear_state) {
+         si_set_tracked_regs_to_clear_state(ctx);
+      } else {
+         /* Set all register values to unknown. */
+         ctx->tracked_regs.reg_saved = 0;
+         ctx->last_gs_out_prim = -1; /* unknown */
+      }
+
+      /* 0xffffffff is an impossible value to register SPI_PS_INPUT_CNTL_n */
+      memset(ctx->tracked_regs.spi_ps_input_cntl, 0xff, sizeof(uint32_t) * 32);
+   }
 
    si_mark_atom_dirty(ctx, &ctx->atoms.s.scratch_state);
    if (ctx->scratch_buffer) {
@@ -504,24 +569,7 @@ void si_begin_new_gfx_cs(struct si_context *ctx)
 
    assert(!ctx->gfx_cs->prev_dw);
    ctx->initial_gfx_cs_size = ctx->gfx_cs->current.cdw;
-
-   /* Invalidate various draw states so that they are emitted before
-    * the first draw call. */
-   si_invalidate_draw_sh_constants(ctx);
-   ctx->last_index_size = -1;
-   ctx->last_primitive_restart_en = -1;
-   ctx->last_restart_index = SI_RESTART_INDEX_UNKNOWN;
-   ctx->last_prim = -1;
-   ctx->last_multi_vgt_param = -1;
-   ctx->last_vs_state = ~0;
-   ctx->last_ls = NULL;
-   ctx->last_tcs = NULL;
-   ctx->last_tes_sh_base = -1;
-   ctx->last_num_tcs_input_cp = -1;
-   ctx->last_ls_hs_config = -1; /* impossible value */
-   ctx->last_binning_enabled = -1;
    ctx->small_prim_cull_info_dirty = ctx->small_prim_cull_info_buf != NULL;
-
    ctx->prim_discard_compute_ib_initialized = false;
 
    /* Compute-based primitive discard:
@@ -534,15 +582,4 @@ void si_begin_new_gfx_cs(struct si_context *ctx)
       ctx->index_ring_base = ctx->index_ring_size_per_ib;
 
    ctx->index_ring_offset = 0;
-
-   if (has_clear_state) {
-      si_set_tracked_regs_to_clear_state(ctx);
-   } else {
-      /* Set all register values to unknown. */
-      ctx->tracked_regs.reg_saved = 0;
-      ctx->last_gs_out_prim = -1; /* unknown */
-   }
-
-   /* 0xffffffff is a impossible value to register SPI_PS_INPUT_CNTL_n */
-   memset(ctx->tracked_regs.spi_ps_input_cntl, 0xff, sizeof(uint32_t) * 32);
 }

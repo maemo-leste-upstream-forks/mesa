@@ -527,6 +527,12 @@ v3dX(emit_state)(struct pipe_context *pctx)
 
                         config.stencil_enable =
                                 v3d->zsa->base.stencil[0].enabled;
+
+                        /* Use nicer line caps when line smoothing is
+                         * enabled
+                         */
+                        config.line_rasterization =
+                                v3d_line_smoothing_enabled(v3d) ? 1 : 0;
                 }
 
         }
@@ -551,7 +557,7 @@ v3dX(emit_state)(struct pipe_context *pctx)
                 }
 
                 cl_emit(&job->bcl, LINE_WIDTH, line_width) {
-                        line_width.line_width = v3d->rasterizer->base.line_width;
+                        line_width.line_width = v3d_get_real_line_width(v3d);
                 }
         }
 

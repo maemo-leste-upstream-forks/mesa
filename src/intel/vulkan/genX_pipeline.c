@@ -438,24 +438,6 @@ emit_3dstate_sbe(struct anv_graphics_pipeline *pipeline)
 #endif
 }
 
-static const uint32_t vk_to_gen_cullmode[] = {
-   [VK_CULL_MODE_NONE]                       = CULLMODE_NONE,
-   [VK_CULL_MODE_FRONT_BIT]                  = CULLMODE_FRONT,
-   [VK_CULL_MODE_BACK_BIT]                   = CULLMODE_BACK,
-   [VK_CULL_MODE_FRONT_AND_BACK]             = CULLMODE_BOTH
-};
-
-static const uint32_t vk_to_gen_fillmode[] = {
-   [VK_POLYGON_MODE_FILL]                    = FILL_MODE_SOLID,
-   [VK_POLYGON_MODE_LINE]                    = FILL_MODE_WIREFRAME,
-   [VK_POLYGON_MODE_POINT]                   = FILL_MODE_POINT,
-};
-
-static const uint32_t vk_to_gen_front_face[] = {
-   [VK_FRONT_FACE_COUNTER_CLOCKWISE]         = 1,
-   [VK_FRONT_FACE_CLOCKWISE]                 = 0
-};
-
 static VkLineRasterizationModeEXT
 vk_line_rasterization_mode(const VkPipelineRasterizationLineStateCreateInfoEXT *line_info,
                            const VkPipelineMultisampleStateCreateInfo *ms_info)
@@ -574,12 +556,31 @@ gen7_ms_rast_mode(struct anv_graphics_pipeline *pipeline,
 }
 #endif
 
+const uint32_t genX(vk_to_gen_cullmode)[] = {
+   [VK_CULL_MODE_NONE]                       = CULLMODE_NONE,
+   [VK_CULL_MODE_FRONT_BIT]                  = CULLMODE_FRONT,
+   [VK_CULL_MODE_BACK_BIT]                   = CULLMODE_BACK,
+   [VK_CULL_MODE_FRONT_AND_BACK]             = CULLMODE_BOTH
+};
+
+const uint32_t genX(vk_to_gen_fillmode)[] = {
+   [VK_POLYGON_MODE_FILL]                    = FILL_MODE_SOLID,
+   [VK_POLYGON_MODE_LINE]                    = FILL_MODE_WIREFRAME,
+   [VK_POLYGON_MODE_POINT]                   = FILL_MODE_POINT,
+};
+
+const uint32_t genX(vk_to_gen_front_face)[] = {
+   [VK_FRONT_FACE_COUNTER_CLOCKWISE]         = 1,
+   [VK_FRONT_FACE_CLOCKWISE]                 = 0
+};
+
 static void
 emit_rs_state(struct anv_graphics_pipeline *pipeline,
               const VkPipelineInputAssemblyStateCreateInfo *ia_info,
               const VkPipelineRasterizationStateCreateInfo *rs_info,
               const VkPipelineMultisampleStateCreateInfo *ms_info,
               const VkPipelineRasterizationLineStateCreateInfoEXT *line_info,
+              const uint32_t dynamic_states,
               const struct anv_render_pass *pass,
               const struct anv_subpass *subpass,
               enum gen_urb_deref_block_size urb_deref_block_size)
@@ -678,10 +679,15 @@ emit_rs_state(struct anv_graphics_pipeline *pipeline,
        line_mode == VK_LINE_RASTERIZATION_MODE_RECTANGULAR_SMOOTH_EXT)
       raster.AntialiasingEnable = true;
 
-   raster.FrontWinding = vk_to_gen_front_face[rs_info->frontFace];
-   raster.CullMode = vk_to_gen_cullmode[rs_info->cullMode];
-   raster.FrontFaceFillMode = vk_to_gen_fillmode[rs_info->polygonMode];
-   raster.BackFaceFillMode = vk_to_gen_fillmode[rs_info->polygonMode];
+   raster.FrontWinding =
+      dynamic_states & ANV_CMD_DIRTY_DYNAMIC_FRONT_FACE ?
+         0 : genX(vk_to_gen_front_face)[rs_info->frontFace];
+   raster.CullMode =
+      dynamic_states & ANV_CMD_DIRTY_DYNAMIC_CULL_MODE ?
+         0 : genX(vk_to_gen_cullmode)[rs_info->cullMode];
+
+   raster.FrontFaceFillMode = genX(vk_to_gen_fillmode)[rs_info->polygonMode];
+   raster.BackFaceFillMode = genX(vk_to_gen_fillmode)[rs_info->polygonMode];
    raster.ScissorRectangleEnable = true;
 
 #if GEN_GEN >= 9
@@ -837,7 +843,7 @@ static const uint32_t vk_to_gen_blend_op[] = {
    [VK_BLEND_OP_MAX]                         = BLENDFUNCTION_MAX,
 };
 
-static const uint32_t vk_to_gen_compare_op[] = {
+const uint32_t genX(vk_to_gen_compare_op)[] = {
    [VK_COMPARE_OP_NEVER]                        = PREFILTEROPNEVER,
    [VK_COMPARE_OP_LESS]                         = PREFILTEROPLESS,
    [VK_COMPARE_OP_EQUAL]                        = PREFILTEROPEQUAL,
@@ -848,7 +854,7 @@ static const uint32_t vk_to_gen_compare_op[] = {
    [VK_COMPARE_OP_ALWAYS]                       = PREFILTEROPALWAYS,
 };
 
-static const uint32_t vk_to_gen_stencil_op[] = {
+const uint32_t genX(vk_to_gen_stencil_op)[] = {
    [VK_STENCIL_OP_KEEP]                         = STENCILOP_KEEP,
    [VK_STENCIL_OP_ZERO]                         = STENCILOP_ZERO,
    [VK_STENCIL_OP_REPLACE]                      = STENCILOP_REPLACE,
@@ -857,6 +863,19 @@ static const uint32_t vk_to_gen_stencil_op[] = {
    [VK_STENCIL_OP_INVERT]                       = STENCILOP_INVERT,
    [VK_STENCIL_OP_INCREMENT_AND_WRAP]           = STENCILOP_INCR,
    [VK_STENCIL_OP_DECREMENT_AND_WRAP]           = STENCILOP_DECR,
+};
+
+const uint32_t genX(vk_to_gen_primitive_type)[] = {
+   [VK_PRIMITIVE_TOPOLOGY_POINT_LIST]                    = _3DPRIM_POINTLIST,
+   [VK_PRIMITIVE_TOPOLOGY_LINE_LIST]                     = _3DPRIM_LINELIST,
+   [VK_PRIMITIVE_TOPOLOGY_LINE_STRIP]                    = _3DPRIM_LINESTRIP,
+   [VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST]                 = _3DPRIM_TRILIST,
+   [VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP]                = _3DPRIM_TRISTRIP,
+   [VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN]                  = _3DPRIM_TRIFAN,
+   [VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY]      = _3DPRIM_LINELIST_ADJ,
+   [VK_PRIMITIVE_TOPOLOGY_LINE_STRIP_WITH_ADJACENCY]     = _3DPRIM_LINESTRIP_ADJ,
+   [VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY]  = _3DPRIM_TRILIST_ADJ,
+   [VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP_WITH_ADJACENCY] = _3DPRIM_TRISTRIP_ADJ,
 };
 
 /* This function sanitizes the VkStencilOpState by looking at the compare ops
@@ -993,6 +1012,7 @@ sanitize_ds_state(VkPipelineDepthStencilStateCreateInfo *state,
 static void
 emit_ds_state(struct anv_graphics_pipeline *pipeline,
               const VkPipelineDepthStencilStateCreateInfo *pCreateInfo,
+              const uint32_t dynamic_states,
               const struct anv_render_pass *pass,
               const struct anv_subpass *subpass)
 {
@@ -1031,26 +1051,52 @@ emit_ds_state(struct anv_graphics_pipeline *pipeline,
    pipeline->depth_test_enable = info.depthTestEnable;
    pipeline->depth_bounds_test_enable = info.depthBoundsTestEnable;
 
+   bool dynamic_stencil_op =
+      dynamic_states & ANV_CMD_DIRTY_DYNAMIC_STENCIL_OP;
+
 #if GEN_GEN <= 7
    struct GENX(DEPTH_STENCIL_STATE) depth_stencil = {
 #else
    struct GENX(3DSTATE_WM_DEPTH_STENCIL) depth_stencil = {
 #endif
-      .DepthTestEnable = info.depthTestEnable,
-      .DepthBufferWriteEnable = info.depthWriteEnable,
-      .DepthTestFunction = vk_to_gen_compare_op[info.depthCompareOp],
+      .DepthTestEnable =
+         dynamic_states & ANV_CMD_DIRTY_DYNAMIC_DEPTH_TEST_ENABLE ?
+            0 : info.depthTestEnable,
+
+      .DepthBufferWriteEnable =
+         dynamic_states & ANV_CMD_DIRTY_DYNAMIC_DEPTH_WRITE_ENABLE ?
+            0 : info.depthWriteEnable,
+
+      .DepthTestFunction =
+         dynamic_states & ANV_CMD_DIRTY_DYNAMIC_DEPTH_COMPARE_OP ?
+            0 : genX(vk_to_gen_compare_op)[info.depthCompareOp],
+
       .DoubleSidedStencilEnable = true,
 
-      .StencilTestEnable = info.stencilTestEnable,
-      .StencilFailOp = vk_to_gen_stencil_op[info.front.failOp],
-      .StencilPassDepthPassOp = vk_to_gen_stencil_op[info.front.passOp],
-      .StencilPassDepthFailOp = vk_to_gen_stencil_op[info.front.depthFailOp],
-      .StencilTestFunction = vk_to_gen_compare_op[info.front.compareOp],
-      .BackfaceStencilFailOp = vk_to_gen_stencil_op[info.back.failOp],
-      .BackfaceStencilPassDepthPassOp = vk_to_gen_stencil_op[info.back.passOp],
-      .BackfaceStencilPassDepthFailOp =vk_to_gen_stencil_op[info.back.depthFailOp],
-      .BackfaceStencilTestFunction = vk_to_gen_compare_op[info.back.compareOp],
+      .StencilTestEnable =
+         dynamic_states & ANV_CMD_DIRTY_DYNAMIC_STENCIL_TEST_ENABLE ?
+            0 : info.stencilTestEnable,
+
+      .StencilFailOp = genX(vk_to_gen_stencil_op)[info.front.failOp],
+      .StencilPassDepthPassOp = genX(vk_to_gen_stencil_op)[info.front.passOp],
+      .StencilPassDepthFailOp = genX(vk_to_gen_stencil_op)[info.front.depthFailOp],
+      .StencilTestFunction = genX(vk_to_gen_compare_op)[info.front.compareOp],
+      .BackfaceStencilFailOp = genX(vk_to_gen_stencil_op)[info.back.failOp],
+      .BackfaceStencilPassDepthPassOp = genX(vk_to_gen_stencil_op)[info.back.passOp],
+      .BackfaceStencilPassDepthFailOp = genX(vk_to_gen_stencil_op)[info.back.depthFailOp],
+      .BackfaceStencilTestFunction = genX(vk_to_gen_compare_op)[info.back.compareOp],
    };
+
+   if (dynamic_stencil_op) {
+      depth_stencil.StencilFailOp = 0;
+      depth_stencil.StencilPassDepthPassOp = 0;
+      depth_stencil.StencilPassDepthFailOp = 0;
+      depth_stencil.StencilTestFunction = 0;
+      depth_stencil.BackfaceStencilFailOp = 0;
+      depth_stencil.BackfaceStencilPassDepthPassOp = 0;
+      depth_stencil.BackfaceStencilPassDepthFailOp = 0;
+      depth_stencil.BackfaceStencilTestFunction = 0;
+   }
 
 #if GEN_GEN <= 7
    GENX(DEPTH_STENCIL_STATE_pack)(NULL, depth_stencil_dw, &depth_stencil);
@@ -1244,74 +1290,80 @@ static void
 emit_3dstate_clip(struct anv_graphics_pipeline *pipeline,
                   const VkPipelineInputAssemblyStateCreateInfo *ia_info,
                   const VkPipelineViewportStateCreateInfo *vp_info,
-                  const VkPipelineRasterizationStateCreateInfo *rs_info)
+                  const VkPipelineRasterizationStateCreateInfo *rs_info,
+                  const uint32_t dynamic_states)
 {
    const struct brw_wm_prog_data *wm_prog_data = get_wm_prog_data(pipeline);
    (void) wm_prog_data;
-   anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_CLIP), clip) {
-      clip.ClipEnable               = true;
-      clip.StatisticsEnable         = true;
-      clip.EarlyCullEnable          = true;
-      clip.APIMode                  = APIMODE_D3D;
-      clip.GuardbandClipTestEnable  = true;
 
-      /* Only enable the XY clip test when the final polygon rasterization
-       * mode is VK_POLYGON_MODE_FILL.  We want to leave it disabled for
-       * points and lines so we get "pop-free" clipping.
-       */
-      VkPolygonMode raster_mode =
-         anv_raster_polygon_mode(pipeline, ia_info, rs_info);
-      clip.ViewportXYClipTestEnable = (raster_mode == VK_POLYGON_MODE_FILL);
+   struct GENX(3DSTATE_CLIP) clip = {
+      GENX(3DSTATE_CLIP_header),
+   };
+
+   clip.ClipEnable               = true;
+   clip.StatisticsEnable         = true;
+   clip.EarlyCullEnable          = true;
+   clip.APIMode                  = APIMODE_D3D;
+   clip.GuardbandClipTestEnable  = true;
+
+   /* Only enable the XY clip test when the final polygon rasterization
+    * mode is VK_POLYGON_MODE_FILL.  We want to leave it disabled for
+    * points and lines so we get "pop-free" clipping.
+    */
+   VkPolygonMode raster_mode =
+      anv_raster_polygon_mode(pipeline, ia_info, rs_info);
+   clip.ViewportXYClipTestEnable = (raster_mode == VK_POLYGON_MODE_FILL);
 
 #if GEN_GEN >= 8
-      clip.VertexSubPixelPrecisionSelect = _8Bit;
+   clip.VertexSubPixelPrecisionSelect = _8Bit;
 #endif
+   clip.ClipMode = CLIPMODE_NORMAL;
 
-      clip.ClipMode = CLIPMODE_NORMAL;
+   clip.TriangleStripListProvokingVertexSelect = 0;
+   clip.LineStripListProvokingVertexSelect     = 0;
+   clip.TriangleFanProvokingVertexSelect       = 1;
 
-      clip.TriangleStripListProvokingVertexSelect = 0;
-      clip.LineStripListProvokingVertexSelect     = 0;
-      clip.TriangleFanProvokingVertexSelect       = 1;
+   clip.MinimumPointWidth = 0.125;
+   clip.MaximumPointWidth = 255.875;
 
-      clip.MinimumPointWidth = 0.125;
-      clip.MaximumPointWidth = 255.875;
+   const struct brw_vue_prog_data *last =
+      anv_pipeline_get_last_vue_prog_data(pipeline);
 
-      const struct brw_vue_prog_data *last =
-         anv_pipeline_get_last_vue_prog_data(pipeline);
+   /* From the Vulkan 1.0.45 spec:
+    *
+    *    "If the last active vertex processing stage shader entry point's
+    *    interface does not include a variable decorated with
+    *    ViewportIndex, then the first viewport is used."
+    */
+   if (vp_info && (last->vue_map.slots_valid & VARYING_BIT_VIEWPORT)) {
+      clip.MaximumVPIndex = vp_info->viewportCount > 0 ?
+         vp_info->viewportCount - 1 : 0;
+   } else {
+      clip.MaximumVPIndex = 0;
+   }
 
-      /* From the Vulkan 1.0.45 spec:
-       *
-       *    "If the last active vertex processing stage shader entry point's
-       *    interface does not include a variable decorated with
-       *    ViewportIndex, then the first viewport is used."
-       */
-      if (vp_info && (last->vue_map.slots_valid & VARYING_BIT_VIEWPORT)) {
-         clip.MaximumVPIndex = vp_info->viewportCount - 1;
-      } else {
-         clip.MaximumVPIndex = 0;
-      }
-
-      /* From the Vulkan 1.0.45 spec:
-       *
-       *    "If the last active vertex processing stage shader entry point's
-       *    interface does not include a variable decorated with Layer, then
-       *    the first layer is used."
-       */
-      clip.ForceZeroRTAIndexEnable =
-         !(last->vue_map.slots_valid & VARYING_BIT_LAYER);
+   /* From the Vulkan 1.0.45 spec:
+    *
+    *    "If the last active vertex processing stage shader entry point's
+    *    interface does not include a variable decorated with Layer, then
+    *    the first layer is used."
+    */
+   clip.ForceZeroRTAIndexEnable =
+      !(last->vue_map.slots_valid & VARYING_BIT_LAYER);
 
 #if GEN_GEN == 7
-      clip.FrontWinding            = vk_to_gen_front_face[rs_info->frontFace];
-      clip.CullMode                = vk_to_gen_cullmode[rs_info->cullMode];
-      clip.ViewportZClipTestEnable = pipeline->depth_clip_enable;
-      clip.UserClipDistanceClipTestEnableBitmask = last->clip_distance_mask;
-      clip.UserClipDistanceCullTestEnableBitmask = last->cull_distance_mask;
+   clip.FrontWinding            = genX(vk_to_gen_front_face)[rs_info->frontFace];
+   clip.CullMode                = genX(vk_to_gen_cullmode)[rs_info->cullMode];
+   clip.ViewportZClipTestEnable = pipeline->depth_clip_enable;
+   clip.UserClipDistanceClipTestEnableBitmask = last->clip_distance_mask;
+   clip.UserClipDistanceCullTestEnableBitmask = last->cull_distance_mask;
 #else
-      clip.NonPerspectiveBarycentricEnable = wm_prog_data ?
-         (wm_prog_data->barycentric_interp_modes &
-          BRW_BARYCENTRIC_NONPERSPECTIVE_BITS) != 0 : 0;
+   clip.NonPerspectiveBarycentricEnable = wm_prog_data ?
+      (wm_prog_data->barycentric_interp_modes &
+       BRW_BARYCENTRIC_NONPERSPECTIVE_BITS) != 0 : 0;
 #endif
-   }
+
+   GENX(3DSTATE_CLIP_pack)(NULL, pipeline->gen7.clip, &clip);
 }
 
 static void
@@ -2199,6 +2251,16 @@ genX(graphics_pipeline_create)(
       vk_find_struct_const(pCreateInfo->pRasterizationState->pNext,
                            PIPELINE_RASTERIZATION_LINE_STATE_CREATE_INFO_EXT);
 
+   /* Information on which states are considered dynamic. */
+   const VkPipelineDynamicStateCreateInfo *dyn_info =
+      pCreateInfo->pDynamicState;
+   uint32_t dynamic_states = 0;
+   if (dyn_info) {
+      for (unsigned i = 0; i < dyn_info->dynamicStateCount; i++)
+         dynamic_states |=
+            anv_cmd_dirty_bit_for_vk_dynamic_state(dyn_info->pDynamicStates[i]);
+   }
+
    enum gen_urb_deref_block_size urb_deref_block_size;
    emit_urb_setup(pipeline, &urb_deref_block_size);
 
@@ -2207,17 +2269,18 @@ genX(graphics_pipeline_create)(
    assert(pCreateInfo->pRasterizationState);
    emit_rs_state(pipeline, pCreateInfo->pInputAssemblyState,
                            pCreateInfo->pRasterizationState,
-                           ms_info, line_info, pass, subpass,
+                           ms_info, line_info, dynamic_states, pass, subpass,
                            urb_deref_block_size);
    emit_ms_state(pipeline, ms_info);
-   emit_ds_state(pipeline, ds_info, pass, subpass);
+   emit_ds_state(pipeline, ds_info, dynamic_states, pass, subpass);
    emit_cb_state(pipeline, cb_info, ms_info);
    compute_kill_pixel(pipeline, ms_info, subpass);
 
    emit_3dstate_clip(pipeline,
                      pCreateInfo->pInputAssemblyState,
                      vp_info,
-                     pCreateInfo->pRasterizationState);
+                     pCreateInfo->pRasterizationState,
+                     dynamic_states);
    emit_3dstate_streamout(pipeline, pCreateInfo->pRasterizationState);
 
 #if GEN_GEN == 12
@@ -2254,7 +2317,9 @@ genX(graphics_pipeline_create)(
    emit_3dstate_ps(pipeline, cb_info, ms_info);
 #if GEN_GEN >= 8
    emit_3dstate_ps_extra(pipeline, subpass);
-   emit_3dstate_vf_topology(pipeline);
+
+   if (!(dynamic_states & ANV_CMD_DIRTY_DYNAMIC_PRIMITIVE_TOPOLOGY))
+      emit_3dstate_vf_topology(pipeline);
 #endif
    emit_3dstate_vf_statistics(pipeline);
 

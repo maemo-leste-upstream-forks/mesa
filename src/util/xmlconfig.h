@@ -35,6 +35,10 @@
 #include <stdint.h>
 #include <string.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define STRING_CONF_MAXLEN 25
 
 /** \brief Option data types */
@@ -104,10 +108,11 @@ void driParseOptionInfo (driOptionCache *info,
 /** \brief Initialize option cache from info and parse configuration files
  *
  * To be called in <driver>CreateContext. screenNum, driverName,
- * kernelDriverName and engineName select device sections. */
+ * kernelDriverName, applicationName and engineName select device sections. */
 void driParseConfigFiles (driOptionCache *cache, const driOptionCache *info,
 			  int screenNum, const char *driverName,
 			  const char *kernelDriverName,
+			  const char *applicationName, uint32_t applicationVersion,
 			  const char *engineName, uint32_t engineVersion);
 /** \brief Destroy option info
  *
@@ -179,5 +184,9 @@ driComputeOptionsSha1(const driOptionCache *cache, unsigned char *sha1)
    _mesa_sha1_compute(dri_options, strlen(dri_options), sha1);
    ralloc_free(ctx);
 }
+
+#ifdef __cplusplus
+} /* extern C */
+#endif
 
 #endif

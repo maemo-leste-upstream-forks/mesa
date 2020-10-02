@@ -27,6 +27,7 @@
 
 #include <stdio.h>
 #include "util/u_memory.h"
+#include "gallium/auxiliary/util/u_blend.h"
 #include "pan_blend_shaders.h"
 #include "pan_blending.h"
 #include "pan_bo.h"
@@ -65,7 +66,7 @@
  * befast, suitable for calling every draw to avoid wacky dirty
  * tracking paths. If the cache hits, boom, done. */
 
-static struct panfrost_blend_shader *
+struct panfrost_blend_shader *
 panfrost_get_blend_shader(
         struct panfrost_context *ctx,
         struct panfrost_blend_state *blend,
@@ -107,33 +108,34 @@ panfrost_create_blend_state(struct pipe_context *pipe,
         so->base = *blend;
 
         /* TODO: The following features are not yet implemented */
-        assert(!blend->alpha_to_coverage);
         assert(!blend->alpha_to_one);
 
         for (unsigned c = 0; c < PIPE_MAX_COLOR_BUFS; ++c) {
+                unsigned g = blend->independent_blend_enable ? c : 0;
+                struct pipe_rt_blend_state pipe = blend->rt[g];
+
                 struct panfrost_blend_rt *rt = &so->rt[c];
+                rt->shaders = _mesa_hash_table_u64_create(so);
 
-                /* There are two paths. First, we would like to try a
-                 * fixed-function if we can */
-
-                /* Without indep blending, the first RT settings replicate */
-
-                if (!blend->logicop_enable) {
-                        unsigned g =
-                                blend->independent_blend_enable ? c : 0;
-
-                        rt->has_fixed_function =
-                                panfrost_make_fixed_blend_mode(
-                                        &blend->rt[g],
-                                        &rt->equation,
-                                        &rt->constant_mask,
-                                        blend->rt[g].colormask);
+                /* Logic ops are always shader */
+                if (blend->logicop_enable) {
+                        rt->load_dest = true;
+                        continue;
                 }
 
-                /* Regardless if that works, we also need to initialize
-                 * the blend shaders */
+                rt->has_fixed_function =
+                                panfrost_make_fixed_blend_mode(
+                                        pipe,
+                                        &rt->equation,
+                                        &rt->constant_mask);
 
-                rt->shaders = _mesa_hash_table_u64_create(so);
+                if (rt->has_fixed_function)
+                        rt->opaque = (rt->equation.opaque[0] == 0xf0122122);
+
+                rt->load_dest = util_blend_uses_dest(pipe)
+                        || pipe.colormask != 0xF;
+
+                rt->no_colour = pipe.colormask == 0x0;
         }
 
         return so;
@@ -144,12 +146,7 @@ panfrost_bind_blend_state(struct pipe_context *pipe,
                           void *cso)
 {
         struct panfrost_context *ctx = pan_context(pipe);
-        struct pipe_blend_state *blend = (struct pipe_blend_state *) cso;
-        struct panfrost_blend_state *pblend = (struct panfrost_blend_state *) cso;
-        ctx->blend = pblend;
-
-        if (!blend)
-                return;
+        ctx->blend = (struct panfrost_blend_state *) cso;
 }
 
 static void
@@ -166,7 +163,7 @@ panfrost_delete_blend_state(struct pipe_context *pipe,
 {
         struct panfrost_blend_state *blend = (struct panfrost_blend_state *) cso;
 
-        for (unsigned c = 0; c < 4; ++c) {
+        for (unsigned c = 0; c < PIPE_MAX_COLOR_BUFS; ++c) {
                 struct panfrost_blend_rt *rt = &blend->rt[c];
                 _mesa_hash_table_u64_clear(rt->shaders, panfrost_delete_blend_shader);
         }
@@ -189,13 +186,10 @@ panfrost_set_blend_color(struct pipe_context *pipe,
 static bool
 panfrost_blend_constant(float *out, float *in, unsigned mask)
 {
-        /* If there is no components used, it automatically works. Do set a
-         * dummy constant just to avoid reading uninitialized memory. */
+        /* If there is no components used, it automatically works */
 
-        if (!mask) {
-                *out = 0.0;
+        if (!mask)
                 return true;
-        }
 
         /* Find some starter mask */
         unsigned first = ffs(mask) - 1;
@@ -206,10 +200,8 @@ panfrost_blend_constant(float *out, float *in, unsigned mask)
         while (mask) {
                 unsigned i = u_bit_scan(&mask);
 
-                if (in[i] != cons) {
-                        *out = 0.0;
+                if (in[i] != cons)
                         return false;
-                }
         }
 
         /* Otherwise, we're good to go */
@@ -223,39 +215,30 @@ struct panfrost_blend_final
 panfrost_get_blend_for_context(struct panfrost_context *ctx, unsigned rti, struct panfrost_bo **bo, unsigned *shader_offset)
 {
         struct panfrost_batch *batch = panfrost_get_batch_for_fbo(ctx);
-
-        /* Grab the format, falling back gracefully if called invalidly (which
-         * has to happen for no-color-attachment FBOs, for instance)  */
         struct pipe_framebuffer_state *fb = &ctx->pipe_framebuffer;
-        enum pipe_format fmt = PIPE_FORMAT_R8G8B8A8_UNORM;
-
-        if ((fb->nr_cbufs > rti) && fb->cbufs[rti])
-                fmt = fb->cbufs[rti]->format;
+        enum pipe_format fmt = fb->cbufs[rti]->format;
 
         /* Grab the blend state */
         struct panfrost_blend_state *blend = ctx->blend;
-        assert(blend);
-
         struct panfrost_blend_rt *rt = &blend->rt[rti];
 
-        struct panfrost_blend_final final;
-
-        /* First, we'll try a fixed function path */
+        /* First, we'll try fixed function, matching equationn and constant */
         if (rt->has_fixed_function && panfrost_can_fixed_blend(fmt)) {
+                float constant = 0.0;
+
                 if (panfrost_blend_constant(
-                            &final.equation.constant,
+                            &constant,
                             ctx->blend_color.color,
                             rt->constant_mask)) {
-                        /* There's an equation and suitable constant, so we're good to go */
-                        final.is_shader = false;
-                        final.equation.equation = &rt->equation;
-
-                        final.no_blending =
-                                (rt->equation.rgb_mode == 0x122) &&
-                                (rt->equation.alpha_mode == 0x122) &&
-                                (rt->equation.color_mask == 0xf);
-
-                        final.no_colour = (rt->equation.color_mask == 0x0);
+                        struct panfrost_blend_final final = {
+                                .equation = {
+                                        .equation = rt->equation,
+                                        .constant = constant
+                                },
+                                .load_dest = rt->load_dest,
+                                .opaque = rt->opaque,
+                                .no_colour = rt->no_colour
+                        };
 
                         return final;
                 }
@@ -263,11 +246,6 @@ panfrost_get_blend_for_context(struct panfrost_context *ctx, unsigned rti, struc
 
         /* Otherwise, we need to grab a shader */
         struct panfrost_blend_shader *shader = panfrost_get_blend_shader(ctx, blend, fmt, rti);
-        final.is_shader = true;
-        final.no_blending = false;
-        final.no_colour = false;
-        final.shader.work_count = shader->work_count;
-        final.shader.first_tag = shader->first_tag;
 
         /* Upload the shader, sharing a BO */
         if (!(*bo)) {
@@ -275,7 +253,6 @@ panfrost_get_blend_for_context(struct panfrost_context *ctx, unsigned rti, struc
                    PAN_BO_EXECUTE,
                    PAN_BO_ACCESS_PRIVATE |
                    PAN_BO_ACCESS_READ |
-                   PAN_BO_ACCESS_VERTEX_TILER |
                    PAN_BO_ACCESS_FRAGMENT);
         }
 
@@ -283,7 +260,6 @@ panfrost_get_blend_for_context(struct panfrost_context *ctx, unsigned rti, struc
         assert((*shader_offset + shader->size) < 4096);
 
         memcpy((*bo)->cpu + *shader_offset, shader->buffer, shader->size);
-        final.shader.gpu = (*bo)->gpu + *shader_offset;
 
         if (shader->patch_index) {
                 /* We have to specialize the blend shader to use constants, so
@@ -292,6 +268,16 @@ panfrost_get_blend_for_context(struct panfrost_context *ctx, unsigned rti, struc
                 float *patch = (float *) ((*bo)->cpu + *shader_offset + shader->patch_index);
                 memcpy(patch, ctx->blend_color.color, sizeof(float) * 4);
         }
+
+        struct panfrost_blend_final final = {
+                .is_shader = true,
+                .shader = {
+                        .work_count = shader->work_count,
+                        .first_tag = shader->first_tag,
+                        .gpu = (*bo)->gpu + *shader_offset,
+                },
+                .load_dest = rt->load_dest,
+        };
 
         *shader_offset += shader->size;
 

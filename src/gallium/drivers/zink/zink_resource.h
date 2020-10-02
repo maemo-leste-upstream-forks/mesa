@@ -26,6 +26,7 @@
 
 struct pipe_screen;
 struct sw_displaytarget;
+struct zink_batch;
 
 #include "util/u_transfer.h"
 
@@ -33,6 +34,8 @@ struct sw_displaytarget;
 
 struct zink_resource {
    struct pipe_resource base;
+
+   enum pipe_format internal_format:16;
 
    union {
       VkBuffer buffer;
@@ -70,4 +73,11 @@ zink_screen_resource_init(struct pipe_screen *pscreen);
 void
 zink_context_resource_init(struct pipe_context *pctx);
 
+void
+zink_get_depth_stencil_resources(struct pipe_resource *res,
+                                 struct zink_resource **out_z,
+                                 struct zink_resource **out_s);
+
+void
+zink_resource_setup_transfer_layouts(struct zink_batch *batch, struct zink_resource *src, struct zink_resource *dst);
 #endif

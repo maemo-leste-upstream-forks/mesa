@@ -143,6 +143,7 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
              unsigned index_offset)
 {
 	struct fd6_context *fd6_ctx = fd6_context(ctx);
+	struct ir3_shader *gs = ctx->prog.gs;
 	struct fd6_emit emit = {
 		.ctx = ctx,
 		.vtx  = &ctx->vtx,
@@ -164,6 +165,7 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 				.fsaturate_s = fd6_ctx->fsaturate_s,
 				.fsaturate_t = fd6_ctx->fsaturate_t,
 				.fsaturate_r = fd6_ctx->fsaturate_r,
+				.layer_zero = !gs || !(gs->nir->info.outputs_written & VARYING_BIT_LAYER),
 				.vsamples = ctx->tex[PIPE_SHADER_VERTEX].samples,
 				.fsamples = ctx->tex[PIPE_SHADER_FRAGMENT].samples,
 				.sample_shading = (ctx->min_samples > 1),
@@ -176,9 +178,15 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 		.primitive_restart = info->primitive_restart && info->index_size,
 	};
 
+	if (!(ctx->prog.vs && ctx->prog.fs))
+		return false;
+
 	if (info->mode == PIPE_PRIM_PATCHES) {
 		emit.key.hs = ctx->prog.hs;
 		emit.key.ds = ctx->prog.ds;
+
+		if (!(ctx->prog.hs && ctx->prog.ds))
+			return false;
 
 		shader_info *ds_info = &emit.key.ds->nir->info;
 		emit.key.key.tessellation = ir3_tess_mode(ds_info->tess.primitive_mode);
@@ -200,7 +208,9 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 
 	/* bail if compile failed: */
 	if (!fd6_ctx->prog)
-		return NULL;
+		return false;
+
+	fixup_draw_state(ctx, &emit);
 
 	emit.dirty = ctx->dirty;      /* *after* fixup_shader_state() */
 	emit.bs = fd6_emit_get_prog(&emit)->bs;
@@ -295,8 +305,6 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 		ctx->last.restart_index = restart_index;
 	}
 
-	fixup_draw_state(ctx, &emit);
-
 	fd6_emit_state(ring, &emit);
 
 	/* for debug after a lock up, write a unique counter value
@@ -337,12 +345,7 @@ fd6_clear_lrz(struct fd_batch *batch, struct fd_resource *zsbuf, double depth)
 	struct fd_ringbuffer *ring;
 	struct fd6_context *fd6_ctx = fd6_context(batch->ctx);
 
-	if (batch->lrz_clear) {
-		fd_ringbuffer_del(batch->lrz_clear);
-	}
-
-	batch->lrz_clear = fd_submit_new_ringbuffer(batch->submit, 0x1000, 0);
-	ring = batch->lrz_clear;
+	ring = fd_batch_get_prologue(batch);
 
 	emit_marker6(ring, 7);
 	OUT_PKT7(ring, CP_SET_MARKER, 1);
@@ -354,15 +357,26 @@ fd6_clear_lrz(struct fd_batch *batch, struct fd_resource *zsbuf, double depth)
 	OUT_PKT4(ring, REG_A6XX_RB_CCU_CNTL, 1);
 	OUT_RING(ring, fd6_ctx->magic.RB_CCU_CNTL_bypass);
 
-	OUT_PKT4(ring, REG_A6XX_HLSQ_UPDATE_CNTL, 1);
-	OUT_RING(ring, 0x7ffff);
+	OUT_REG(ring, A6XX_HLSQ_INVALIDATE_CMD(
+			.vs_state = true,
+			.hs_state = true,
+			.ds_state = true,
+			.gs_state = true,
+			.fs_state = true,
+			.cs_state = true,
+			.gfx_ibo = true,
+			.cs_ibo = true,
+			.gfx_shared_const = true,
+			.gfx_bindless = 0x1f,
+			.cs_bindless = 0x1f
+		));
 
 	emit_marker6(ring, 7);
 	OUT_PKT7(ring, CP_SET_MARKER, 1);
 	OUT_RING(ring, A6XX_CP_SET_MARKER_0_MODE(RM6_BLIT2DSCALE));
 	emit_marker6(ring, 7);
 
-	OUT_PKT4(ring, REG_A6XX_RB_UNKNOWN_8C01, 1);
+	OUT_PKT4(ring, REG_A6XX_RB_2D_UNKNOWN_8C01, 1);
 	OUT_RING(ring, 0x0);
 
 	OUT_PKT4(ring, REG_A6XX_SP_PS_2D_SRC_INFO, 13);
@@ -380,7 +394,7 @@ fd6_clear_lrz(struct fd_batch *batch, struct fd_resource *zsbuf, double depth)
 	OUT_RING(ring, 0x00000000);
 	OUT_RING(ring, 0x00000000);
 
-	OUT_PKT4(ring, REG_A6XX_SP_2D_SRC_FORMAT, 1);
+	OUT_PKT4(ring, REG_A6XX_SP_2D_DST_FORMAT, 1);
 	OUT_RING(ring, 0x0000f410);
 
 	OUT_PKT4(ring, REG_A6XX_GRAS_2D_BLIT_CNTL, 1);
@@ -405,18 +419,18 @@ fd6_clear_lrz(struct fd_batch *batch, struct fd_resource *zsbuf, double depth)
 			A6XX_RB_2D_DST_INFO_TILE_MODE(TILE6_LINEAR) |
 			A6XX_RB_2D_DST_INFO_COLOR_SWAP(WZYX));
 	OUT_RELOC(ring, zsbuf->lrz, 0, 0, 0);
-	OUT_RING(ring, A6XX_RB_2D_DST_SIZE_PITCH(zsbuf->lrz_pitch * 2));
+	OUT_RING(ring, A6XX_RB_2D_DST_PITCH(zsbuf->lrz_pitch * 2).value);
 	OUT_RING(ring, 0x00000000);
 	OUT_RING(ring, 0x00000000);
 	OUT_RING(ring, 0x00000000);
 	OUT_RING(ring, 0x00000000);
 	OUT_RING(ring, 0x00000000);
 
-	OUT_PKT4(ring, REG_A6XX_GRAS_2D_SRC_TL_X, 4);
-	OUT_RING(ring, A6XX_GRAS_2D_SRC_TL_X_X(0));
-	OUT_RING(ring, A6XX_GRAS_2D_SRC_BR_X_X(0));
-	OUT_RING(ring, A6XX_GRAS_2D_SRC_TL_Y_Y(0));
-	OUT_RING(ring, A6XX_GRAS_2D_SRC_BR_Y_Y(0));
+	OUT_REG(ring,
+			A6XX_GRAS_2D_SRC_TL_X(0),
+			A6XX_GRAS_2D_SRC_BR_X(0),
+			A6XX_GRAS_2D_SRC_TL_Y(0),
+			A6XX_GRAS_2D_SRC_BR_Y(0));
 
 	OUT_PKT4(ring, REG_A6XX_GRAS_2D_DST_TL, 2);
 	OUT_RING(ring, A6XX_GRAS_2D_DST_TL_X(0) |
@@ -465,6 +479,10 @@ fd6_clear(struct fd_context *ctx, unsigned buffers,
 	struct pipe_framebuffer_state *pfb = &ctx->batch->framebuffer;
 	const bool has_depth = pfb->zsbuf;
 	unsigned color_buffers = buffers >> 2;
+
+	/* we need to do multisample clear on 3d pipe, so fallback to u_blitter: */
+	if (pfb->samples > 1)
+		return false;
 
 	/* If we're clearing after draws, fallback to 3D pipe clears.  We could
 	 * use blitter clears in the draw batch but then we'd have to patch up the

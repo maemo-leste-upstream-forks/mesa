@@ -49,10 +49,16 @@ struct blorp_params;
 #define IRIS_MAX_SSBOS 16
 #define IRIS_MAX_VIEWPORTS 16
 #define IRIS_MAX_CLIP_PLANES 8
+#define IRIS_MAX_GLOBAL_BINDINGS 32
 
 enum iris_param_domain {
    BRW_PARAM_DOMAIN_BUILTIN = 0,
    BRW_PARAM_DOMAIN_IMAGE,
+};
+
+enum iris_shader_reloc {
+   IRIS_SHADER_RELOC_CONST_DATA_ADDR_LOW,
+   IRIS_SHADER_RELOC_CONST_DATA_ADDR_HIGH,
 };
 
 enum {
@@ -377,11 +383,8 @@ struct iris_uncompiled_shader {
    /* Whether shader uses atomic operations. */
    bool uses_atomic_load_store;
 
-   /** Constant data scraped from the shader by nir_opt_large_constants */
-   struct pipe_resource *const_data;
-
-   /** Surface state for const_data */
-   struct iris_state_ref const_data_state;
+   /** Size (in bytes) of the kernel input data */
+   unsigned kernel_input_size;
 };
 
 enum iris_surface_group {
@@ -422,6 +425,8 @@ struct iris_binding_table {
  * (iris_uncompiled_shader), due to state-based recompiles (brw_*_prog_key).
  */
 struct iris_compiled_shader {
+   struct list_head link;
+
    /** Reference to the uploaded assembly. */
    struct iris_state_ref assembly;
 
@@ -434,6 +439,9 @@ struct iris_compiled_shader {
    /** A list of system values to be uploaded as uniforms. */
    enum brw_param_builtin *system_values;
    unsigned num_system_values;
+
+   /** Size (in bytes) of the kernel input data */
+   unsigned kernel_input_size;
 
    /** Number of constbufs expected by the shader. */
    unsigned num_cbufs;
@@ -594,6 +602,9 @@ struct iris_context {
       struct iris_compiled_shader *prog[MESA_SHADER_STAGES];
       struct brw_vue_map *last_vue_map;
 
+      /** List of shader variants whose deletion has been deferred for now */
+      struct list_head deleted_variants[MESA_SHADER_STAGES];
+
       struct u_upload_mgr *uploader;
       struct hash_table *cache;
 
@@ -691,6 +702,9 @@ struct iris_context {
 
       /** Do any samplers need border color?  One bit per shader stage. */
       uint8_t need_border_colors;
+
+      /** Global resource bindings */
+      struct pipe_resource *global_bindings[IRIS_MAX_GLOBAL_BINDINGS];
 
       struct pipe_stream_output_target *so_target[PIPE_MAX_SO_BUFFERS];
       bool streamout_active;
@@ -877,11 +891,14 @@ struct iris_compiled_shader *iris_upload_shader(struct iris_context *ice,
                                                 uint32_t *streamout,
                                                 enum brw_param_builtin *sysv,
                                                 unsigned num_system_values,
+                                                unsigned kernel_input_size,
                                                 unsigned num_cbufs,
                                                 const struct iris_binding_table *bt);
 const void *iris_find_previous_compile(const struct iris_context *ice,
                                        enum iris_program_cache_id cache_id,
                                        unsigned program_string_id);
+void iris_delete_shader_variants(struct iris_context *ice,
+                                 struct iris_uncompiled_shader *ish);
 bool iris_blorp_lookup_shader(struct blorp_batch *blorp_batch,
                               const void *key,
                               uint32_t key_size,

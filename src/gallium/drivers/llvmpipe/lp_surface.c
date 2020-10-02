@@ -53,14 +53,14 @@ lp_resource_copy_ms(struct pipe_context *pipe,
    for (unsigned i = 0; i < src->nr_samples; i++) {
       struct pipe_transfer *src_trans, *dst_trans;
       const uint8_t *src_map = llvmpipe_transfer_map_ms(pipe,
-                                                        src, 0, PIPE_TRANSFER_READ, i,
+                                                        src, 0, PIPE_MAP_READ, i,
                                                         src_box,
                                                         &src_trans);
       if (!src_map)
          return;
 
       uint8_t *dst_map = llvmpipe_transfer_map_ms(pipe,
-                                                  dst, 0, PIPE_TRANSFER_WRITE, i,
+                                                  dst, 0, PIPE_MAP_WRITE, i,
                                                   &dst_box,
                                                   &dst_trans);
       if (!dst_map) {
@@ -130,6 +130,15 @@ static void lp_blit(struct pipe_context *pipe,
                    util_format_short_name(info.src.resource->format),
                    util_format_short_name(info.dst.resource->format));
       return;
+   }
+
+   /* for 32-bit unorm depth, avoid the conversions to float and back,
+      which can introduce accuracy errors. */
+   if (blit_info->src.format == PIPE_FORMAT_Z32_UNORM &&
+       blit_info->dst.format == PIPE_FORMAT_Z32_UNORM && info.filter == PIPE_TEX_FILTER_NEAREST) {
+      info.src.format = PIPE_FORMAT_R32_UINT;
+      info.dst.format = PIPE_FORMAT_R32_UINT;
+      info.mask = PIPE_MASK_R;
    }
 
    /* XXX turn off occlusion and streamout queries */
@@ -276,7 +285,7 @@ lp_clear_color_texture_msaa(struct pipe_context *pipe,
    struct pipe_transfer *dst_trans;
    ubyte *dst_map;
 
-   dst_map = llvmpipe_transfer_map_ms(pipe, texture, 0, PIPE_TRANSFER_WRITE,
+   dst_map = llvmpipe_transfer_map_ms(pipe, texture, 0, PIPE_MAP_WRITE,
                                       sample, box, &dst_trans);
    if (!dst_map)
       return;
@@ -304,6 +313,10 @@ llvmpipe_clear_render_target(struct pipe_context *pipe,
    if (dst->texture->nr_samples > 1) {
       struct pipe_box box;
       u_box_2d(dstx, dsty, width, height, &box);
+      if (dst->texture->target != PIPE_BUFFER) {
+         box.z = dst->u.tex.first_layer;
+         box.depth = dst->u.tex.last_layer - dst->u.tex.first_layer + 1;
+      }
       for (unsigned s = 0; s < util_res_sample_count(dst->texture); s++) {
          lp_clear_color_texture_msaa(pipe, dst->texture, dst->format,
                                      color, s, &box);
@@ -334,8 +347,8 @@ lp_clear_depth_stencil_texture_msaa(struct pipe_context *pipe,
    dst_map = llvmpipe_transfer_map_ms(pipe,
                                       texture,
                                       0,
-                                      (need_rmw ? PIPE_TRANSFER_READ_WRITE :
-                                       PIPE_TRANSFER_WRITE),
+                                      (need_rmw ? PIPE_MAP_READ_WRITE :
+                                       PIPE_MAP_WRITE),
                                       sample, box, &dst_trans);
    assert(dst_map);
    if (!dst_map)
@@ -369,6 +382,10 @@ llvmpipe_clear_depth_stencil(struct pipe_context *pipe,
       uint64_t zstencil = util_pack64_z_stencil(dst->format, depth, stencil);
       struct pipe_box box;
       u_box_2d(dstx, dsty, width, height, &box);
+      if (dst->texture->target != PIPE_BUFFER) {
+         box.z = dst->u.tex.first_layer;
+         box.depth = dst->u.tex.last_layer - dst->u.tex.first_layer + 1;
+      }
       for (unsigned s = 0; s < util_res_sample_count(dst->texture); s++)
          lp_clear_depth_stencil_texture_msaa(pipe, dst->texture,
                                              dst->format, clear_flags,

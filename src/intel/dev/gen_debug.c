@@ -94,6 +94,8 @@ static const struct debug_control debug_control[] = {
    { "pc",          DEBUG_PIPE_CONTROL },
    { "nofc",        DEBUG_NO_FAST_CLEAR },
    { "no32",        DEBUG_NO32 },
+   { "shaders",     DEBUG_WM | DEBUG_VS | DEBUG_TCS |
+                    DEBUG_TES | DEBUG_GS | DEBUG_CS },
    { NULL,    0 }
 };
 
@@ -173,6 +175,18 @@ intel_debug_write_identifiers(void *_output,
          driver_desc.base.length = sizeof(driver_desc) + len + 1;
          memcpy(output, &driver_desc, sizeof(driver_desc));
          output += driver_desc.base.length;
+         break;
+      }
+
+      case GEN_DEBUG_BLOCK_TYPE_FRAME: {
+         struct gen_debug_block_frame frame_desc = {
+            .base = {
+               .type = GEN_DEBUG_BLOCK_TYPE_FRAME,
+               .length = sizeof(frame_desc),
+            },
+         };
+         memcpy(output, &frame_desc, sizeof(frame_desc));
+         output += sizeof(frame_desc);
          break;
       }
 

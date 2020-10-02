@@ -89,7 +89,7 @@ emit_mrt(struct fd_ringbuffer *ring, unsigned nr_bufs,
 				size = stride * gmem->bin_h;
 				base = gmem->cbuf_base[i];
 			} else {
-				stride = slice->pitch;
+				stride = fd_resource_pitch(rsc, psurf->u.tex.level);
 				size = slice->size0;
 
 				tile_mode = fd_resource_tile_mode(psurf->texture, psurf->u.tex.level);
@@ -144,9 +144,8 @@ emit_zs(struct fd_ringbuffer *ring, struct pipe_surface *zsbuf,
 			stride = cpp * gmem->bin_w;
 			size = stride * gmem->bin_h;
 		} else {
-			struct fdl_slice *slice = fd_resource_slice(rsc, 0);
-			stride = slice->pitch;
-			size = slice->size0;
+			stride = fd_resource_pitch(rsc, 0);
+			size = fd_resource_slice(rsc, 0)->size0;
 		}
 
 		OUT_PKT4(ring, REG_A5XX_RB_DEPTH_BUFFER_INFO, 5);
@@ -191,9 +190,8 @@ emit_zs(struct fd_ringbuffer *ring, struct pipe_surface *zsbuf,
 				stride = 1 * gmem->bin_w;
 				size = stride * gmem->bin_h;
 			} else {
-				struct fdl_slice *slice = fd_resource_slice(rsc->stencil, 0);
-				stride = slice->pitch;
-				size = slice->size0;
+				stride = fd_resource_pitch(rsc->stencil, 0);
+				size = fd_resource_slice(rsc->stencil, 0)->size0;
 			}
 
 			OUT_PKT4(ring, REG_A5XX_RB_STENCIL_INFO, 5);
@@ -371,8 +369,8 @@ fd5_emit_tile_init(struct fd_batch *batch)
 
 	fd5_emit_restore(batch, ring);
 
-	if (batch->lrz_clear)
-		fd5_emit_ib(ring, batch->lrz_clear);
+	if (batch->prologue)
+		fd5_emit_ib(ring, batch->prologue);
 
 	fd5_emit_lrz_flush(ring);
 
@@ -491,7 +489,7 @@ emit_mem2gmem_surf(struct fd_batch *batch, uint32_t base,
 		OUT_RING(ring, A5XX_RB_MRT_BUF_INFO_COLOR_FORMAT(format) |
 				A5XX_RB_MRT_BUF_INFO_COLOR_TILE_MODE(rsc->layout.tile_mode) |
 				A5XX_RB_MRT_BUF_INFO_COLOR_SWAP(WZYX));
-		OUT_RING(ring, A5XX_RB_MRT_PITCH(slice->pitch));
+		OUT_RING(ring, A5XX_RB_MRT_PITCH(fd_resource_pitch(rsc, 0)));
 		OUT_RING(ring, A5XX_RB_MRT_ARRAY_PITCH(slice->size0));
 		OUT_RELOC(ring, rsc->bo, 0, 0, 0);  /* BASE_LO/HI */
 
@@ -609,7 +607,7 @@ emit_gmem2mem_surf(struct fd_batch *batch, uint32_t base,
 	struct fd_resource *rsc = fd_resource(psurf->texture);
 	struct fdl_slice *slice;
 	bool tiled;
-	uint32_t offset;
+	uint32_t offset, pitch;
 
 	if (!rsc->valid)
 		return;
@@ -620,6 +618,7 @@ emit_gmem2mem_surf(struct fd_batch *batch, uint32_t base,
 	slice = fd_resource_slice(rsc, psurf->u.tex.level);
 	offset = fd_resource_offset(rsc, psurf->u.tex.level,
 			psurf->u.tex.first_layer);
+	pitch = fd_resource_pitch(rsc, psurf->u.tex.level);
 
 	debug_assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
 
@@ -635,7 +634,7 @@ emit_gmem2mem_surf(struct fd_batch *batch, uint32_t base,
 	OUT_RING(ring, 0x00000004 |   /* XXX RB_RESOLVE_CNTL_3 */
 			COND(tiled, A5XX_RB_RESOLVE_CNTL_3_TILED));
 	OUT_RELOC(ring, rsc->bo, offset, 0, 0);     /* RB_BLIT_DST_LO/HI */
-	OUT_RING(ring, A5XX_RB_BLIT_DST_PITCH(slice->pitch));
+	OUT_RING(ring, A5XX_RB_BLIT_DST_PITCH(pitch));
 	OUT_RING(ring, A5XX_RB_BLIT_DST_ARRAY_PITCH(slice->size0));
 
 	OUT_PKT4(ring, REG_A5XX_RB_BLIT_CNTL, 1);
@@ -694,12 +693,14 @@ fd5_emit_tile_fini(struct fd_batch *batch)
 static void
 fd5_emit_sysmem_prep(struct fd_batch *batch)
 {
-	struct pipe_framebuffer_state *pfb = &batch->framebuffer;
 	struct fd_ringbuffer *ring = batch->gmem;
 
 	fd5_emit_restore(batch, ring);
 
 	fd5_emit_lrz_flush(ring);
+
+	if (batch->prologue)
+		fd5_emit_ib(ring, batch->prologue);
 
 	OUT_PKT7(ring, CP_SKIP_IB2_ENABLE_GLOBAL, 1);
 	OUT_RING(ring, 0x0);
@@ -717,6 +718,17 @@ fd5_emit_sysmem_prep(struct fd_batch *batch)
 	fd_wfi(batch, ring);
 	OUT_PKT4(ring, REG_A5XX_RB_CCU_CNTL, 1);
 	OUT_RING(ring, 0x10000000);   /* RB_CCU_CNTL */
+
+	OUT_PKT4(ring, REG_A5XX_RB_CNTL, 1);
+	OUT_RING(ring, A5XX_RB_CNTL_WIDTH(0) |
+			A5XX_RB_CNTL_HEIGHT(0) |
+			A5XX_RB_CNTL_BYPASS);
+
+	/* remaining setup below here does not apply to blit/compute: */
+	if (batch->nondraw)
+		return;
+
+	struct pipe_framebuffer_state *pfb = &batch->framebuffer;
 
 	OUT_PKT4(ring, REG_A5XX_GRAS_SC_WINDOW_SCISSOR_TL, 2);
 	OUT_RING(ring, A5XX_GRAS_SC_WINDOW_SCISSOR_TL_X(0) |
@@ -736,11 +748,6 @@ fd5_emit_sysmem_prep(struct fd_batch *batch)
 
 	OUT_PKT7(ring, CP_SET_VISIBILITY_OVERRIDE, 1);
 	OUT_RING(ring, 0x1);
-
-	OUT_PKT4(ring, REG_A5XX_RB_CNTL, 1);
-	OUT_RING(ring, A5XX_RB_CNTL_WIDTH(0) |
-			A5XX_RB_CNTL_HEIGHT(0) |
-			A5XX_RB_CNTL_BYPASS);
 
 	patch_draws(batch, IGNORE_VISIBILITY);
 

@@ -93,6 +93,7 @@ etna_context_destroy(struct pipe_context *pctx)
    struct etna_context *ctx = etna_context(pctx);
 
    mtx_lock(&ctx->lock);
+
    if (ctx->used_resources_read) {
 
       /*
@@ -103,7 +104,9 @@ etna_context_destroy(struct pipe_context *pctx)
       set_foreach(ctx->used_resources_read, entry) {
          struct etna_resource *rsc = (struct etna_resource *)entry->key;
 
+         mtx_lock(&rsc->lock);
          _mesa_set_remove_key(rsc->pending_ctx, ctx);
+         mtx_unlock(&rsc->lock);
       }
       _mesa_set_destroy(ctx->used_resources_read, NULL);
 
@@ -118,7 +121,9 @@ etna_context_destroy(struct pipe_context *pctx)
       set_foreach(ctx->used_resources_write, entry) {
          struct etna_resource *rsc = (struct etna_resource *)entry->key;
 
+         mtx_lock(&rsc->lock);
          _mesa_set_remove_key(rsc->pending_ctx, ctx);
+         mtx_unlock(&rsc->lock);
       }
       _mesa_set_destroy(ctx->used_resources_write, NULL);
 
@@ -347,7 +352,7 @@ etna_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info)
       }
    }
 
-   ctx->stats.prims_emitted += u_reduced_prims_for_vertices(info->mode, info->count);
+   ctx->stats.prims_generated += u_reduced_prims_for_vertices(info->mode, info->count);
    ctx->stats.draw_calls++;
 
    /* Update state for this draw operation */
@@ -394,9 +399,6 @@ etna_reset_gpu_state(struct etna_context *ctx)
 
    etna_set_state(stream, VIVS_GL_API_MODE, VIVS_GL_API_MODE_OPENGL);
    etna_set_state(stream, VIVS_GL_VERTEX_ELEMENT_CONFIG, 0x00000001);
-   /* blob sets this to 0x40000031 on GC7000, seems to make no difference,
-    * but keep it in mind if depth behaves strangely. */
-   etna_set_state(stream, VIVS_RA_EARLY_DEPTH, 0x00000031);
    etna_set_state(stream, VIVS_PA_W_CLIP_LIMIT, 0x34000001);
    etna_set_state(stream, VIVS_PA_FLAGS, 0x00000000); /* blob sets ZCONVERT_BYPASS on GC3000+, this messes up z for us */
    etna_set_state(stream, VIVS_PA_VIEWPORT_UNK00A80, 0x38a01404);
@@ -487,11 +489,15 @@ etna_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence,
       struct etna_resource *rsc = (struct etna_resource *)entry->key;
       struct pipe_resource *referenced = &rsc->base;
 
+      mtx_lock(&rsc->lock);
+
       _mesa_set_remove_key(rsc->pending_ctx, ctx);
 
       /* if resource has no pending ctx's reset its status */
       if (_mesa_set_next_entry(rsc->pending_ctx, NULL) == NULL)
          rsc->status &= ~ETNA_PENDING_READ;
+
+      mtx_unlock(&rsc->lock);
 
       pipe_resource_reference(&referenced, NULL);
    }
@@ -501,11 +507,13 @@ etna_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence,
       struct etna_resource *rsc = (struct etna_resource *)entry->key;
       struct pipe_resource *referenced = &rsc->base;
 
+      mtx_lock(&rsc->lock);
       _mesa_set_remove_key(rsc->pending_ctx, ctx);
 
       /* if resource has no pending ctx's reset its status */
       if (_mesa_set_next_entry(rsc->pending_ctx, NULL) == NULL)
          rsc->status &= ~ETNA_PENDING_WRITE;
+      mtx_unlock(&rsc->lock);
 
       pipe_resource_reference(&referenced, NULL);
    }

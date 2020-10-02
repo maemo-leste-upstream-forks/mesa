@@ -534,7 +534,7 @@ static void StreamOut(
 
     for (uint32_t primIndex = 0; primIndex < numPrims; ++primIndex)
     {
-        DWORD    slot   = 0;
+        unsigned long slot = 0;
         uint64_t soMask = soState.streamMasks[streamIndex];
 
         // Write all entries into primitive data buffer for SOS.
@@ -1243,7 +1243,7 @@ static void AllocateTessellationData(SWR_CONTEXT* pContext)
     {
         gt_pTessellationThreadData =
             (TessellationThreadLocalData*)AlignedMalloc(sizeof(TessellationThreadLocalData), 64);
-        memset(gt_pTessellationThreadData, 0, sizeof(*gt_pTessellationThreadData));
+        memset((void*)gt_pTessellationThreadData, 0, sizeof(*gt_pTessellationThreadData));
     }
 }
 

@@ -305,7 +305,7 @@ static bool ppir_emit_intrinsic(ppir_block *block, nir_instr *ni)
          op = ppir_op_load_frontface;
          break;
       default:
-         assert(0);
+         unreachable("bad intrinsic");
          break;
       }
 
@@ -833,13 +833,13 @@ static void ppir_print_shader_db(struct nir_shader *nir, ppir_compiler *comp,
 {
    const struct shader_info *info = &nir->info;
    char *shaderdb;
-   int ret = asprintf(&shaderdb,
-                      "%s shader: %d inst, %d loops, %d:%d spills:fills\n",
-                      gl_shader_stage_name(info->stage),
-                      comp->cur_instr_index,
-                      comp->num_loops,
-                      comp->num_spills,
-                      comp->num_fills);
+   ASSERTED int ret = asprintf(&shaderdb,
+                               "%s shader: %d inst, %d loops, %d:%d spills:fills\n",
+                               gl_shader_stage_name(info->stage),
+                               comp->cur_instr_index,
+                               comp->num_loops,
+                               comp->num_spills,
+                               comp->num_fills);
    assert(ret >= 0);
 
    if (lima_debug & LIMA_DEBUG_SHADERDB)
@@ -916,7 +916,7 @@ bool ppir_compile_nir(struct lima_fs_shader_state *prog, struct nir_shader *nir,
    }
 
    /* Validate outputs, we support only gl_FragColor */
-   nir_foreach_variable(var, &nir->outputs) {
+   nir_foreach_shader_out_variable(var, nir) {
       switch (var->data.location) {
       case FRAG_RESULT_COLOR:
       case FRAG_RESULT_DATA0:

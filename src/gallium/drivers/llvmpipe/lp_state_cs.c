@@ -43,6 +43,7 @@
 #include "lp_perf.h"
 #include "lp_screen.h"
 #include "lp_memory.h"
+#include "lp_query.h"
 #include "lp_cs_tpool.h"
 #include "frontend/sw_winsys.h"
 #include "nir/nir_to_tgsi_info.h"
@@ -437,6 +438,7 @@ llvmpipe_create_compute_state(struct pipe_context *pipe,
    shader->no = cs_no++;
 
    shader->base.type = templ->ir_type;
+   shader->req_local_mem = templ->req_local_mem;
    if (templ->ir_type == PIPE_SHADER_IR_NIR_SERIALIZED) {
       struct blob_reader reader;
       const struct pipe_binary_program_header *hdr = templ->prog;
@@ -446,6 +448,7 @@ llvmpipe_create_compute_state(struct pipe_context *pipe,
       shader->base.type = PIPE_SHADER_IR_NIR;
 
       pipe->screen->finalize_nir(pipe->screen, shader->base.ir.nir, false);
+      shader->req_local_mem += ((struct nir_shader *)shader->base.ir.nir)->info.cs.shared_size;
    } else if (templ->ir_type == PIPE_SHADER_IR_NIR)
       shader->base.ir.nir = (struct nir_shader *)templ->prog;
 
@@ -459,7 +462,6 @@ llvmpipe_create_compute_state(struct pipe_context *pipe,
       nir_tgsi_scan_shader(shader->base.ir.nir, &shader->info.base, false);
    }
 
-   shader->req_local_mem = templ->req_local_mem;
    make_empty_list(&shader->variants);
 
    nr_samplers = shader->info.base.file_max[TGSI_FILE_SAMPLER] + 1;
@@ -508,8 +510,8 @@ llvmpipe_remove_cs_shader_variant(struct llvmpipe_context *lp,
 
    /* remove from context's list */
    remove_from_list(&variant->list_item_global);
-   lp->nr_fs_variants--;
-   lp->nr_fs_instrs -= variant->nr_instrs;
+   lp->nr_cs_variants--;
+   lp->nr_cs_instrs -= variant->nr_instrs;
 
    FREE(variant);
 }
@@ -992,7 +994,7 @@ lp_csctx_set_sampler_views(struct lp_cs_context *csctx,
             struct llvmpipe_screen *screen = llvmpipe_screen(res->screen);
             struct sw_winsys *winsys = screen->winsys;
             jit_tex->base = winsys->displaytarget_map(winsys, lp_tex->dt,
-                                                         PIPE_TRANSFER_READ);
+                                                         PIPE_MAP_READ);
             jit_tex->row_stride[0] = lp_tex->row_stride[0];
             jit_tex->img_stride[0] = lp_tex->img_stride[0];
             jit_tex->mip_offsets[0] = 0;
@@ -1160,7 +1162,7 @@ update_csctx_consts(struct llvmpipe_context *llvmpipe)
    for (i = 0; i < ARRAY_SIZE(csctx->constants); ++i) {
       struct pipe_resource *buffer = csctx->constants[i].current.buffer;
       const ubyte *current_data = NULL;
-
+      unsigned current_size = csctx->constants[i].current.buffer_size;
       if (buffer) {
          /* resource buffer */
          current_data = (ubyte *) llvmpipe_resource_data(buffer);
@@ -1170,13 +1172,15 @@ update_csctx_consts(struct llvmpipe_context *llvmpipe)
          current_data = (ubyte *) csctx->constants[i].current.user_buffer;
       }
 
-      if (current_data) {
+      if (current_data && current_size >= sizeof(float)) {
          current_data += csctx->constants[i].current.buffer_offset;
-
          csctx->cs.current.jit_context.constants[i] = (const float *)current_data;
-         csctx->cs.current.jit_context.num_constants[i] = csctx->constants[i].current.buffer_size;
+         csctx->cs.current.jit_context.num_constants[i] =
+            DIV_ROUND_UP(csctx->constants[i].current.buffer_size,
+                         lp_get_constant_buffer_stride(llvmpipe->pipe.screen));
       } else {
-         csctx->cs.current.jit_context.constants[i] = NULL;
+         static const float fake_const_buf[4];
+         csctx->cs.current.jit_context.constants[i] = fake_const_buf;
          csctx->cs.current.jit_context.num_constants[i] = 0;
       }
    }
@@ -1210,9 +1214,6 @@ update_csctx_ssbo(struct llvmpipe_context *llvmpipe)
 static void
 llvmpipe_cs_update_derived(struct llvmpipe_context *llvmpipe, void *input)
 {
-   if (llvmpipe->cs_dirty & (LP_CSNEW_CS))
-      llvmpipe_update_cs(llvmpipe);
-
    if (llvmpipe->cs_dirty & LP_CSNEW_CONSTANTS) {
       lp_csctx_set_cs_constants(llvmpipe->csctx,
                                 ARRAY_SIZE(llvmpipe->constants[PIPE_SHADER_COMPUTE]),
@@ -1247,6 +1248,13 @@ llvmpipe_cs_update_derived(struct llvmpipe_context *llvmpipe, void *input)
       csctx->input = input;
       csctx->cs.current.jit_context.kernel_args = input;
    }
+
+   if (llvmpipe->cs_dirty & (LP_CSNEW_CS |
+                             LP_CSNEW_IMAGES |
+                             LP_CSNEW_SAMPLER_VIEW |
+                             LP_CSNEW_SAMPLER))
+      llvmpipe_update_cs(llvmpipe);
+
 
    llvmpipe->cs_dirty = 0;
 }
@@ -1293,7 +1301,7 @@ fill_grid_size(struct pipe_context *pipe,
    params = pipe_buffer_map_range(pipe, info->indirect,
                                   info->indirect_offset,
                                   3 * sizeof(uint32_t),
-                                  PIPE_TRANSFER_READ,
+                                  PIPE_MAP_READ,
                                   &transfer);
 
    if (!transfer)
@@ -1311,6 +1319,9 @@ static void llvmpipe_launch_grid(struct pipe_context *pipe,
    struct llvmpipe_context *llvmpipe = llvmpipe_context(pipe);
    struct llvmpipe_screen *screen = llvmpipe_screen(pipe->screen);
    struct lp_cs_job_info job_info;
+
+   if (!llvmpipe_check_render_cond(llvmpipe))
+      return;
 
    memset(&job_info, 0, sizeof(job_info));
 

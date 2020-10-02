@@ -25,7 +25,6 @@
 #define __PAN_IR_H
 
 #include <stdint.h>
-#include "panfrost-job.h"
 #include "compiler/nir/nir.h"
 #include "util/u_dynarray.h"
 #include "util/hash_table.h"
@@ -77,7 +76,7 @@ struct panfrost_sysvals {
 };
 
 void
-panfrost_nir_assign_sysvals(struct panfrost_sysvals *ctx, nir_shader *shader);
+panfrost_nir_assign_sysvals(struct panfrost_sysvals *ctx, void *memctx, nir_shader *shader);
 
 int
 panfrost_sysval_for_instr(nir_instr *instr, nir_dest *dest);
@@ -87,7 +86,7 @@ typedef struct {
         int uniform_cutoff;
 
         /* For Bifrost - output type for each RT */
-        nir_alu_type blend_types[BIFROST_MAX_RENDER_TARGET_COUNT];
+        nir_alu_type blend_types[8];
 
         /* Prepended before uniforms, mapping to SYSVAL_ names for the
          * sysval */
@@ -108,8 +107,8 @@ typedef struct {
          * (register spilling), or zero if no spilling is used */
         unsigned tls_size;
 
-        /* IN: For a fragment shader with a lowered alpha test, the ref value */
-        float alpha_ref;
+        /* IN: Render target formats for output load/store lowering */
+        enum pipe_format rt_formats[8];
 } panfrost_program;
 
 typedef struct pan_block {

@@ -22,7 +22,6 @@
 
 #include "invocation.hpp"
 
-#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -49,6 +48,12 @@ using namespace clover;
 
 #ifdef HAVE_CLOVER_SPIRV
 namespace {
+
+   uint32_t
+   make_spirv_version(uint8_t major, uint8_t minor) {
+      return (static_cast<uint32_t>(major) << 16u) |
+             (static_cast<uint32_t>(minor) << 8u);
+   }
 
    template<typename T>
    T get(const char *source, size_t index) {
@@ -252,7 +257,8 @@ namespace {
             const auto elem_size = types_iter->second.size;
             const auto elem_nbs = get<uint32_t>(inst, 3);
             const auto size = elem_size * elem_nbs;
-            types[id] = { module::argument::scalar, size, size, size,
+            const auto align = elem_size * util_next_power_of_two(elem_nbs);
+            types[id] = { module::argument::scalar, size, size, align,
                           module::argument::zero_ext };
             break;
          }
@@ -433,6 +439,7 @@ namespace {
                     std::string &r_log) {
       const size_t length = source.size() / sizeof(uint32_t);
       size_t i = SPIRV_HEADER_WORD_SIZE; // Skip header
+      const auto spirv_extensions = spirv::supported_extensions();
 
       while (i < length) {
          const auto desc_word = get<uint32_t>(source.data(), i);
@@ -446,14 +453,9 @@ namespace {
          if (opcode != SpvOpExtension)
             break;
 
-         const char *extension = source.data() + (i + 1u) * sizeof(uint32_t);
-         const std::string device_extensions = dev.supported_extensions();
-         const std::string platform_extensions =
-            dev.platform.supported_extensions();
-         if (device_extensions.find(extension) == std::string::npos &&
-             platform_extensions.find(extension) == std::string::npos) {
-            r_log += "Extension '" + std::string(extension) +
-                     "' is not supported.\n";
+         const std::string extension = source.data() + (i + 1u) * sizeof(uint32_t);
+         if (spirv_extensions.count(extension) == 0) {
+            r_log += "Extension '" + extension + "' is not supported.\n";
             return false;
          }
 
@@ -567,10 +569,11 @@ namespace {
 
 module
 clover::spirv::compile_program(const std::vector<char> &binary,
-                               const device &dev, std::string &r_log) {
+                               const device &dev, std::string &r_log,
+                               bool validate) {
    std::vector<char> source = spirv_to_cpu(binary);
 
-   if (!is_valid_spirv(source, dev.device_version(), r_log))
+   if (!is_valid_spirv(source, dev.device_version(), r_log, validate))
       throw build_error();
 
    if (!check_capabilities(dev, source, r_log))
@@ -659,6 +662,9 @@ clover::spirv::link_program(const std::vector<module> &modules,
    if (!is_valid_spirv(final_binary, opencl_version, r_log))
       throw error(CL_LINK_PROGRAM_FAILURE);
 
+   if (has_flag(llvm::debug::spirv))
+      llvm::debug::log(".spvasm", spirv::print_module(final_binary, dev.device_version()));
+
    for (const auto &mod : modules)
       m.syms.insert(m.syms.end(), mod.syms.begin(), mod.syms.end());
 
@@ -670,7 +676,8 @@ clover::spirv::link_program(const std::vector<module> &modules,
 bool
 clover::spirv::is_valid_spirv(const std::vector<char> &binary,
                               const std::string &opencl_version,
-                              std::string &r_log) {
+                              std::string &r_log,
+                              bool validate) {
    auto const validator_consumer =
       [&r_log](spv_message_level_t level, const char *source,
                const spv_position_t &position, const char *message) {
@@ -682,6 +689,8 @@ clover::spirv::is_valid_spirv(const std::vector<char> &binary,
    spvtools::SpirvTools spvTool(target_env);
    spvTool.SetMessageConsumer(validator_consumer);
 
+   if (!validate)
+      return true;
    return spvTool.Validate(reinterpret_cast<const uint32_t *>(binary.data()),
                            binary.size() / 4u);
 }
@@ -709,17 +718,31 @@ clover::spirv::print_module(const std::vector<char> &binary,
    return disassemblyStr;
 }
 
+std::unordered_set<std::string>
+clover::spirv::supported_extensions() {
+   return {
+      /* this is only a hint so all devices support that */
+      "SPV_KHR_no_integer_wrap_decoration"
+   };
+}
+
+std::vector<uint32_t>
+clover::spirv::supported_versions() {
+   return { make_spirv_version(1u, 0u) };
+}
+
 #else
 bool
 clover::spirv::is_valid_spirv(const std::vector<char> &/*binary*/,
                               const std::string &/*opencl_version*/,
-                              std::string &/*r_log*/) {
+                              std::string &/*r_log*/, bool /*validate*/) {
    return false;
 }
 
 module
 clover::spirv::compile_program(const std::vector<char> &binary,
-                               const device &dev, std::string &r_log) {
+                               const device &dev, std::string &r_log,
+                               bool validate) {
    r_log += "SPIR-V support in clover is not enabled.\n";
    throw build_error();
 }
@@ -737,4 +760,37 @@ clover::spirv::print_module(const std::vector<char> &binary,
                             const std::string &opencl_version) {
    return std::string();
 }
+
+std::unordered_set<std::string>
+clover::spirv::supported_extensions() {
+   return {};
+}
+
+std::vector<uint32_t>
+clover::spirv::supported_versions() {
+   return {};
+}
 #endif
+
+module
+clover::spirv::load_clc(const device &dev)
+{
+   std::vector<char> ilfile;
+   std::ifstream file;
+   std::string name32 = "spirv-mesa3d-.spv";
+   std::string name64 = "spirv64-mesa3d-.spv";
+   file.open(LIBCLC_LIBEXECDIR + (dev.address_bits() == 64 ? name64 : name32), std::ifstream::in | std::ifstream::binary);
+   if (!file.good())
+      throw error(CL_COMPILER_NOT_AVAILABLE);
+
+   file.seekg(0, std::ios::end);
+   std::streampos length(file.tellg());
+   if (length) {
+      file.seekg(0, std::ios::beg);
+      ilfile.resize(static_cast<std::size_t>(length));
+      file.read(&ilfile.front(), static_cast<std::size_t>(length));
+   }
+
+   std::string log;
+   return spirv::compile_program(ilfile, dev, log, false);
+}

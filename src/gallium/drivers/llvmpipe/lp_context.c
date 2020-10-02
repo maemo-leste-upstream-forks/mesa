@@ -47,6 +47,7 @@
 #include "lp_query.h"
 #include "lp_setup.h"
 #include "lp_screen.h"
+
 /* This is only safe if there's just one concurrent context */
 #ifdef EMBEDDED_DEVICE
 #define USE_GLOBAL_LLVM_CONTEXT
@@ -153,6 +154,12 @@ static void lp_draw_disk_cache_insert_shader(void *cookie,
    lp_disk_cache_insert_shader(screen, cache, ir_sha1_cache_key);
 }
 
+static enum pipe_reset_status
+llvmpipe_get_device_reset_status(struct pipe_context *pipe)
+{
+   return PIPE_NO_RESET;
+}
+
 struct pipe_context *
 llvmpipe_create_context(struct pipe_screen *screen, void *priv,
                         unsigned flags)
@@ -185,6 +192,7 @@ llvmpipe_create_context(struct pipe_screen *screen, void *priv,
 
    llvmpipe->pipe.render_condition = llvmpipe_render_condition;
 
+   llvmpipe->pipe.get_device_reset_status = llvmpipe_get_device_reset_status;
    llvmpipe_init_blend_funcs(llvmpipe);
    llvmpipe_init_clip_funcs(llvmpipe);
    llvmpipe_init_draw_funcs(llvmpipe);
@@ -222,6 +230,9 @@ llvmpipe_create_context(struct pipe_screen *screen, void *priv,
                                  llvmpipe_screen(screen),
                                  lp_draw_disk_cache_find_shader,
                                  lp_draw_disk_cache_insert_shader);
+
+   draw_set_constant_buffer_stride(llvmpipe->draw, lp_get_constant_buffer_stride(screen));
+
    /* FIXME: devise alternative to draw_texture_samplers */
 
    llvmpipe->setup = lp_setup_create( &llvmpipe->pipe,

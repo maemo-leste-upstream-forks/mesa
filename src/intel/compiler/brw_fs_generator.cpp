@@ -191,9 +191,9 @@ fs_generator::fs_generator(const struct brw_compiler *compiler, void *log_data,
 
    : compiler(compiler), log_data(log_data),
      devinfo(compiler->devinfo),
-     prog_data(prog_data),
+     prog_data(prog_data), dispatch_width(0),
      runtime_check_aads_emit(runtime_check_aads_emit), debug_flag(false),
-     stage(stage), mem_ctx(mem_ctx)
+     shader_name(NULL), stage(stage), mem_ctx(mem_ctx)
 {
    p = rzalloc(mem_ctx, struct brw_codegen);
    brw_init_codegen(devinfo, p, mem_ctx);
@@ -468,7 +468,15 @@ fs_generator::generate_mov_indirect(fs_inst *inst,
 
       reg.nr = imm_byte_offset / REG_SIZE;
       reg.subnr = imm_byte_offset % REG_SIZE;
-      brw_MOV(p, dst, reg);
+      if (type_sz(reg.type) > 4 && !devinfo->has_64bit_float) {
+         brw_MOV(p, subscript(dst, BRW_REGISTER_TYPE_D, 0),
+                    subscript(reg, BRW_REGISTER_TYPE_D, 0));
+         brw_set_default_swsb(p, tgl_swsb_null());
+         brw_MOV(p, subscript(dst, BRW_REGISTER_TYPE_D, 1),
+                    subscript(reg, BRW_REGISTER_TYPE_D, 1));
+      } else {
+         brw_MOV(p, dst, reg);
+      }
    } else {
       /* Prior to Broadwell, there are only 8 address registers. */
       assert(inst->exec_size <= 8 || devinfo->gen >= 8);
@@ -642,15 +650,42 @@ fs_generator::generate_shuffle(fs_inst *inst,
             group_idx = retype(spread(group_idx, 2), BRW_REGISTER_TYPE_W);
          }
 
+         uint32_t src_start_offset = src.nr * REG_SIZE + src.subnr;
+
+         /* Whether we can use destination dependency control without running
+          * the risk of a hang if an instruction gets shot down.
+          */
+         const bool use_dep_ctrl = !inst->predicate &&
+                                   inst->exec_size == dispatch_width;
+         brw_inst *insn;
+
+         /* Due to a hardware bug some platforms (particularly Gen11+) seem
+          * to require the address components of all channels to be valid
+          * whether or not they're active, which causes issues if we use VxH
+          * addressing under non-uniform control-flow.  We can easily work
+          * around that by initializing the whole address register with a
+          * pipelined NoMask MOV instruction.
+          */
+         insn = brw_MOV(p, addr, brw_imm_uw(src_start_offset));
+         brw_inst_set_mask_control(devinfo, insn, BRW_MASK_DISABLE);
+         brw_inst_set_pred_control(devinfo, insn, BRW_PREDICATE_NONE);
+         if (devinfo->gen >= 12)
+            brw_set_default_swsb(p, tgl_swsb_null());
+         else
+            brw_inst_set_no_dd_clear(devinfo, insn, use_dep_ctrl);
+
          /* Take into account the component size and horizontal stride. */
          assert(src.vstride == src.hstride + src.width);
-         brw_SHL(p, addr, group_idx,
-                 brw_imm_uw(util_logbase2(type_sz(src.type)) +
-                            src.hstride - 1));
+         insn = brw_SHL(p, addr, group_idx,
+                        brw_imm_uw(util_logbase2(type_sz(src.type)) +
+                                   src.hstride - 1));
+         if (devinfo->gen >= 12)
+            brw_set_default_swsb(p, tgl_swsb_regdist(1));
+         else
+            brw_inst_set_no_dd_check(devinfo, insn, use_dep_ctrl);
 
          /* Add on the register start offset */
-         brw_set_default_swsb(p, tgl_swsb_regdist(1));
-         brw_ADD(p, addr, addr, brw_imm_uw(src.nr * REG_SIZE + src.subnr));
+         brw_ADD(p, addr, addr, brw_imm_uw(src_start_offset));
 
          if (type_sz(src.type) > 4 &&
              ((devinfo->gen == 7 && !devinfo->is_haswell) ||
@@ -1775,8 +1810,7 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
                             struct brw_compile_stats *stats)
 {
    /* align to 64 byte boundary. */
-   while (p->next_insn_offset % 64)
-      brw_NOP(p);
+   brw_realign(p, 64);
 
    this->dispatch_width = dispatch_width;
 
@@ -2223,6 +2257,11 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
          generate_mov_indirect(inst, dst, src[0], src[1]);
          break;
 
+      case SHADER_OPCODE_MOV_RELOC_IMM:
+         assert(src[0].file == BRW_IMMEDIATE_VALUE);
+         brw_MOV_reloc_imm(p, dst, dst.type, src[0].ud);
+         break;
+
       case SHADER_OPCODE_URB_READ_SIMD8:
       case SHADER_OPCODE_URB_READ_SIMD8_PER_SLOT:
          generate_urb_read(inst, dst, src[0]);
@@ -2553,12 +2592,19 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
 
       /* overriding the shader makes disasm_info invalid */
       if (!brw_try_override_assembly(p, start_offset, sha1buf)) {
-         dump_assembly(p->store, disasm_info, perf.block_latency);
+         dump_assembly(p->store, start_offset, p->next_insn_offset,
+                       disasm_info, perf.block_latency);
       } else {
          fprintf(stderr, "Successfully overrode shader with sha1 %s\n\n", sha1buf);
       }
    }
    ralloc_free(disasm_info);
+#ifndef NDEBUG
+   if (!validated && !debug_flag) {
+      fprintf(stderr,
+            "Validation failed. Rerun with INTEL_DEBUG=shaders to get more information.\n");
+   }
+#endif
    assert(validated);
 
    compiler->shader_debug_log(log_data,
@@ -2587,8 +2633,20 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
    return start_offset;
 }
 
+void
+fs_generator::add_const_data(void *data, unsigned size)
+{
+   assert(prog_data->const_data_size == 0);
+   if (size > 0) {
+      prog_data->const_data_size = size;
+      prog_data->const_data_offset = brw_append_data(p, data, size, 32);
+   }
+}
+
 const unsigned *
 fs_generator::get_assembly()
 {
+   prog_data->relocs = brw_get_shader_relocs(p, &prog_data->num_relocs);
+
    return brw_get_program(p, &prog_data->program_size);
 }

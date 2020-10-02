@@ -255,6 +255,7 @@ visit_intrinsic(nir_intrinsic_instr *instr, struct divergence_state *state)
    case nir_intrinsic_load_ssbo:
    case nir_intrinsic_load_shared:
    case nir_intrinsic_load_global:
+   case nir_intrinsic_load_global_constant:
    case nir_intrinsic_load_uniform:
    case nir_intrinsic_load_push_constant:
    case nir_intrinsic_load_constant:
@@ -266,7 +267,7 @@ visit_intrinsic(nir_intrinsic_instr *instr, struct divergence_state *state)
    case nir_intrinsic_image_samples:
    case nir_intrinsic_image_deref_samples:
    case nir_intrinsic_bindless_image_samples:
-   case nir_intrinsic_get_buffer_size:
+   case nir_intrinsic_get_ssbo_size:
    case nir_intrinsic_image_size:
    case nir_intrinsic_image_deref_size:
    case nir_intrinsic_bindless_image_size:
@@ -314,6 +315,7 @@ visit_intrinsic(nir_intrinsic_instr *instr, struct divergence_state *state)
    case nir_intrinsic_interp_deref_at_vertex:
    case nir_intrinsic_load_tess_coord:
    case nir_intrinsic_load_point_coord:
+   case nir_intrinsic_load_line_coord:
    case nir_intrinsic_load_frag_coord:
    case nir_intrinsic_load_sample_pos:
    case nir_intrinsic_load_vertex_id_zero_base:
@@ -592,6 +594,11 @@ visit_jump(nir_jump_instr *jump, struct divergence_state *state)
       return state->divergent_loop_break;
    case nir_jump_return:
       unreachable("NIR divergence analysis: Unsupported return instruction.");
+      break;
+   case nir_jump_goto:
+   case nir_jump_goto_if:
+      unreachable("NIR divergence analysis: Unsupported goto_if instruction.");
+      break;
    }
    return false;
 }

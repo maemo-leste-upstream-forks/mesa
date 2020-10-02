@@ -637,6 +637,12 @@ add_parameter(struct gl_uniform_storage *uniform,
               const struct glsl_type *type,
               struct nir_link_uniforms_state *state)
 {
+   /* Builtin uniforms are backed by PROGRAM_STATE_VAR, so don't add them as
+    * uniforms.
+    */
+   if (uniform->builtin)
+      return;
+
    if (!state->params || uniform->is_shader_storage ||
        (glsl_contains_opaque(type) && !state->current_var->data.bindless))
       return;
@@ -1515,8 +1521,7 @@ gl_nir_link_uniforms(struct gl_context *ctx,
          if (!sh)
             continue;
 
-         nir_shader *nir = sh->Program->nir;
-         nir_foreach_variable(var, &nir->uniforms)
+         nir_foreach_gl_uniform_variable(var, sh->Program->nir)
             update_array_sizes(prog, var, state.referenced_uniforms, stage);
       }
    }
@@ -1531,7 +1536,7 @@ gl_nir_link_uniforms(struct gl_context *ctx,
          if (!sh)
             continue;
 
-         nir_foreach_variable(var, &sh->Program->nir->uniforms) {
+         nir_foreach_gl_uniform_variable(var, sh->Program->nir) {
             const struct glsl_type *type = var->type;
             const char *name = var->name;
             if (nir_variable_is_in_block(var) &&
@@ -1582,7 +1587,7 @@ gl_nir_link_uniforms(struct gl_context *ctx,
       state.shader_shadow_samplers = 0;
       state.params = fill_parameters ? sh->Program->Parameters : NULL;
 
-      nir_foreach_variable(var, &nir->uniforms) {
+      nir_foreach_gl_uniform_variable(var, nir) {
          state.current_var = var;
          state.current_ifc_type = NULL;
          state.offset = 0;

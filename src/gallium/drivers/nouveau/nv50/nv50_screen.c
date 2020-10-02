@@ -438,6 +438,7 @@ nv50_screen_get_shader_param(struct pipe_screen *pscreen,
    case PIPE_SHADER_CAP_FP16:
    case PIPE_SHADER_CAP_FP16_DERIVATIVES:
    case PIPE_SHADER_CAP_INT16:
+   case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
    case PIPE_SHADER_CAP_SUBROUTINES:
       return 0; /* please inline, or provide function declarations */
    case PIPE_SHADER_CAP_INTEGERS:
@@ -656,7 +657,7 @@ nv50_screen_init_hwctx(struct nv50_screen *screen)
    PUSH_DATA (push, 0);
    BEGIN_NV04(push, NV50_2D(COLOR_KEY_ENABLE), 1);
    PUSH_DATA (push, 0);
-   BEGIN_NV04(push, SUBC_2D(0x0888), 1);
+   BEGIN_NV04(push, NV50_2D(SET_PIXELS_FROM_MEMORY_SAFE_OVERLAP), 1);
    PUSH_DATA (push, 1);
    BEGIN_NV04(push, NV50_2D(COND_MODE), 1);
    PUSH_DATA (push, NV50_2D_COND_MODE_ALWAYS);
@@ -922,7 +923,9 @@ int nv50_tls_realloc(struct nv50_screen *screen, unsigned tls_space)
 }
 
 static const nir_shader_compiler_options nir_options = {
-   .fuse_ffma = false, /* nir doesn't track mad vs fma */
+   .fuse_ffma16 = false, /* nir doesn't track mad vs fma */
+   .fuse_ffma32 = false, /* nir doesn't track mad vs fma */
+   .fuse_ffma64 = false, /* nir doesn't track mad vs fma */
    .lower_flrp32 = true,
    .lower_flrp64 = true,
    .lower_fpow = false,

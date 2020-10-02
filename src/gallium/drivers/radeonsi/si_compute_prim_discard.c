@@ -308,8 +308,8 @@ void si_build_prim_discard_compute_shader(struct si_shader_context *ctx)
    LLVMSetLinkage(vs, LLVMPrivateLinkage);
 
    enum ac_arg_type const_desc_type;
-   if (ctx->shader->selector->info.const_buffers_declared == 1 &&
-       ctx->shader->selector->info.shader_buffers_declared == 0)
+   if (ctx->shader->selector->info.base.num_ubos == 1 &&
+       ctx->shader->selector->info.base.num_ssbos == 0)
       const_desc_type = AC_ARG_CONST_FLOAT_PTR;
    else
       const_desc_type = AC_ARG_CONST_DESC_PTR;
@@ -346,10 +346,10 @@ void si_build_prim_discard_compute_shader(struct si_shader_context *ctx)
    ac_add_arg(&ctx->args, AC_ARG_VGPR, 1, AC_ARG_INT, &param_local_id);
 
    /* Create the compute shader function. */
-   unsigned old_type = ctx->type;
-   ctx->type = PIPE_SHADER_COMPUTE;
+   gl_shader_stage old_stage = ctx->stage;
+   ctx->stage = MESA_SHADER_COMPUTE;
    si_llvm_create_func(ctx, "prim_discard_cs", NULL, 0, THREADGROUP_SIZE);
-   ctx->type = old_type;
+   ctx->stage = old_stage;
 
    if (VERTEX_COUNTER_GDS_MODE == 2) {
       ac_llvm_add_target_dep_function_attr(ctx->main_fn, "amdgpu-gds-size", 256);
@@ -912,7 +912,8 @@ static bool si_initialize_prim_discard_cmdbuf(struct si_context *sctx)
       unsigned num_oa_counters = VERTEX_COUNTER_GDS_MODE == 2 ? 2 : 0;
 
       if (gds_size) {
-         sctx->gds = ws->buffer_create(ws, gds_size, 4, RADEON_DOMAIN_GDS, 0);
+         sctx->gds = ws->buffer_create(ws, gds_size, 4, RADEON_DOMAIN_GDS,
+                                       RADEON_FLAG_DRIVER_INTERNAL);
          if (!sctx->gds)
             return false;
 
@@ -920,7 +921,8 @@ static bool si_initialize_prim_discard_cmdbuf(struct si_context *sctx)
       }
       if (num_oa_counters) {
          assert(gds_size);
-         sctx->gds_oa = ws->buffer_create(ws, num_oa_counters, 1, RADEON_DOMAIN_OA, 0);
+         sctx->gds_oa = ws->buffer_create(ws, num_oa_counters, 1, RADEON_DOMAIN_OA,
+                                          RADEON_FLAG_DRIVER_INTERNAL);
          if (!sctx->gds_oa)
             return false;
 
@@ -935,7 +937,8 @@ static bool si_initialize_prim_discard_cmdbuf(struct si_context *sctx)
 
    if (!sctx->index_ring) {
       sctx->index_ring = si_aligned_buffer_create(
-         sctx->b.screen, SI_RESOURCE_FLAG_UNMAPPABLE, PIPE_USAGE_DEFAULT,
+         sctx->b.screen, SI_RESOURCE_FLAG_UNMAPPABLE | SI_RESOURCE_FLAG_DRIVER_INTERNAL,
+         PIPE_USAGE_DEFAULT,
          sctx->index_ring_size_per_ib * 2, sctx->screen->info.pte_fragment_size);
       if (!sctx->index_ring)
          return false;
@@ -1028,7 +1031,7 @@ si_prepare_prim_discard_or_split_draw(struct si_context *sctx, const struct pipe
    unsigned num_subdraws = DIV_ROUND_UP(num_prims, SPLIT_PRIMS_PACKET_LEVEL);
    unsigned need_compute_dw = 11 /* shader */ + 34 /* first draw */ +
                               24 * (num_subdraws - 1) + /* subdraws */
-                              20;                       /* leave some space at the end */
+                              30;                       /* leave some space at the end */
    unsigned need_gfx_dw = si_get_minimum_num_gfx_cs_dwords(sctx);
 
    if (sctx->chip_class <= GFX7 || FORCE_REWIND_EMULATION)

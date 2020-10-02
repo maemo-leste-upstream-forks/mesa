@@ -35,7 +35,9 @@ static const nir_shader_compiler_options options = {
 	.lower_fmod = true,
 	.lower_fdiv = true,
 	.lower_fceil = true,
-	.fuse_ffma = true,
+	.fuse_ffma16 = true,
+	.fuse_ffma32 = true,
+	.fuse_ffma64 = true,
 	/* .fdot_replicates = true, it is replicated, but it makes things worse */
 	.lower_all_io_to_temps = true,
 	.vertex_id_zero_based = true, /* its not implemented anyway */
@@ -113,7 +115,7 @@ ir2_optimize_nir(nir_shader *s, bool lower)
 
 	OPT_V(s, nir_lower_regs_to_ssa);
 	OPT_V(s, nir_lower_vars_to_ssa);
-	OPT_V(s, nir_lower_indirect_derefs, nir_var_shader_in | nir_var_shader_out);
+	OPT_V(s, nir_lower_indirect_derefs, nir_var_shader_in | nir_var_shader_out, UINT32_MAX);
 
 	if (lower) {
 		OPT_V(s, ir3_nir_apply_trig_workarounds);
@@ -127,7 +129,7 @@ ir2_optimize_nir(nir_shader *s, bool lower)
 
 	/* TODO we dont want to get shaders writing to depth for depth textures */
 	if (s->info.stage == MESA_SHADER_FRAGMENT) {
-		nir_foreach_variable(var, &s->outputs) {
+		nir_foreach_shader_out_variable(var, s) {
 			if (var->data.location == FRAG_RESULT_DEPTH)
 				return -1;
 		}
@@ -495,7 +497,7 @@ load_input(struct ir2_context *ctx, nir_dest *dst, unsigned idx)
 	}
 
 	/* get slot from idx */
-	nir_foreach_variable(var, &ctx->nir->inputs) {
+	nir_foreach_shader_in_variable(var, ctx->nir) {
 		if (var->data.driver_location == idx) {
 			slot = var->data.location;
 			break;
@@ -538,7 +540,7 @@ output_slot(struct ir2_context *ctx, nir_intrinsic_instr *intr)
 {
 	int slot = -1;
 	unsigned idx = nir_intrinsic_base(intr);
-	nir_foreach_variable(var, &ctx->nir->outputs) {
+	nir_foreach_shader_out_variable(var, ctx->nir) {
 		if (var->data.driver_location == idx) {
 			slot = var->data.location;
 			break;
@@ -1129,7 +1131,7 @@ ir2_nir_compile(struct ir2_context *ctx, bool binning)
 	}
 
 	/* Setup inputs: */
-	nir_foreach_variable(in, &ctx->nir->inputs)
+	nir_foreach_shader_in_variable(in, ctx->nir)
 		setup_input(ctx, in);
 
 	if (so->type == MESA_SHADER_FRAGMENT) {

@@ -28,6 +28,7 @@
 #define H_ETNAVIV_SHADER
 
 #include "pipe/p_state.h"
+#include "util/disk_cache.h"
 
 struct etna_context;
 struct etna_shader_variant;
@@ -66,8 +67,11 @@ struct etna_shader {
    struct tgsi_token *tokens;
    struct nir_shader *nir;
    const struct etna_specs *specs;
+   struct etna_compiler *compiler;
 
    struct etna_shader_variant *variants;
+
+   cache_key cache_key;     /* shader disk-cache key */
 };
 
 bool

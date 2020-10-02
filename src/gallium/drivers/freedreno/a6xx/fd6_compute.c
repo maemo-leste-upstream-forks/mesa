@@ -34,6 +34,7 @@
 #include "fd6_const.h"
 #include "fd6_context.h"
 #include "fd6_emit.h"
+#include "fd6_pack.h"
 
 struct fd6_compute_stateobj {
 	struct ir3_shader *shader;
@@ -78,8 +79,16 @@ cs_program_emit(struct fd_ringbuffer *ring, struct ir3_shader_variant *v)
 	const struct ir3_info *i = &v->info;
 	enum a3xx_threadsize thrsz = FOUR_QUADS;
 
-	OUT_PKT4(ring, REG_A6XX_HLSQ_UPDATE_CNTL, 1);
-	OUT_RING(ring, 0xff);
+	OUT_REG(ring, A6XX_HLSQ_INVALIDATE_CMD(
+			.vs_state = true,
+			.hs_state = true,
+			.ds_state = true,
+			.gs_state = true,
+			.fs_state = true,
+			.cs_state = true,
+			.gfx_ibo = true,
+			.cs_ibo = true,
+		));
 
 	OUT_PKT4(ring, REG_A6XX_HLSQ_CS_CNTL, 1);
 	OUT_RING(ring, A6XX_HLSQ_CS_CNTL_CONSTLEN(v->constlen) |
@@ -130,8 +139,6 @@ fd6_launch_grid(struct fd_context *ctx, const struct pipe_grid_info *info)
 	struct ir3_shader_variant *v;
 	struct fd_ringbuffer *ring = ctx->batch->draw;
 	unsigned nglobal = 0;
-
-	fd6_emit_restore(ctx->batch, ring);
 
 	v = ir3_shader_variant(so->shader, key, false, &ctx->debug);
 	if (!v)

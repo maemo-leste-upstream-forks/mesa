@@ -27,11 +27,13 @@
 #include "pipe/p_defines.h"
 #include "pipe/p_state.h"
 
+#include "compiler/nir/nir.h"
 #include "compiler/shader_info.h"
 
 #include <vulkan/vulkan.h>
 
 struct pipe_screen;
+struct zink_context;
 struct zink_screen;
 struct zink_gfx_program;
 
@@ -41,6 +43,11 @@ struct nir_shader;
 struct set;
 
 struct tgsi_token;
+struct zink_so_info {
+   struct pipe_stream_output_info so_info;
+   unsigned *so_info_slots;
+};
+
 
 const void *
 zink_get_compiler_options(struct pipe_screen *screen,
@@ -51,11 +58,9 @@ struct nir_shader *
 zink_tgsi_to_nir(struct pipe_screen *screen, const struct tgsi_token *tokens);
 
 struct zink_shader {
-   VkShaderModule shader_module;
+   struct nir_shader *nir;
 
-   shader_info info;
-
-   struct pipe_stream_output_info stream_output;
+   struct zink_so_info streamout;
 
    struct {
       int index;
@@ -66,11 +71,14 @@ struct zink_shader {
    struct set *programs;
 };
 
+VkShaderModule
+zink_shader_compile(struct zink_screen *screen, struct zink_shader *zs);
+
 struct zink_shader *
-zink_compile_nir(struct zink_screen *screen, struct nir_shader *nir,
+zink_shader_create(struct zink_screen *screen, struct nir_shader *nir,
                  const struct pipe_stream_output_info *so_info);
 
 void
-zink_shader_free(struct zink_screen *screen, struct zink_shader *shader);
+zink_shader_free(struct zink_context *ctx, struct zink_shader *shader);
 
 #endif

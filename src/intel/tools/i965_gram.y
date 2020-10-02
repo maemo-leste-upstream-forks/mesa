@@ -310,6 +310,22 @@ i965_asm_set_dst_nr(struct brw_codegen *p,
 	}
 }
 
+static void
+add_label(struct brw_codegen *p, const char* label_name, enum instr_label_type type)
+{
+	if (!label_name) {
+		return;
+	}
+
+	struct instr_label *label = rzalloc(p->mem_ctx, struct instr_label);
+
+	label->name = ralloc_strdup(p->mem_ctx, label_name);
+	label->offset = p->next_insn_offset;
+	label->type = type;
+
+	list_addtail(&label->link, &instr_labels);
+}
+
 %}
 
 %locations
@@ -317,10 +333,12 @@ i965_asm_set_dst_nr(struct brw_codegen *p,
 %start ROOT
 
 %union {
+	char *string;
 	double number;
 	int integer;
 	unsigned long long int llint;
 	struct brw_reg reg;
+	enum brw_reg_type reg_type;
 	struct brw_codegen *program;
 	struct predicate predicate;
 	struct condition condition;
@@ -348,6 +366,10 @@ i965_asm_set_dst_nr(struct brw_codegen *p,
 %token <integer> TYPE_F TYPE_HF
 %token <integer> TYPE_DF TYPE_NF
 %token <integer> TYPE_VF
+
+/* label */
+%token <string> JUMP_LABEL
+%token <string> JUMP_LABEL_TARGET
 
 /* opcodes */
 %token <integer> ADD ADD3 ADDC AND ASR AVG
@@ -466,10 +488,10 @@ i965_asm_set_dst_nr(struct brw_codegen *p,
 
 /* writemask */
 %type <integer> writemask_x writemask_y writemask_z writemask_w
-%type <reg> writemask
+%type <integer> writemask
 
 /* dst operand */
-%type <reg> dst dstoperand dstoperandex dstoperandex_typed dstreg dsttype
+%type <reg> dst dstoperand dstoperandex dstoperandex_typed dstreg
 %type <integer> dstregion
 
 %type <integer> saturate relativelocation rellocation
@@ -477,15 +499,19 @@ i965_asm_set_dst_nr(struct brw_codegen *p,
 
 /* src operand */
 %type <reg> directsrcoperand directsrcaccoperand indirectsrcoperand srcacc
-%type <reg> srcarcoperandex srcaccimm srcarcoperandex_typed srctype srcimm
-%type <reg> srcimmtype indirectgenreg indirectregion
+%type <reg> srcarcoperandex srcaccimm srcarcoperandex_typed srcimm
+%type <reg> indirectgenreg indirectregion
 %type <reg> immreg src reg32 payload directgenreg_list addrparam region
-%type <reg> region_wh swizzle directgenreg directmsgreg indirectmsgreg
+%type <reg> region_wh directgenreg directmsgreg indirectmsgreg
+%type <integer> swizzle
 
 /* registers */
 %type <reg> accreg addrreg channelenablereg controlreg flagreg ipreg
 %type <reg> notifyreg nullreg performancereg threadcontrolreg statereg maskreg
 %type <integer> subregnum
+
+/* register types */
+%type <reg_type> reg_type imm_type
 
 /* immediate values */
 %type <llint> immval
@@ -496,6 +522,9 @@ i965_asm_set_dst_nr(struct brw_codegen *p,
 %type <instruction> sendopcode
 
 %type <integer> negate abs chansel math_function sharedfunction
+
+%type <string> jumplabeltarget
+%type <string> jumplabel
 
 %code {
 
@@ -603,6 +632,8 @@ instrseq:
 	| instrseq relocatableinstruction SEMICOLON
 	| instruction SEMICOLON
 	| relocatableinstruction SEMICOLON
+	| instrseq jumplabeltarget
+	| jumplabeltarget
 	;
 
 /* Instruction Group */
@@ -774,7 +805,6 @@ binaryaccinstruction:
 		if (p->devinfo->gen >= 7)
 			brw_inst_set_nib_control(p->devinfo, brw_last_inst,
 					         $9.nib_ctrl);
-
 	}
 	;
 
@@ -879,15 +909,18 @@ ternaryopcodes:
 
 /* Sync instruction */
 syncinstruction:
-	WAIT execsize src instoptions
+	WAIT execsize dst instoptions
 	{
 		brw_next_insn(p, $1);
 		i965_asm_set_instruction_options(p, $4);
 		brw_inst_set_exec_size(p->devinfo, brw_last_inst, $2);
 		brw_set_default_access_mode(p, $4.access_mode);
-		struct brw_reg src = brw_notification_reg();
-		brw_set_dest(p, brw_last_inst, src);
-		brw_set_src0(p, brw_last_inst, src);
+		struct brw_reg dest = $3;
+		dest.swizzle = brw_swizzle_for_mask(dest.writemask);
+		if (dest.file != ARF || dest.nr != BRW_ARF_NOTIFICATION_COUNT)
+			error(&@1, "WAIT must use the notification register\n");
+		brw_set_dest(p, brw_last_inst, dest);
+		brw_set_src0(p, brw_last_inst, dest);
 		brw_set_src1(p, brw_last_inst, brw_null_reg());
 		brw_inst_set_mask_control(p->devinfo, brw_last_inst, BRW_MASK_DISABLE);
 	}
@@ -1065,24 +1098,16 @@ jumpinstruction:
 
 /* branch instruction */
 branchinstruction:
-	predicate ENDIF execsize relativelocation instoptions
+	predicate ENDIF execsize JUMP_LABEL instoptions
 	{
+		add_label(p, $4, INSTR_LABEL_JIP);
+
 		brw_next_insn(p, $2);
 		i965_asm_set_instruction_options(p, $5);
 		brw_inst_set_exec_size(p->devinfo, brw_last_inst, $3);
 
-		if (p->devinfo->gen < 6) {
-			brw_set_dest(p, brw_last_inst, retype(brw_null_reg(),
-				     BRW_REGISTER_TYPE_D));
-			brw_set_src0(p, brw_last_inst, retype(brw_null_reg(),
-				     BRW_REGISTER_TYPE_D));
-			brw_set_src1(p, brw_last_inst, brw_imm_d(0x0));
-			brw_inst_set_gen4_pop_count(p->devinfo, brw_last_inst,
-						    $4);
-		} else if (p->devinfo->gen == 6) {
+		if (p->devinfo->gen == 6) {
 			brw_set_dest(p, brw_last_inst, brw_imm_w(0x0));
-			brw_inst_set_gen6_jump_count(p->devinfo, brw_last_inst,
-						     $4);
 			brw_set_src0(p, brw_last_inst, retype(brw_null_reg(),
 				     BRW_REGISTER_TYPE_D));
 			brw_set_src1(p, brw_last_inst, retype(brw_null_reg(),
@@ -1093,34 +1118,41 @@ branchinstruction:
 			brw_set_src0(p, brw_last_inst, retype(brw_null_reg(),
 				     BRW_REGISTER_TYPE_D));
 			brw_set_src1(p, brw_last_inst, brw_imm_w(0x0));
-			brw_inst_set_jip(p->devinfo, brw_last_inst, $4);
 		} else {
-			brw_set_src0(p, brw_last_inst, brw_imm_d($4));
+			brw_set_src0(p, brw_last_inst, brw_imm_d(0x0));
 		}
 
-		if (p->devinfo->gen < 6)
-			brw_inst_set_thread_control(p->devinfo, brw_last_inst,
-						    BRW_THREAD_SWITCH);
 		brw_pop_insn_state(p);
 	}
-	| ELSE execsize relativelocation rellocation instoptions
+	| predicate ENDIF execsize relativelocation instoptions
 	{
+		brw_next_insn(p, $2);
+		i965_asm_set_instruction_options(p, $5);
+		brw_inst_set_exec_size(p->devinfo, brw_last_inst, $3);
+
+		brw_set_dest(p, brw_last_inst, retype(brw_null_reg(),
+					BRW_REGISTER_TYPE_D));
+		brw_set_src0(p, brw_last_inst, retype(brw_null_reg(),
+					BRW_REGISTER_TYPE_D));
+		brw_set_src1(p, brw_last_inst, brw_imm_d(0x0));
+		brw_inst_set_gen4_pop_count(p->devinfo, brw_last_inst, $4);
+
+		brw_inst_set_thread_control(p->devinfo, brw_last_inst,
+						BRW_THREAD_SWITCH);
+
+		brw_pop_insn_state(p);
+	}
+	| ELSE execsize JUMP_LABEL jumplabel instoptions
+	{
+		add_label(p, $3, INSTR_LABEL_JIP);
+		add_label(p, $4, INSTR_LABEL_UIP);
+
 		brw_next_insn(p, $1);
 		i965_asm_set_instruction_options(p, $5);
 		brw_inst_set_exec_size(p->devinfo, brw_last_inst, $2);
 
-		if (p->devinfo->gen < 6) {
-			brw_set_dest(p, brw_last_inst, brw_ip_reg());
-			brw_set_src0(p, brw_last_inst, brw_ip_reg());
-			brw_set_src1(p, brw_last_inst, brw_imm_d(0x0));
-			brw_inst_set_gen4_jump_count(p->devinfo, brw_last_inst,
-						     $3);
-			brw_inst_set_gen4_pop_count(p->devinfo, brw_last_inst,
-						    $4);
-		} else if (p->devinfo->gen == 6) {
+		if (p->devinfo->gen == 6) {
 			brw_set_dest(p, brw_last_inst, brw_imm_w(0x0));
-			brw_inst_set_gen6_jump_count(p->devinfo, brw_last_inst,
-						     $3);
 			brw_set_src0(p, brw_last_inst, retype(brw_null_reg(),
 				     BRW_REGISTER_TYPE_D));
 			brw_set_src1(p, brw_last_inst, retype(brw_null_reg(),
@@ -1130,39 +1162,41 @@ branchinstruction:
 				     BRW_REGISTER_TYPE_D));
 			brw_set_src0(p, brw_last_inst, retype(brw_null_reg(),
 				     BRW_REGISTER_TYPE_D));
-			brw_set_src1(p, brw_last_inst, brw_imm_w($3));
-			brw_inst_set_jip(p->devinfo, brw_last_inst, $3);
-			brw_inst_set_uip(p->devinfo, brw_last_inst, $4);
+			brw_set_src1(p, brw_last_inst, brw_imm_w(0));
 		} else {
 			brw_set_dest(p, brw_last_inst, retype(brw_null_reg(),
 				     BRW_REGISTER_TYPE_D));
-			brw_set_src0(p, brw_last_inst, brw_imm_d($3));
-			brw_inst_set_jip(p->devinfo, brw_last_inst, $3);
-			brw_inst_set_uip(p->devinfo, brw_last_inst, $4);
+			if (p->devinfo->gen < 12)
+				brw_set_src0(p, brw_last_inst, brw_imm_d(0));
 		}
+	}
+	| ELSE execsize relativelocation rellocation instoptions
+	{
+		brw_next_insn(p, $1);
+		i965_asm_set_instruction_options(p, $5);
+		brw_inst_set_exec_size(p->devinfo, brw_last_inst, $2);
 
-		if (!p->single_program_flow && p->devinfo->gen < 6)
+		brw_set_dest(p, brw_last_inst, brw_ip_reg());
+		brw_set_src0(p, brw_last_inst, brw_ip_reg());
+		brw_set_src1(p, brw_last_inst, brw_imm_d(0x0));
+		brw_inst_set_gen4_jump_count(p->devinfo, brw_last_inst, $3);
+		brw_inst_set_gen4_pop_count(p->devinfo, brw_last_inst, $4);
+
+		if (!p->single_program_flow)
 			brw_inst_set_thread_control(p->devinfo, brw_last_inst,
 						    BRW_THREAD_SWITCH);
 	}
-	| predicate IF execsize relativelocation rellocation instoptions
+	| predicate IF execsize JUMP_LABEL jumplabel instoptions
 	{
+		add_label(p, $4, INSTR_LABEL_JIP);
+		add_label(p, $5, INSTR_LABEL_UIP);
+
 		brw_next_insn(p, $2);
 		i965_asm_set_instruction_options(p, $6);
 		brw_inst_set_exec_size(p->devinfo, brw_last_inst, $3);
 
-		if (p->devinfo->gen < 6) {
-			brw_set_dest(p, brw_last_inst, brw_ip_reg());
-			brw_set_src0(p, brw_last_inst, brw_ip_reg());
-			brw_set_src1(p, brw_last_inst, brw_imm_d(0x0));
-			brw_inst_set_gen4_jump_count(p->devinfo, brw_last_inst,
-						     $4);
-			brw_inst_set_gen4_pop_count(p->devinfo, brw_last_inst,
-						    $5);
-		} else if (p->devinfo->gen == 6) {
+		if (p->devinfo->gen == 6) {
 			brw_set_dest(p, brw_last_inst, brw_imm_w(0x0));
-			brw_inst_set_gen6_jump_count(p->devinfo, brw_last_inst,
-						     $4);
 			brw_set_src0(p, brw_last_inst,
 				     vec1(retype(brw_null_reg(),
 				     BRW_REGISTER_TYPE_D)));
@@ -1176,21 +1210,65 @@ branchinstruction:
 			brw_set_src0(p, brw_last_inst,
 				     vec1(retype(brw_null_reg(),
 				     BRW_REGISTER_TYPE_D)));
-			brw_set_src1(p, brw_last_inst, brw_imm_w($4));
-			brw_inst_set_jip(p->devinfo, brw_last_inst, $4);
-			brw_inst_set_uip(p->devinfo, brw_last_inst, $5);
+			brw_set_src1(p, brw_last_inst, brw_imm_w(0x0));
 		} else {
 			brw_set_dest(p, brw_last_inst,
 				     vec1(retype(brw_null_reg(),
 				     BRW_REGISTER_TYPE_D)));
-			brw_set_src0(p, brw_last_inst, brw_imm_d($4));
-			brw_inst_set_jip(p->devinfo, brw_last_inst, $4);
-			brw_inst_set_uip(p->devinfo, brw_last_inst, $5);
+			if (p->devinfo->gen < 12)
+				brw_set_src0(p, brw_last_inst, brw_imm_d(0x0));
 		}
 
-		if (!p->single_program_flow && p->devinfo->gen < 6)
+		brw_pop_insn_state(p);
+	}
+	| predicate IF execsize relativelocation rellocation instoptions
+	{
+		brw_next_insn(p, $2);
+		i965_asm_set_instruction_options(p, $6);
+		brw_inst_set_exec_size(p->devinfo, brw_last_inst, $3);
+
+		brw_set_dest(p, brw_last_inst, brw_ip_reg());
+		brw_set_src0(p, brw_last_inst, brw_ip_reg());
+		brw_set_src1(p, brw_last_inst, brw_imm_d(0x0));
+		brw_inst_set_gen4_jump_count(p->devinfo, brw_last_inst, $4);
+		brw_inst_set_gen4_pop_count(p->devinfo, brw_last_inst, $5);
+
+		if (!p->single_program_flow)
 			brw_inst_set_thread_control(p->devinfo, brw_last_inst,
 						    BRW_THREAD_SWITCH);
+
+		brw_pop_insn_state(p);
+	}
+	| predicate IFF execsize JUMP_LABEL instoptions
+	{
+		add_label(p, $4, INSTR_LABEL_JIP);
+
+		brw_next_insn(p, $2);
+		i965_asm_set_instruction_options(p, $5);
+		brw_inst_set_exec_size(p->devinfo, brw_last_inst, $3);
+
+		if (p->devinfo->gen == 6) {
+			brw_set_src0(p, brw_last_inst,
+				     vec1(retype(brw_null_reg(),
+				     BRW_REGISTER_TYPE_D)));
+			brw_set_src1(p, brw_last_inst,
+				     vec1(retype(brw_null_reg(),
+				     BRW_REGISTER_TYPE_D)));
+		} else if (p->devinfo->gen == 7) {
+			brw_set_dest(p, brw_last_inst,
+				     vec1(retype(brw_null_reg(),
+				     BRW_REGISTER_TYPE_D)));
+			brw_set_src0(p, brw_last_inst,
+				     vec1(retype(brw_null_reg(),
+				     BRW_REGISTER_TYPE_D)));
+			brw_set_src1(p, brw_last_inst, brw_imm_w(0x0));
+		} else {
+			brw_set_dest(p, brw_last_inst,
+				     vec1(retype(brw_null_reg(),
+				     BRW_REGISTER_TYPE_D)));
+			if (p->devinfo->gen < 12)
+				brw_set_src0(p, brw_last_inst, brw_imm_d(0x0));
+		}
 
 		brw_pop_insn_state(p);
 	}
@@ -1200,40 +1278,12 @@ branchinstruction:
 		i965_asm_set_instruction_options(p, $5);
 		brw_inst_set_exec_size(p->devinfo, brw_last_inst, $3);
 
-		if (p->devinfo->gen < 6) {
-			brw_set_dest(p, brw_last_inst, brw_ip_reg());
-			brw_set_src0(p, brw_last_inst, brw_ip_reg());
-			brw_inst_set_gen4_jump_count(p->devinfo, brw_last_inst,
-						     $4);
-			brw_set_src1(p, brw_last_inst, brw_imm_d($4));
-		} else if (p->devinfo->gen == 6) {
-			brw_set_dest(p, brw_last_inst, brw_imm_w($4));
-			brw_inst_set_gen6_jump_count(p->devinfo, brw_last_inst,
-						     $4);
-			brw_set_src0(p, brw_last_inst,
-				     vec1(retype(brw_null_reg(),
-				     BRW_REGISTER_TYPE_D)));
-			brw_set_src1(p, brw_last_inst,
-				     vec1(retype(brw_null_reg(),
-				     BRW_REGISTER_TYPE_D)));
-		} else if (p->devinfo->gen == 7) {
-			brw_set_dest(p, brw_last_inst,
-				     vec1(retype(brw_null_reg(),
-				     BRW_REGISTER_TYPE_D)));
-			brw_set_src0(p, brw_last_inst,
-				     vec1(retype(brw_null_reg(),
-				     BRW_REGISTER_TYPE_D)));
-			brw_set_src1(p, brw_last_inst, brw_imm_w($4));
-			brw_inst_set_jip(p->devinfo, brw_last_inst, $4);
-		} else {
-			brw_set_dest(p, brw_last_inst,
-				     vec1(retype(brw_null_reg(),
-				     BRW_REGISTER_TYPE_D)));
-			brw_set_src0(p, brw_last_inst, brw_imm_d($4));
-			brw_inst_set_jip(p->devinfo, brw_last_inst, $4);
-		}
+		brw_set_dest(p, brw_last_inst, brw_ip_reg());
+		brw_set_src0(p, brw_last_inst, brw_ip_reg());
+		brw_inst_set_gen4_jump_count(p->devinfo, brw_last_inst, $4);
+		brw_set_src1(p, brw_last_inst, brw_imm_d($4));
 
-		if (!p->single_program_flow && p->devinfo->gen < 6)
+		if (!p->single_program_flow)
 			brw_inst_set_thread_control(p->devinfo, brw_last_inst,
 						    BRW_THREAD_SWITCH);
 
@@ -1243,8 +1293,11 @@ branchinstruction:
 
 /* break instruction */
 breakinstruction:
-	predicate BREAK execsize relativelocation relativelocation instoptions
+	predicate BREAK execsize JUMP_LABEL JUMP_LABEL instoptions
 	{
+		add_label(p, $4, INSTR_LABEL_JIP);
+		add_label(p, $5, INSTR_LABEL_UIP);
+
 		brw_next_insn(p, $2);
 		i965_asm_set_instruction_options(p, $6);
 		brw_inst_set_exec_size(p->devinfo, brw_last_inst, $3);
@@ -1252,47 +1305,70 @@ breakinstruction:
 		if (p->devinfo->gen >= 8) {
 			brw_set_dest(p, brw_last_inst, retype(brw_null_reg(),
 				     BRW_REGISTER_TYPE_D));
-			brw_set_src0(p, brw_last_inst, brw_imm_d($4));
-			brw_inst_set_uip(p->devinfo, brw_last_inst, $5);
-		} else if (p->devinfo->gen >= 6) {
+			brw_set_src0(p, brw_last_inst, brw_imm_d(0x0));
+		} else {
 			brw_set_dest(p, brw_last_inst, retype(brw_null_reg(),
 				     BRW_REGISTER_TYPE_D));
 			brw_set_src0(p, brw_last_inst, retype(brw_null_reg(),
 				     BRW_REGISTER_TYPE_D));
 			brw_set_src1(p, brw_last_inst, brw_imm_d(0x0));
-			brw_inst_set_jip(p->devinfo, brw_last_inst, $4);
-			brw_inst_set_uip(p->devinfo, brw_last_inst, $5);
-		} else {
-			brw_set_dest(p, brw_last_inst, brw_ip_reg());
-			brw_set_src0(p, brw_last_inst, brw_ip_reg());
-			brw_set_src1(p, brw_last_inst, brw_imm_d(0x0));
-			brw_inst_set_gen4_jump_count(p->devinfo, brw_last_inst,
-						     $4);
-			brw_inst_set_gen4_pop_count(p->devinfo, brw_last_inst,
-						    $5);
 		}
 
 		brw_pop_insn_state(p);
 	}
-	| predicate HALT execsize relativelocation relativelocation instoptions
+	| predicate BREAK execsize relativelocation relativelocation instoptions
 	{
 		brw_next_insn(p, $2);
 		i965_asm_set_instruction_options(p, $6);
 		brw_inst_set_exec_size(p->devinfo, brw_last_inst, $3);
+
+		brw_set_dest(p, brw_last_inst, brw_ip_reg());
+		brw_set_src0(p, brw_last_inst, brw_ip_reg());
+		brw_set_src1(p, brw_last_inst, brw_imm_d(0x0));
+		brw_inst_set_gen4_jump_count(p->devinfo, brw_last_inst, $4);
+		brw_inst_set_gen4_pop_count(p->devinfo, brw_last_inst, $5);
+
+		brw_pop_insn_state(p);
+	}
+	| predicate HALT execsize JUMP_LABEL JUMP_LABEL instoptions
+	{
+		add_label(p, $4, INSTR_LABEL_JIP);
+		add_label(p, $5, INSTR_LABEL_UIP);
+
+		brw_next_insn(p, $2);
+		i965_asm_set_instruction_options(p, $6);
+		brw_inst_set_exec_size(p->devinfo, brw_last_inst, $3);
+
 		brw_set_dest(p, brw_last_inst, retype(brw_null_reg(),
 			     BRW_REGISTER_TYPE_D));
 
 		if (p->devinfo->gen >= 8) {
-			brw_set_src0(p, brw_last_inst, brw_imm_d($4));
-			brw_inst_set_uip(p->devinfo, brw_last_inst, $5);
+			brw_set_src0(p, brw_last_inst, brw_imm_d(0x0));
 		} else {
 			brw_set_src0(p, brw_last_inst, retype(brw_null_reg(),
 				     BRW_REGISTER_TYPE_D));
-			brw_set_src1(p, brw_last_inst, brw_imm_d($5));
+			brw_set_src1(p, brw_last_inst, brw_imm_d(0x0));
 		}
 
-		brw_inst_set_jip(p->devinfo, brw_last_inst, $4);
-		brw_inst_set_uip(p->devinfo, brw_last_inst, $5);
+		brw_pop_insn_state(p);
+	}
+	| predicate CONT execsize JUMP_LABEL JUMP_LABEL instoptions
+	{
+		add_label(p, $4, INSTR_LABEL_JIP);
+		add_label(p, $5, INSTR_LABEL_UIP);
+
+		brw_next_insn(p, $2);
+		i965_asm_set_instruction_options(p, $6);
+		brw_inst_set_exec_size(p->devinfo, brw_last_inst, $3);
+		brw_set_dest(p, brw_last_inst, brw_ip_reg());
+
+		if (p->devinfo->gen >= 8) {
+			brw_set_src0(p, brw_last_inst, brw_imm_d(0x0));
+		} else {
+			brw_set_src0(p, brw_last_inst, brw_ip_reg());
+			brw_set_src1(p, brw_last_inst, brw_imm_d(0x0));
+		}
+
 		brw_pop_insn_state(p);
 	}
 	| predicate CONT execsize relativelocation relativelocation instoptions
@@ -1302,23 +1378,11 @@ breakinstruction:
 		brw_inst_set_exec_size(p->devinfo, brw_last_inst, $3);
 		brw_set_dest(p, brw_last_inst, brw_ip_reg());
 
-		if (p->devinfo->gen >= 8) {
-			brw_set_src0(p, brw_last_inst, brw_imm_d(0x0));
-			brw_inst_set_jip(p->devinfo, brw_last_inst, $4);
-			brw_inst_set_uip(p->devinfo, brw_last_inst, $5);
-		} else {
-			brw_set_src0(p, brw_last_inst, brw_ip_reg());
-			brw_set_src1(p, brw_last_inst, brw_imm_d(0x0));
-			if (p->devinfo->gen >= 6) {
-				brw_inst_set_jip(p->devinfo, brw_last_inst, $4);
-				brw_inst_set_uip(p->devinfo, brw_last_inst, $5);
-			} else {
-				brw_inst_set_gen4_jump_count(p->devinfo, brw_last_inst,
-							     $4);
-				brw_inst_set_gen4_pop_count(p->devinfo, brw_last_inst,
-							    $5);
-			}
-		}
+		brw_set_src0(p, brw_last_inst, brw_ip_reg());
+		brw_set_src1(p, brw_last_inst, brw_imm_d(0x0));
+
+		brw_inst_set_gen4_jump_count(p->devinfo, brw_last_inst, $4);
+		brw_inst_set_gen4_pop_count(p->devinfo, brw_last_inst, $5);
 
 		brw_pop_insn_state(p);
 	}
@@ -1326,50 +1390,52 @@ breakinstruction:
 
 /* loop instruction */
 loopinstruction:
-	predicate WHILE execsize relativelocation instoptions
+	predicate WHILE execsize JUMP_LABEL instoptions
+	{
+		add_label(p, $4, INSTR_LABEL_JIP);
+
+		brw_next_insn(p, $2);
+		i965_asm_set_instruction_options(p, $5);
+		brw_inst_set_exec_size(p->devinfo, brw_last_inst, $3);
+
+		if (p->devinfo->gen >= 8) {
+			brw_set_dest(p, brw_last_inst,
+						retype(brw_null_reg(),
+						BRW_REGISTER_TYPE_D));
+			brw_set_src0(p, brw_last_inst, brw_imm_d(0x0));
+		} else if (p->devinfo->gen == 7) {
+			brw_set_dest(p, brw_last_inst,
+						retype(brw_null_reg(),
+						BRW_REGISTER_TYPE_D));
+			brw_set_src0(p, brw_last_inst,
+						retype(brw_null_reg(),
+						BRW_REGISTER_TYPE_D));
+			brw_set_src1(p, brw_last_inst,
+						brw_imm_w(0x0));
+		} else {
+			brw_set_dest(p, brw_last_inst, brw_imm_w(0x0));
+			brw_set_src0(p, brw_last_inst,
+						retype(brw_null_reg(),
+						BRW_REGISTER_TYPE_D));
+			brw_set_src1(p, brw_last_inst,
+						retype(brw_null_reg(),
+						BRW_REGISTER_TYPE_D));
+		}
+
+		brw_pop_insn_state(p);
+	}
+	| predicate WHILE execsize relativelocation instoptions
 	{
 		brw_next_insn(p, $2);
 		i965_asm_set_instruction_options(p, $5);
 		brw_inst_set_exec_size(p->devinfo, brw_last_inst, $3);
 
-		if (p->devinfo->gen >= 6) {
-			if (p->devinfo->gen >= 8) {
-				brw_set_dest(p, brw_last_inst,
-					     retype(brw_null_reg(),
-					     BRW_REGISTER_TYPE_D));
-				brw_set_src0(p, brw_last_inst, brw_imm_d($4));
-			} else if (p->devinfo->gen == 7) {
-				brw_set_dest(p, brw_last_inst,
-					     retype(brw_null_reg(),
-					     BRW_REGISTER_TYPE_D));
-				brw_set_src0(p, brw_last_inst,
-					     retype(brw_null_reg(),
-					     BRW_REGISTER_TYPE_D));
-				brw_set_src1(p, brw_last_inst,
-					     brw_imm_w(0x0));
-				brw_inst_set_jip(p->devinfo, brw_last_inst,
-						 $4);
-			} else {
-				brw_set_dest(p, brw_last_inst, brw_imm_w(0x0));
-				brw_inst_set_gen6_jump_count(p->devinfo,
-							     brw_last_inst,
-							     $4);
-				brw_set_src0(p, brw_last_inst,
-					     retype(brw_null_reg(),
-					     BRW_REGISTER_TYPE_D));
-				brw_set_src1(p, brw_last_inst,
-					     retype(brw_null_reg(),
-					     BRW_REGISTER_TYPE_D));
-			}
-		} else {
-			brw_set_dest(p, brw_last_inst, brw_ip_reg());
-			brw_set_src0(p, brw_last_inst, brw_ip_reg());
-			brw_set_src1(p, brw_last_inst, brw_imm_d(0x0));
-			brw_inst_set_gen4_jump_count(p->devinfo, brw_last_inst,
-						     $4);
-			brw_inst_set_gen4_pop_count(p->devinfo, brw_last_inst,
-						    0);
-		}
+		brw_set_dest(p, brw_last_inst, brw_ip_reg());
+		brw_set_src0(p, brw_last_inst, brw_ip_reg());
+		brw_set_src1(p, brw_last_inst, brw_imm_d(0x0));
+		brw_inst_set_gen4_jump_count(p->devinfo, brw_last_inst, $4);
+		brw_inst_set_gen4_pop_count(p->devinfo, brw_last_inst, 0);
+
 		brw_pop_insn_state(p);
 	}
 	| DO execsize instoptions
@@ -1412,6 +1478,23 @@ relativelocation:
 	}
 	;
 
+jumplabel:
+	JUMP_LABEL	{ $$ = $1; }
+	| %empty	{ $$ = NULL; }
+	;
+
+jumplabeltarget:
+	JUMP_LABEL_TARGET
+	{
+		struct target_label *label = rzalloc(p->mem_ctx, struct target_label);
+
+		label->name = ralloc_strdup(p->mem_ctx, $1);
+		label->offset = p->next_insn_offset;
+
+		list_addtail(&label->link, &target_labels);
+	}
+	;
+
 /* Destination register */
 dst:
 	dstoperand
@@ -1419,49 +1502,40 @@ dst:
 	;
 
 dstoperand:
-	dstreg dstregion writemask dsttype
+	dstreg dstregion writemask reg_type
 	{
 		$$ = $1;
-
-		if ($2 == -1) {
-			$$.hstride = BRW_HORIZONTAL_STRIDE_1;
-			$$.vstride = BRW_VERTICAL_STRIDE_1;
-			$$.width = BRW_WIDTH_1;
-		} else {
-			$$.hstride = $2;
-		}
-		$$.type = $4.type;
-		$$.writemask = $3.writemask;
+		$$.vstride = BRW_VERTICAL_STRIDE_1;
+		$$.width = BRW_WIDTH_1;
+		$$.hstride = $2;
+		$$.type = $4;
+		$$.writemask = $3;
 		$$.swizzle = BRW_SWIZZLE_NOOP;
-		$$.subnr = $$.subnr * brw_reg_type_to_size($4.type);
+		$$.subnr = $$.subnr * brw_reg_type_to_size($4);
 	}
 	;
 
 dstoperandex:
-	dstoperandex_typed dstregion writemask dsttype
+	dstoperandex_typed dstregion writemask reg_type
 	{
 		$$ = $1;
 		$$.hstride = $2;
-		$$.type = $4.type;
-		$$.writemask = $3.writemask;
-		$$.subnr = $$.subnr * brw_reg_type_to_size($4.type);
+		$$.type = $4;
+		$$.writemask = $3;
+		$$.subnr = $$.subnr * brw_reg_type_to_size($4);
 	}
 	/* BSpec says "When the conditional modifier is present, updates
 	 * to the selected flag register also occur. In this case, the
 	 * register region fields of the ‘null’ operand are valid."
 	 */
-	| nullreg dstregion writemask dsttype
+	| nullreg dstregion writemask reg_type
 	{
 		$$ = $1;
-		if ($2 == -1) {
-			$$.hstride = BRW_HORIZONTAL_STRIDE_1;
-			$$.vstride = BRW_VERTICAL_STRIDE_1;
-			$$.width = BRW_WIDTH_1;
-		} else {
-			$$.hstride = $2;
-		}
-		$$.writemask = $3.writemask;
-		$$.type = $4.type;
+		$$.vstride = BRW_VERTICAL_STRIDE_1;
+		$$.width = BRW_WIDTH_1;
+		$$.hstride = $2;
+		$$.writemask = $3;
+		$$.type = $4;
 	}
 	| threadcontrolreg
 	{
@@ -1479,6 +1553,7 @@ dstoperandex_typed:
 	| flagreg
 	| ipreg
 	| maskreg
+	| notifyreg
 	| performancereg
 	| statereg
 	;
@@ -1513,30 +1588,25 @@ srcaccimm:
 	;
 
 immreg:
-	immval srcimmtype
+	immval imm_type
 	{
-		uint32_t u32;
-		uint64_t u64;
-		switch ($2.type) {
+		switch ($2) {
 		case BRW_REGISTER_TYPE_UD:
-			u32 = $1;
-			$$ = brw_imm_ud(u32);
+			$$ = brw_imm_ud($1);
 			break;
 		case BRW_REGISTER_TYPE_D:
 			$$ = brw_imm_d($1);
 			break;
 		case BRW_REGISTER_TYPE_UW:
-			u32 = $1 | ($1 << 16);
-			$$ = brw_imm_uw(u32);
+			$$ = brw_imm_uw($1 | ($1 << 16));
 			break;
 		case BRW_REGISTER_TYPE_W:
-			u32 = $1;
-			$$ = brw_imm_w(u32);
+			$$ = brw_imm_w($1);
 			break;
 		case BRW_REGISTER_TYPE_F:
 			$$ = brw_imm_reg(BRW_REGISTER_TYPE_F);
+			/* Set u64 instead of ud since DIM uses a 64-bit F-typed imm */
 			$$.u64 = $1;
-			$$.ud = $1;
 			break;
 		case BRW_REGISTER_TYPE_V:
 			$$ = brw_imm_v($1);
@@ -1545,32 +1615,29 @@ immreg:
 			$$ = brw_imm_uv($1);
 			break;
 		case BRW_REGISTER_TYPE_VF:
-			$$ = brw_imm_reg(BRW_REGISTER_TYPE_VF);
-			$$.d = $1;
+			$$ = brw_imm_vf($1);
 			break;
 		case BRW_REGISTER_TYPE_Q:
-			u64 = $1;
-			$$ = brw_imm_q(u64);
+			$$ = brw_imm_q($1);
 			break;
 		case BRW_REGISTER_TYPE_UQ:
-			u64 = $1;
-			$$ = brw_imm_uq(u64);
+			$$ = brw_imm_uq($1);
 			break;
 		case BRW_REGISTER_TYPE_DF:
 			$$ = brw_imm_reg(BRW_REGISTER_TYPE_DF);
 			$$.d64 = $1;
 			break;
 		default:
-			error(&@2, "Unkown immdediate type %s\n",
-			      brw_reg_type_to_letters($2.type));
+			error(&@2, "Unknown immediate type %s\n",
+			      brw_reg_type_to_letters($2));
 		}
 	}
 	;
 
 reg32:
-	directgenreg region srctype
+	directgenreg region reg_type
 	{
-		$$ = set_direct_src_operand(&$1, $3.type);
+		$$ = set_direct_src_operand(&$1, $3);
 		$$ = stride($$, $2.vstride, $2.width, $2.hstride);
 	}
 	;
@@ -1597,9 +1664,9 @@ srcimm:
 
 directsrcaccoperand:
 	directsrcoperand
-	| accreg region srctype
+	| accreg region reg_type
 	{
-		$$ = set_direct_src_operand(&$1, $3.type);
+		$$ = set_direct_src_operand(&$1, $3);
 		$$.vstride = $2.vstride;
 		$$.width = $2.width;
 		$$.hstride = $2.hstride;
@@ -1607,23 +1674,23 @@ directsrcaccoperand:
 	;
 
 srcarcoperandex:
-	srcarcoperandex_typed region srctype
+	srcarcoperandex_typed region reg_type
 	{
 		$$ = brw_reg($1.file,
 			     $1.nr,
 			     $1.subnr,
 			     0,
 			     0,
-			     $3.type,
+			     $3,
 			     $2.vstride,
 			     $2.width,
 			     $2.hstride,
 			     BRW_SWIZZLE_NOOP,
 			     WRITEMASK_XYZW);
 	}
-	| nullreg region srctype
+	| nullreg region reg_type
 	{
-		$$ = set_direct_src_operand(&$1, $3.type);
+		$$ = set_direct_src_operand(&$1, $3);
 		$$.vstride = $2.vstride;
 		$$.width = $2.width;
 		$$.hstride = $2.hstride;
@@ -1644,18 +1711,18 @@ srcarcoperandex_typed:
 	;
 
 indirectsrcoperand:
-	negate abs indirectgenreg indirectregion swizzle srctype
+	negate abs indirectgenreg indirectregion swizzle reg_type
 	{
 		$$ = brw_reg($3.file,
 			     0,
 			     $3.subnr,
 			     $1,  // negate
 			     $2,  // abs
-			     $6.type,
+			     $6,
 			     $4.vstride,
 			     $4.width,
 			     $4.hstride,
-			     $5.swizzle,
+			     $5,
 			     WRITEMASK_X);
 
 		$$.address_mode = BRW_ADDRESS_REGISTER_INDIRECT_REGISTER;
@@ -1673,18 +1740,18 @@ directgenreg_list:
 	;
 
 directsrcoperand:
-	negate abs directgenreg_list region swizzle srctype
+	negate abs directgenreg_list region swizzle reg_type
 	{
 		$$ = brw_reg($3.file,
 			     $3.nr,
 			     $3.subnr,
 			     $1,
 			     $2,
-			     $6.type,
+			     $6,
 			     $4.vstride,
 			     $4.width,
 			     $4.hstride,
-			     $5.swizzle,
+			     $5,
 			     WRITEMASK_X);
 	}
 	| srcarcoperandex
@@ -1735,7 +1802,8 @@ indirectgenreg:
 directmsgreg:
 	MSGREG subregnum
 	{
-		$$ = brw_message_reg($1);
+		$$.file = BRW_MESSAGE_REGISTER_FILE;
+		$$.nr = $1;
 		$$.subnr = $2;
 	}
 	;
@@ -1756,7 +1824,7 @@ addrreg:
 		int subnr = (p->devinfo->gen >= 8) ? 16 : 8;
 
 		if ($2 > subnr)
-			error(&@2, "Address sub resgister number %d"
+			error(&@2, "Address sub register number %d"
 				   "out of range\n", $2);
 
 		$$.file = BRW_ARCHITECTURE_REGISTER_FILE;
@@ -1812,23 +1880,22 @@ maskreg:
 			error(&@1, "Mask register number %d"
 				   " out of range\n", $1);
 
-		$$ = brw_mask_reg($2);
+		$$.file = BRW_ARCHITECTURE_REGISTER_FILE;
+		$$.nr = BRW_ARF_MASK;
+		$$.subnr = $2;
 	}
 	;
 
 notifyreg:
 	NOTIFYREG subregnum
 	{
-		if ($1 > 0)
-			error(&@1, "Notification register number %d"
-				   " out of range\n", $1);
-
 		int subnr = (p->devinfo->gen >= 11) ? 2 : 3;
 		if ($2 > subnr)
 			error(&@2, "Notification sub register number %d"
 				   " out of range\n", $2);
 
-		$$ = brw_notification_reg();
+		$$.file = BRW_ARCHITECTURE_REGISTER_FILE;
+		$$.nr = BRW_ARF_NOTIFICATION_COUNT;
 		$$.subnr = $2;
 	}
 	;
@@ -1857,7 +1924,9 @@ controlreg:
 			error(&@2, "control sub register number %d"
 				   " out of range\n", $2);
 
-		$$ = brw_cr0_reg($2);
+		$$.file = BRW_ARCHITECTURE_REGISTER_FILE;
+		$$.nr = BRW_ARF_CONTROL;
+		$$.subnr = $2;
 	}
 	;
 
@@ -1872,15 +1941,12 @@ nullreg:
 threadcontrolreg:
 	THREADREG subregnum
 	{
-		if ($1 > 0)
-			error(&@1, "Thread control register number %d"
-				   " out of range\n", $1);
-
 		if ($2 > 7)
 			error(&@2, "Thread control sub register number %d"
 				   " out of range\n", $2);
 
-		$$ = brw_tdr_reg();
+		$$.file = BRW_ARCHITECTURE_REGISTER_FILE;
+		$$.nr = BRW_ARF_TDR;
 		$$.subnr = $2;
 	}
 	;
@@ -1902,6 +1968,7 @@ performancereg:
 
 		$$.file = BRW_ARCHITECTURE_REGISTER_FILE;
 		$$.nr = BRW_ARF_TIMESTAMP;
+		$$.subnr = $2;
 	}
 	;
 
@@ -1912,7 +1979,9 @@ channelenablereg:
 			error(&@1, "Channel enable register number %d"
 				   " out of range\n", $1);
 
-		$$ = brw_mask_reg($2);
+		$$.file = BRW_ARCHITECTURE_REGISTER_FILE;
+		$$.nr = BRW_ARF_MASK;
+		$$.subnr = $2;
 	}
 	;
 
@@ -1930,7 +1999,10 @@ immval:
 
 /* Regions */
 dstregion:
-	%empty 	{ $$ = -1; }
+	%empty
+	{
+		$$ = BRW_HORIZONTAL_STRIDE_1;
+	}
 	| LANGLE exp RANGLE
 	{
 		if ($2 != 0 && ($2 > 4 || !isPowerofTwo($2)))
@@ -1948,14 +2020,14 @@ indirectregion:
 region:
 	%empty
 	{
-		$$ = stride($$, BRW_VERTICAL_STRIDE_1, BRW_WIDTH_2, BRW_HORIZONTAL_STRIDE_1);
+		$$ = stride($$, 0, 1, 0);
 	}
 	| LANGLE exp RANGLE
 	{
 		if ($2 != 0 && ($2 > 32 || !isPowerofTwo($2)))
 			error(&@2, "Invalid VertStride %d\n", $2);
 
-		$$ = stride($$, $2, BRW_WIDTH_1, 0);
+		$$ = stride($$, $2, 1, 0);
 	}
 	| LANGLE exp COMMA exp COMMA exp RANGLE
 	{
@@ -2009,45 +2081,41 @@ region_wh:
 			error(&@4, "Invalid Horizontal stride in"
 				   " region_wh %d\n", $4);
 
-		$$ = stride($$, BRW_VERTICAL_STRIDE_ONE_DIMENSIONAL, $2, $4);
+		$$ = stride($$, 0, $2, $4);
+		$$.vstride = BRW_VERTICAL_STRIDE_ONE_DIMENSIONAL;
 	}
 	;
 
-srctype:
-	%empty 	        { $$ = retype($$, BRW_REGISTER_TYPE_F); }
-	| TYPE_F 	{ $$ = retype($$, BRW_REGISTER_TYPE_F); }
-	| TYPE_UD 	{ $$ = retype($$, BRW_REGISTER_TYPE_UD); }
-	| TYPE_D 	{ $$ = retype($$, BRW_REGISTER_TYPE_D); }
-	| TYPE_UW 	{ $$ = retype($$, BRW_REGISTER_TYPE_UW); }
-	| TYPE_W 	{ $$ = retype($$, BRW_REGISTER_TYPE_W); }
-	| TYPE_UB 	{ $$ = retype($$, BRW_REGISTER_TYPE_UB); }
-	| TYPE_B 	{ $$ = retype($$, BRW_REGISTER_TYPE_B); }
-	| TYPE_DF 	{ $$ = retype($$, BRW_REGISTER_TYPE_DF); }
-	| TYPE_UQ 	{ $$ = retype($$, BRW_REGISTER_TYPE_UQ); }
-	| TYPE_Q 	{ $$ = retype($$, BRW_REGISTER_TYPE_Q); }
-	| TYPE_HF 	{ $$ = retype($$, BRW_REGISTER_TYPE_HF); }
-	| TYPE_NF 	{ $$ = retype($$, BRW_REGISTER_TYPE_NF); }
+reg_type:
+	  TYPE_F 	{ $$ = BRW_REGISTER_TYPE_F;  }
+	| TYPE_UD 	{ $$ = BRW_REGISTER_TYPE_UD; }
+	| TYPE_D 	{ $$ = BRW_REGISTER_TYPE_D;  }
+	| TYPE_UW 	{ $$ = BRW_REGISTER_TYPE_UW; }
+	| TYPE_W 	{ $$ = BRW_REGISTER_TYPE_W;  }
+	| TYPE_UB 	{ $$ = BRW_REGISTER_TYPE_UB; }
+	| TYPE_B 	{ $$ = BRW_REGISTER_TYPE_B;  }
+	| TYPE_DF 	{ $$ = BRW_REGISTER_TYPE_DF; }
+	| TYPE_UQ 	{ $$ = BRW_REGISTER_TYPE_UQ; }
+	| TYPE_Q 	{ $$ = BRW_REGISTER_TYPE_Q;  }
+	| TYPE_HF 	{ $$ = BRW_REGISTER_TYPE_HF; }
+	| TYPE_NF 	{ $$ = BRW_REGISTER_TYPE_NF; }
 	;
 
-srcimmtype:
-	srctype 	{ $$ = $1; }
-	| TYPE_V 	{ $$ = retype($$, BRW_REGISTER_TYPE_V); }
-	| TYPE_VF 	{ $$ = retype($$, BRW_REGISTER_TYPE_VF); }
-	| TYPE_UV 	{ $$ = retype($$, BRW_REGISTER_TYPE_UV); }
-	;
-
-dsttype:
-	srctype 	{ $$ = $1; }
+imm_type:
+	reg_type 	{ $$ = $1; }
+	| TYPE_V 	{ $$ = BRW_REGISTER_TYPE_V;  }
+	| TYPE_VF 	{ $$ = BRW_REGISTER_TYPE_VF; }
+	| TYPE_UV 	{ $$ = BRW_REGISTER_TYPE_UV; }
 	;
 
 writemask:
 	%empty
 	{
-		$$= brw_set_writemask($$, WRITEMASK_XYZW);
+		$$ = WRITEMASK_XYZW;
 	}
 	| DOT writemask_x writemask_y writemask_z writemask_w
 	{
-		$$ = brw_set_writemask($$, $2 | $3 | $4 | $5);
+		$$ = $2 | $3 | $4 | $5;
 	}
 	;
 
@@ -2074,15 +2142,15 @@ writemask_w:
 swizzle:
 	%empty
 	{
-		$$.swizzle = BRW_SWIZZLE_NOOP;
+		$$ = BRW_SWIZZLE_NOOP;
 	}
 	| DOT chansel
 	{
-		$$.swizzle = BRW_SWIZZLE4($2, $2, $2, $2);
+		$$ = BRW_SWIZZLE4($2, $2, $2, $2);
 	}
 	| DOT chansel chansel chansel chansel
 	{
-		$$.swizzle = BRW_SWIZZLE4($2, $3, $4, $5);
+		$$ = BRW_SWIZZLE4($2, $3, $4, $5);
 	}
 	;
 

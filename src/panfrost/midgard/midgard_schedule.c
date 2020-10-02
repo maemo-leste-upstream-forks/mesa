@@ -212,6 +212,9 @@ mir_is_scalar(midgard_instruction *ains)
         if (ains->src[1] != ~0)
                 could_scalar &= (sz1 == 16) || (sz1 == 32);
 
+        if (midgard_is_integer_out_op(ains->op) && ains->outmod != midgard_outmod_int_wrap)
+                return false;
+
         return could_scalar;
 }
 
@@ -225,7 +228,7 @@ bytes_for_instruction(midgard_instruction *ains)
         else if (ains->unit == ALU_ENAB_BRANCH)
                 return sizeof(midgard_branch_extended);
         else if (ains->compact_branch)
-                return sizeof(ains->br_compact);
+                return sizeof(uint16_t);
         else
                 return sizeof(midgard_reg_info) + sizeof(midgard_scalar_alu);
 }
@@ -341,9 +344,9 @@ struct midgard_predicate {
         unsigned no_mask;
         unsigned dest;
 
-        /* For VADD/VLUT whether to only/never schedule imov/fmov instructions
-         * This allows non-move instructions to get priority on each unit */
-        bool moves;
+        /* Whether to not-care/only/never schedule imov/fmov instructions This
+         * allows non-move instructions to get priority on each unit */
+        unsigned move_mode;
 
         /* For load/store: how many pipeline registers are in use? The two
          * scheduled instructions cannot use more than the 256-bits of pipeline
@@ -520,7 +523,7 @@ mir_pipeline_count(midgard_instruction *ins)
 static bool
 mir_is_add_2(midgard_instruction *ins)
 {
-        if (ins->alu.op != midgard_alu_op_fadd)
+        if (ins->op != midgard_alu_op_fadd)
                 return false;
 
         if (ins->src[0] != ins->src[1])
@@ -548,7 +551,7 @@ mir_adjust_unit(midgard_instruction *ins, unsigned unit)
 {
         /* FADD x, x = FMUL x, #2 */
         if (mir_is_add_2(ins) && (unit & (UNITS_MUL | UNIT_VLUT))) {
-                ins->alu.op = midgard_alu_op_fmul;
+                ins->op = midgard_alu_op_fmul;
 
                 ins->src[1] = ~0;
                 ins->src_abs[1] = false;
@@ -562,7 +565,7 @@ mir_adjust_unit(midgard_instruction *ins, unsigned unit)
 static unsigned
 mir_has_unit(midgard_instruction *ins, unsigned unit)
 {
-        if (alu_opcode_props[ins->alu.op].props & unit)
+        if (alu_opcode_props[ins->op].props & unit)
                 return true;
 
         /* FADD x, x can run on any adder or any multiplier */
@@ -658,8 +661,8 @@ mir_choose_instruction(
 
         BITSET_FOREACH_SET(i, worklist, count) {
                 bool is_move = alu &&
-                        (instructions[i]->alu.op == midgard_alu_op_imov ||
-                         instructions[i]->alu.op == midgard_alu_op_fmov);
+                        (instructions[i]->op == midgard_alu_op_imov ||
+                         instructions[i]->op == midgard_alu_op_fmov);
 
                 if ((max_active - i) >= max_distance)
                         continue;
@@ -673,7 +676,8 @@ mir_choose_instruction(
                 if (alu && !branch && !(mir_has_unit(instructions[i], unit)))
                         continue;
 
-                if ((unit == UNIT_VLUT || unit == UNIT_VADD) && (predicate->moves != is_move))
+                /* 0: don't care, 1: no moves, 2: only moves */
+                if (predicate->move_mode && ((predicate->move_mode - 1) != is_move))
                         continue;
 
                 if (branch && !instructions[i]->compact_branch)
@@ -697,7 +701,7 @@ mir_choose_instruction(
                 if (ldst && mir_pipeline_count(instructions[i]) + predicate->pipeline_count > 2)
                         continue;
 
-                bool conditional = alu && !branch && OP_IS_CSEL(instructions[i]->alu.op);
+                bool conditional = alu && !branch && OP_IS_CSEL(instructions[i]->op);
                 conditional |= (branch && instructions[i]->branch.conditional);
 
                 if (conditional && no_cond)
@@ -829,13 +833,13 @@ mir_comparison_mobile(
                         return ~0;
 
                 /* If it would itself require a condition, that's recursive */
-                if (OP_IS_CSEL(instructions[i]->alu.op))
+                if (OP_IS_CSEL(instructions[i]->op))
                         return ~0;
 
                 /* We'll need to rewrite to .w but that doesn't work for vector
                  * ops that don't replicate (ball/bany), so bail there */
 
-                if (GET_CHANNEL_COUNT(alu_opcode_props[instructions[i]->alu.op].props))
+                if (GET_CHANNEL_COUNT(alu_opcode_props[instructions[i]->op].props))
                         return ~0;
 
                 /* Ensure it will fit with constants */
@@ -907,7 +911,7 @@ mir_schedule_condition(compiler_context *ctx,
         unsigned condition_index = branch ? 0 : 2;
 
         /* csel_v is vector; otherwise, conditions are scalar */
-        bool vector = !branch && OP_IS_CSEL_V(last->alu.op);
+        bool vector = !branch && OP_IS_CSEL_V(last->op);
 
         /* Grab the conditional instruction */
 
@@ -969,8 +973,9 @@ mir_schedule_texture(
         mir_update_worklist(worklist, len, instructions, ins);
 
         struct midgard_bundle out = {
-                .tag = ins->texture.op == TEXTURE_OP_BARRIER ?
-                        TAG_TEXTURE_4_BARRIER :  is_vertex ?
+                .tag = ins->op == TEXTURE_OP_BARRIER ?
+                        TAG_TEXTURE_4_BARRIER :
+                        (ins->op == TEXTURE_OP_TEXEL_FETCH) || is_vertex ?
                         TAG_TEXTURE_4_VTX : TAG_TEXTURE_4,
                 .instruction_count = 1,
                 .instructions = { ins }
@@ -1158,7 +1163,7 @@ mir_schedule_alu(
                 *vadd = v_mov(~0, make_compiler_temp(ctx));
 
                 if (!ctx->is_blend) {
-                        vadd->alu.op = midgard_alu_op_iadd;
+                        vadd->op = midgard_alu_op_iadd;
                         vadd->src[0] = SSA_FIXED_REGISTER(31);
                         vadd->src_types[0] = nir_type_uint32;
 
@@ -1189,20 +1194,23 @@ mir_schedule_alu(
 
         mir_choose_alu(&smul, instructions, liveness, worklist, len, &predicate, UNIT_SMUL);
 
-        for (unsigned moves = 0; moves < 2; ++moves) {
-                predicate.moves = moves;
+        for (unsigned mode = 1; mode < 3; ++mode) {
+                predicate.move_mode = mode;
                 predicate.no_mask = writeout ? (1 << 3) : 0;
                 mir_choose_alu(&vlut, instructions, liveness, worklist, len, &predicate, UNIT_VLUT);
                 predicate.no_mask = 0;
                 mir_choose_alu(&vadd, instructions, liveness, worklist, len, &predicate, UNIT_VADD);
         }
 
+        /* Reset */
+        predicate.move_mode = 0;
+
         mir_update_worklist(worklist, len, instructions, vlut);
         mir_update_worklist(worklist, len, instructions, vadd);
         mir_update_worklist(worklist, len, instructions, smul);
 
-        bool vadd_csel = vadd && OP_IS_CSEL(vadd->alu.op);
-        bool smul_csel = smul && OP_IS_CSEL(smul->alu.op);
+        bool vadd_csel = vadd && OP_IS_CSEL(vadd->op);
+        bool smul_csel = smul && OP_IS_CSEL(smul->op);
 
         if (vadd_csel || smul_csel) {
                 midgard_instruction *ins = vadd_csel ? vadd : smul;
@@ -1326,8 +1334,11 @@ mir_schedule_alu(
         /* Size ALU instruction for tag */
         bundle.tag = (TAG_ALU_4) + (bytes_emitted / 16) - 1;
 
+        bool tilebuf_wait = branch && branch->compact_branch &&
+           branch->branch.target_type == TARGET_TILEBUF_WAIT;
+
         /* MRT capable GPUs use a special writeout procedure */
-        if (writeout && !(ctx->quirks & MIDGARD_NO_UPPER_ALU))
+        if ((writeout || tilebuf_wait) && !(ctx->quirks & MIDGARD_NO_UPPER_ALU))
                 bundle.tag += 4;
 
         bundle.padding = padding;

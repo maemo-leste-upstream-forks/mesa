@@ -1,8 +1,4 @@
-GENERATED_SOURCES := \
-	si_driinfo.h
-
 C_SOURCES := \
-	$(GENERATED_SOURCES) \
 	cik_sdma.c \
 	driinfo_radeonsi.h \
 	gfx10_query.c \
@@ -16,6 +12,7 @@ C_SOURCES := \
 	si_compute.h \
 	si_compute_blit.c \
 	si_cp_dma.c \
+	si_cp_reg_shadowing.c \
 	si_debug.c \
 	si_descriptors.c \
 	si_dma_cs.c \

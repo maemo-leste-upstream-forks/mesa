@@ -593,7 +593,7 @@ dri3_swap_buffers(__GLXDRIdrawable *pdraw, int64_t target_msc, int64_t divisor,
 
    return loader_dri3_swap_buffers_msc(&priv->loader_drawable,
                                        target_msc, divisor, remainder,
-                                       flags, false);
+                                       flags, NULL, 0, false);
 }
 
 static int
@@ -741,6 +741,8 @@ dri3_bind_extensions(struct dri3_screen *psc, struct glx_display * priv,
 
    extensions = psc->core->getExtensions(psc->driScreen);
 
+   __glXEnableDirectExtension(&psc->base, "GLX_EXT_swap_control");
+   __glXEnableDirectExtension(&psc->base, "GLX_EXT_swap_control_tear");
    __glXEnableDirectExtension(&psc->base, "GLX_SGI_swap_control");
    __glXEnableDirectExtension(&psc->base, "GLX_MESA_swap_control");
    __glXEnableDirectExtension(&psc->base, "GLX_SGI_make_current_read");
