@@ -1393,15 +1393,9 @@ _libdrm_checks = [
   ['intel', with_dri_i915 or with_gallium_i915, true],
   ['amdgpu', with_amd_vk or with_gallium_radeonsi, true],
   ['radeon', (with_gallium_radeonsi or with_dri_r100 or with_dri_r200 or
-<<<<<<< HEAD
-              with_gallium_r300 or with_gallium_r600)],
-  ['nouveau', (with_gallium_nouveau or with_dri_nouveau)],
-=======
               with_gallium_r300 or with_gallium_r600), true],
   ['nouveau', (with_gallium_nouveau or with_dri_nouveau), true],
-  ['etnaviv', with_gallium_etnaviv, true],
   ['pvr', with_dri_pvr, false],
->>>>>>> eaab67f2cb5... dri/pvr: Introduce PowerVR DRI driver.
 ]
 
 # VC4 only needs core libdrm support of this version, not a libdrm_vc4

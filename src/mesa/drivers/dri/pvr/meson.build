@@ -37,12 +37,9 @@ dep_libpvr = [
 
 libpvr = static_library(
   'pvr',
-  [files_pvr, xmlpool_options_h, main_dispatch_h],
-  include_directories : [inc_common, inc_dri_common, inc_util, inc_pvr],
-  c_args : [c_vis_args, no_override_init_args],
-  cpp_args : [cpp_vis_args],
+  [files_pvr, main_dispatch_h],
+  include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_dri_common, inc_util, inc_pvr],
+  c_args : [no_override_init_args],
+  gnu_symbol_visibility : 'hidden',
   dependencies : [dep_libpvr],
 )
-
-dri_drivers += libpvr
-dri_link += 'pvr_dri.so'
