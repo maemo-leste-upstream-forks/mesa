@@ -476,6 +476,18 @@ dri_screen_create(struct gbm_dri_device *dri)
 }
 
 static int
+dri_screen_create_pvr(struct gbm_dri_device *dri)
+{
+   char *driver_name;
+
+   driver_name = strdup("pvr");
+   if (!driver_name)
+      return -errno;
+
+   return dri_screen_create_dri2(dri, driver_name);
+}
+
+static int
 dri_screen_create_sw(struct gbm_dri_device *dri)
 {
    char *driver_name;
@@ -1394,6 +1406,8 @@ dri_device_create(int fd)
    force_sw = env_var_as_boolean("GBM_ALWAYS_SOFTWARE", false);
    if (!force_sw) {
       ret = dri_screen_create(dri);
+      if (ret)
+         ret = dri_screen_create_pvr(dri);
       if (ret)
          ret = dri_screen_create_sw(dri);
    } else {
