@@ -418,3 +418,9 @@ option(
   value : 'auto',
   description : 'Use ZSTD instead of ZLIB in some cases.'
 )
+option(
+  'use-elf-tls',
+  type : 'boolean',
+  value : false,
+  description : 'Build support for initial-exec TLS model'
+)
