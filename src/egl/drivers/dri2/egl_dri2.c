@@ -1010,7 +1010,10 @@ dri2_setup_screen(_EGLDisplay *disp)
       if (dri2_dpy->image->base.version >= 8 &&
           dri2_dpy->image->createImageFromDmaBufs) {
          disp->Extensions.EXT_image_dma_buf_import = EGL_TRUE;
-         disp->Extensions.EXT_image_dma_buf_import_modifiers = EGL_TRUE;
+	// FIXME - this is broken on PVR, so don't expose it
+	// Not sure what needs to be fixed, but prevents wlroots-based
+	// compositors from starting
+         disp->Extensions.EXT_image_dma_buf_import_modifiers = EGL_FALSE;
       }
 #endif
    }
