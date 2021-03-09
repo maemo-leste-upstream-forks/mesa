@@ -101,6 +101,7 @@ struct dri3_screen {
 
    void *driver;
    int fd;
+   int fd_dpy;
    bool is_different_gpu;
    bool prefer_back_buffer_reuse;
 

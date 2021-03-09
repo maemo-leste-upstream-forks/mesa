@@ -267,6 +267,7 @@ struct dri2_egl_display
    const __DRIconfigOptionsExtension *configOptions;
    const __DRImutableRenderBufferDriverExtension *mutable_render_buffer;
    int fd;
+   int fd_dpy;
 
    /* dri2_initialize/dri2_terminate increment/decrement this count, so does
     * dri2_make_current (tracks if there are active contexts/surfaces). */

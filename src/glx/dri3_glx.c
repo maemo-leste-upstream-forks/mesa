@@ -78,6 +78,7 @@
 #include "loader.h"
 #include "loader_dri_helper.h"
 #include "dri2.h"
+#include "util/os_file.h"
 
 static struct dri3_drawable *
 loader_drawable_to_dri3_drawable(struct loader_dri3_drawable *draw) {
@@ -537,6 +538,14 @@ dri3_flush_swap_buffers(__DRIdrawable *driDrawable, void *loaderPrivate)
    loader_dri3_swapbuffer_barrier(draw);
 }
 
+static int
+dri3_get_display_fd(void *loaderPrivate)
+{
+   struct dri3_screen *psc = (struct dri3_screen *)loaderPrivate;
+
+   return psc->fd_dpy;
+}
+
 static void
 dri_set_background_context(void *loaderPrivate)
 {
@@ -555,11 +564,12 @@ dri_is_thread_safe(void *loaderPrivate)
 /* The image loader extension record for DRI3
  */
 static const __DRIimageLoaderExtension imageLoaderExtension = {
-   .base = { __DRI_IMAGE_LOADER, 3 },
+   .base = { __DRI_IMAGE_LOADER, 5 },
 
    .getBuffers          = loader_dri3_get_buffers,
    .flushFrontBuffer    = dri3_flush_front_buffer,
    .flushSwapBuffers    = dri3_flush_swap_buffers,
+   .getDisplayFD        = dri3_get_display_fd,
 };
 
 const __DRIuseInvalidateExtension dri3UseInvalidate = {
@@ -625,6 +635,10 @@ dri3_destroy_screen(struct glx_screen *base)
    loader_dri3_close_screen(psc->driScreen);
    (*psc->core->destroyScreen) (psc->driScreen);
    driDestroyConfigs(psc->driver_configs);
+
+   if (psc->fd_dpy != psc->fd)
+      close(psc->fd_dpy);
+
    close(psc->fd);
    free(psc);
 }
@@ -835,8 +849,9 @@ dri3_create_screen(int screen, struct glx_display * priv)
    struct dri3_screen *psc;
    __GLXDRIscreen *psp;
    struct glx_config *configs = NULL, *visuals = NULL;
-   char *driverName, *driverNameDisplayGPU, *tmp;
+   char *driverName = NULL, *driverNameDisplayGPU, *tmp;
    int i;
+   int fd_old;
 
    psc = calloc(1, sizeof *psc);
    if (psc == NULL)
@@ -844,6 +859,7 @@ dri3_create_screen(int screen, struct glx_display * priv)
 
    psc->fd = -1;
    psc->fd_display_gpu = -1;
+   psc->fd_dpy = -1;
 
    if (!glx_screen_init(&psc->base, screen, priv)) {
       free(psc);
@@ -864,11 +880,22 @@ dri3_create_screen(int screen, struct glx_display * priv)
       return NULL;
    }
 
+   fd_old = psc->fd;
+   psc->fd_dpy = os_dupfd_cloexec(psc->fd);
    psc->fd_display_gpu = fcntl(psc->fd, F_DUPFD_CLOEXEC, 3);
    psc->fd = loader_get_user_preferred_fd(psc->fd, &psc->is_different_gpu);
    if (!psc->is_different_gpu) {
       close(psc->fd_display_gpu);
       psc->fd_display_gpu = -1;
+   }
+   if (psc->fd == fd_old) {
+      if (psc->fd_dpy != -1)
+         close(psc->fd_dpy);
+
+      psc->fd_dpy = psc->fd;
+   } else if (psc->fd_dpy == -1) {
+         ErrorMessageF("Unable to dup the display FD");
+         goto handle_error;
    }
 
    driverName = loader_get_driver_for_fd(psc->fd);
@@ -1075,6 +1102,8 @@ handle_error:
    if (psc->driScreenDisplayGPU)
        psc->core->destroyScreen(psc->driScreenDisplayGPU);
    psc->driScreenDisplayGPU = NULL;
+   if (psc->fd_dpy >= 0 && psc->fd_dpy != psc->fd)
+      close(psc->fd_dpy);
    if (psc->fd >= 0)
       close(psc->fd);
    if (psc->fd_display_gpu >= 0)

@@ -44,6 +44,7 @@
 #include "loader.h"
 #include "util/u_vector.h"
 #include "util/anon_file.h"
+#include "util/os_file.h"
 #include "eglglobals.h"
 #include "kopper_interface.h"
 
@@ -1448,21 +1449,32 @@ dri2_wl_get_capability(void *loaderPrivate, enum dri_loader_cap cap)
    }
 }
 
+static int
+dri2_wl_get_display_fd(void *loaderPrivate)
+{
+   _EGLDisplay *disp = loaderPrivate;
+   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
+
+   return dri2_dpy->fd_dpy;
+}
+
 static const __DRIdri2LoaderExtension dri2_loader_extension = {
-   .base = { __DRI_DRI2_LOADER, 4 },
+   .base = { __DRI_DRI2_LOADER, 6 },
 
    .getBuffers           = dri2_wl_get_buffers,
    .flushFrontBuffer     = dri2_wl_flush_front_buffer,
    .getBuffersWithFormat = dri2_wl_get_buffers_with_format,
    .getCapability        = dri2_wl_get_capability,
+   .getDisplayFD         = dri2_wl_get_display_fd,
 };
 
 static const __DRIimageLoaderExtension image_loader_extension = {
-   .base = { __DRI_IMAGE_LOADER, 2 },
+   .base = { __DRI_IMAGE_LOADER, 5 },
 
    .getBuffers          = image_get_buffers,
    .flushFrontBuffer    = dri2_wl_flush_front_buffer,
    .getCapability       = dri2_wl_get_capability,
+   .getDisplayFD        = dri2_wl_get_display_fd,
 };
 
 static void
@@ -2253,12 +2265,14 @@ dri2_initialize_wayland_drm(_EGLDisplay *disp)
 {
    _EGLDevice *dev;
    struct dri2_egl_display *dri2_dpy;
+   int fd_old;
 
    dri2_dpy = calloc(1, sizeof *dri2_dpy);
    if (!dri2_dpy)
       return _eglError(EGL_BAD_ALLOC, "eglInitialize");
 
    dri2_dpy->fd = -1;
+   dri2_dpy->fd_dpy = -1;
    disp->DriverData = (void *) dri2_dpy;
 
    if (dri2_wl_formats_init(&dri2_dpy->formats) < 0)
@@ -2330,8 +2344,20 @@ dri2_initialize_wayland_drm(_EGLDisplay *disp)
          goto cleanup;
    }
 
+   fd_old = dri2_dpy->fd;
+   dri2_dpy->fd_dpy = os_dupfd_cloexec(dri2_dpy->fd);
    dri2_dpy->fd = loader_get_user_preferred_fd(dri2_dpy->fd,
                                                &dri2_dpy->is_different_gpu);
+   if (dri2_dpy->fd == fd_old) {
+      if (dri2_dpy->fd_dpy != -1)
+         close(dri2_dpy->fd_dpy);
+
+      dri2_dpy->fd_dpy = dri2_dpy->fd;
+   } else if (dri2_dpy->fd_dpy == -1) {
+      _eglError(EGL_NOT_INITIALIZED, "DRI2: failed to dup display FD");
+      goto cleanup;
+   }
+
    dev = _eglAddDevice(dri2_dpy->fd, false);
    if (!dev) {
       _eglError(EGL_NOT_INITIALIZED, "DRI2: failed to find EGLDevice");
@@ -2908,6 +2934,7 @@ dri2_initialize_wayland_swrast(_EGLDisplay *disp)
       return _eglError(EGL_BAD_ALLOC, "eglInitialize");
 
    dri2_dpy->fd = -1;
+   dri2_dpy->fd_dpy = -1;
    disp->DriverData = (void *) dri2_dpy;
 
    if (dri2_wl_formats_init(&dri2_dpy->formats) < 0)

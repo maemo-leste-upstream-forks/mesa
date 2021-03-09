@@ -32,6 +32,7 @@
 
 #include <xf86drm.h>
 #include "util/macros.h"
+#include "util/os_file.h"
 
 #include "egl_dri2.h"
 #include "platform_x11_dri3.h"
@@ -431,11 +432,21 @@ dri3_flush_front_buffer(__DRIdrawable *driDrawable, void *loaderPrivate)
       _eglLog(_EGL_WARNING, "FIXME: egl/x11 doesn't support front buffer rendering.");
 }
 
+static int
+dri3_get_display_fd(void *loaderPrivate)
+{
+   _EGLDisplay *disp = loaderPrivate;
+   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
+
+   return dri2_dpy->fd_dpy;
+}
+
 const __DRIimageLoaderExtension dri3_image_loader_extension = {
-   .base = { __DRI_IMAGE_LOADER, 1 },
+   .base = { __DRI_IMAGE_LOADER, 5 },
 
    .getBuffers          = loader_dri3_get_buffers,
    .flushFrontBuffer    = dri3_flush_front_buffer,
+   .getDisplayFD        = dri3_get_display_fd,
 };
 
 static EGLBoolean
@@ -555,6 +566,7 @@ dri3_x11_connect(struct dri2_egl_display *dri2_dpy)
    xcb_xfixes_query_version_cookie_t xfixes_query_cookie;
    xcb_generic_error_t *error;
    const xcb_query_extension_reply_t *extension;
+   int fd_old;
 
    xcb_prefetch_extension_data (dri2_dpy->conn, &xcb_dri3_id);
    xcb_prefetch_extension_data (dri2_dpy->conn, &xcb_present_id);
@@ -634,12 +646,25 @@ dri3_x11_connect(struct dri2_egl_display *dri2_dpy)
       return EGL_FALSE;
    }
 
+   fd_old = dri2_dpy->fd;
+   dri2_dpy->fd_dpy = os_dupfd_cloexec(dri2_dpy->fd);
    dri2_dpy->fd = loader_get_user_preferred_fd(dri2_dpy->fd, &dri2_dpy->is_different_gpu);
+   if (dri2_dpy->fd == fd_old) {
+      if (dri2_dpy->fd_dpy != -1)
+         close(dri2_dpy->fd_dpy);
+
+      dri2_dpy->fd_dpy = dri2_dpy->fd;
+   } else if (dri2_dpy->fd_dpy == -1) {
+      _eglLog(_EGL_WARNING, "DRI3: failed to dup display FD");
+      close(dri2_dpy->fd);
+      return EGL_FALSE;
+   }
 
    dri2_dpy->driver_name = loader_get_driver_for_fd(dri2_dpy->fd);
    if (!dri2_dpy->driver_name) {
       _eglLog(_EGL_WARNING, "DRI3: No driver found");
       close(dri2_dpy->fd);
+      close(dri2_dpy->fd_dpy);
       return EGL_FALSE;
    }
 
