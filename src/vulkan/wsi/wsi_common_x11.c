@@ -52,6 +52,7 @@
 #include "vk_enum_to_str.h"
 #include "wsi_common_entrypoints.h"
 #include "wsi_common_private.h"
+#include "wsi_common_x11.h"
 #include "wsi_common_queue.h"
 
 #ifdef HAVE_SYS_SHM_H
@@ -543,14 +544,12 @@ visual_supported(xcb_visualtype_t *visual)
           visual->_class == XCB_VISUAL_CLASS_DIRECT_COLOR;
 }
 
-VKAPI_ATTR VkBool32 VKAPI_CALL
-wsi_GetPhysicalDeviceXcbPresentationSupportKHR(VkPhysicalDevice physicalDevice,
-                                               uint32_t queueFamilyIndex,
-                                               xcb_connection_t *connection,
-                                               xcb_visualid_t visual_id)
+VkBool32 wsi_get_physical_device_xcb_presentation_support(
+    struct wsi_device *wsi_device,
+    uint32_t queueFamilyIndex,
+    xcb_connection_t *connection,
+    xcb_visualid_t visual_id)
 {
-   VK_FROM_HANDLE(vk_physical_device, pdevice, physicalDevice);
-   struct wsi_device *wsi_device = pdevice->wsi_device;
    struct wsi_x11_connection *wsi_conn =
       wsi_x11_get_connection(wsi_device, connection);
 
@@ -566,6 +565,21 @@ wsi_GetPhysicalDeviceXcbPresentationSupportKHR(VkPhysicalDevice physicalDevice,
       return false;
 
    return true;
+}
+
+VKAPI_ATTR VkBool32 VKAPI_CALL
+wsi_GetPhysicalDeviceXcbPresentationSupportKHR(VkPhysicalDevice physicalDevice,
+                                               uint32_t queueFamilyIndex,
+                                               xcb_connection_t *connection,
+                                               xcb_visualid_t visual_id)
+{
+   VK_FROM_HANDLE(vk_physical_device, pdevice, physicalDevice);
+   struct wsi_device *wsi_device = pdevice->wsi_device;
+
+   return wsi_get_physical_device_xcb_presentation_support(wsi_device,
+                                                           queueFamilyIndex,
+                                                           connection,
+                                                           visual_id);
 }
 
 VKAPI_ATTR VkBool32 VKAPI_CALL
@@ -876,19 +890,16 @@ x11_surface_get_present_rectangles(VkIcdSurfaceBase *icd_surface,
    return vk_outarray_status(&out);
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL
-wsi_CreateXcbSurfaceKHR(VkInstance _instance,
-                        const VkXcbSurfaceCreateInfoKHR *pCreateInfo,
-                        const VkAllocationCallbacks *pAllocator,
-                        VkSurfaceKHR *pSurface)
+VkResult wsi_create_xcb_surface(const VkAllocationCallbacks *allocator,
+				const VkXcbSurfaceCreateInfoKHR *pCreateInfo,
+				VkSurfaceKHR *pSurface)
 {
-   VK_FROM_HANDLE(vk_instance, instance, _instance);
    VkIcdSurfaceXcb *surface;
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR);
 
-   surface = vk_alloc2(&instance->alloc, pAllocator, sizeof *surface, 8,
-                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   surface = vk_alloc(allocator, sizeof *surface, 8,
+                      VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (surface == NULL)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
@@ -901,18 +912,34 @@ wsi_CreateXcbSurfaceKHR(VkInstance _instance,
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
-wsi_CreateXlibSurfaceKHR(VkInstance _instance,
-                         const VkXlibSurfaceCreateInfoKHR *pCreateInfo,
-                         const VkAllocationCallbacks *pAllocator,
-                         VkSurfaceKHR *pSurface)
+wsi_CreateXcbSurfaceKHR(VkInstance _instance,
+                        const VkXcbSurfaceCreateInfoKHR *pCreateInfo,
+                        const VkAllocationCallbacks *pAllocator,
+                        VkSurfaceKHR *pSurface)
 {
    VK_FROM_HANDLE(vk_instance, instance, _instance);
+   const VkAllocationCallbacks *allocator;
+
+   if (pAllocator)
+     allocator = pAllocator;
+   else
+     allocator = &instance->alloc;
+
+   return wsi_create_xcb_surface(allocator,
+                                 pCreateInfo,
+                                 pSurface);
+}
+
+VkResult wsi_create_xlib_surface(const VkAllocationCallbacks *allocator,
+				 const VkXlibSurfaceCreateInfoKHR *pCreateInfo,
+				 VkSurfaceKHR *pSurface)
+{
    VkIcdSurfaceXlib *surface;
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR);
 
-   surface = vk_alloc2(&instance->alloc, pAllocator, sizeof *surface, 8,
-                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   surface = vk_alloc(allocator, sizeof *surface, 8,
+                      VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (surface == NULL)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
@@ -938,6 +965,25 @@ struct x11_image {
    int                                       shmid;
    uint8_t *                                 shmaddr;
 };
+
+VKAPI_ATTR VkResult VKAPI_CALL
+wsi_CreateXlibSurfaceKHR(VkInstance _instance,
+                         const VkXlibSurfaceCreateInfoKHR *pCreateInfo,
+                         const VkAllocationCallbacks *pAllocator,
+                         VkSurfaceKHR *pSurface)
+{
+   VK_FROM_HANDLE(vk_instance, instance, _instance);
+   const VkAllocationCallbacks *allocator;
+
+   if (pAllocator)
+     allocator = pAllocator;
+   else
+     allocator = &instance->alloc;
+
+   return wsi_create_xlib_surface(allocator,
+                                  pCreateInfo,
+                                  pSurface);
+}
 
 struct x11_swapchain {
    struct wsi_swapchain                        base;

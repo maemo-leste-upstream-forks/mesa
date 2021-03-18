@@ -104,6 +104,9 @@ endif
 if with_gallium_panfrost or with_gallium_lima or with_panfrost_vk or with_tools.contains('panfrost')
   subdir('panfrost')
 endif
+if with_pvr_vk
+  subdir('pvr')
+endif
 if with_gallium_virgl or with_virtio_vk
   subdir('virtio')
 endif
