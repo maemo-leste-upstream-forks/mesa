@@ -151,6 +151,11 @@ void si_init_resource_fields(struct si_screen *sscreen, struct si_resource *res,
        */
       if (!sscreen->info.kernel_flushes_hdp_before_ib || !sscreen->info.is_amdgpu)
          res->domains = RADEON_DOMAIN_GTT;
+
+#if defined(PIPE_ARCH_AARCH64)
+      if (size <= 1024 * 512)
+         res->domains = RADEON_DOMAIN_GTT;
+#endif
    }
 
    /* Tiled textures are unmappable. Always put them in VRAM. */

@@ -27,6 +27,8 @@
 #if !DETECT_OS_WINDOWS
 #if defined(HAVE_GETRANDOM)
 #include <sys/random.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #endif
 #include <unistd.h>
 #include <fcntl.h>

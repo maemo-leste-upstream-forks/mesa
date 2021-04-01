@@ -45,8 +45,11 @@
 /* From the zlib docs:
  *    "If the memory is available, buffers sizes on the order of 128K or 256K
  *    bytes should be used."
+ *
+ * But that is performance optimization for large files. To keep stack usage
+ * in sensible amount (wrt. musl default stack) we use smaller stack on Alpine.
  */
-#define BUFSIZE 256 * 1024
+#define BUFSIZE 4 * 1024
 
 static ssize_t
 write_all(int fd, const void *buf, size_t count);
