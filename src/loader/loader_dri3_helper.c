@@ -2606,3 +2606,18 @@ dri3_find_back_alloc(struct loader_dri3_drawable *draw)
 
    return back;
 }
+
+bool
+loader_dri3_has_modifiers(bool multiplanes_available,
+                          const __DRIimageExtension *image)
+{
+#ifdef HAVE_DRI3_MODIFIERS
+   return multiplanes_available && image &&
+          image->base.version >= 15 &&
+          image->queryDmaBufModifiers &&
+          image->createImageWithModifiers &&
+          image->createImageFromDmaBufs2;
+#else
+   return false;
+#endif
+}

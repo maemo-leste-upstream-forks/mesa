@@ -330,5 +330,8 @@ loader_dri3_update_screen_resources(struct loader_dri3_screen_resources *res);
 void
 loader_dri3_destroy_screen_resources(struct loader_dri3_screen_resources *res);
 
+bool
+loader_dri3_has_modifiers(bool multiplanes_available,
+                          const __DRIimageExtension *image);
 
 #endif

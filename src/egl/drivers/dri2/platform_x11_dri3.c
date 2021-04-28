@@ -158,12 +158,17 @@ dri3_create_surface(_EGLDisplay *disp, EGLint type, _EGLConfig *conf,
    struct dri3_egl_surface *dri3_surf;
    const __DRIconfig *dri_config;
    xcb_drawable_t drawable;
+   bool is_incompat_gpu;
 
    dri3_surf = calloc(1, sizeof *dri3_surf);
    if (!dri3_surf) {
       _eglError(EGL_BAD_ALLOC, "dri3_create_surface");
       return NULL;
    }
+
+   is_incompat_gpu = dri2_dpy->is_different_gpu &&
+                     !loader_dri3_has_modifiers(dri2_dpy->multibuffers_available,
+                                                dri2_dpy->image);
 
    if (!dri2_init_surface(&dri3_surf->surf.base, disp, type, conf,
                           attrib_list, false, native_surface))
@@ -190,7 +195,7 @@ dri3_create_surface(_EGLDisplay *disp, EGLint type, _EGLConfig *conf,
    if (loader_dri3_drawable_init(dri2_dpy->conn, drawable,
                                  egl_to_loader_dri3_drawable_type(type),
                                  dri2_dpy->dri_screen,
-                                 dri2_dpy->is_different_gpu,
+                                 is_incompat_gpu,
                                  dri2_dpy->multibuffers_available,
                                  true,
                                  dri_config,
