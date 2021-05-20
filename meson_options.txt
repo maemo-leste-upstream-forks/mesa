@@ -38,6 +38,12 @@ option(
   description : 'the window system EGL assumes for EGL_DEFAULT_DISPLAY',
 )
 option(
+  'null-dri-driver-name',
+  type : 'string',
+  value : '',
+  description : 'For the null platform, ignore all dri drivers apart from this one. By default, no dri drivers are ignored.'
+)
+option(
   'android-stub',
   type : 'boolean',
   value : false,

@@ -380,6 +380,10 @@ with_platform_haiku = _platforms.contains('haiku')
 with_platform_windows = _platforms.contains('windows')
 with_platform_null = _platforms.contains('null')
 
+if with_platform_null
+  null_dri_driver_name = get_option('null-dri-driver-name')
+endif
+
 with_glx = get_option('glx')
 if with_glx == 'auto'
   if with_platform_android

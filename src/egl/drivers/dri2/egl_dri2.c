@@ -1383,6 +1383,7 @@ dri2_display_destroy(_EGLDisplay *disp)
 
    switch (disp->Platform) {
    case _EGL_PLATFORM_DRM:
+   case _EGL_PLATFORM_NULL:
    case _EGL_PLATFORM_WAYLAND:
    case _EGL_PLATFORM_X11:
       if (dri2_dpy->fd_dpy >= 0 && dri2_dpy->fd_dpy != dri2_dpy->fd)
