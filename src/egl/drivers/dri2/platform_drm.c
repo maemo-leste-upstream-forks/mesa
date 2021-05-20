@@ -595,7 +595,7 @@ dri2_drm_authenticate(_EGLDisplay *disp, uint32_t id)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
 
-   return drmAuthMagic(dri2_dpy->fd, id);
+   return drmAuthMagic(dri2_dpy->fd_dpy, id);
 }
 
 static void
@@ -782,6 +782,7 @@ dri2_initialize_drm(_EGLDisplay *disp)
       return _eglError(EGL_BAD_ALLOC, "eglInitialize");
 
    dri2_dpy->fd = -1;
+   dri2_dpy->fd_dpy = -1;
    disp->DriverData = (void *) dri2_dpy;
 
    gbm = disp->PlatformDisplay;
@@ -789,16 +790,16 @@ dri2_initialize_drm(_EGLDisplay *disp)
       char buf[64];
       int n = snprintf(buf, sizeof(buf), DRM_DEV_NAME, DRM_DIR_NAME, 0);
       if (n != -1 && n < sizeof(buf))
-         dri2_dpy->fd = loader_open_device(buf);
-      gbm = gbm_create_device(dri2_dpy->fd);
+         dri2_dpy->fd_dpy = loader_open_device(buf);
+      gbm = gbm_create_device(dri2_dpy->fd_dpy);
       if (gbm == NULL) {
          err = "DRI2: failed to create gbm device";
          goto cleanup;
       }
       dri2_dpy->own_device = true;
    } else {
-      dri2_dpy->fd = os_dupfd_cloexec(gbm_device_get_fd(gbm));
-      if (dri2_dpy->fd < 0) {
+      dri2_dpy->fd_dpy = os_dupfd_cloexec(gbm_device_get_fd(gbm));
+      if (dri2_dpy->fd_dpy < 0) {
          err = "DRI2: failed to fcntl() existing gbm device";
          goto cleanup;
       }
@@ -809,6 +810,12 @@ dri2_initialize_drm(_EGLDisplay *disp)
       err = "DRI2: gbm device using incorrect/incompatible backend";
       goto cleanup;
    }
+
+   if (gbm_dri_device_get_fd(dri2_dpy->gbm_dri) ==
+       gbm_device_get_fd(gbm))
+      dri2_dpy->fd = dri2_dpy->fd_dpy;
+   else
+      dri2_dpy->fd = os_dupfd_cloexec(gbm_dri_device_get_fd(dri2_dpy->gbm_dri));
 
    dev = _eglAddDevice(dri2_dpy->fd, dri2_dpy->gbm_dri->software);
    if (!dev) {
@@ -875,7 +882,7 @@ dri2_initialize_drm(_EGLDisplay *disp)
       disp->Extensions.EXT_buffer_age = EGL_TRUE;
 
 #ifdef HAVE_WAYLAND_PLATFORM
-   dri2_dpy->device_name = loader_get_device_name_for_fd(dri2_dpy->fd);
+   dri2_dpy->device_name = loader_get_device_name_for_fd(dri2_dpy->fd_dpy);
 #endif
    dri2_set_WL_bind_wayland_display(disp);
 
