@@ -1666,6 +1666,7 @@ static VkResult
 x11_image_init(VkDevice device_h, struct x11_swapchain *chain,
                const VkSwapchainCreateInfoKHR *pCreateInfo,
                const VkAllocationCallbacks* pAllocator,
+               int display_fd,
                struct x11_image *image)
 {
    xcb_void_cookie_t cookie;
@@ -1674,7 +1675,7 @@ x11_image_init(VkDevice device_h, struct x11_swapchain *chain,
    int fence_fd;
 
    result = wsi_create_image(&chain->base, &chain->base.image_info,
-                             &image->base);
+                             display_fd, &image->base);
    if (result != VK_SUCCESS)
       return result;
 
@@ -2054,8 +2055,19 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
       image_params = &drm_image_params.base;
    }
 
+   int display_fd;
+   if (wsi_device->sw) {
+      display_fd = -1;
+   } else {
+      xcb_screen_iterator_t screen_iter =
+         xcb_setup_roots_iterator(xcb_get_setup(conn));
+      xcb_screen_t *screen = screen_iter.data;
+
+      display_fd = wsi_dri3_open(conn, screen->root, None);
+   }
+
    result = wsi_swapchain_init(wsi_device, &chain->base, device, pCreateInfo,
-                               image_params, pAllocator);
+                               image_params, pAllocator, display_fd);
 
    for (int i = 0; i < ARRAY_SIZE(modifiers); i++)
       vk_free(pAllocator, modifiers[i]);
@@ -2146,9 +2158,14 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
    uint32_t image = 0;
    for (; image < chain->base.image_count; image++) {
       result = x11_image_init(device, chain, pCreateInfo, pAllocator,
-                              &chain->images[image]);
+                              display_fd, &chain->images[image]);
       if (result != VK_SUCCESS)
          goto fail_init_images;
+   }
+
+   if (display_fd >= 0) {
+      close(display_fd);
+      display_fd = -1;
    }
 
    /* Initialize queues for images in our swapchain. Possible queues are:
@@ -2227,6 +2244,9 @@ fail_register:
 
 fail_alloc:
    vk_free(pAllocator, chain);
+
+   if (display_fd >= 0)
+     close(display_fd);
 
    return result;
 }
