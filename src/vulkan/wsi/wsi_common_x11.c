@@ -285,7 +285,7 @@ wsi_x11_connection_create(struct wsi_device *wsi_dev,
 
       ver_cookie = xcb_present_query_version(conn, 1, 2);
       ver_reply = xcb_present_query_version_reply(conn, ver_cookie, NULL);
-      has_present_v1_2 =
+      has_present_v1_2 = ver_reply != NULL &&
         (ver_reply->major_version > 1 || ver_reply->minor_version >= 2);
       free(ver_reply);
    }
