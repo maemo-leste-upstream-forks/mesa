@@ -1889,6 +1889,8 @@ dri2_null_try_device(_EGLDisplay *disp)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
 
+   dri2_dpy->fd = -1;
+
    if (!dri2_null_device_is_kms(dri2_dpy->fd_dpy))
       return false;
 
@@ -1946,34 +1948,56 @@ dri2_null_try_device(_EGLDisplay *disp)
 }
 
 static bool
-dri2_null_probe_device(_EGLDisplay *disp)
+dri2_null_probe_device(_EGLDisplay *disp, unsigned minor)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
+   char *card_path;
 
-   dri2_dpy->fd = -1;
+   if (asprintf(&card_path, DRM_DEV_NAME, DRM_DIR_NAME, minor) < 0)
+      goto cleanup;
+
+   dri2_dpy->fd_dpy = loader_open_device(card_path);
+   free(card_path);
+   if (dri2_dpy->fd_dpy < 0)
+      goto cleanup;
+
+   if (dri2_null_try_device(disp))
+      return true;
+
+   close(dri2_dpy->fd_dpy);
+
+   if (dri2_dpy->fd >= 0 && dri2_dpy->fd != dri2_dpy->fd_dpy)
+      close(dri2_dpy->fd);
+
+cleanup:
    dri2_dpy->fd_dpy = -1;
+   dri2_dpy->fd = -1;
 
-   for (unsigned i = 0; i <= NULL_CARD_MINOR_MAX; i++) {
-      char *card_path;
+   return false;
+}
 
-      if (asprintf(&card_path, DRM_DEV_NAME, DRM_DIR_NAME, i) < 0)
-         continue;
+static bool
+dri2_null_probe_devices(_EGLDisplay *disp)
+{
+   const char *null_drm_display = getenv("NULL_DRM_DISPLAY");
 
-      dri2_dpy->fd_dpy = loader_open_device(card_path);
-      free(card_path);
-      if (dri2_dpy->fd_dpy < 0)
-         continue;
+   if (null_drm_display) {
+      char *endptr;
+      long val = strtol(null_drm_display, &endptr, 10);
 
-      if (dri2_null_try_device(disp))
-         return true;
-
-      close(dri2_dpy->fd_dpy);
-
-      if (dri2_dpy->fd >= 0 && dri2_dpy->fd != dri2_dpy->fd_dpy)
-         close(dri2_dpy->fd);
-
-      dri2_dpy->fd_dpy = -1;
-      dri2_dpy->fd = -1;
+      if (endptr != null_drm_display && !*endptr &&
+          val >= 0 && val <= NULL_CARD_MINOR_MAX) {
+         if (dri2_null_probe_device(disp, (unsigned)val))
+            return true;
+      } else {
+         _eglLog(_EGL_FATAL, "NULL_DRM_DISPLAY is invalid: %s",
+                 null_drm_display);
+      }
+   } else {
+      for (unsigned i = 0; i <= NULL_CARD_MINOR_MAX; i++) {
+         if (dri2_null_probe_device(disp, i))
+            return true;
+      }
    }
 
    return false;
@@ -2071,7 +2095,10 @@ dri2_initialize_null(_EGLDisplay *disp)
 
    disp->DriverData = (void *) dri2_dpy;
 
-   if (!dri2_null_probe_device(disp)) {
+   dri2_dpy->fd_dpy = -1;
+   dri2_dpy->fd = -1;
+
+   if (!dri2_null_probe_devices(disp)) {
       _eglError(EGL_NOT_INITIALIZED, "failed to load driver");
       goto cleanup;
    }
