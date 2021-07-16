@@ -1,0 +1,16 @@
+diff --git a/meson.build b/meson.build
+index e1e94e71049..91b0ebb24bd 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1537,9 +1537,9 @@ if with_tests or with_gallium_softpipe
+ endif
+ 
+ if with_microsoft_clc
+-  _llvm_version = '>= 10.0.0'
++  _llvm_version = '>= 7.0.0'
+ elif with_amd_vk or with_gallium_radeonsi or with_gallium_opencl
+-  _llvm_version = '>= 8.0.0'
++  _llvm_version = '>= 7.0.0'
+ elif with_gallium_swr
+   _llvm_version = '>= 6.0.0'
+ else
