@@ -92,12 +92,18 @@ wsi_device_init2(struct wsi_device *wsi,
 
    wsi->drm_info.sType =
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT;
+#if defined(VULKAN_WSI_USE_PCI_BUS_INFO)
    wsi->pci_bus_info.sType =
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PCI_BUS_INFO_PROPERTIES_EXT;
    wsi->pci_bus_info.pNext = &wsi->drm_info;
+#endif
    VkPhysicalDeviceProperties2 pdp2 = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+#if defined(VULKAN_WSI_USE_PCI_BUS_INFO)
       .pNext = &wsi->pci_bus_info,
+#else
+      .pNext = &wsi->drm_info,
+#endif
    };
    GetPhysicalDeviceProperties2(pdevice, &pdp2);
 

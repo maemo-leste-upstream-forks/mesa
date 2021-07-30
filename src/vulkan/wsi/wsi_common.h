@@ -115,7 +115,10 @@ struct wsi_device {
    uint32_t queue_family_count;
 
    VkPhysicalDeviceDrmPropertiesEXT drm_info;
+
+#if defined(VULKAN_WSI_USE_PCI_BUS_INFO)
    VkPhysicalDevicePCIBusInfoPropertiesEXT pci_bus_info;
+#endif
 
    VkExternalSemaphoreHandleTypeFlags semaphore_export_handle_types;
 
