@@ -27,6 +27,11 @@ struct gl_config
    /* ARB_multisample / SGIS_multisample */
    GLuint samples;
 
+   /* GLX 1.3 */
+   GLint maxPbufferWidth;
+   GLint maxPbufferHeight;
+   GLint maxPbufferPixels;
+
    /* OML_swap_method */
    GLint swapMethod;
 
