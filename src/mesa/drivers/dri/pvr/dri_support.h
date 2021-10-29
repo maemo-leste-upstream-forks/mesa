@@ -712,6 +712,8 @@ PVRDRIBufferImpl *PVRDRISubBufferCreate(PVRDRIScreenImpl *psScreen,
 					PVRDRIBufferImpl *psParent,
 					int plane);
 
+void PVRDRIBufferDestroy(PVRDRIBufferImpl *psBuffer);
+
 int PVRDRIBufferGetFd(PVRDRIBufferImpl *psBuffer);
 
 int PVRDRIBufferGetHandle(PVRDRIBufferImpl *psBuffer);
