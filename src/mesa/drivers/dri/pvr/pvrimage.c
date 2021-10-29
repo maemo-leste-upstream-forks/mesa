@@ -51,7 +51,6 @@ struct PVRDRIImageShared
 	PVRDRIBufferImpl *psBuffer;
 	IMGEGLImage *psEGLImage;
 	PVRDRIEGLImageType eglImageType;
-	struct PVRDRIImageShared *psAncestor;
 };
 
 struct __DRIimageRec
@@ -114,17 +113,6 @@ static void DestroyImageShared(struct PVRDRIImageShared *shared)
 			PVRDRIEGLImageDestroyExternal(shared->psPVRScreen->psImpl,
 			                              shared->psEGLImage,
 						      shared->eglImageType);
-			free(shared);
-			return;
-		case PVRDRI_IMAGE_SUBIMAGE:
-			if (shared->psBuffer)
-			{
-				PVRDRIBufferDestroy(shared->psBuffer);
-			}
-			if (shared->psAncestor)
-			{
-				DestroyImageShared(shared->psAncestor);
-			}
 			free(shared);
 			return;
 	}
