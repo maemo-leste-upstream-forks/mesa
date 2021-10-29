@@ -517,7 +517,6 @@ GLboolean PVRDRIQueryImage(__DRIimage *image, int attrib, int *value_ptr)
 	struct PVRDRIImageShared *shared = image->psShared;
 	PVRDRIBufferAttribs sAttribs;
 	int value;
-	uint64_t ulValue;
 
 	PVRDRIEGLImageGetAttribs(image->psEGLImage, &sAttribs);
 
@@ -644,22 +643,12 @@ GLboolean PVRDRIValidateUsage(__DRIimage *image, unsigned int use)
 
 	if (use & (__DRI_IMAGE_USE_SCANOUT | __DRI_IMAGE_USE_CURSOR))
 	{
-		uint64_t modifier;
-
 		/*
 		 * We are extra strict in this case as an application may ask for a
 		 * handle so that the memory can be wrapped as a framebuffer/used as
 		 * a cursor and this can only be done on a card node.
 		 */
 		if (drmGetNodeTypeFromFd(screen->fd) != DRM_NODE_PRIMARY)
-		{
-			return GL_FALSE;
-		}
-
-		modifier = PVRDRIBufferGetModifier(shared->psBuffer);
-
-		if (modifier != DRM_FORMAT_MOD_INVALID &&
-			modifier != DRM_FORMAT_MOD_LINEAR)
 		{
 			return GL_FALSE;
 		}
