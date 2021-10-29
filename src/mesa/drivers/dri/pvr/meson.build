@@ -28,6 +28,7 @@ files_pvr = files(
   'pvrext.c',
   'pvrimage.c',
   'pvrutil.c',
+  'pvr_object_cache.c',
 )
 
 dep_libpvr = [

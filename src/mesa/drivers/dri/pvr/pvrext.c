@@ -79,21 +79,28 @@
 #define PVR_DRI2_ROBUSTNESS_VERSION	1
 #define PVR_DRI2_FENCE_VERSION		2
 
-static void PVRDRIFlushDrawableContext(PVRDRIDrawable *psPVRDrawable,
-				       PVRDRIContext *psPVRContext)
+static void
+PVRDRIFlushAllContexts(PVRDRIDrawable *psPVRDrawable)
 {
-	PVRDRIContext *psPVRDrawContext = psPVRDrawable->psPVRContext;
+	PVRQElem *psQElem;
 
-	if (psPVRDrawContext)
+	PVRDRIDrawableLock(psPVRDrawable);
+	psQElem = psPVRDrawable->sPVRContextHead.pvForw;
+
+	while (psQElem != &psPVRDrawable->sPVRContextHead)
 	{
-		PVRDRIEGLFlushBuffers(psPVRDrawContext->eAPI,
-		                      psPVRDrawContext->psPVRScreen->psImpl,
-		                      psPVRDrawContext->psImpl,
-		                      psPVRDrawable->psImpl,
-		                      false,
-		                      false,
-		                      (psPVRDrawContext != psPVRContext));
+		PVRDRIContext *psPVRContext = PVRQ_CONTAINER_OF(psQElem, PVRDRIContext, sQElem);
+		PVRDRIEGLFlushBuffers(psPVRContext->eAPI,
+				      psPVRContext->psPVRScreen->psImpl,
+				      psPVRContext->psImpl,
+				      psPVRDrawable->psImpl,
+				      false,
+				      false,
+				      false);
+		psQElem = psPVRContext->sQElem.pvForw;
 	}
+
+	PVRDRIDrawableUnlock(psPVRDrawable);
 }
 
 static void PVRDRIExtSetTexBuffer(__DRIcontext  *psDRIContext,
@@ -116,11 +123,11 @@ static void PVRDRIExtSetTexBuffer(__DRIcontext  *psDRIContext,
 		}
 	}
 
-	PVRDRIFlushDrawableContext(psPVRDrawable, psPVRContext);
+	PVRDRIFlushAllContexts(psPVRDrawable);
 	PVRDRI2BindTexImage(psPVRContext->eAPI,
-	                    psPVRContext->psPVRScreen->psImpl,
-	                    psPVRContext->psImpl,
-	                    psPVRDrawable->psImpl);
+			    psPVRContext->psPVRScreen->psImpl,
+			    psPVRContext->psImpl,
+			    psPVRDrawable->psImpl);
 }
 
 static void PVRDRIExtReleaseTexBuffer(__DRIcontext  *psDRIContext,
@@ -133,9 +140,9 @@ static void PVRDRIExtReleaseTexBuffer(__DRIcontext  *psDRIContext,
 	(void)target;
 
 	PVRDRI2ReleaseTexImage(psPVRContext->eAPI,
-	                       psPVRContext->psPVRScreen->psImpl,
-	                       psPVRContext->psImpl,
-	                       psPVRDrawable->psImpl);
+			       psPVRContext->psPVRScreen->psImpl,
+			       psPVRContext->psImpl,
+			       psPVRDrawable->psImpl);
 }
 
 static __DRItexBufferExtension pvrDRITexBufferExtension =
@@ -150,9 +157,10 @@ static __DRItexBufferExtension pvrDRITexBufferExtension =
 static void PVRDRI2Flush(__DRIdrawable *psDRIDrawable)
 {
 	PVRDRIDrawable *psPVRDrawable = (PVRDRIDrawable *)psDRIDrawable->driverPrivate;
-	PVRDRIContext *psPVRContext = psPVRDrawable->psPVRContext;
 
-	PVRDRIFlushBuffersForSwap(psPVRContext, psPVRDrawable);
+	PVRDRIDrawableLock(psPVRDrawable);
+	PVRDRIFlushBuffersForSwap(NULL, psPVRDrawable);
+	PVRDRIDrawableUnlock(psPVRDrawable);
 }
 
 static void PVRDRI2Invalidate(__DRIdrawable *psDRIDrawable)
@@ -161,7 +169,9 @@ static void PVRDRI2Invalidate(__DRIdrawable *psDRIDrawable)
 
 	if (psPVRDrawable->psPVRScreen->bUseInvalidate)
 	{
-		p_atomic_inc(&psPVRDrawable->iInfoInvalid);
+		PVRDRIDrawableLock(psDRIDrawable->driverPrivate);
+		psPVRDrawable->bDrawableInfoInvalid = true;
+		PVRDRIDrawableUnlock(psPVRDrawable);
 	}
 }
 
@@ -176,18 +186,19 @@ static void PVRDRI2FlushWithFlags(__DRIcontext *psDRIContext,
 
 	if ((uFlags & __DRI2_FLUSH_DRAWABLE) != 0)
 	{
-		PVRDRIDrawable *psPVRDrawable = psDRIDrawable->driverPrivate;
+		PVRDRIDrawable *psPVRDrawable = (PVRDRIDrawable *) psDRIDrawable->driverPrivate;
 
-		PVRDRIFlushBuffersForSwap(psPVRContext, psPVRDrawable);
+		PVRDRIDrawableLock(psPVRDrawable);
+		(void) PVRDRIFlushBuffersForSwap(psPVRContext, psPVRDrawable);
+		psPVRDrawable->bDrawableInfoInvalid = true;
+		PVRDRIDrawableUnlock(psPVRDrawable);
 	}
 	else if ((uFlags & __DRI2_FLUSH_CONTEXT) != 0)
 	{
-		/*
-		 * __DRI2_FLUSH__CONTEXT means "glFlush". Most callers
-		 * also specify __DRI2_FLUSH_DRAWABLE. An exception is
-		 * GBM, which flushes after an unmap, when there doesn't
-		 * appear to be a need to flush outstanding GPU operations.
-		 */
+		(void) PVRDRIEGLFlushBuffers(psPVRContext->eAPI,
+					     psPVRContext->psPVRScreen->psImpl,
+					     psPVRContext->psImpl,
+					     NULL, true, false, false);
 	}
 }
 
@@ -215,15 +226,6 @@ static __DRIimageExtension pvrDRIImage =
 	.createImageFromTexture		= PVRDRICreateImageFromTexture,
 	.createImageFromFds		= PVRDRICreateImageFromFds,
 	.createImageFromDmaBufs		= PVRDRICreateImageFromDmaBufs,
-	.blitImage			= PVRDRIBlitImage,
-	.getCapabilities		= PVRDRIGetCapabilities,
-	.mapImage			= PVRDRIMapImage,
-	.unmapImage			= PVRDRIUnmapImage,
-	.createImageWithModifiers	= PVRDRICreateImageWithModifiers,
-	.createImageFromDmaBufs2	= PVRDRICreateImageFromDmaBufs2,
-	.queryDmaBufFormats		= PVRDRIQueryDmaBufFormats,
-	.queryDmaBufModifiers		= PVRDRIQueryDmaBufModifiers,
-	.queryDmaBufFormatModifierAttribs = PVRDRIQueryDmaBufFormatModifierAttribs,
 	.createImageFromRenderbuffer2	= PVRDRICreateImageFromRenderbuffer2,
 #if defined(EGL_IMG_cl_image)
 	.createImageFromBuffer		= PVRDRICreateImageFromBuffer,
@@ -233,38 +235,6 @@ static __DRIimageExtension pvrDRIImage =
 static __DRIrobustnessExtension pvrDRIRobustness =
 {
 	.base = { .name = __DRI2_ROBUSTNESS, .version = PVR_DRI2_ROBUSTNESS_VERSION }
-};
-
-static int
-PVRDRIQueryRendererInteger(__DRIscreen *dri_screen,
-                           int param, unsigned int *value)
-{
-	switch (param)
-	{
-		case __DRI2_RENDERER_HAS_CONTEXT_PRIORITY:
-			value[0] = 0;
-			value[0] |= __DRI2_RENDERER_HAS_CONTEXT_PRIORITY_HIGH;
-			value[0] |= __DRI2_RENDERER_HAS_CONTEXT_PRIORITY_MEDIUM;
-			value[0] |= __DRI2_RENDERER_HAS_CONTEXT_PRIORITY_LOW;
-			return 0;
-
-		default:
-			return driQueryRendererIntegerCommon(dri_screen, param, value);
-	}
-}
-
-static int
-PVRDRIQueryRendererString(__DRIscreen *dri_screen,
-                          int param, const char **value)
-{
-	return -1;
-}
-
-static const __DRI2rendererQueryExtension pvrDRIRendererQueryExtension = {
-   .base = { __DRI2_RENDERER_QUERY, 1 },
-
-   .queryInteger = PVRDRIQueryRendererInteger,
-   .queryString = PVRDRIQueryRendererString,
 };
 
 
@@ -291,25 +261,14 @@ static GLboolean PVRDRIClientWaitSyncEXT(__DRIcontext *psDRIContext,
 					 unsigned uFlags,
 					 uint64_t uiTimeout)
 {
+	PVRDRIContext *psPVRContext = psDRIContext->driverPrivate;
 	bool bFlushCommands = (uFlags & __DRI2_FENCE_FLAG_FLUSH_COMMANDS);
 	bool bTimeout = (uiTimeout != __DRI2_FENCE_TIMEOUT_INFINITE);
 
-	if (psDRIContext && bFlushCommands)
-	{
-		PVRDRIContext *psPVRContext = psDRIContext->driverPrivate;
-		PVRDRIDrawable *psPVRDrawable = psPVRContext->psPVRDrawable;
-
-		(void) PVRDRIEGLFlushBuffers(psPVRContext->eAPI,
-					     psPVRContext->psPVRScreen->psImpl,
-					     psPVRContext->psImpl,
-					     psPVRDrawable ? psPVRDrawable->psImpl : NULL,
-					     true, false, false);
-	}
-
-	return PVRDRIClientWaitSyncImpl(PVRDRI_API_NONE,
-					NULL,
+	return PVRDRIClientWaitSyncImpl(psPVRContext->eAPI,
+					psPVRContext->psImpl,
 					psDRIFence,
-					false,
+					bFlushCommands,
 					bTimeout,
 					uiTimeout);
 }
@@ -335,31 +294,6 @@ static void PVRDRIServerWaitSyncEXT(__DRIcontext *psDRIContext,
 	}
 }
 
-static unsigned PVRDRIGetFenceCapabilitiesEXT(__DRIscreen *psDRIScreen)
-{
-	PVRDRIScreen *psPVRScreen = DRIScreenPrivate(psDRIScreen);
-
-	return PVRDRIGetFenceCapabilitiesImpl(psPVRScreen->psImpl);
-}
-
-static void *PVRDRICreateFenceFdEXT(__DRIcontext *psDRIContext, int iFd)
-{
-	PVRDRIContext *psPVRContext = psDRIContext->driverPrivate;
-	PVRDRIScreen *psPVRScreen = psPVRContext->psPVRScreen;
-
-	return PVRDRICreateFenceFdImpl(psPVRContext->eAPI,
-				       psPVRScreen->psImpl,
-				       psPVRContext->psImpl,
-				       iFd);
-}
-
-static int PVRDRIGetFenceFdEXT(__DRIscreen *psDRIScreen, void *psDRIFence)
-{
-	(void)psDRIScreen;
-
-	return PVRDRIGetFenceFdImpl(psDRIFence);
-}
-
 const __DRI2fenceExtension pvrDRIFenceExtension =
 {
 	.base				= { .name = __DRI2_FENCE, .version = PVR_DRI2_FENCE_VERSION },
@@ -369,9 +303,9 @@ const __DRI2fenceExtension pvrDRIFenceExtension =
 	.destroy_fence			= PVRDRIDestroyFenceEXT,
 	.client_wait_sync		= PVRDRIClientWaitSyncEXT,
 	.server_wait_sync		= PVRDRIServerWaitSyncEXT,
-	.get_capabilities		= PVRDRIGetFenceCapabilitiesEXT,
-	.create_fence_fd		= PVRDRICreateFenceFdEXT,
-	.get_fence_fd			= PVRDRIGetFenceFdEXT,
+	.get_capabilities		= NULL,
+	.create_fence_fd		= NULL,
+	.get_fence_fd			= NULL,
 };
 #endif /* defined(__DRI2_FENCE) */
 
@@ -387,11 +321,9 @@ static const __DRIextension *apsScreenExtensions[] =
 	&pvrDRI2FlushExtension.base,
 	&pvrDRIImage.base,
 	&pvrDRIRobustness.base,
-	&pvrDRIRendererQueryExtension.base,
 #if defined(__DRI2_FENCE)
 	&pvrDRIFenceExtension.base,
 #endif
-	&dri2ConfigQueryExtension.base,
 	NULL
 };
 
@@ -404,33 +336,11 @@ static const __DRIextension asScreenExtensionVersionInfo[] =
 #if defined(__DRI2_FENCE)
 	{ .name = __DRI2_FENCE, .version = __DRI2_FENCE_VERSION },
 #endif
-	{ .name = __DRI2_CONFIG_QUERY, .version = __DRI2_CONFIG_QUERY_VERSION },
 	{ .name = NULL, .version = 0 },
 };
 
 const __DRIextension **PVRDRIScreenExtensions(void)
 {
-	if (!PVRDRIBlitEGLImage_IsSupported())
-	{
-		pvrDRIImage.base.version = 8;
-	}
-	else if (!PVRDRIMapEGLImage_IsSupported())
-	{
-		pvrDRIImage.base.version = 11;
-	}
-	else if (!PVRDRIBufferGetOffset_IsSupported())
-	{
-		pvrDRIImage.base.version = 12;
-	}
-	else if (!PVRDRIBufferCreateWithModifiers_IsSupported())
-	{
-		pvrDRIImage.base.version = 13;
-	}
-	else if (!PVRDRIBufferCreateFromFdsWithModifier_IsSupported())
-	{
-		pvrDRIImage.base.version = 14;
-	}
-
 	return apsScreenExtensions;
 }
 

@@ -258,12 +258,9 @@ CompatDeinit(void)
 }
 
 bool
-PVRDRICompatInit(const PVRDRICallbacks *psCallbacks, unsigned uVersion)
+PVRDRICompatInit(const PVRDRICallbacks *psCallbacks)
 {
 	bool res;
-
-	bool (*pfRegisterVersionedCallbacks)(const PVRDRICallbacks *psCallbacks,
-						    unsigned uVersion) = NULL;
 
 	CompatLock();
 	res = (giSupLibRef++ != 0);
@@ -278,16 +275,7 @@ PVRDRICompatInit(const PVRDRICallbacks *psCallbacks, unsigned uVersion)
 		goto Exit;
 	}
 
-	LookupFunc(PVRDRIRegisterVersionedCallbacks, pfRegisterVersionedCallbacks);
-
-	if (pfRegisterVersionedCallbacks != (void *)&DumSupFunc)
-	{
-		res = pfRegisterVersionedCallbacks(psCallbacks, uVersion);
-	}
-	else
-	{
-		res = RegisterCallbacksCompat(psCallbacks);
-	}
+	res = RegisterCallbacksCompat(psCallbacks);
 Exit:
 	if (!res)
 	{
@@ -310,34 +298,6 @@ PVRDRICompatDeinit(void)
 	}
 
 	CompatUnlock();
-}
-
-bool
-PVRDRIRegisterSupportInterfaceV1(const PVRDRISupportInterface *psInterface,
-				 unsigned uVersion)
-{
-	size_t uSize;
-
-	/* The "default" case should be associated with the latest version */
-	switch (uVersion)
-	{
-		default:
-		case 2:
-			uSize = PVRDRIInterfaceSize(GetFenceFd);
-			break;
-		case 1:
-			uSize = PVRDRIInterfaceSize(CreateDrawableWithConfig);
-			break;
-		case 0:
-			uSize = PVRDRIInterfaceSize(QueryModifiers);
-			break;
-	}
-
-	memcpy(&gsSup, psInterface, uSize);
-
-	guSupVer = uVersion;
-
-	return true;
 }
 
 PVRDRIDeviceType
@@ -472,10 +432,18 @@ PVRDRIEGLFlushBuffers(PVRDRIAPIType eAPI,
 	return false;
 }
 
-void
-PVRDRIEGLMarkRendersurfaceInvalid(PVRDRIAPIType eAPI,
-				  PVRDRIScreenImpl *psScreenImpl,
-				  PVRDRIContextImpl *psContextImpl)
+bool PVRDRIEGLFreeResources(PVRDRIScreenImpl *psPVRScreenImpl)
+{
+	CallFuncLegacy(PVRDRIEGLFreeResources,
+		       EGLFreeResources,
+		       psPVRScreenImpl);
+
+	return false;
+}
+
+void PVRDRIEGLMarkRendersurfaceInvalid(PVRDRIAPIType eAPI,
+				       PVRDRIScreenImpl *psScreenImpl,
+				       PVRDRIContextImpl *psContextImpl)
 {
 	CallFuncLegacy(PVRDRIEGLMarkRendersurfaceInvalid,
 		       EGLMarkRendersurfaceInvalid,
@@ -484,58 +452,39 @@ PVRDRIEGLMarkRendersurfaceInvalid(PVRDRIAPIType eAPI,
 		       psContextImpl);
 }
 
-static inline void PVRDRIConfigFromMesa(PVRDRIConfigInfo *psConfigInfo,
-					const struct gl_config *psGLMode)
+void PVRDRIEGLSetFrontBufferCallback(PVRDRIAPIType eAPI,
+				     PVRDRIScreenImpl *psScreenImpl,
+				     PVRDRIDrawableImpl *psDrawableImpl,
+				     void (*pfnCallback)(PVRDRIDrawable *))
 {
-	memset(psConfigInfo, 0, sizeof(*psConfigInfo));
+	CallFuncLegacy(PVRDRIEGLSetFrontBufferCallback,
+		       EGLSetFrontBufferCallback,
+		       eAPI,
+		       psScreenImpl,
+		       psDrawableImpl,
+		       pfnCallback);
 
-	if (psGLMode)
-	{
-		psConfigInfo->samples           = psGLMode->samples;
-		psConfigInfo->redBits           = psGLMode->redBits;
-		psConfigInfo->greenBits         = psGLMode->greenBits;
-		psConfigInfo->blueBits          = psGLMode->blueBits;
-		psConfigInfo->alphaBits         = psGLMode->alphaBits;
-		psConfigInfo->rgbBits           = psGLMode->rgbBits;
-		psConfigInfo->depthBits         = psGLMode->depthBits;
-		psConfigInfo->stencilBits       = psGLMode->stencilBits;
-		psConfigInfo->doubleBufferMode  = psGLMode->doubleBufferMode;
-
-		psConfigInfo->sampleBuffers     = psGLMode->sampleBuffers;
-		psConfigInfo->bindToTextureRgb  = psGLMode->bindToTextureRgb;
-		psConfigInfo->bindToTextureRgba = psGLMode->bindToTextureRgba;
-	}
 }
 
-unsigned
-PVRDRISupportCreateContext(PVRDRIScreenImpl *psScreenImpl,
-			   PVRDRIContextImpl *psSharedContextImpl,
-			   PVRDRIConfig *psConfig,
-			   PVRDRIAPIType eAPI,
-			   PVRDRIAPISubType eAPISub,
-			   unsigned uMajorVersion,
-			   unsigned uMinorVersion,
-			   uint32_t uFlags,
-			   bool bNotifyReset,
-			   unsigned uPriority,
-			   PVRDRIContextImpl **ppsContextImpl)
+unsigned PVRDRICreateContextImpl(PVRDRIContextImpl **ppsContextImpl,
+				 PVRDRIAPIType eAPI,
+				 PVRDRIAPISubType eAPISub,
+				 PVRDRIScreenImpl *psScreenImpl,
+				 const PVRDRIConfigInfo *psConfigInfo,
+				 unsigned uMajorVersion,
+				 unsigned uMinorVersion,
+				 uint32_t uFlags,
+				 bool bNotifyReset,
+				 unsigned uPriority,
+				 PVRDRIContextImpl *psSharedContextImpl)
 {
-	PVRDRIConfigInfo sConfigInfo;
-
-	CallFunc(CreateContextV1, 1,
-		 psScreenImpl, psSharedContextImpl, psConfig, eAPI, eAPISub,
-		 uMajorVersion, uMinorVersion, uFlags, bNotifyReset, uPriority,
-		 ppsContextImpl);
-
-	PVRDRIConfigFromMesa(&sConfigInfo, &psConfig->sGLMode);
-
 	CallFuncLegacy(PVRDRICreateContextImpl,
 		       CreateContext,
 		       ppsContextImpl,
 		       eAPI,
 		       eAPISub,
 		       psScreenImpl,
-		       &sConfigInfo,
+		       psConfigInfo,
 		       uMajorVersion,
 		       uMinorVersion,
 		       uFlags,
@@ -648,45 +597,6 @@ PVRDRICreateDrawableImpl(PVRDRIDrawable *psPVRDrawable)
 	return NULL;
 }
 
-PVRDRIDrawableImpl *
-PVRDRISupportCreateDrawable(PVRDRIDrawable *psPVRDrawable,
-			    PVRDRIConfig *psConfig)
-{
-	PVRDRIDrawableImpl *psDrawableImpl;
-	PVRDRIConfigInfo sConfigInfo;
-	IMG_PIXFMT ePixelFormat;
-
-	CallFunc(CreateDrawableWithConfig, 1,
-		 psPVRDrawable,
-		 psConfig);
-
-	ePixelFormat = PVRDRIGetPixelFormat(&psConfig->sGLMode);
-	if (ePixelFormat == IMG_PIXFMT_UNKNOWN)
-	{
-		__driUtilMessage("%s: Couldn't work out pixel format", __func__);
-		return NULL;
-	}
-
-	psDrawableImpl = PVRDRICreateDrawableImpl(psPVRDrawable);
-	if (!psDrawableImpl)
-	{
-		return NULL;
-	}
-
-	PVRDRIConfigFromMesa(&sConfigInfo, &psConfig->sGLMode);
-	if (!PVRDRIEGLDrawableConfigFromGLMode(psDrawableImpl,
-	                                       &sConfigInfo,
-	                                       psConfig->iSupportedAPIs,
-	                                       ePixelFormat))
-	{
-		__driUtilMessage("%s: Couldn't derive EGL config", __func__);
-		PVRDRIDestroyDrawableImpl(psDrawableImpl);
-		return NULL;
-	}
-
-	return psDrawableImpl;
-}
-
 void
 PVRDRIDestroyDrawableImpl(PVRDRIDrawableImpl *psScreenImpl)
 {
@@ -754,33 +664,6 @@ PVRDRIBufferCreate(PVRDRIScreenImpl *psScreenImpl,
 		       iHeight,
 		       uiBpp,
 		       uiUseFlags,
-		       puiStride);
-
-	return NULL;
-}
-
-DefineFunc_IsSupportedLegacy(PVRDRIBufferCreateWithModifiers,
-			     BufferCreateWithModifiers)
-
-PVRDRIBufferImpl *
-PVRDRIBufferCreateWithModifiers(PVRDRIScreenImpl *psScreenImpl,
-				int iWidth,
-				int iHeight,
-				int format,
-				IMG_PIXFMT eIMGPixelFormat,
-				const uint64_t *puiModifiers,
-				unsigned int uiModifierCount,
-				unsigned int *puiStride)
-{
-	CallFuncLegacy(PVRDRIBufferCreateWithModifiers,
-		       BufferCreateWithModifiers,
-		       psScreenImpl,
-		       iWidth,
-		       iHeight,
-		       format,
-		       eIMGPixelFormat,
-		       puiModifiers,
-		       uiModifierCount,
 		       puiStride);
 
 	return NULL;
@@ -858,66 +741,6 @@ PVRDRIBufferCreateFromFds(PVRDRIScreenImpl *psScreenImpl,
 	return NULL;
 }
 
-DefineFunc_IsSupportedLegacy(PVRDRIBufferCreateFromFdsWithModifier,
-			     BufferCreateFromFdsWithModifier)
-
-PVRDRIBufferImpl *
-PVRDRIBufferCreateFromFdsWithModifier(PVRDRIScreenImpl *psScreenImpl,
-				      int iWidth,
-				      int iHeight,
-				      uint64_t uiModifier,
-				      unsigned uiNumPlanes,
-				      const int *piFd,
-				      const int *piStride,
-				      const int *piOffset,
-				      const unsigned int *puiWidthShift,
-				      const unsigned int *puiHeightShift)
-{
-	CallFuncLegacy(PVRDRIBufferCreateFromFdsWithModifier,
-		       BufferCreateFromFdsWithModifier,
-		       psScreenImpl,
-		       iWidth,
-		       iHeight,
-		       uiModifier,
-		       uiNumPlanes,
-		       piFd,
-		       piStride,
-		       piOffset,
-		       puiWidthShift,
-		       puiHeightShift);
-
-	if (uiModifier == DRM_FORMAT_MOD_INVALID)
-	{
-		CallFuncLegacy(PVRDRIBufferCreateFromFds,
-			       BufferCreateFromFds,
-			       psScreenImpl,
-			       iWidth,
-			       iHeight,
-			       uiNumPlanes,
-			       piFd,
-			       piStride,
-			       piOffset,
-			       puiWidthShift,
-			       puiHeightShift);
-	}
-
-	return NULL;
-}
-
-PVRDRIBufferImpl *
-PVRDRISubBufferCreate(PVRDRIScreenImpl *psScreen,
-		      PVRDRIBufferImpl *psParentBuffer,
-		      int plane)
-{
-	CallFuncLegacy(PVRDRISubBufferCreate,
-		       SubBufferCreate,
-		       psScreen,
-		       psParentBuffer,
-		       plane);
-
-	return NULL;
-}
-
 void
 PVRDRIBufferDestroy(PVRDRIBufferImpl *psBuffer)
 {
@@ -946,33 +769,11 @@ PVRDRIBufferGetHandle(PVRDRIBufferImpl *psBuffer)
 	return 0;
 }
 
-uint64_t
-PVRDRIBufferGetModifier(PVRDRIBufferImpl *psBuffer)
-{
-	CallFuncLegacy(PVRDRIBufferGetModifier,
-		       BufferGetModifier,
-		       psBuffer);
-
-	return DRM_FORMAT_MOD_INVALID;
-}
-
 int
 PVRDRIBufferGetName(PVRDRIBufferImpl *psBuffer)
 {
 	CallFuncLegacy(PVRDRIBufferGetName,
 		       BufferGetName,
-		       psBuffer);
-
-	return 0;
-}
-
-DefineFunc_IsSupportedLegacy(PVRDRIBufferGetOffset, BufferGetOffset)
-
-int
-PVRDRIBufferGetOffset(PVRDRIBufferImpl *psBuffer)
-{
-	CallFuncLegacy(PVRDRIBufferGetOffset,
-		       BufferGetOffset,
 		       psBuffer);
 
 	return 0;
@@ -1007,18 +808,6 @@ PVRDRIEGLImageCreateFromBuffer(int iWidth,
 		       eChromaUInterp,
 		       eChromaVInterp,
 		       psBuffer);
-
-	return NULL;
-}
-
-IMGEGLImage *
-PVRDRIEGLImageCreateFromSubBuffer(IMG_PIXFMT ePixelFormat,
-				  PVRDRIBufferImpl *psSubBuffer)
-{
-	CallFuncLegacy(PVRDRIEGLImageCreateFromSubBuffer,
-		       EGLImageCreateFromSubBuffer,
-		       ePixelFormat,
-		       psSubBuffer);
 
 	return NULL;
 }
@@ -1086,37 +875,6 @@ PVRDRICreateFenceImpl(PVRDRIAPIType eAPI,
 	return NULL;
 }
 
-void *
-PVRDRICreateFenceFdImpl(PVRDRIAPIType eAPI,
-		      PVRDRIScreenImpl *psScreenImpl,
-		      PVRDRIContextImpl *psContextImpl,
-		      int iFd)
-{
-	CallFunc(CreateFenceFd, 2,
-		 eAPI,
-	         psScreenImpl,
-		 psContextImpl,
-		 iFd);
-
-	return NULL;
-}
-
-unsigned PVRDRIGetFenceCapabilitiesImpl(PVRDRIScreenImpl *psScreenImpl)
-{
-	CallFunc(GetFenceCapabilities, 2,
-		 psScreenImpl);
-
-	return 0;
-}
-
-int PVRDRIGetFenceFdImpl(void *psDRIFence)
-{
-	CallFunc(GetFenceFd, 2,
-		 psDRIFence);
-
-	return -1;
-}
-
 void
 PVRDRIDestroyFenceImpl(void *psDRIFence)
 {
@@ -1179,74 +937,6 @@ PVRDRIEGLDrawableConfigFromGLMode(PVRDRIDrawableImpl *psPVRDrawable,
 		       psConfigInfo,
 		       supportedAPIs,
 		       ePixFmt);
-
-	return false;
-}
-
-DefineFunc_IsSupportedLegacy(PVRDRIBlitEGLImage, BlitEGLImage)
-
-bool
-PVRDRIBlitEGLImage(PVRDRIScreenImpl *psScreenImpl,
-		   PVRDRIContextImpl *psContextImpl,
-		   IMGEGLImage *psDstImage,
-		   PVRDRIBufferImpl *psDstBuffer,
-		   IMGEGLImage *psSrcImage,
-		   PVRDRIBufferImpl *psSrcBuffer,
-		   int iDstX, int iDstY,
-		   int iDstWidth, int iDstHeight,
-		   int iSrcX, int iSrcY,
-		   int iSrcWidth, int iSrcHeight,
-		   int iFlushFlag)
-{
-	CallFuncLegacy(PVRDRIBlitEGLImage,
-		       BlitEGLImage,
-		       psScreenImpl,
-		       psContextImpl,
-		       psDstImage, psDstBuffer,
-		       psSrcImage, psSrcBuffer,
-		       iDstX, iDstY,
-		       iDstWidth, iDstHeight,
-		       iSrcX, iSrcY,
-		       iSrcWidth, iSrcHeight,
-		       iFlushFlag);
-
-	return false;
-}
-
-DefineFunc_IsSupportedLegacy(PVRDRIMapEGLImage, MapEGLImage)
-
-void *
-PVRDRIMapEGLImage(PVRDRIScreenImpl *psScreenImpl,
-		  PVRDRIContextImpl *psContextImpl,
-		  IMGEGLImage *psImage,
-		  PVRDRIBufferImpl *psBuffer,
-		  int iX, int iY, int iWidth, int iHeight,
-		  unsigned uiFlags, int *iStride, void **ppvData)
-{
-	CallFuncLegacy(PVRDRIMapEGLImage,
-		       MapEGLImage,
-		       psScreenImpl,
-		       psContextImpl,
-		       psImage, psBuffer,
-		       iX, iY, iWidth, iHeight,
-		       uiFlags, iStride, ppvData);
-
-	return false;
-}
-
-bool
-PVRDRIUnmapEGLImage(PVRDRIScreenImpl *psScreenImpl,
-		    PVRDRIContextImpl *psContextImpl,
-		    IMGEGLImage *psImage,
-		    PVRDRIBufferImpl *psBuffer,
-		    void *pvData)
-{
-	CallFuncLegacy(PVRDRIUnmapEGLImage,
-		       UnmapEGLImage,
-		       psScreenImpl,
-		       psContextImpl,
-		       psImage, psBuffer,
-		       pvData);
 
 	return false;
 }
@@ -1344,40 +1034,4 @@ PVRDRIGetAPIFunc(PVRDRIAPIType eAPI, unsigned index)
 		       index);
 
 	return NULL;
-}
-
-int
-PVRDRIQuerySupportedFormats(PVRDRIScreenImpl *psScreenImpl,
-			    unsigned uNumFormats,
-			    const int *iFormats,
-			    const IMG_PIXFMT *peImgFormats,
-			    bool *bSupported)
-{
-	CallFuncLegacy(PVRDRIQuerySupportedFormats,
-		       QuerySupportedFormats,
-		       psScreenImpl,
-		       uNumFormats,
-		       iFormats,
-		       peImgFormats,
-		       bSupported);
-
-	return -1;
-}
-
-int
-PVRDRIQueryModifiers(PVRDRIScreenImpl *psScreenImpl,
-		     int iFormat,
-		     IMG_PIXFMT eImgFormat,
-		     uint64_t *puModifiers,
-		     unsigned *puExternalOnly)
-{
-	CallFuncLegacy(PVRDRIQueryModifiers,
-		       QueryModifiers,
-		       psScreenImpl,
-		       iFormat,
-		       eImgFormat,
-		       puModifiers,
-		       puExternalOnly);
-
-	return -1;
 }

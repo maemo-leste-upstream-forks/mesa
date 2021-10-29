@@ -48,6 +48,7 @@ typedef enum
 typedef enum
 {
 	PVRDRI_API_NONE = 0,
+	PVRDRI_API_GL = 1,
 	PVRDRI_API_GLES1 = 2,
 	PVRDRI_API_GLES2 = 3,
 	PVRDRI_API_CL = 4,
@@ -57,6 +58,8 @@ typedef enum
 typedef enum
 {
 	PVRDRI_API_SUB_NONE,
+	PVRDRI_API_SUB_GL_COMPAT = 1,
+	PVRDRI_API_SUB_GL_CORE = 2,
 } PVRDRIAPISubType;
 
 typedef enum
@@ -120,6 +123,13 @@ typedef enum
 	PVRDRI_BUFFER_ATTRIB_PIXEL_FORMAT = 5,
 } PVRDRIBufferAttrib;
 
+typedef enum PVRDRIBufferBackingType_TAG
+{
+  PVRDRI_BUFFER_BACKING_INVALID = 0x0,
+  PVRDRI_BUFFER_BACKING_DRI2 = 0x1,
+  PVRDRI_BUFFER_BACKING_IMAGE = 0x2,
+} PVRDRIBufferBackingType;
+
 /* The context flags match their __DRI_CTX_FLAG and EGL_CONTEXT counterparts */
 #define PVRDRI_CONTEXT_FLAG_DEBUG			0x00000001
 #define PVRDRI_CONTEXT_FLAG_FORWARD_COMPATIBLE		0x00000002
@@ -163,6 +173,7 @@ typedef enum
 
 /* EGL_RENDERABLE_TYPE mask bits */
 #define PVRDRI_API_BIT_GLES		0x0001
+#define PVRDRI_API_BIT_OPENGL		0x0002
 #define PVRDRI_API_BIT_GLES2		0x0004
 #define PVRDRI_API_BIT_GLES3		0x0040
 
@@ -222,14 +233,6 @@ typedef enum
 /* Since callback interface version 3 */
 #define PVRDRI_GETPARAMS_FLAG_NO_UPDATE		0x2
 
-/*
- * Capabilities that might be returned by PVRDRIInterface.GetFenceCapabilities.
- * These match their _DRI_FENCE_CAP counterparts.
- *
- * Since PVRDRIInterface version 2.
- */
-#define	PVRDRI_FENCE_CAP_NATIVE_FD 0x1
-
 typedef struct 
 {
 	IMG_PIXFMT          ePixFormat;
@@ -270,9 +273,6 @@ typedef struct PVRDRIBufferImplRec PVRDRIBufferImpl;
 typedef struct PVRDRIDrawable_TAG PVRDRIDrawable;
 
 typedef void (*PVRDRIGLAPIProc)(void);
-
-/* Since PVRDRICallbacks version 2 */
-typedef struct PVRDRIConfigRec PVRDRIConfig;
 
 typedef struct {
 	/**********************************************************************
@@ -384,15 +384,6 @@ typedef struct {
 	                                     unsigned int uiUseFlags,
 	                                     unsigned int *puiStride);
 
-	PVRDRIBufferImpl    *(*BufferCreateWithModifiers)(PVRDRIScreenImpl *psScreenImpl,
-	                                                  int iWidth,
-	                                                  int iHeight,
-	                                                  int iFormat,
-	                                                  IMG_PIXFMT eIMGPixelFormat,
-	                                                  const uint64_t *puiModifiers,
-	                                                  unsigned int uiModifierCount,
-	                                                  unsigned int *puiStride);
-
 	PVRDRIBufferImpl    *(*BufferCreateFromNames)(PVRDRIScreenImpl *psScreenImpl,
 	                                              int iWidth,
 	                                              int iHeight,
@@ -421,32 +412,13 @@ typedef struct {
 	                                            const unsigned int *puiWidthShift,
 	                                            const unsigned int *puiHeightShift);
 
-	PVRDRIBufferImpl    *(*BufferCreateFromFdsWithModifier)(PVRDRIScreenImpl *psScreenImpl,
-	                                                        int iWidth,
-	                                                        int iHeight,
-	                                                        uint64_t uiModifier,
-	                                                        unsigned uiNumPlanes,
-	                                                        const int *piFd,
-	                                                        const int *piStride,
-	                                                        const int *piOffset,
-	                                                        const unsigned int *puiWidthShift,
-	                                                        const unsigned int *puiHeightShift);
-
-	PVRDRIBufferImpl    *(*SubBufferCreate)(PVRDRIScreenImpl *psScreen,
-	                                        PVRDRIBufferImpl *psParent,
-	                                        int plane);
-
 	void                 (*BufferDestroy)(PVRDRIBufferImpl *psBuffer);
 
 	int                  (*BufferGetFd)(PVRDRIBufferImpl *psBuffer);
 
 	int                  (*BufferGetHandle)(PVRDRIBufferImpl *psBuffer);
 
-	uint64_t             (*BufferGetModifier)(PVRDRIBufferImpl *psBuffer);
-
 	int                  (*BufferGetName)(PVRDRIBufferImpl *psBuffer);
-
-	int                  (*BufferGetOffset)(PVRDRIBufferImpl *psBuffer);
 
 	/* Image functions */
 	IMGEGLImage         *(*EGLImageCreate)(void);
@@ -458,9 +430,6 @@ typedef struct {
 	                                                 IMG_YUV_CHROMA_INTERP eChromaUInterp,
 	                                                 IMG_YUV_CHROMA_INTERP eChromaVInterp,
 	                                                 PVRDRIBufferImpl *psBuffer);
-
-	IMGEGLImage         *(*EGLImageCreateFromSubBuffer)(IMG_PIXFMT ePixelFormat,
-	                                                    PVRDRIBufferImpl *psSubBuffer);
 
 	IMGEGLImage         *(*EGLImageDup)(IMGEGLImage *psIn);
 
@@ -561,38 +530,6 @@ typedef struct {
 	                                       IMG_PIXFMT eImgFormat,
 	                                       uint64_t *puModifiers,
 	                                       unsigned *puExternalOnly);
-
-	/**********************************************************************
-	 * Version 1 functions
-	 **********************************************************************/
-
-	unsigned             (*CreateContextV1)(PVRDRIScreenImpl *psScreenImpl,
-						PVRDRIContextImpl *psSharedContextImpl,
-						PVRDRIConfig *psConfig,
-						PVRDRIAPIType eAPI,
-						PVRDRIAPISubType eAPISub,
-						unsigned uMajorVersion,
-						unsigned uMinorVersion,
-						uint32_t uFlags,
-						bool bNotifyReset,
-						unsigned uPriority,
-						PVRDRIContextImpl **ppsContextImpl);
-
-	PVRDRIDrawableImpl  *(*CreateDrawableWithConfig)(PVRDRIDrawable *psPVRDrawable,
-							 PVRDRIConfig *psConfig);
-
-	/**********************************************************************
-	 * Version 2 functions
-	 **********************************************************************/
-
-	unsigned             (*GetFenceCapabilities)(PVRDRIScreenImpl *psScreenImpl);
-
-	void                *(*CreateFenceFd)(PVRDRIAPIType eAPI,
-	                                      PVRDRIScreenImpl *psScreenImpl,
-	                                      PVRDRIContextImpl *psContextImpl,
-                                              int iFd);
-
-	int                  (*GetFenceFd)(void *psDRIFence);
 } PVRDRISupportInterface;
 
 /* Callbacks into non-impl layer */
@@ -620,66 +557,6 @@ typedef struct
 	__DRIimage          *(*ScreenGetDRIImage)(void *hEGLImage);
 	void                 (*RefImage)(__DRIimage *image);
 	void                 (*UnrefImage)(__DRIimage *image);
-
-	/*
-	 * If the DRI module calls PVRDRIRegisterCallbacks, or
-	 * PVRDRIRegisterVersionedCallbacks with any version number,
-	 * the DRI support library can use the callbacks above.
-	 * The callbacks below can only be called if
-	 * PVRDRIRegisterVersionedCallbacks is called with a suitable
-	 * version number.
-	 */
-
-	/**********************************************************************
-	 * Version 1 callbacks
-	 **********************************************************************/
-
-	/*
-	 * Deprecated in version 2 (since 1.10).
-	 *
-	 * DrawableGetParametersV1 is a replacement for DrawableRecreate
-	 * and DrawableGetParameters. The DRI Support library must use one
-	 * interface or the other, otherwise the results are undefined.
-	 */
-	bool                 (*DrawableGetParametersV1)(PVRDRIDrawable *psPVRDrawable,
-                                                        bool bAllowRecreate,
-	                                                PVRDRIBufferImpl **ppsDstBuffer,
-	                                                PVRDRIBufferImpl **ppsAccumBuffer,
-	                                                PVRDRIBufferAttribs *psAttribs,
-	                                                bool *pbDoubleBuffered);
-
-	/*
-	 * Register the DRI Support interface with the DRI module.
-	 * The caller is not required to preserve the PVRDRICallbacks structure
-	 * after the call, so the callee must make a copy.
-	 */
-	bool                 (*RegisterSupportInterfaceV1)(const PVRDRISupportInterface *psInterface,
-							   unsigned uVersion);
-
-	/**********************************************************************
-	 * Version 2 callbacks
-	 **********************************************************************/
-
-	bool                 (*ConfigQuery)(const PVRDRIConfig *psConfig,
-	                                    PVRDRIConfigAttrib eConfigAttrib,
-	                                    int *piValueOut);
-	/*
-	 * DrawableGetParametersV2 is a replacement for DrawableGetParametersV1.
-	 * Unlike earlier versions, the caller is expected to query drawable
-	 * information (via DrawableQuery) instead of this information being
-	 * returned by the callback.
-	 */
-	bool                 (*DrawableGetParametersV2)(PVRDRIDrawable *psPVRDrawable,
-	                                                uint32_t uiFlags,
-	                                                PVRDRIBufferImpl **ppsDstBuffer,
-	                                                PVRDRIBufferImpl **ppsAccumBuffer);
-	bool                 (*DrawableQuery)(const PVRDRIDrawable *psPVRDrawable,
-	                                      PVRDRIBufferAttrib eBufferAttrib,
-	                                      uint32_t *uiValueOut);
-
-	/**********************************************************************
-	 * Version 3 callbacks
-	 **********************************************************************/
 } PVRDRICallbacks;
 
 /*
@@ -804,16 +681,6 @@ PVRDRIBufferImpl *PVRDRIBufferCreate(PVRDRIScreenImpl *psScreenImpl,
 				     unsigned int uiUseFlags,
 				     unsigned int *puiStride);
 
-PVRDRIBufferImpl *
-PVRDRIBufferCreateWithModifiers(PVRDRIScreenImpl *psScreenImpl,
-			        int iWidth,
-			        int iHeight,
-			        int iFormat,
-				IMG_PIXFMT eIMGPixelFormat,
-			        const uint64_t *puiModifiers,
-			        unsigned int uiModifierCount,
-			        unsigned int *puiStride);
-
 PVRDRIBufferImpl *PVRDRIBufferCreateFromNames(PVRDRIScreenImpl *psScreenImpl,
 					   int iWidth,
 					   int iHeight,
@@ -841,23 +708,9 @@ PVRDRIBufferImpl *PVRDRIBufferCreateFromFds(PVRDRIScreenImpl *psScreenImpl,
 					   const unsigned int *puiWidthShift,
 					   const unsigned int *puiHeightShift);
 
-PVRDRIBufferImpl *
-PVRDRIBufferCreateFromFdsWithModifier(PVRDRIScreenImpl *psScreenImpl,
-				      int iWidth,
-				      int iHeight,
-				      uint64_t uiModifier,
-				      unsigned uiNumPlanes,
-				      const int *piFd,
-				      const int *piStride,
-				      const int *piOffset,
-				      const unsigned int *puiWidthShift,
-				      const unsigned int *puiHeightShift);
-
 PVRDRIBufferImpl *PVRDRISubBufferCreate(PVRDRIScreenImpl *psScreen,
 					PVRDRIBufferImpl *psParent,
 					int plane);
-
-void PVRDRIBufferDestroy(PVRDRIBufferImpl *psBuffer);
 
 int PVRDRIBufferGetFd(PVRDRIBufferImpl *psBuffer);
 
@@ -866,8 +719,6 @@ int PVRDRIBufferGetHandle(PVRDRIBufferImpl *psBuffer);
 uint64_t PVRDRIBufferGetModifier(PVRDRIBufferImpl *psBuffer);
 
 int PVRDRIBufferGetName(PVRDRIBufferImpl *psBuffer);
-
-int PVRDRIBufferGetOffset(PVRDRIBufferImpl *psBuffer);
 
 /* Image functions */
 IMGEGLImage *PVRDRIEGLImageCreate(void);
@@ -879,9 +730,6 @@ IMGEGLImage *PVRDRIEGLImageCreateFromBuffer(int iWidth,
 					   IMG_YUV_CHROMA_INTERP eChromaUInterp,
 					   IMG_YUV_CHROMA_INTERP eChromaVInterp,
 					   PVRDRIBufferImpl *psBuffer);
-
-IMGEGLImage *PVRDRIEGLImageCreateFromSubBuffer(IMG_PIXFMT ePixelFormat,
-					       PVRDRIBufferImpl *psSubBuffer);
 
 IMGEGLImage *PVRDRIEGLImageDup(IMGEGLImage *psIn);
 
@@ -920,27 +768,6 @@ bool PVRDRIEGLDrawableConfigFromGLMode(PVRDRIDrawableImpl *psPVRDrawable,
 				       int supportedAPIs,
 				       IMG_PIXFMT ePixFmt);
 
-/* Blit functions */
-bool PVRDRIBlitEGLImage(PVRDRIScreenImpl *psScreenImpl,
-		        PVRDRIContextImpl *psContextImpl,
-			IMGEGLImage *psDstImage, PVRDRIBufferImpl *psDstBuffer,
-			IMGEGLImage *psSrcImage, PVRDRIBufferImpl *psSrcBuffer,
-			int iDstX, int iDstY, int iDstWidth, int iDstHeight,
-			int iSrcX, int iSrcY, int iSrcWidth, int iSrcHeight,
-			int iFlushFlag);
-
-/* Mapping functions */
-void *PVRDRIMapEGLImage(PVRDRIScreenImpl *psScreenImpl,
-			PVRDRIContextImpl *psContextImpl,
-			IMGEGLImage *psImage, PVRDRIBufferImpl *psBuffer,
-			int iX, int iY, int iWidth, int iHeight,
-			unsigned uiFlags, int *piStride, void **ppvData);
-
-bool PVRDRIUnmapEGLImage(PVRDRIScreenImpl *psScreenImpl,
-			 PVRDRIContextImpl *psContextImpl,
-			 IMGEGLImage *psImage, PVRDRIBufferImpl *psBuffer,
-			 void *pvData);
-
 /* PVR utility support functions */
 bool PVRDRIMesaFormatSupported(unsigned fmt);
 unsigned PVRDRIDepthStencilBitArraySize(void);
@@ -953,17 +780,5 @@ uint32_t PVRDRIMaxPBufferHeight(void);
 
 unsigned PVRDRIGetNumAPIFuncs(PVRDRIAPIType eAPI);
 const char *PVRDRIGetAPIFunc(PVRDRIAPIType eAPI, unsigned index);
-
-int PVRDRIQuerySupportedFormats(PVRDRIScreenImpl *psScreenImpl,
-				unsigned uNumFormats,
-				const int *piFormats,
-				const IMG_PIXFMT *peImgFormats,
-				bool *pbSupported);
-
-int PVRDRIQueryModifiers(PVRDRIScreenImpl *psScreenImpl,
-			 int iFormat,
-			 IMG_PIXFMT eImgFormat,
-			 uint64_t *puModifiers,
-			 unsigned *puExternalOnly);
 
 #endif /* defined(__PVRDRIIFCE_H__) */

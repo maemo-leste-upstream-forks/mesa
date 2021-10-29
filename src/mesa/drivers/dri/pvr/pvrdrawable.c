@@ -32,72 +32,178 @@
 
 #include "pvrdri.h"
 #include "pvrimage.h"
+#include "pvr_object_cache.h"
 
-static inline void PVRDRIMarkRenderSurfaceAsInvalid(PVRDRIDrawable *psPVRDrawable)
+static PVRDRIBufferImpl *PVRGetBackingBuffer(PVRDRIBuffer *psPVRBuffer)
 {
-	PVRDRIContext *psPVRContext = psPVRDrawable->psPVRContext;
-
-	if (psPVRContext)
+	if (psPVRBuffer)
 	{
+		switch (psPVRBuffer->eBackingType)
+		{
+			case PVRDRI_BUFFER_BACKING_DRI2:
+				return psPVRBuffer->uBacking.sDRI2.psBuffer;
+			case PVRDRI_BUFFER_BACKING_IMAGE:
+				return PVRDRIImageGetSharedBuffer(psPVRBuffer->uBacking.sImage.psImage);
+			default:
+				assert(0);
+				return NULL;
+		}
+	}
 
+	return NULL;
+}
+
+static void *PVRImageObjectCacheInsert(void *pvCreateData, void *pvInsertData)
+{
+	__DRIimage *psImage = pvInsertData;
+	PVRDRIBuffer *psPVRBuffer;
+	(void)pvCreateData;
+
+	assert(PVRDRIImageGetSharedBuffer(psImage) != NULL);
+
+	psPVRBuffer = calloc(1, sizeof(*psPVRBuffer));
+	if (psPVRBuffer == NULL)
+	{
+		errorMessage("%s: Failed to create PVR DRI buffer", __func__);
+		return NULL;
+	}
+
+	psPVRBuffer->eBackingType = PVRDRI_BUFFER_BACKING_IMAGE;
+	psPVRBuffer->uBacking.sImage.psImage = psImage;
+
+	/* As a precaution, take a reference on the image so it doesn't disappear unexpectedly */
+	PVRDRIRefImage(psImage);
+
+	return psPVRBuffer;
+}
+
+static void PVRImageObjectCachePurge(void *pvCreateData,
+				     void *pvObjectData,
+				     bool bRetired)
+{
+	PVRDRIDrawable *psPVRDrawable = pvCreateData;
+	PVRDRIBuffer *psPVRBuffer = pvObjectData;
+
+	if (bRetired)
+	{
+		/*
+		 * Delay flush until later, as it may not be safe
+		 * to do the flush within GetDrawableInfo.
+		 */
+		PVRQQueue(&psPVRDrawable->sCacheFlushHead, &psPVRBuffer->sCacheFlushElem);
+	}
+	else
+	{
+		PVRDRIUnrefImage(psPVRBuffer->uBacking.sImage.psImage);
+		free(psPVRBuffer);
+	}
+}
+
+static bool PVRImageObjectCacheCompare(void *pvCreateData,
+				       void *pvObjectData,
+				       void *pvInsertData)
+{
+	__DRIimage *psImage = pvInsertData;
+	PVRDRIBuffer *psPVRBuffer = pvObjectData;
+	(void)pvCreateData;
+
+	return psPVRBuffer->uBacking.sImage.psImage == psImage;
+}
+
+static void *PVRDRI2ObjectCacheInsert(void *pvCreateData, void *pvInsertData)
+{
+	PVRDRIDrawable *psPVRDrawable = pvCreateData;
+	__DRIdrawable *psDRIDrawable = psPVRDrawable->psDRIDrawable;
+	PVRDRIScreen *psPVRScreen = psPVRDrawable->psPVRScreen;
+	PVRDRIBuffer *psPVRBuffer;
+	__DRIbuffer *psDRIBuffer = pvInsertData;
+
+	if (PVRDRIPixFmtGetBlockSize(psPVRDrawable->ePixelFormat) != psDRIBuffer->cpp)
+	{
+		errorMessage("%s: DRI buffer format doesn't match drawable format\n", __func__);
+		return NULL;
+	}
+
+	psPVRBuffer = calloc(1, sizeof(*psPVRBuffer));
+	if (psPVRBuffer == NULL)
+	{
+		errorMessage("%s: Failed to create PVR DRI buffer", __func__);
+		return NULL;
+	}
+
+	psPVRBuffer->eBackingType = PVRDRI_BUFFER_BACKING_DRI2;
+	psPVRBuffer->uBacking.sDRI2.uiName = psDRIBuffer->name;
+	psPVRBuffer->uBacking.sDRI2.psBuffer =
+			PVRDRIBufferCreateFromName(psPVRScreen->psImpl,
+						   psDRIBuffer->name,
+						   psDRIDrawable->w,
+						   psDRIDrawable->h,
+						   psDRIBuffer->pitch,
+						   0);
+	if (!psPVRBuffer->uBacking.sDRI2.psBuffer)
+	{
+		free(psPVRBuffer);
+		return NULL;
+	}
+
+	return psPVRBuffer;
+}
+
+static void PVRDRI2ObjectCachePurge(void *pvCreateData,
+				    void *pvObjectData,
+				    bool bRetired)
+{
+	PVRDRIDrawable *psPVRDrawable = pvCreateData;
+	PVRDRIBuffer *psPVRBuffer = pvObjectData;
+
+	if (bRetired)
+	{
+		/*
+		 * Delay flush until later, as it may not be safe
+		 * to do the flush within GetDrawableInfo.
+		 */
+		PVRQQueue(&psPVRDrawable->sCacheFlushHead, &psPVRBuffer->sCacheFlushElem);
+	}
+	else
+	{
+		PVRDRIBufferDestroy(psPVRBuffer->uBacking.sDRI2.psBuffer);
+		free(psPVRBuffer);
+	}
+}
+
+static bool PVRDRI2ObjectCacheCompare(void *pvCreateData,
+				      void *pvObjectData,
+				      void *pvInsertData)
+{
+	__DRIbuffer *psDRIBuffer = pvInsertData;
+	PVRDRIBuffer *psPVRBuffer = pvObjectData;
+	(void)pvCreateData;
+
+	return psDRIBuffer->name == psPVRBuffer->uBacking.sDRI2.uiName;
+}
+
+
+/*************************************************************************/ /*!
+ PVR drawable local functions
+*/ /**************************************************************************/
+
+static inline void PVRDRIMarkAllRenderSurfacesAsInvalid(PVRDRIDrawable *psPVRDrawable)
+{
+	PVRQElem *psQElem = psPVRDrawable->sPVRContextHead.pvForw;
+
+	while (psQElem != &psPVRDrawable->sPVRContextHead)
+	{
+		PVRDRIContext *psPVRContext = PVRQ_CONTAINER_OF(psQElem, PVRDRIContext, sQElem);
 		PVRDRIEGLMarkRendersurfaceInvalid(psPVRContext->eAPI,
 						  psPVRContext->psPVRScreen->psImpl,
 						  psPVRContext->psImpl);
+		psQElem = psPVRContext->sQElem.pvForw;
 	}
+
+	/* No need to flush surfaces evicted from the cache */
+	INITIALISE_PVRQ_HEAD(&psPVRDrawable->sCacheFlushHead);
 }
 
-/*************************************************************************/ /*!
- PVR drawable local functions (image driver loader)
-*/ /**************************************************************************/
-
-static inline void PVRDrawableImageDestroy(PVRDRIDrawable *psPVRDrawable)
-{
-	if (psPVRDrawable->psImage)
-	{
-		PVRDRIUnrefImage(psPVRDrawable->psImage);
-		psPVRDrawable->psImage = NULL;
-	}
-}
-
-static inline void PVRDrawableImageAccumDestroy(PVRDRIDrawable *psPVRDrawable)
-{
-	if (psPVRDrawable->psImageAccum)
-	{
-		PVRDRIUnrefImage(psPVRDrawable->psImageAccum);
-		psPVRDrawable->psImageAccum = NULL;
-	}
-}
-
-static void PVRDrawableImageUpdate(PVRDRIDrawable *psPVRDrawable)
-{
-	if (psPVRDrawable->psImage != psPVRDrawable->psDRI)
-	{
-		assert(PVRDRIImageGetSharedBuffer(psPVRDrawable->psDRI) != NULL);
-
-		PVRDrawableImageDestroy(psPVRDrawable);
-
-		PVRDRIRefImage(psPVRDrawable->psDRI);
-		psPVRDrawable->psImage = psPVRDrawable->psDRI;
-	}
-
-	if (psPVRDrawable->psImageAccum != psPVRDrawable->psDRIAccum)
-	{
-		PVRDrawableImageAccumDestroy(psPVRDrawable);
-
-		if (psPVRDrawable->psDRIAccum)
-		{
-			PVRDRIRefImage(psPVRDrawable->psDRIAccum);
-			psPVRDrawable->psImageAccum = psPVRDrawable->psDRIAccum;
-		}
-	}
-}
-
-/*************************************************************************/ /*!
- Function Name		: PVRImageDrawableGetNativeInfo
- Inputs			: psPVRDrawable
- Returns		: Boolean
- Description		: Update native drawable information.
-*/ /**************************************************************************/
 static bool PVRImageDrawableGetNativeInfo(PVRDRIDrawable *psPVRDrawable)
 {
 	__DRIdrawable *psDRIDrawable = psPVRDrawable->psDRIDrawable;
@@ -109,8 +215,8 @@ static bool PVRImageDrawableGetNativeInfo(PVRDRIDrawable *psPVRDrawable)
 	assert(psDRIScreen->image.loader != NULL);
 	assert(psDRIScreen->image.loader->getBuffers);
 
-	psFormat = PVRDRIIMGPixelFormatToImageFormat(psPVRDrawable->psPVRScreen,
-						     psPVRDrawable->ePixelFormat);
+	psFormat = PVRDRIIMGPixelFormatToImageFormat(
+			   psPVRDrawable->ePixelFormat);
 	if (!psFormat)
 	{
 		errorMessage("%s: Unsupported format (format = %u)\n",
@@ -118,7 +224,7 @@ static bool PVRImageDrawableGetNativeInfo(PVRDRIDrawable *psPVRDrawable)
 		return false;
 	}
 
-	if (psPVRDrawable->sConfig.sGLMode.doubleBufferMode)
+	if (psPVRDrawable->bDoubleBuffered)
 	{
 		uiBufferMask = __DRI_IMAGE_BUFFER_BACK;
 	}
@@ -126,10 +232,6 @@ static bool PVRImageDrawableGetNativeInfo(PVRDRIDrawable *psPVRDrawable)
 	{
 		uiBufferMask = __DRI_IMAGE_BUFFER_FRONT;
 	}
-
-#if defined(DRI_IMAGE_HAS_BUFFER_PREV)
-	uiBufferMask |= __DRI_IMAGE_BUFFER_PREV;
-#endif
 
 	if (!psDRIScreen->image.loader->getBuffers(psDRIDrawable,
 						   psFormat->iDRIFormat,
@@ -142,52 +244,275 @@ static bool PVRImageDrawableGetNativeInfo(PVRDRIDrawable *psPVRDrawable)
 		return false;
 	}
 
-	psPVRDrawable->psDRI =
+	psPVRDrawable->uDRI.sImage.psDRI =
 		(sImages.image_mask & __DRI_IMAGE_BUFFER_BACK) ?
 			sImages.back : sImages.front;
-
-#if defined(DRI_IMAGE_HAS_BUFFER_PREV)
-	if (sImages.image_mask & __DRI_IMAGE_BUFFER_PREV)
-	{
-		psPVRDrawable->psDRIAccum = sImages.prev;
-	}
-	else
-#endif
-	{
-		psPVRDrawable->psDRIAccum = NULL;
-	}
 
 	return true;
 }
 
-/*************************************************************************/ /*!
- Function Name		: PVRImageDrawableCreate
- Inputs			: psPVRDrawable
- Returns		: Boolean
- Description		: Create drawable
-*/ /**************************************************************************/
-static bool PVRImageDrawableCreate(PVRDRIDrawable *psPVRDrawable)
+static bool PVRDRI2DrawableGetNativeInfo(PVRDRIDrawable *psPVRDrawable)
 {
 	__DRIdrawable *psDRIDrawable = psPVRDrawable->psDRIDrawable;
-	uint32_t uBytesPerPixel;
-	PVRDRIBufferAttribs sBufferAttribs;
+	__DRIscreen *psDRIScreen = psPVRDrawable->psPVRScreen->psDRIScreen;
+	__DRIbuffer *psDRIBuffers;
+	int i;
+	int iBufCount;
+	int w;
+	int h;
+	unsigned int auiAttachmentReq[2];
 
-	if (!PVRImageDrawableGetNativeInfo(psPVRDrawable))
+	assert(psDRIScreen->dri2.loader);
+	assert(psDRIScreen->dri2.loader->getBuffersWithFormat);
+
+	auiAttachmentReq[0] = psPVRDrawable->bDoubleBuffered;
+	auiAttachmentReq[1] = PVRDRIPixFmtGetDepth(psPVRDrawable->ePixelFormat);
+
+	psDRIBuffers = psDRIScreen->dri2.loader->getBuffersWithFormat(
+			       psDRIDrawable, &w, &h, auiAttachmentReq,
+			       1, &iBufCount, psDRIDrawable->loaderPrivate);
+
+	if (!psDRIBuffers)
 	{
+		errorMessage("%s: DRI2 get buffers call failed\n",
+			     __func__);
 		return false;
 	}
 
-	PVRDRIEGLImageGetAttribs(
-		PVRDRIImageGetEGLImage(psPVRDrawable->psDRI),
-					&sBufferAttribs);
-	uBytesPerPixel = PVRDRIPixFmtGetBlockSize(sBufferAttribs.ePixFormat);
+	for (i = 0; i < iBufCount; i++)
+	{
+		if (psDRIBuffers->attachment == auiAttachmentReq[0] ||
+		    (psDRIBuffers->attachment == __DRI_BUFFER_FAKE_FRONT_LEFT &&
+		     auiAttachmentReq[0] == 0))
+		{
+			break;
+		}
 
-	psDRIDrawable->w = sBufferAttribs.uiWidth;
-	psDRIDrawable->h = sBufferAttribs.uiHeight;
-	psPVRDrawable->uStride = sBufferAttribs.uiStrideInBytes;
-	psPVRDrawable->uBytesPerPixel = uBytesPerPixel;
+		psDRIBuffers++;
+	}
 
-	PVRDrawableImageUpdate(psPVRDrawable);
+	if (iBufCount)
+	{
+		psPVRDrawable->uDRI.sBuffer.sDRI.attachment =
+				psDRIBuffers->attachment;
+		psPVRDrawable->uDRI.sBuffer.sDRI.name = psDRIBuffers->name;
+		psPVRDrawable->uDRI.sBuffer.sDRI.pitch = psDRIBuffers->pitch;
+		psPVRDrawable->uDRI.sBuffer.sDRI.cpp = psDRIBuffers->cpp;
+		psPVRDrawable->uDRI.sBuffer.sDRI.flags = psDRIBuffers->flags;
+		psPVRDrawable->uDRI.sBuffer.w = w;
+		psPVRDrawable->uDRI.sBuffer.h = h;
+		return true;
+	}
+
+	errorMessage("%s: Couldn't get DRI buffer information\n", __func__);
+
+	return false;
+}
+
+static bool PVRDRIDrawableUpdateNativeInfo(PVRDRIDrawable *psPVRDrawable)
+{
+  if (psPVRDrawable->psPVRScreen->psDRIScreen->image.loader)
+    return PVRImageDrawableGetNativeInfo(psPVRDrawable);
+  else
+    return PVRDRI2DrawableGetNativeInfo(psPVRDrawable);
+}
+
+static bool PVRDRI2DrawableRecreate(PVRDRIDrawable *psPVRDrawable)
+{
+	__DRIdrawable *psDRIDrawable = psPVRDrawable->psDRIDrawable;
+	PVRDRIBuffer *psPVRBuffer = NULL;
+
+	if (!psPVRDrawable->bDoubleBuffered)
+	{
+		psPVRBuffer = PVRObjectCacheGetObject(
+				      psPVRDrawable->hBufferCache, 0);
+	}
+
+	if (psPVRDrawable->bDoubleBuffered ||
+	    !psPVRBuffer ||
+	    psPVRBuffer->uBacking.sDRI2.uiName ==
+	    psPVRDrawable->uDRI.sBuffer.sDRI.name)
+	{
+		if (psDRIDrawable->w == psPVRDrawable->uDRI.sBuffer.w &&
+		    psDRIDrawable->h == psPVRDrawable->uDRI.sBuffer.h &&
+		    psPVRDrawable->uStride ==
+		    psPVRDrawable->uDRI.sBuffer.sDRI.pitch &&
+		    psPVRDrawable->uBytesPerPixel ==
+		    psPVRDrawable->uDRI.sBuffer.sDRI.cpp)
+		{
+			if (!PVRObjectCacheInsert(psPVRDrawable->hBufferCache,
+						  &psPVRDrawable->uDRI))
+			{
+				goto ErrorCacheInsert;
+			}
+			return true;
+		}
+	}
+
+	PVRDRIMarkAllRenderSurfacesAsInvalid(psPVRDrawable);
+	PVRObjectCachePurge(psPVRDrawable->hBufferCache);
+
+	psDRIDrawable->w = psPVRDrawable->uDRI.sBuffer.w;
+	psDRIDrawable->h = psPVRDrawable->uDRI.sBuffer.h;
+	psPVRDrawable->uStride = psPVRDrawable->uDRI.sBuffer.sDRI.pitch;
+	psPVRDrawable->uBytesPerPixel = psPVRDrawable->uDRI.sBuffer.sDRI.cpp;
+
+	if (!PVRObjectCacheInsert(psPVRDrawable->hBufferCache,
+				 &psPVRDrawable->uDRI))
+	{
+		goto ErrorCacheInsert;
+	}
+
+	if (!PVREGLDrawableRecreate(psPVRDrawable->psPVRScreen->psImpl,
+				    psPVRDrawable->psImpl))
+	{
+		errorMessage("%s: Couldn't recreate EGL drawable\n",
+			     "PVRDRI2DrawableRecreate");
+		return false;
+	}
+
+	return true;
+
+ErrorCacheInsert:
+	errorMessage("%s: Couldn't insert buffer into cache\n", __func__);
+
+	return false;
+}
+
+static bool PVRImageDrawableRecreate(PVRDRIDrawable *psPVRDrawable)
+{
+	unsigned int uBytesPerPixel;
+	PVRDRIBuffer *psPVRBuffer = NULL;
+	PVRDRIBufferAttribs sAttribs;
+
+	PVRDRIEGLImageGetAttribs(PVRDRIImageGetEGLImage(
+					 psPVRDrawable->uDRI.sImage.psDRI),
+				 &sAttribs);
+	uBytesPerPixel = PVRDRIPixFmtGetBlockSize(sAttribs.ePixFormat);
+
+	if (!psPVRDrawable->bDoubleBuffered)
+	{
+		psPVRBuffer = PVRObjectCacheGetObject(
+				      psPVRDrawable->hBufferCache, 0);
+	}
+
+	if ((psPVRBuffer && psPVRBuffer->uBacking.sImage.psImage !=
+	     psPVRDrawable->uDRI.sImage.psDRI) ||
+	    psPVRDrawable->psDRIDrawable->w != sAttribs.uiWidth ||
+	    psPVRDrawable->psDRIDrawable->h != sAttribs.uiHeight ||
+	    psPVRDrawable->uStride != sAttribs.uiStrideInBytes ||
+	    psPVRDrawable->uBytesPerPixel != uBytesPerPixel)
+	{
+		PVRDRIMarkAllRenderSurfacesAsInvalid(psPVRDrawable);
+		PVRObjectCachePurge(psPVRDrawable->hBufferCache);
+
+		psPVRDrawable->psDRIDrawable->w = sAttribs.uiWidth;
+		psPVRDrawable->psDRIDrawable->h = sAttribs.uiHeight;
+		psPVRDrawable->uStride = sAttribs.uiStrideInBytes;
+		psPVRDrawable->uBytesPerPixel = uBytesPerPixel;
+
+		if (!PVRObjectCacheInsert(psPVRDrawable->hBufferCache,
+					  psPVRDrawable->uDRI.sImage.psDRI))
+		{
+			goto ErrorCacheInsert;
+		}
+
+		if (!PVREGLDrawableRecreate(psPVRDrawable->psPVRScreen->psImpl,
+					    psPVRDrawable->psImpl))
+		{
+			errorMessage("%s: Couldn't recreate EGL drawable\n",
+				     __func__);
+			return false;
+		}
+
+		return true;
+	}
+
+
+	if (PVRObjectCacheInsert(psPVRDrawable->hBufferCache,
+				 psPVRDrawable->uDRI.sImage.psDRI))
+	{
+		return true;
+	}
+
+ErrorCacheInsert:
+	errorMessage("%s: Couldn't insert buffer into cache\n", __func__);
+
+	return false;
+}
+
+/*************************************************************************/ /*!
+ Function Name	: PVRDRIDrawableRecreate
+ Inputs		: psPVRDrawable
+ Description	: Recreate drawable
+*/ /**************************************************************************/
+bool PVRDRIDrawableRecreate(PVRDRIDrawable *psPVRDrawable)
+{
+	bool rv = true;
+	PVRDRIDrawableLock(psPVRDrawable);
+
+	if (psPVRDrawable->psPVRScreen->bUseInvalidate &&
+	    !psPVRDrawable->bDrawableInfoInvalid)
+	{
+		PVRDRIDrawableUnlock(psPVRDrawable);
+		return true;
+	}
+
+
+	if (!psPVRDrawable->bDrawableInfoUpdated)
+	{
+		rv = PVRDRIDrawableUpdateNativeInfo(psPVRDrawable);
+	}
+
+	if (rv)
+	{
+		if (!psPVRDrawable->psPVRScreen->psDRIScreen->image.loader)
+		{
+			rv = PVRDRI2DrawableRecreate(psPVRDrawable);
+		}
+		else
+		{
+			rv = PVRImageDrawableRecreate(psPVRDrawable);
+		}
+	}
+
+
+	if (rv)
+		psPVRDrawable->bDrawableInfoInvalid = false;
+
+	PVRDRIDrawableUnlock(psPVRDrawable);
+
+	return rv;
+}
+
+/*************************************************************************/ /*!
+ PVR drawable interface
+*/ /**************************************************************************/
+
+static bool PVRImageDrawableCreate(PVRDRIDrawable *psPVRDrawable)
+{
+	IMGEGLImage *psEGLImage;
+	PVRDRIBufferAttribs sAttribs;
+
+	if (!PVRImageDrawableGetNativeInfo(psPVRDrawable))
+		return false;
+
+	psEGLImage = PVRDRIImageGetEGLImage(psPVRDrawable->uDRI.sImage.psDRI);
+	PVRDRIEGLImageGetAttribs(psEGLImage, &sAttribs);
+
+	psPVRDrawable->psDRIDrawable->w = sAttribs.uiWidth;
+	psPVRDrawable->psDRIDrawable->h = sAttribs.uiHeight;
+	psPVRDrawable->uStride = sAttribs.uiStrideInBytes;
+	psPVRDrawable->uBytesPerPixel =
+			PVRDRIPixFmtGetBlockSize(sAttribs.ePixFormat);
+
+	if (!PVRObjectCacheInsert(psPVRDrawable->hBufferCache,
+				  psPVRDrawable->uDRI.sImage.psDRI) )
+	{
+		errorMessage("%s: Couldn't insert buffer into cache\n",
+			     __func__);
+		return false;
+	}
 
 	if (!PVREGLDrawableCreate(psPVRDrawable->psPVRScreen->psImpl,
 				  psPVRDrawable->psImpl))
@@ -199,196 +524,130 @@ static bool PVRImageDrawableCreate(PVRDRIDrawable *psPVRDrawable)
 	return true;
 }
 
-/*************************************************************************/ /*!
- Function Name		: PVRImageDrawableUpdate
- Inputs			: psPVRDrawable
- Returns		: Boolean
- Description		: Update drawable
-*/ /**************************************************************************/
-static bool PVRImageDrawableUpdate(PVRDRIDrawable *psPVRDrawable,
-				   bool bAllowRecreate)
+static bool PVRDRI2DrawableCreate(PVRDRIDrawable *psPVRDrawable)
 {
-	__DRIdrawable *psDRIDrawable = psPVRDrawable->psDRIDrawable;
-	uint32_t uBytesPerPixel;
-	PVRDRIBufferAttribs sBufferAttribs;
-	bool bRecreate;
+	if (!PVRDRI2DrawableGetNativeInfo(psPVRDrawable))
+		return false;
 
-	PVRDRIEGLImageGetAttribs(
-		PVRDRIImageGetEGLImage(psPVRDrawable->psDRI),
-					&sBufferAttribs);
-	uBytesPerPixel = PVRDRIPixFmtGetBlockSize(sBufferAttribs.ePixFormat);
+	psPVRDrawable->psDRIDrawable->w = psPVRDrawable->uDRI.sBuffer.w;
+	psPVRDrawable->psDRIDrawable->h = psPVRDrawable->uDRI.sBuffer.h;
+	psPVRDrawable->uStride = psPVRDrawable->uDRI.sBuffer.sDRI.pitch;
+	psPVRDrawable->uBytesPerPixel = psPVRDrawable->uDRI.sBuffer.sDRI.cpp;
 
-	bRecreate = (!psPVRDrawable->sConfig.sGLMode.doubleBufferMode &&
-			psPVRDrawable->psImage !=
-				psPVRDrawable->psDRI) ||
-			(psDRIDrawable->w != sBufferAttribs.uiWidth) ||
-			(psDRIDrawable->h != sBufferAttribs.uiHeight) ||
-			(psPVRDrawable->uStride !=
-				sBufferAttribs.uiStrideInBytes) ||
-			(psPVRDrawable->uBytesPerPixel != uBytesPerPixel);
-
-	if (bRecreate)
+	if (!PVRObjectCacheInsert(psPVRDrawable->hBufferCache,
+				  &psPVRDrawable->uDRI))
 	{
-		if (bAllowRecreate)
-		{
-			PVRDRIMarkRenderSurfaceAsInvalid(psPVRDrawable);
-
-			psDRIDrawable->w = sBufferAttribs.uiWidth;
-			psDRIDrawable->h = sBufferAttribs.uiHeight;
-			psPVRDrawable->uStride = sBufferAttribs.uiStrideInBytes;
-			psPVRDrawable->uBytesPerPixel = uBytesPerPixel;
-		}
-		else
-		{
-			return false;
-		}
+		errorMessage("%s: Couldn't insert buffer into cache\n",
+			     __func__);
+		return false;
 	}
-
-	PVRDrawableImageUpdate(psPVRDrawable);
-
-	if (bRecreate)
+	if (!PVREGLDrawableCreate(psPVRDrawable->psPVRScreen->psImpl,
+				  psPVRDrawable->psImpl))
 	{
-		if (!PVREGLDrawableRecreate(psPVRDrawable->psPVRScreen->psImpl,
-		                            psPVRDrawable->psImpl))
-		{
-			errorMessage("%s: Couldn't recreate EGL drawable\n",
-				     __func__);
-			return false;
-		}
+		errorMessage("%s: Couldn't create EGL drawable\n", __func__);
+		return false;
 	}
 
 	return true;
 }
 
-/*************************************************************************/ /*!
- PVR drawable local functions
-*/ /**************************************************************************/
-
-/*************************************************************************/ /*!
- Function Name	: PVRDRIDrawableUpdate
- Inputs		: psPVRDrawable
- Description	: Update drawable
-*/ /**************************************************************************/
-static bool PVRDRIDrawableUpdate(PVRDRIDrawable *psPVRDrawable,
-				 bool bAllowRecreate)
-{
-	bool bRes;
-	int iInfoInvalid = 0;
-
-	/*
-	 * The test for bDrawableUpdating is needed because drawable
-	 * parameters are fetched (via KEGLGetDrawableParameters) when
-	 * a drawable is recreated.
-	 * The test for bFlushInProgress is to prevent the drawable
-	 * information being updated during a flush, which could result
-	 * in a call back into the Mesa platform code during the
-	 * processing for a buffer swap, which could corrupt the platform
-	 * state.
-	 */
-	if (psPVRDrawable->bDrawableUpdating ||
-	    psPVRDrawable->bFlushInProgress)
-	{
-		return false;
-	}
-	psPVRDrawable->bDrawableUpdating = true;
-
-	if (psPVRDrawable->psPVRScreen->bUseInvalidate)
-	{
-		iInfoInvalid = p_atomic_read(&psPVRDrawable->iInfoInvalid);
-		bRes = !iInfoInvalid;
-		if (bRes)
-		{
-			goto ExitNotUpdating;
-		}
-	}
-
-	bRes = PVRImageDrawableGetNativeInfo(psPVRDrawable);
-	if (!bRes)
-	{
-		goto ExitNotUpdating;
-	}
-
-	bRes = PVRImageDrawableUpdate(psPVRDrawable, bAllowRecreate);
-	if (bRes && iInfoInvalid)
-	{
-		p_atomic_add(&psPVRDrawable->iInfoInvalid, -iInfoInvalid);
-	}
-
-ExitNotUpdating:
-	psPVRDrawable->bDrawableUpdating = false;
-	return bRes;
-}
-
-/*************************************************************************/ /*!
- Function Name	: PVRDRIDrawableRecreateV0
- Inputs		: psPVRDrawable
- Description	: Recreate drawable
-*/ /**************************************************************************/
-bool PVRDRIDrawableRecreateV0(PVRDRIDrawable *psPVRDrawable)
-{
-	return PVRDRIDrawableUpdate(psPVRDrawable, true);
-}
-
-/*************************************************************************/ /*!
- PVR drawable interface
-*/ /**************************************************************************/
 bool PVRDRIDrawableInit(PVRDRIDrawable *psPVRDrawable)
 {
+	unsigned uNumBufs = psPVRDrawable->bDoubleBuffered ?
+				    DRI2_BUFFERS_MAX : 1;
+	PVRObjectCacheInsertCB pfnInsert;
+	PVRObjectCachePurgeCB pfnPurge;
+	PVRObjectCacheCompareCB pfnCompare;
+
 	if (psPVRDrawable->bInitialised)
 	{
 		return true;
 	}
 
-	if (!PVRImageDrawableCreate(psPVRDrawable))
+	if (psPVRDrawable->psPVRScreen->psDRIScreen->image.loader)
 	{
+		pfnInsert = PVRImageObjectCacheInsert;
+		pfnPurge = PVRImageObjectCachePurge;
+		pfnCompare = PVRImageObjectCacheCompare;
+	}
+	else
+	{
+		assert(psPVRDrawable->psPVRScreen->psDRIScreen->dri2.loader);
+
+		pfnInsert = PVRDRI2ObjectCacheInsert;
+		pfnPurge = PVRDRI2ObjectCachePurge;
+		pfnCompare = PVRDRI2ObjectCacheCompare;
+	}
+
+	psPVRDrawable->hBufferCache = PVRObjectCacheCreate(uNumBufs,
+							   uNumBufs,
+							   psPVRDrawable,
+							   pfnInsert,
+							   pfnPurge,
+							   pfnCompare);
+	if (psPVRDrawable->hBufferCache == NULL)
+	{
+		errorMessage("%s: Failed to create buffer cache\n", __func__);
 		return false;
+	}
+
+
+	if (psPVRDrawable->psPVRScreen->psDRIScreen->image.loader)
+	{
+		if (!PVRImageDrawableCreate(psPVRDrawable))
+			goto ErrorCacheDestroy;
+	}
+	else
+	{
+		if (!PVRDRI2DrawableCreate(psPVRDrawable))
+			goto ErrorCacheDestroy;
 	}
 
 	psPVRDrawable->bInitialised = true;
 
 	return true;
+
+ErrorCacheDestroy:
+	PVRObjectCacheDestroy(psPVRDrawable->hBufferCache);
+	psPVRDrawable->hBufferCache = NULL;
+
+	return false;
 }
 
 void PVRDRIDrawableDeinit(PVRDRIDrawable *psPVRDrawable)
 {
 	(void) PVREGLDrawableDestroy(psPVRDrawable->psPVRScreen->psImpl,
-	                             psPVRDrawable->psImpl);
+				     psPVRDrawable->psImpl);
 
-	PVRDrawableImageDestroy(psPVRDrawable);
-	PVRDrawableImageAccumDestroy(psPVRDrawable);
+	if (psPVRDrawable->hBufferCache)
+	{
+		PVRObjectCacheDestroy(psPVRDrawable->hBufferCache);
+		psPVRDrawable->hBufferCache = NULL;
+	}
 
 	psPVRDrawable->bInitialised = false;
 }
 
-static bool PVRDRIDrawableGetParameters(PVRDRIDrawable *psPVRDrawable,
-					PVRDRIBufferImpl **ppsDstBuffer,
-					PVRDRIBufferImpl **ppsAccumBuffer)
+bool PVRDRIDrawableGetParameters(PVRDRIDrawable *psPVRDrawable,
+				 PVRDRIBufferImpl **ppsDstBuffer,
+				 PVRDRIBufferImpl **ppsAccumBuffer,
+				 PVRDRIBufferAttribs *psAttribs,
+				 bool *pbDoubleBuffered)
 {
 	if (ppsDstBuffer || ppsAccumBuffer)
 	{
+		PVRDRIBuffer *psPVRBuffer;
 		PVRDRIBufferImpl *psDstBuffer;
-		PVRDRIBufferImpl *psAccumBuffer;
 
-		psDstBuffer = PVRDRIImageGetSharedBuffer(psPVRDrawable->psImage);
+		psPVRBuffer = PVRObjectCacheGetObject(
+				      psPVRDrawable->hBufferCache, 0);
+		psDstBuffer = PVRGetBackingBuffer(psPVRBuffer);
+
 		if (!psDstBuffer)
 		{
-			errorMessage("%s: Couldn't get backing buffer\n",
+			errorMessage("%s: Couldn't get render buffer from cache\n",
 				     __func__);
 			return false;
-		}
-
-		if (psPVRDrawable->psImageAccum)
-		{
-			psAccumBuffer =
-				PVRDRIImageGetSharedBuffer(psPVRDrawable->psImageAccum);
-			if (!psAccumBuffer)
-			{
-				psAccumBuffer = psDstBuffer;
-			}
-		}
-		else
-		{
-			psAccumBuffer = psDstBuffer;
 		}
 
 		if (ppsDstBuffer)
@@ -396,32 +655,15 @@ static bool PVRDRIDrawableGetParameters(PVRDRIDrawable *psPVRDrawable,
 			*ppsDstBuffer = psDstBuffer;
 		}
 
-		if (ppsAccumBuffer)
+		if (!ppsDstBuffer || ppsAccumBuffer)
 		{
-			*ppsAccumBuffer = psAccumBuffer;
+			psPVRBuffer = PVRObjectCacheGetObject(
+					      psPVRDrawable->hBufferCache, 1);
+			*ppsAccumBuffer = PVRGetBackingBuffer(psPVRBuffer);
+
+			if (!*ppsAccumBuffer)
+				*ppsAccumBuffer = psDstBuffer;
 		}
-	}
-
-	return true;
-}
-
-bool PVRDRIDrawableGetParametersV0(PVRDRIDrawable *psPVRDrawable,
-				   PVRDRIBufferImpl **ppsDstBuffer,
-				   PVRDRIBufferImpl **ppsAccumBuffer,
-				   PVRDRIBufferAttribs *psAttribs,
-				   bool *pbDoubleBuffered)
-{
-	/*
-	 * Some drawable updates may be required, which stop short of
-	 * recreating the drawable.
-	 */
-	(void) PVRDRIDrawableUpdate(psPVRDrawable, false);
-
-	if (!PVRDRIDrawableGetParameters(psPVRDrawable,
-					 ppsDstBuffer,
-					 ppsAccumBuffer))
-	{
-		return false;
 	}
 
 	if (psAttribs)
@@ -434,109 +676,8 @@ bool PVRDRIDrawableGetParametersV0(PVRDRIDrawable *psPVRDrawable,
 
 	if (pbDoubleBuffered)
 	{
-		*pbDoubleBuffered =
-			psPVRDrawable->sConfig.sGLMode.doubleBufferMode;
+		*pbDoubleBuffered = psPVRDrawable->bDoubleBuffered;
 	}
 
 	return true;
-}
-
-bool PVRDRIDrawableGetParametersV1(PVRDRIDrawable *psPVRDrawable,
-				   bool bAllowRecreate,
-				   PVRDRIBufferImpl **ppsDstBuffer,
-				   PVRDRIBufferImpl **ppsAccumBuffer,
-				   PVRDRIBufferAttribs *psAttribs,
-				   bool *pbDoubleBuffered)
-{
-	if (!PVRDRIDrawableUpdate(psPVRDrawable, bAllowRecreate))
-	{
-		if (bAllowRecreate)
-		{
-			return false;
-		}
-	}
-
-	if (!PVRDRIDrawableGetParameters(psPVRDrawable,
-					 ppsDstBuffer,
-					 ppsAccumBuffer))
-	{
-		return false;
-	}
-
-	if (psAttribs)
-	{
-		psAttribs->uiWidth           = psPVRDrawable->psDRIDrawable->w;
-		psAttribs->uiHeight          = psPVRDrawable->psDRIDrawable->h;
-		psAttribs->ePixFormat        = psPVRDrawable->ePixelFormat;
-		psAttribs->uiStrideInBytes   = psPVRDrawable->uStride;
-	}
-
-	if (pbDoubleBuffered)
-	{
-		*pbDoubleBuffered =
-			psPVRDrawable->sConfig.sGLMode.doubleBufferMode;
-	}
-
-	return true;
-}
-
-bool PVRDRIDrawableQuery(const PVRDRIDrawable *psPVRDrawable,
-			 PVRDRIBufferAttrib eBufferAttrib,
-			 uint32_t *uiValueOut)
-{
-	if (!psPVRDrawable || !uiValueOut)
-	{
-		return false;
-	}
-
-	switch (eBufferAttrib)
-	{
-		case PVRDRI_BUFFER_ATTRIB_TYPE:
-			*uiValueOut = (uint32_t) psPVRDrawable->eType;
-			return true;
-		case PVRDRI_BUFFER_ATTRIB_WIDTH:
-			*uiValueOut = (uint32_t) psPVRDrawable->psDRIDrawable->w;
-			return true;
-		case PVRDRI_BUFFER_ATTRIB_HEIGHT:
-			*uiValueOut = (uint32_t) psPVRDrawable->psDRIDrawable->h;
-			return true;
-		case PVRDRI_BUFFER_ATTRIB_STRIDE:
-			*uiValueOut = (uint32_t) psPVRDrawable->uStride;
-			return true;
-		case PVRDRI_BUFFER_ATTRIB_PIXEL_FORMAT:
-			STATIC_ASSERT(sizeof(psPVRDrawable->ePixelFormat) <= sizeof(*uiValueOut));
-			*uiValueOut = (uint32_t) psPVRDrawable->ePixelFormat;
-			return true;
-		case PVRDRI_BUFFER_ATTRIB_INVALID:
-			errorMessage("%s: Invalid attribute", __func__);
-			assert(0);
-			break;
-	}
-
-	return false;
-}
-
-bool PVRDRIDrawableGetParametersV2(PVRDRIDrawable *psPVRDrawable,
-				   uint32_t uiFlags,
-				   PVRDRIBufferImpl **ppsDstBuffer,
-				   PVRDRIBufferImpl **ppsAccumBuffer)
-{
-	const bool bNoUpdate = uiFlags & PVRDRI_GETPARAMS_FLAG_NO_UPDATE;
-
-	if (!bNoUpdate)
-	{
-		const bool bAllowRecreate =
-			uiFlags & PVRDRI_GETPARAMS_FLAG_ALLOW_RECREATE;
-
-		if (!PVRDRIDrawableUpdate(psPVRDrawable, bAllowRecreate))
-		{
-			if (bAllowRecreate)
-			{
-				return false;
-			}
-		}
-	}
-
-	return PVRDRIDrawableGetParameters(psPVRDrawable,
-					   ppsDstBuffer, ppsAccumBuffer);
 }

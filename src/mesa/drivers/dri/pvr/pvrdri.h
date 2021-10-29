@@ -37,18 +37,15 @@
 
 #include "dri_support.h"
 
+#include "pvrqueue.h"
+#include "pvr_object_cache.h"
+
 /* This should match EGL_MAX_PLANES */
 #define DRI_PLANES_MAX 3
 
 #define	DRI2_BUFFERS_MAX (3)
 
 #define	DRIScreenPrivate(pScreen)	((pScreen)->driverPrivate)
-
-struct PVRDRIConfigRec
-{
-	struct gl_config sGLMode;
-	int iSupportedAPIs;
-};
 
 struct PVRDRIModifiers
 {
@@ -68,6 +65,8 @@ typedef struct PVRDRIScreen_TAG
 {
 	/* DRI screen structure pointer */
 	__DRIscreen        *psDRIScreen;
+	/* mutex :) */
+	pthread_mutex_t sMutex;
 	/* X Server sends invalidate events */
 	bool                bUseInvalidate;
 	/* Reference count */
@@ -78,34 +77,25 @@ typedef struct PVRDRIScreen_TAG
 	int iContextAlloc, iDrawableAlloc, iBufferAlloc;
 #endif
 
+	/* PVR OGL dispatch table */
+	struct _glapi_table *psPVROGLDispatch;
 	/* PVR OGLES 1 dispatch table */
 	struct _glapi_table *psOGLES1Dispatch;
 	/* PVR OGLES 2/3 dispatch table */
 	struct _glapi_table *psOGLES2Dispatch;
 
 	PVRDRIScreenImpl    *psImpl;
-
-	/*
-	 * Number of supported formats:
-	 * -1 -> couldn't be queried (pvr_dri_support too old)
-	 *  0 -> uninitialised or initialisation failed
-	 */
-	int                 iNumFormats;
-	/* Indicates which entries in the image format array are supported */
-	bool                *pbHasFormat;
-	/* Array of modifiers for each image format array entry */
-	struct PVRDRIModifiers *psModifiers;
 } PVRDRIScreen;
 
 /** Our PVR related context data */
 typedef struct PVRDRIContext_TAG
 {
+	PVRQElem sQElem;
+
 	/* Pointer to DRI context */
 	__DRIcontext              *psDRIContext;
 	/* Pointer to PVRDRIScreen structure */
 	PVRDRIScreen              *psPVRScreen;
-
-	PVRDRIConfig               sConfig;
 
 	/* Pointer to currently bound drawable */
 	struct PVRDRIDrawable_TAG *psPVRDrawable;
@@ -125,12 +115,10 @@ typedef struct PVRDRIDrawable_TAG
 	/** DRI drawable data */
 	__DRIdrawable      *psDRIDrawable;
 
-	PVRDRIDrawableType  eType;
-
-	PVRDRIConfig        sConfig;
-
 	/** Are surface/buffers created? */
 	bool                bInitialised;
+
+	bool bDoubleBuffered;
 
 	/** Buffer stride */
 	unsigned            uStride;
@@ -138,26 +126,37 @@ typedef struct PVRDRIDrawable_TAG
 	/* Number of bytes per pixel */
 	unsigned int        uBytesPerPixel;
 
-	/* Context bound to this drawable */
-	PVRDRIContext       *psPVRContext;
+	/* Contexts bound to this drawable */
+	PVRQHead sPVRContextHead;
+
+	/* Mutex to protect contexs queue */
+	pthread_mutex_t sMutex;
 
 	/* IMG Pixel format for this drawable */
 	IMG_PIXFMT          ePixelFormat;
 
 	/* Indicates the drawable info is invalid */
-	int                 iInfoInvalid;
+	bool                 bDrawableInfoInvalid; /*iInfoInvalid*/
 
 	/* Indicates the drawable is currently being updated */
-	bool                bDrawableUpdating;
+	bool                 bDrawableInfoUpdated;/* bDrawableUpdating */
 
-	/* Indicates a flush is in progress */
-	bool                bFlushInProgress;
+	PVRObjectCache hBufferCache;
+	PVRQHead sCacheFlushHead;
 
-	__DRIimage *psDRI;
-	__DRIimage *psImage;
-
-	__DRIimage *psDRIAccum;
-	__DRIimage *psImageAccum;
+	union
+	{
+		struct
+		{
+			__DRIbuffer sDRI;
+			int w;
+			int h;
+		} sBuffer;
+		struct
+		{
+			__DRIimage *psDRI;
+		} sImage;
+	} uDRI;
 
 	PVRDRIDrawableImpl *psImpl;
 } PVRDRIDrawable;
@@ -235,6 +234,25 @@ typedef struct PVRDRIImageFormat_TAG
 	} sPlanes[DRI_PLANES_MAX];
 } PVRDRIImageFormat;
 
+typedef struct PVRDRIBuffer_TAG
+{
+	PVRDRIBufferBackingType eBackingType;
+	union
+	{
+		struct
+		{
+			uint32_t uiName;
+			PVRDRIBufferImpl *psBuffer;
+		} sDRI2;
+		struct
+		{
+			__DRIimage *psImage;
+		} sImage;
+
+	} uBacking;
+
+	PVRQElem sCacheFlushElem;
+} PVRDRIBuffer;
 
 /*************************************************************************/ /*!
  pvrdri.c
@@ -244,7 +262,7 @@ IMG_PIXFMT PVRDRIGetPixelFormat(const struct gl_config *psGLMode);
 PVRDRIScreen *PVRDRIThreadGetCurrentScreen(void);
 void PVRDRIThreadSetCurrentScreen(PVRDRIScreen *psPVRScreen);
 
-void PVRDRIFlushBuffersForSwap(PVRDRIContext *psPVRContext,
+bool PVRDRIFlushBuffersForSwap(PVRDRIContext *psPVRContext,
                                PVRDRIDrawable *psPVRDrawable);
 
 
@@ -261,32 +279,13 @@ const PVRDRIImageFormat *PVRDRIFormatToImageFormat(PVRDRIScreen *psPVRScreen,
 						   int iDRIFormat);
 const PVRDRIImageFormat *PVRDRIFourCCToImageFormat(PVRDRIScreen *psPVRScreen,
 						   int iDRIFourCC);
-const PVRDRIImageFormat *PVRDRIIMGPixelFormatToImageFormat(PVRDRIScreen *psPVRScreen,
-							   IMG_PIXFMT eIMGPixelFormat);
+const PVRDRIImageFormat *PVRDRIIMGPixelFormatToImageFormat(IMG_PIXFMT eIMGPixelFormat);
 
 IMG_YUV_COLORSPACE PVRDRIToIMGColourSpace(const PVRDRIImageFormat *psFormat,
 					  enum __DRIYUVColorSpace eDRIColourSpace,
 					  enum __DRISampleRange eDRISampleRange);
 IMG_YUV_CHROMA_INTERP PVRDRIChromaSittingToIMGInterp(const PVRDRIImageFormat *psFormat,
 						     enum __DRIChromaSiting eChromaSitting);
-
-bool PVRDRIGetSupportedFormats(PVRDRIScreen *psPVRScreen);
-
-GLboolean PVRDRIQueryDmaBufFormats(__DRIscreen *screen, int max,
-				   int *formats, int *count);
-
-GLboolean PVRDRIQueryDmaBufModifiers(__DRIscreen *screen, int fourcc,
-				     int max, uint64_t *modifiers,
-				     unsigned int *external_only,
-				     int *count);
-
-GLboolean PVRDRIQueryDmaBufFormatModifierAttribs(__DRIscreen *screen,
-						 uint32_t fourcc,
-						 uint64_t modifier,
-						 int attrib,
-						 uint64_t *value);
-
-void PVRDRIDestroyFormatInfo(PVRDRIScreen *psPVRScreen);
 
 /*************************************************************************/ /*!
  pvrdrawable.c
@@ -298,29 +297,12 @@ void PVRDRIDrawableDeinit(PVRDRIDrawable *psPVRDrawable);
 /* Callbacks into non-impl layer */
 
 /* Version 0 callbacks (deprecated) */
-bool PVRDRIDrawableRecreateV0(PVRDRIDrawable *psPVRDrawable);
-bool PVRDRIDrawableGetParametersV0(PVRDRIDrawable *psPVRDrawable,
-				   PVRDRIBufferImpl **ppsDstBuffer,
-				   PVRDRIBufferImpl **ppsAccumBuffer,
-				   PVRDRIBufferAttribs *psAttribs,
-				   bool *pbDoubleBuffered);
-
-/* Version 1 callbacks (deprecated) */
-bool PVRDRIDrawableGetParametersV1(PVRDRIDrawable *psPVRDrawable,
-				   bool bAllowRecreate,
-				   PVRDRIBufferImpl **ppsDstBuffer,
-				   PVRDRIBufferImpl **ppsAccumBuffer,
-				   PVRDRIBufferAttribs *psAttribs,
-				   bool *pbDoubleBuffered);
-
-/* Version 2 callbacks */
-bool PVRDRIDrawableQuery(const PVRDRIDrawable *psPVRDrawable,
-			 PVRDRIBufferAttrib eBufferAttrib,
-			 uint32_t *uiValueOut);
-bool PVRDRIDrawableGetParametersV2(PVRDRIDrawable *psPVRDrawable,
-				   uint32_t uiFlags,
-				   PVRDRIBufferImpl **ppsDstBuffer,
-				   PVRDRIBufferImpl **ppsAccumBuffer);
+bool PVRDRIDrawableRecreate(PVRDRIDrawable *psPVRDrawable);
+bool PVRDRIDrawableGetParameters(PVRDRIDrawable *psPVRDrawable,
+				 PVRDRIBufferImpl **ppsDstBuffer,
+				 PVRDRIBufferImpl **ppsAccumBuffer,
+				 PVRDRIBufferAttribs *psAttribs,
+				 bool *pbDoubleBuffered);
 
 /*************************************************************************/ /*!
  pvrimage.c
@@ -347,7 +329,7 @@ const __DRIextension *PVRDRIScreenExtensionVersionInfo(void);
  pvrcompat.c
 */ /**************************************************************************/
 
-bool PVRDRICompatInit(const PVRDRICallbacks *psCallbacks, unsigned uVersion);
+bool PVRDRICompatInit(const PVRDRICallbacks *psCallbacks);
 void PVRDRICompatDeinit(void);
 
 bool PVRDRIRegisterSupportInterfaceV1(const PVRDRISupportInterface *psInterface,
@@ -355,7 +337,7 @@ bool PVRDRIRegisterSupportInterfaceV1(const PVRDRISupportInterface *psInterface,
 
 unsigned PVRDRISupportCreateContext(PVRDRIScreenImpl *psScreenImpl,
 				    PVRDRIContextImpl *psSharedContextImpl,
-				    PVRDRIConfig *psConfig,
+				    const struct gl_config *psGLMode,
 				    PVRDRIAPIType eAPI,
 				    PVRDRIAPISubType eAPISub,
 				    unsigned uMajorVersion,
@@ -365,24 +347,36 @@ unsigned PVRDRISupportCreateContext(PVRDRIScreenImpl *psScreenImpl,
 				    unsigned uPriority,
 				    PVRDRIContextImpl **ppsContextImpl);
 
-PVRDRIDrawableImpl *PVRDRISupportCreateDrawable(PVRDRIDrawable *psPVRDrawable,
-						PVRDRIConfig *psConfig);
+static inline void PVRDRIConfigFromMesa(PVRDRIConfigInfo *psConfigInfo,
+					const struct gl_config *psGLMode)
+{
+	memset(psConfigInfo, 0, sizeof(*psConfigInfo));
 
-bool PVRDRIBlitEGLImage_IsSupported(void);
-bool PVRDRIMapEGLImage_IsSupported(void);
-bool PVRDRIBufferGetOffset_IsSupported(void);
-bool PVRDRIBufferCreateWithModifiers_IsSupported(void);
-bool PVRDRIBufferCreateFromFdsWithModifier_IsSupported(void);
+	if (psGLMode)
+	{
+		psConfigInfo->samples           = psGLMode->samples;
+		psConfigInfo->redBits           = psGLMode->redBits;
+		psConfigInfo->greenBits         = psGLMode->greenBits;
+		psConfigInfo->blueBits          = psGLMode->blueBits;
+		psConfigInfo->alphaBits         = psGLMode->alphaBits;
+		psConfigInfo->rgbBits           = psGLMode->rgbBits;
+		psConfigInfo->depthBits         = psGLMode->depthBits;
+		psConfigInfo->stencilBits       = psGLMode->stencilBits;
+		psConfigInfo->doubleBufferMode  = psGLMode->doubleBufferMode;
 
-void *PVRDRICreateFenceFdImpl(PVRDRIAPIType eAPI,
-			      PVRDRIScreenImpl *psScreenImpl,
-			      PVRDRIContextImpl *psContextImpl,
-			      int fd);
+		psConfigInfo->sampleBuffers     = psGLMode->sampleBuffers;
+		psConfigInfo->bindToTextureRgb  = psGLMode->bindToTextureRgb;
+		psConfigInfo->bindToTextureRgba = psGLMode->bindToTextureRgba;
+	}
+}
 
-unsigned PVRDRIGetFenceCapabilitiesImpl(PVRDRIScreenImpl *psScreenImpl);
+bool PVRMutexInit(pthread_mutex_t *psMutex, int iType);
+void PVRMutexDeinit(pthread_mutex_t *psMutex);
 
-int PVRDRIGetFenceFdImpl(void *psDRIFence);
+void PVRDRIScreenLock(PVRDRIScreen *psPVRScreen);
+void PVRDRIScreenUnlock(PVRDRIScreen *psPVRScreen);
 
-bool PVRDRIValidateImageModifier(PVRDRIScreen *psPVRScreen, const int iFourcc,
-				 const uint64_t uiModifier);
+void PVRDRIDrawableLock(PVRDRIDrawable *psPVRDrawable);
+void PVRDRIDrawableUnlock(PVRDRIDrawable *psPVRDrawable);
+
 #endif /* defined(__PVRDRI2_H__) */

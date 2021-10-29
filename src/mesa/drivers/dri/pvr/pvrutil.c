@@ -436,30 +436,6 @@ static const PVRDRIImageFormat g_asFormats[] =
 	},
 };
 
-/*
- * Check if a PVR Screen has support for a particular format based upon its
- * position in g_asFormats. If querying of this information isn't supported
- * by pvr_dri_support then assume the format is supported.
- */
-static inline bool
-PVRDRIScreenHasFormatFromIdx(const PVRDRIScreen * const psPVRScreen,
-			     const unsigned int uiFormatIdx)
-{
-	if (psPVRScreen->iNumFormats > 0)
-	{
-		if (uiFormatIdx < ARRAY_SIZE(g_asFormats))
-		{
-			return psPVRScreen->pbHasFormat[uiFormatIdx];
-		}
-
-		return false;
-	}
-
-	assert(psPVRScreen->iNumFormats == -1);
-
-	return true;
-}
-
 /* Standard error message */
 void PRINTFLIKE(1, 2) errorMessage(const char *f, ...)
 {
@@ -563,17 +539,10 @@ const PVRDRIImageFormat *PVRDRIFormatToImageFormat(PVRDRIScreen *psPVRScreen,
 
 	for (i = 0; i < ARRAY_SIZE(g_asFormats); i++)
 	{
-		if (g_asFormats[i].iDRIFormat != iDRIFormat)
+		if (g_asFormats[i].iDRIFormat == iDRIFormat)
 		{
-			continue;
+			return &g_asFormats[i];
 		}
-
-		if (!PVRDRIScreenHasFormatFromIdx(psPVRScreen, i))
-		{
-			break;
-		}
-
-		return &g_asFormats[i];
 	}
 
 	return NULL;
@@ -591,24 +560,16 @@ const PVRDRIImageFormat *PVRDRIFourCCToImageFormat(PVRDRIScreen *psPVRScreen,
 
 	for (i = 0; i < ARRAY_SIZE(g_asFormats); i++)
 	{
-		if (g_asFormats[i].iDRIFourCC != iDRIFourCC)
+		if (g_asFormats[i].iDRIFourCC == iDRIFourCC)
 		{
-			continue;
+			return &g_asFormats[i];
 		}
-
-		if (!PVRDRIScreenHasFormatFromIdx(psPVRScreen, i))
-		{
-			break;
-		}
-
-		return &g_asFormats[i];
 	}
 
 	return NULL;
 }
 
-const PVRDRIImageFormat *PVRDRIIMGPixelFormatToImageFormat(PVRDRIScreen *psPVRScreen,
-							   IMG_PIXFMT eIMGPixelFormat)
+const PVRDRIImageFormat *PVRDRIIMGPixelFormatToImageFormat(IMG_PIXFMT eIMGPixelFormat)
 {
 	unsigned i;
 
@@ -616,20 +577,10 @@ const PVRDRIImageFormat *PVRDRIIMGPixelFormatToImageFormat(PVRDRIScreen *psPVRSc
 
 	for (i = 0; i < ARRAY_SIZE(g_asFormats); i++)
 	{
-		if (g_asFormats[i].eIMGPixelFormat != eIMGPixelFormat)
+		if (g_asFormats[i].eIMGPixelFormat == eIMGPixelFormat)
 		{
-			continue;
+			return &g_asFormats[i];
 		}
-
-		/*
-		 * Assume that the screen has the format, i.e. it's supported by
-		 * the HW+SW, since we can only have an IMG_PIXFMT from having
-		 * called one of the other PVRDRI*ToImageFormat functions or
-		 * one of the pvr_dri_support functions.
-		 */
-		assert(PVRDRIScreenHasFormatFromIdx(psPVRScreen, i));
-
-		return &g_asFormats[i];
 	}
 
 	return NULL;
@@ -759,311 +710,105 @@ IMG_YUV_CHROMA_INTERP PVRDRIChromaSittingToIMGInterp(const PVRDRIImageFormat *ps
 	}
 }
 
-bool PVRDRIGetSupportedFormats(PVRDRIScreen *psPVRScreen)
+bool PVRMutexInit(pthread_mutex_t *psMutex, int iType)
 {
-	int *piFormats;
-	IMG_PIXFMT *peImgFormats;
-	bool bRet = false;
-	unsigned i;
+	int res;
+	pthread_mutexattr_t sMutexAttr;
 
-	piFormats = malloc(ARRAY_SIZE(g_asFormats) * sizeof(*piFormats));
-	peImgFormats = malloc(ARRAY_SIZE(g_asFormats) * sizeof(*peImgFormats));
+	(void)iType;
 
-	psPVRScreen->pbHasFormat = malloc(ARRAY_SIZE(g_asFormats) *
-					  sizeof(*psPVRScreen->pbHasFormat));
-
-	psPVRScreen->psModifiers = calloc(ARRAY_SIZE(g_asFormats),
-					   sizeof(*psPVRScreen->psModifiers));
-
-	if (!piFormats || !peImgFormats ||
-	    !psPVRScreen->pbHasFormat || !psPVRScreen->psModifiers)
+	res = pthread_mutexattr_init(&sMutexAttr);
+	if (res)
 	{
-		errorMessage("Out of memory\n");
-
-		goto err_free;
+		__driUtilMessage("%s: pthread_mutexattr_init failed (%d)",
+				 __func__, res);
+		return false;
 	}
 
-	for (i = 0; i < ARRAY_SIZE(g_asFormats); i++)
+	res = pthread_mutexattr_settype(&sMutexAttr, iType);
+	if (res)
 	{
-		piFormats[i] = g_asFormats[i].bQueryDmaBufFormatsExclude ?
-			       0 : g_asFormats[i].iDRIFourCC;
-
-		peImgFormats[i] = g_asFormats[i].eIMGPixelFormat;
-
-		psPVRScreen->psModifiers[i].iNumModifiers = -1;
+		__driUtilMessage("%s: pthread_mutexattr_settype failed (%d)",
+				 __func__, res);
 	}
-
-	psPVRScreen->iNumFormats =
-			PVRDRIQuerySupportedFormats(psPVRScreen->psImpl,
-						    ARRAY_SIZE(g_asFormats),
-						    piFormats,
-						    peImgFormats,
-						    psPVRScreen->pbHasFormat);
-	if (psPVRScreen->iNumFormats == 0)
+	else
 	{
-		__driUtilMessage("Couldn't query supported pixel formats\n");
-		goto err_free;
-	}
-
-	bRet = true;
-	goto cleanup;
-
-err_free:
-	free(psPVRScreen->psModifiers);
-	psPVRScreen->psModifiers = NULL;
-
-	free(psPVRScreen->pbHasFormat);
-	psPVRScreen->pbHasFormat = NULL;
-cleanup:
-	free(peImgFormats);
-	free(piFormats);
-	return bRet;
-}
-
-GLboolean PVRDRIQueryDmaBufFormats(__DRIscreen *screen, int max,
-				   int *formats, int *count)
-{
-	PVRDRIScreen *psPVRScreen = DRIScreenPrivate(screen);
-	int i, j;
-
-	assert(psPVRScreen->iNumFormats != 0);
-
-	if (psPVRScreen->iNumFormats < 0)
-	{
-		return GL_FALSE;
-	}
-
-	if (!max)
-	{
-		*count = psPVRScreen->iNumFormats;
-		return GL_TRUE;
-	}
-
-	for (i = 0, j = 0; i < ARRAY_SIZE(g_asFormats) && j < max; i++)
-	{
-		if (psPVRScreen->pbHasFormat[i])
+		res = pthread_mutex_init(psMutex, &sMutexAttr);
+		if (!res)
 		{
-			formats[j++] = g_asFormats[i].iDRIFourCC;
-		}
-	}
-
-	*count = j;
-
-	return GL_TRUE;
-}
-
-static bool PVRDRIGetSupportedModifiers(PVRDRIScreen *psPVRScreen,
-					struct PVRDRIModifiers *psModifiers,
-					const PVRDRIImageFormat *psFormat)
-{
-	int iNumModifiers;
-
-	iNumModifiers = PVRDRIQueryModifiers(psPVRScreen->psImpl,
-					     psFormat->iDRIFourCC,
-					     psFormat->eIMGPixelFormat,
-					     NULL, NULL);
-	if (iNumModifiers < 0)
-	{
-		errorMessage("Couldn't query modifiers for format 0x%x\n",
-			     psFormat->iDRIFourCC);
-		return false;
-	}
-
-	psModifiers->puModifiers = malloc(iNumModifiers *
-					  sizeof(*psModifiers->puModifiers));
-	psModifiers->puExternalOnly = malloc(iNumModifiers *
-					  sizeof(*psModifiers->puExternalOnly));
-	if (!psModifiers->puModifiers || !psModifiers->puExternalOnly)
-	{
-		free(psModifiers->puModifiers);
-		psModifiers->puModifiers = NULL;
-
-		free(psModifiers->puExternalOnly);
-		psModifiers->puExternalOnly = NULL;
-
-		errorMessage("Out of memory\n");
-
-		return false;
-	}
-	psModifiers->iNumModifiers = iNumModifiers;
-
-	iNumModifiers = PVRDRIQueryModifiers(psPVRScreen->psImpl,
-					    psFormat->iDRIFourCC,
-					    psFormat->eIMGPixelFormat,
-					    psModifiers->puModifiers,
-					    psModifiers->puExternalOnly);
-
-	assert(iNumModifiers == psModifiers->iNumModifiers);
-
-	return true;
-}
-
-static bool PVRDRIGetModifiersForFormat(PVRDRIScreen *psPVRScreen,
-					int fourcc,
-					const PVRDRIImageFormat **ppsFormat,
-					const struct PVRDRIModifiers **ppsModifiers)
-{
-	const PVRDRIImageFormat *psFormat;
-	struct PVRDRIModifiers *psModifiers;
-	unsigned uIdx;
-
-	assert(psPVRScreen->iNumFormats != 0);
-
-	if (psPVRScreen->iNumFormats < 0)
-	{
-		return false;
-	}
-
-	psFormat = PVRDRIFourCCToImageFormat(psPVRScreen, fourcc);
-	if (!psFormat)
-	{
-		return false;
-	}
-
-	uIdx = psFormat - g_asFormats;
-	psModifiers = &psPVRScreen->psModifiers[uIdx];
-
-	if (psModifiers->iNumModifiers < 0)
-	{
-		if (!PVRDRIGetSupportedModifiers(psPVRScreen,
-						 psModifiers,
-						 psFormat))
-		{
-			return false;
-		}
-	}
-
-	*ppsFormat = psFormat;
-	*ppsModifiers = psModifiers;
-
-	return true;
-}
-
-bool PVRDRIValidateImageModifier(PVRDRIScreen *psPVRScreen, const int iFourcc,
-				 const uint64_t uiModifier)
-{
-	const PVRDRIImageFormat *psFormat;
-	const struct PVRDRIModifiers *psModifiers;
-
-	if (!PVRDRIGetModifiersForFormat(psPVRScreen, iFourcc, &psFormat,
-					 &psModifiers))
-	{
-		return false;
-	}
-
-	for (unsigned i = 0; i < psModifiers->iNumModifiers; i++)
-	{
-		if (psModifiers->puModifiers[i] == uiModifier)
-		{
+			pthread_mutexattr_destroy(&sMutexAttr);
 			return true;
 		}
+
+		__driUtilMessage("%s: pthread_mutex_init failed (%d)",
+				 __func__, res);
 	}
+
+	pthread_mutexattr_destroy(&sMutexAttr);
 
 	return false;
 }
 
-GLboolean PVRDRIQueryDmaBufModifiers(__DRIscreen *screen, int fourcc,
-				     int max, uint64_t *modifiers,
-				     unsigned int *external_only,
-				     int *count)
+void PVRMutexDeinit(pthread_mutex_t *psMutex)
 {
-	PVRDRIScreen *psPVRScreen = DRIScreenPrivate(screen);
-	const PVRDRIImageFormat *psFormat;
-	const struct PVRDRIModifiers *psModifiers;
-	int num_copy;
+  int res;
 
-	if (!PVRDRIGetModifiersForFormat(psPVRScreen,
-					fourcc,
-					&psFormat,
-					&psModifiers))
-	{
-		return GL_FALSE;
-	}
-
-	if (!max)
-	{
-		*count = psModifiers->iNumModifiers;
-		return GL_TRUE;
-	}
-
-	num_copy = (max < psModifiers->iNumModifiers) ?
-			max : psModifiers->iNumModifiers;
-
-	if (modifiers)
-	{
-		(void) memcpy(modifiers,
-			      psModifiers->puModifiers,
-			      sizeof(*modifiers) * num_copy);
-	}
-
-	if (external_only)
-	{
-		(void) memcpy(external_only,
-			      psModifiers->puExternalOnly,
-			      sizeof(*external_only) * num_copy);
-	}
-
-	*count = num_copy;
-
-	return GL_TRUE;
+  res = pthread_mutex_destroy(psMutex);
+  if (res)
+  {
+    __driUtilMessage("%s: pthread_mutex_destroy failed (%d)",
+		     __func__, res);
+  }
 }
 
-GLboolean PVRDRIQueryDmaBufFormatModifierAttribs(__DRIscreen *screen,
-						 uint32_t fourcc,
-						 uint64_t modifier,
-						 int attrib,
-						 uint64_t *value)
+void PVRDRIDrawableLock(PVRDRIDrawable *psPVRDrawable)
 {
-	PVRDRIScreen *psPVRScreen = DRIScreenPrivate(screen);
-	const PVRDRIImageFormat *psFormat;
-	const struct PVRDRIModifiers *psModifiers;
-	int i;
+	int res;
 
-	if (!PVRDRIGetModifiersForFormat(psPVRScreen,
-					fourcc,
-					&psFormat,
-					&psModifiers))
+	res = pthread_mutex_lock(&psPVRDrawable->sMutex);
+	if (res)
 	{
-		return GL_FALSE;
+		errorMessage("%s: Failed to lock drawable (%d)\n",
+			     __func__, res);
+		abort();
 	}
-
-	for (i = 0; i < psModifiers->iNumModifiers; i++)
-	{
-		if (psModifiers->puModifiers[i] == modifier)
-		{
-			break;
-		}
-	}
-	if (i == psModifiers->iNumModifiers)
-	{
-		return GL_FALSE;
-	}
-
-	switch (attrib)
-	{
-		case __DRI_IMAGE_FORMAT_MODIFIER_ATTRIB_PLANE_COUNT:
-			*value = psFormat->uiNumPlanes;
-			break;
-		default:
-			return GL_FALSE;
-	}
-
-	return GL_TRUE;
 }
 
-void PVRDRIDestroyFormatInfo(PVRDRIScreen *psPVRScreen)
+void PVRDRIDrawableUnlock(PVRDRIDrawable *psPVRDrawable)
 {
-	unsigned i;
+	int res;
 
-	if (psPVRScreen->psModifiers)
+	res = pthread_mutex_unlock(&psPVRDrawable->sMutex);
+	if (res)
 	{
-		for (i = 0; i < ARRAY_SIZE(g_asFormats); i++)
-		{
-			free(psPVRScreen->psModifiers[i].puModifiers);
-			free(psPVRScreen->psModifiers[i].puExternalOnly);
-		}
-		free(psPVRScreen->psModifiers);
+		errorMessage("%s: Failed to unlock drawable (%d)\n",
+			     __func__, res);
+		abort();
 	}
+}
 
-	free(psPVRScreen->pbHasFormat);
+void PVRDRIScreenLock(PVRDRIScreen *psPVRScreen)
+{
+	int res;
+
+	res = pthread_mutex_lock(&psPVRScreen->sMutex);
+	if (res)
+	{
+		errorMessage("%s: Failed to lock screen (%d)\n",
+			     __func__, res);
+		abort();
+	}
+}
+
+void PVRDRIScreenUnlock(PVRDRIScreen *psPVRScreen)
+{
+	int res;
+
+	res = pthread_mutex_unlock(&psPVRScreen->sMutex);
+	if (res)
+	{
+		errorMessage("%s: Failed to unlock screen (%d)\n",
+			     __func__, res);
+		abort();
+	}
 }

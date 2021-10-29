@@ -109,12 +109,6 @@ __DRIimage *PVRDRICreateImageFromDmaBufs2(__DRIscreen *screen,
 					  unsigned *error,
 					  void *loaderPrivate);
 
-void PVRDRIBlitImage(__DRIcontext *context,
-		     __DRIimage *dst, __DRIimage *src,
-		     int dstx0, int dsty0, int dstwidth, int dstheight,
-		     int srcx0, int srcy0, int srcwidth, int srcheight,
-		     int flush_flag);
-
 int PVRDRIGetCapabilities(__DRIscreen *screen);
 
 void *PVRDRIMapImage(__DRIcontext *context, __DRIimage *image,
