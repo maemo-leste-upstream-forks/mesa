@@ -705,7 +705,8 @@ static GLboolean PVRDRICreateBuffer(__DRIscreen *psDRIScreen,
 	}
 
 	psPVRDrawable = calloc(1, sizeof(*psPVRDrawable));
-	if (!psPVRDrawable || (psDrawableImpl = PVRDRICreateDrawableImpl(psPVRDrawable)) == 0)
+	if (!psPVRDrawable ||
+	    (psDrawableImpl = PVRDRICreateDrawableImpl(psPVRDrawable)) == 0)
 	{
 		__driUtilMessage("%s: Couldn't allocate PVR drawable",
 				 __func__);
@@ -731,7 +732,7 @@ static GLboolean PVRDRICreateBuffer(__DRIscreen *psDRIScreen,
 		goto ErrorDrawableFree;
 	}
 
-	if ( !PVRMutexInit(&psPVRDrawable->sMutex, PTHREAD_MUTEX_RECURSIVE) )
+	if (!PVRMutexInit(&psPVRDrawable->sMutex, PTHREAD_MUTEX_RECURSIVE))
 	{
 		__driUtilMessage("%s: Couldn't initialise drawable mutex",
 				 __func__);

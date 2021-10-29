@@ -129,7 +129,7 @@ typedef struct PVRDRIDrawable_TAG
 	/* Contexts bound to this drawable */
 	PVRQHead sPVRContextHead;
 
-	/* Mutex to protect contexs queue */
+	/* Mutex to protect this object */
 	pthread_mutex_t sMutex;
 
 	/* IMG Pixel format for this drawable */
