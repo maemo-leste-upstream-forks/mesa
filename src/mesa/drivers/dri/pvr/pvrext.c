@@ -280,17 +280,14 @@ static void PVRDRIServerWaitSyncEXT(__DRIcontext *psDRIContext,
 	(void)uFlags;
 	assert(uFlags == 0);
 
-	if (psDRIFence)
-	{
-		PVRDRIContext *psPVRContext = psDRIContext->driverPrivate;
+	PVRDRIContext *psPVRContext = psDRIContext->driverPrivate;
 
-		if (!PVRDRIServerWaitSyncImpl(psPVRContext->eAPI,
-					      psPVRContext->psImpl,
-					      psDRIFence))
-		{
-			__driUtilMessage("%s: Server wait sync failed",
-					 __func__);
-		}
+	if (!PVRDRIServerWaitSyncImpl(psPVRContext->eAPI,
+				      psPVRContext->psImpl,
+				      psDRIFence))
+	{
+		__driUtilMessage("%s: Server wait sync failed",
+				 __func__);
 	}
 }
 
