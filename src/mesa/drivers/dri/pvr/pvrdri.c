@@ -372,7 +372,7 @@ static const __DRIconfig **PVRDRIInitScreen(__DRIscreen *psDRIScreen)
 	DRIScreenPrivate(psDRIScreen) = psPVRScreen;
 	psPVRScreen->psDRIScreen = psDRIScreen;
 
-	if (!PVRMutexInit(&psPVRScreen->sMutex, PTHREAD_MUTEX_RECURSIVE_NP))
+	if (!PVRMutexInit(&psPVRScreen->sMutex, PTHREAD_MUTEX_RECURSIVE))
 	{
 		__driUtilMessage("%s: Screen mutex initialisation failed",
 				 __func__);
@@ -731,7 +731,7 @@ static GLboolean PVRDRICreateBuffer(__DRIscreen *psDRIScreen,
 		goto ErrorDrawableFree;
 	}
 
-	if ( !PVRMutexInit(&psPVRDrawable->sMutex, PTHREAD_MUTEX_RECURSIVE_NP) )
+	if ( !PVRMutexInit(&psPVRDrawable->sMutex, PTHREAD_MUTEX_RECURSIVE) )
 	{
 		__driUtilMessage("%s: Couldn't initialise drawable mutex",
 				 __func__);
