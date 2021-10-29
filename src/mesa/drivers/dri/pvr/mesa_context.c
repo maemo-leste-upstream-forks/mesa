@@ -90,6 +90,9 @@ pvrdri_get_dispatch_table_ptr(PVRDRIScreen *psPVRScreen, PVRDRIAPIType eAPI)
 {
 	switch (eAPI)
 	{
+		case PVRDRI_API_GL:
+			return &psPVRScreen->psPVROGLDispatch;
+			break;
 		case PVRDRI_API_GLES1:
 			return &psPVRScreen->psOGLES1Dispatch;
 			break;
@@ -123,6 +126,12 @@ pvrdri_get_dispatch_table(PVRDRIScreen *psPVRScreen, PVRDRIAPIType eAPI)
 void
 pvrdri_free_dispatch_tables(PVRDRIScreen *psPVRScreen)
 {
+	if (psPVRScreen->psPVROGLDispatch != NULL)
+	{
+		free(psPVRScreen->psPVROGLDispatch);
+		psPVRScreen->psPVROGLDispatch = NULL;
+	}
+
 	if (psPVRScreen->psOGLES1Dispatch != NULL)
 	{
 		free(psPVRScreen->psOGLES1Dispatch);
