@@ -505,7 +505,6 @@ GLboolean PVRDRIQueryImage(__DRIimage *image, int attrib, int *value_ptr)
 	struct PVRDRIImageShared *shared = image->psShared;
 	PVRDRIBufferAttribs sAttribs;
 	int value;
-	uint64_t ulValue;
 
 	PVRDRIEGLImageGetAttribs(image->psEGLImage, &sAttribs);
 
@@ -596,14 +595,6 @@ GLboolean PVRDRIQueryImage(__DRIimage *image, int attrib, int *value_ptr)
 			break;
 		case __DRI_IMAGE_ATTRIB_OFFSET:
 			*value_ptr = 0;
-			break;
-		case __DRI_IMAGE_ATTRIB_MODIFIER_LOWER:
-			ulValue = DRM_FORMAT_MOD_INVALID;
-			*value_ptr = (int)(ulValue & 0xffffffff);
-			break;
-		case __DRI_IMAGE_ATTRIB_MODIFIER_UPPER:
-			ulValue = DRM_FORMAT_MOD_INVALID;
-			*value_ptr = (int)((ulValue >> 32) & 0xffffffff);
 			break;
 		default:
 			return GL_FALSE;
