@@ -1,0 +1,97 @@
+<?xml version="1.0"?>
+<!DOCTYPE OpenGLAPI SYSTEM "gl_API.dtd">
+
+<!-- Note: no GLX protocol info yet. -->
+
+
+<OpenGLAPI>
+<category name="GL_ARB_geometry_shader4" number="47">
+    <enum name="GEOMETRY_SHADER_ARB"                      value="0x8DD9"/>
+    <enum name="GEOMETRY_VERTICES_OUT_ARB"                value="0x8DDA"/>
+    <enum name="GEOMETRY_INPUT_TYPE_ARB"                  value="0x8DDB"/>
+    <enum name="GEOMETRY_OUTPUT_TYPE_ARB"                 value="0x8DDC"/>
+
+    <enum name="MAX_GEOMETRY_TEXTURE_IMAGE_UNITS_ARB"
+						count="1" value="0x8C29">
+	<size name="Get" mode="get"/>
+    </enum>
+    <enum name="MAX_GEOMETRY_VARYING_COMPONENTS_ARB"
+						count="1" value="0x8DDD">
+	<size name="Get" mode="get"/>
+    </enum>
+    <enum name="MAX_VERTEX_VARYING_COMPONENTS_ARB"
+						count="1" value="0x8DDE">
+	<size name="Get" mode="get"/>
+    </enum>
+    <enum name="MAX_VARYING_COMPONENTS"
+						count="1" value="0x8B4B">
+	<size name="Get" mode="get"/>
+    </enum>
+    <enum name="MAX_GEOMETRY_UNIFORM_COMPONENTS_ARB"
+						count="1" value="0x8DDF">
+	<size name="Get" mode="get"/>
+    </enum>
+    <enum name="MAX_GEOMETRY_OUTPUT_VERTICES_ARB"
+						count="1" value="0x8DE0">
+	<size name="Get" mode="get"/>
+    </enum>
+    <enum name="MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS_ARB"
+						count="1" value="0x8DE1">
+	<size name="Get" mode="get"/>
+    </enum>
+
+    <enum name="LINES_ADJACENCY_ARB"                      value="0xA"/>
+    <enum name="LINE_STRIP_ADJACENCY_ARB"                 value="0xB"/>
+    <enum name="TRIANGLES_ADJACENCY_ARB"                  value="0xC"/>
+    <enum name="TRIANGLE_STRIP_ADJACENCY_ARB"             value="0xD"/>
+
+    <enum name="FRAMEBUFFER_INCOMPLETE_LAYER_TARGETS_ARB" value="0x8DA8"/>
+    <enum name="FRAMEBUFFER_INCOMPLETE_LAYER_COUNT_ARB"   value="0x8DA9"/>
+
+
+    <enum name="FRAMEBUFFER_ATTACHMENT_LAYERED_ARB"
+						count="1" value="0x8DA7">
+        <size name="GetFramebufferAttachmentParameteriv" mode="get"/>
+    </enum>
+    <enum name="FRAMEBUFFER_ATTACHMENT_TEXTURE_LAYER"
+						count="1" value="0x8CD4">
+        <size name="GetFramebufferAttachmentParameteriv" mode="get"/>
+    </enum>
+
+    <enum name="PROGRAM_POINT_SIZE_ARB"                   value="0x8642"/>
+    <enum name="PROGRAM_POINT_SIZE_ARB"
+						count="1" value="0x8642">
+	<size name="Get" mode="get"/>
+    </enum>
+
+    <function name="ProgramParameteriARB" exec="dynamic">
+        <param name="program" type="GLuint"/>
+        <param name="pname" type="GLenum"/>
+        <param name="value" type="GLint"/>
+    </function>
+
+    <function name="FramebufferTextureARB" exec="dynamic">
+        <param name="target" type="GLenum"/>
+        <param name="attachment" type="GLenum"/>
+        <param name="texture" type="GLuint"/>
+        <param name="level" type="GLint"/>
+    </function>
+
+    <function name="FramebufferTextureLayerARB" exec="dynamic">
+        <param name="target" type="GLenum"/>
+        <param name="attachment" type="GLenum"/>
+        <param name="texture" type="GLuint"/>
+        <param name="level" type="GLint"/>
+        <param name="layer" type="GLint"/>
+    </function>
+
+    <function name="FramebufferTextureFaceARB" exec="dynamic">
+        <param name="target" type="GLenum"/>
+        <param name="attachment" type="GLenum"/>
+        <param name="texture" type="GLuint"/>
+        <param name="level" type="GLint"/>
+        <param name="face" type="GLenum"/>
+    </function>
+</category>
+
+</OpenGLAPI>
