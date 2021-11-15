@@ -1,3 +1,24 @@
+mesa (21.2.5+pvr1-1) unstable; urgency=medium
+
+  * pvr: Fix reported __DRI_IMAGE version
+  * pvr: remove some more dead code
+  * pvr: add support for missing attributes
+  * pvr: we don't have PVRDRIBufferGetModifier
+  * use PTHREAD_MUTEX_RECURSIVE instead of PTHREAD_MUTEX_RECURSIVE_NP
+  * add missing function declaration
+  * dri: pvr: Reverse-engineered pvr_dri.so from TI blobs 1.17.4948957
+  * Revert "egl_dri2: Don't expose EXT_image_dma_buf_import_modifiers"
+  * musl-fix-includes.patch
+  * gallium: Disable rgb10 configs by default
+  * add-use-elf-tls.patch
+  * radeonsi: On Aarch64 force persistent buffers to GTT
+  * pvr: gbm: Try loading the pvr_dri.so if the main one fails
+  * egl_dri2: Don't expose EXT_image_dma_buf_import_modifiers
+  * pvr: Some hacks to get things to build
+  * dri/pvr: Introduce PowerVR DRI driver.
+
+ -- Ivan J. <parazyd@dyne.org>  Mon, 15 Nov 2021 16:26:16 +0100
+
 mesa (21.2.5-1) unstable; urgency=medium
 
   * New upstream release.
