@@ -500,6 +500,12 @@ option(
    description : 'Use ZLIB to build driver. Default: enabled'
 )
 option(
+  'use-elf-tls',
+  type : 'boolean',
+  value: false,
+  description : 'Build support for initial-exec TLS model'
+)
+option(
   'sse2',
   type : 'boolean',
   value : true,
