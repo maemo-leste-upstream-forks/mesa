@@ -1,0 +1,45 @@
+diff --git a/meson.build b/meson.build
+index 9f0b3cba548..133c1037def 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1600,9 +1600,9 @@ if with_tests or with_gallium_softpipe
+ endif
+ 
+ if with_amd_vk or with_gallium_radeonsi
+-  _llvm_version = '>= 11.0.0'
++  _llvm_version = '>= 8.0.0'
+ elif with_microsoft_clc
+-  _llvm_version = '>= 10.0.0'
++  _llvm_version = '>= 8.0.0'
+ elif with_gallium_opencl
+   _llvm_version = '>= 8.0.0'
+ elif with_gallium_swr
+@@ -1908,8 +1908,8 @@ if with_platform_wayland
+     wl_scanner_arg = 'code'
+   endif
+   dep_wl_protocols = dependency('wayland-protocols', version : '>= 1.8')
+-  dep_wayland_client = dependency('wayland-client', version : '>=1.18')
+-  dep_wayland_server = dependency('wayland-server', version : '>=1.18')
++  dep_wayland_client = dependency('wayland-client', version : '>=1.16')
++  dep_wayland_server = dependency('wayland-server', version : '>=1.16')
+   if with_egl
+     dep_wayland_egl = dependency('wayland-egl-backend', version : '>= 3')
+     dep_wayland_egl_headers = dep_wayland_egl.partial_dependency(compile_args : true)
+diff --git a/src/egl/drivers/dri2/platform_wayland.c b/src/egl/drivers/dri2/platform_wayland.c
+index cfff0ade90e..f080e72b01b 100644
+--- a/src/egl/drivers/dri2/platform_wayland.c
++++ b/src/egl/drivers/dri2/platform_wayland.c
+@@ -51,6 +51,13 @@
+ #include "wayland-drm-client-protocol.h"
+ #include "linux-dmabuf-unstable-v1-client-protocol.h"
+ 
++/* cheesy workaround until wayland 1.18 */
++#if WAYLAND_VERSION_MAJOR > 1 || \
++	(WAYLAND_VERSION_MAJOR == 1 && WAYLAND_VERSION_MINOR < 18)
++#define WL_SHM_FORMAT_ABGR16161616F 0x48344241
++#define WL_SHM_FORMAT_XBGR16161616F 0x48344258
++#endif
++
+ /*
+  * The index of entries in this table is used as a bitmask in
+  * dri2_dpy->formats, which tracks the formats supported by our server.

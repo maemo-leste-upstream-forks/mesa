@@ -2,3 +2,4 @@
 fix-python-shebang.diff
 path_max.diff
 src_glx_dri_common.h.diff
+lower_llvm_and_wayland_deps.patch
