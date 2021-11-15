@@ -24,6 +24,8 @@
  * THE SOFTWARE.
  */
 
+#include "drm-uapi/drm_fourcc.h"
+
 #include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -76,7 +78,7 @@ static const PVRDRIImageFormat g_asFormats[] =
 {
 	{
 		.eIMGPixelFormat = IMG_PIXFMT_R10G10B10A2_UNORM,
-		.iDRIFourCC = __DRI_IMAGE_FOURCC_ABGR2101010,
+		.iDRIFourCC = DRM_FORMAT_ABGR2101010,
 		.iDRIFormat = __DRI_IMAGE_FORMAT_ABGR2101010,
 		.iDRIComponents = __DRI_IMAGE_COMPONENTS_RGBA,
 		.uiNumPlanes = 1,
@@ -89,7 +91,7 @@ static const PVRDRIImageFormat g_asFormats[] =
 	},
 	{
 		.eIMGPixelFormat = IMG_PIXFMT_B8G8R8A8_UNORM,
-		.iDRIFourCC = __DRI_IMAGE_FOURCC_ARGB8888,
+		.iDRIFourCC = DRM_FORMAT_ARGB8888,
 		.iDRIFormat = __DRI_IMAGE_FORMAT_ARGB8888,
 		.iDRIComponents = __DRI_IMAGE_COMPONENTS_RGBA,
 		.uiNumPlanes = 1,
@@ -102,7 +104,7 @@ static const PVRDRIImageFormat g_asFormats[] =
 	},
 	{
 		.eIMGPixelFormat = IMG_PIXFMT_R8G8B8A8_UNORM,
-		.iDRIFourCC = __DRI_IMAGE_FOURCC_ABGR8888,
+		.iDRIFourCC = DRM_FORMAT_ABGR8888,
 		.iDRIFormat = __DRI_IMAGE_FORMAT_ABGR8888,
 		.iDRIComponents = __DRI_IMAGE_COMPONENTS_RGBA,
 		.uiNumPlanes = 1,
@@ -115,7 +117,7 @@ static const PVRDRIImageFormat g_asFormats[] =
 	},
 	{
 		.eIMGPixelFormat = IMG_PIXFMT_B8G8R8X8_UNORM,
-		.iDRIFourCC = __DRI_IMAGE_FOURCC_XRGB8888,
+		.iDRIFourCC = DRM_FORMAT_XRGB8888,
 		.iDRIFormat = __DRI_IMAGE_FORMAT_XRGB8888,
 		.iDRIComponents = __DRI_IMAGE_COMPONENTS_RGB,
 		.uiNumPlanes = 1,
@@ -128,7 +130,7 @@ static const PVRDRIImageFormat g_asFormats[] =
 	},
 	{
 		.eIMGPixelFormat = IMG_PIXFMT_R8G8B8X8_UNORM,
-		.iDRIFourCC = __DRI_IMAGE_FOURCC_XBGR8888,
+		.iDRIFourCC = DRM_FORMAT_XBGR8888,
 		.iDRIFormat = __DRI_IMAGE_FORMAT_XBGR8888,
 		.iDRIComponents = __DRI_IMAGE_COMPONENTS_RGB,
 		.uiNumPlanes = 1,
@@ -141,7 +143,7 @@ static const PVRDRIImageFormat g_asFormats[] =
 	},
 	{
 		.eIMGPixelFormat = IMG_PIXFMT_B5G6R5_UNORM,
-		.iDRIFourCC = __DRI_IMAGE_FOURCC_RGB565,
+		.iDRIFourCC = DRM_FORMAT_RGB565,
 		.iDRIFormat = __DRI_IMAGE_FORMAT_RGB565,
 		.iDRIComponents = __DRI_IMAGE_COMPONENTS_RGB,
 		.uiNumPlanes = 1,
@@ -154,7 +156,7 @@ static const PVRDRIImageFormat g_asFormats[] =
 	},
 	{
 		.eIMGPixelFormat = IMG_PIXFMT_R8G8_UNORM,
-		.iDRIFourCC = __DRI_IMAGE_FOURCC_GR88,
+		.iDRIFourCC = DRM_FORMAT_GR88,
 		.iDRIFormat = __DRI_IMAGE_FORMAT_GR88,
 		.iDRIComponents = __DRI_IMAGE_COMPONENTS_RG,
 		.uiNumPlanes = 1,
@@ -167,7 +169,7 @@ static const PVRDRIImageFormat g_asFormats[] =
 	},
 	{
 		.eIMGPixelFormat = IMG_PIXFMT_R8_UNORM,
-		.iDRIFourCC = __DRI_IMAGE_FOURCC_R8,
+		.iDRIFourCC = DRM_FORMAT_R8,
 		.iDRIFormat = __DRI_IMAGE_FORMAT_R8,
 		.iDRIComponents = __DRI_IMAGE_COMPONENTS_R,
 		.uiNumPlanes = 1,
@@ -180,7 +182,7 @@ static const PVRDRIImageFormat g_asFormats[] =
 	},
 		{
 		.eIMGPixelFormat = IMG_PIXFMT_L8A8_UNORM,
-		.iDRIFourCC = __DRI_IMAGE_FOURCC_GR88,
+		.iDRIFourCC = DRM_FORMAT_GR88,
 		.iDRIFormat = __DRI_IMAGE_FORMAT_GR88,
 		.iDRIComponents = __DRI_IMAGE_COMPONENTS_RG,
 		.bQueryDmaBufFormatsExclude = true,
@@ -194,7 +196,7 @@ static const PVRDRIImageFormat g_asFormats[] =
 	},
 	{
 		.eIMGPixelFormat = IMG_PIXFMT_L8_UNORM,
-		.iDRIFourCC = __DRI_IMAGE_FOURCC_R8,
+		.iDRIFourCC = DRM_FORMAT_R8,
 		.iDRIFormat = __DRI_IMAGE_FORMAT_R8,
 		.iDRIComponents = __DRI_IMAGE_COMPONENTS_R,
 		.bQueryDmaBufFormatsExclude = true,
@@ -236,7 +238,7 @@ static const PVRDRIImageFormat g_asFormats[] =
 	/* We patch this format into Mesa */
 	{
 		.eIMGPixelFormat = IMG_PIXFMT_B4G4R4A4_UNORM,
-		.iDRIFourCC = __DRI_IMAGE_FOURCC_ARGB4444,
+		.iDRIFourCC = DRM_FORMAT_ARGB4444,
 		.iDRIFormat = __DRI_IMAGE_FORMAT_ARGB4444,
 		.iDRIComponents = __DRI_IMAGE_COMPONENTS_RGBA,
 		.uiNumPlanes = 1,
@@ -252,7 +254,7 @@ static const PVRDRIImageFormat g_asFormats[] =
 	/* We patch this format into Mesa */
 	{
 		.eIMGPixelFormat = IMG_PIXFMT_B5G5R5A1_UNORM,
-		.iDRIFourCC = __DRI_IMAGE_FOURCC_ARGB1555,
+		.iDRIFourCC = DRM_FORMAT_ARGB1555,
 		.iDRIFormat = __DRI_IMAGE_FORMAT_ARGB1555,
 		.iDRIComponents = __DRI_IMAGE_COMPONENTS_RGBA,
 		.uiNumPlanes = 1,
@@ -267,7 +269,7 @@ static const PVRDRIImageFormat g_asFormats[] =
 #if defined(__DRI_IMAGE_COMPONENTS_EXTERNAL)
 	{
 		.eIMGPixelFormat = IMG_PIXFMT_YUYV,
-		.iDRIFourCC = __DRI_IMAGE_FOURCC_YUYV,
+		.iDRIFourCC = DRM_FORMAT_YUYV,
 		.iDRIFormat = __DRI_IMAGE_FORMAT_YUYV,
 		.iDRIComponents = __DRI_IMAGE_COMPONENTS_EXTERNAL,
 		.uiNumPlanes = 1,
@@ -278,10 +280,10 @@ static const PVRDRIImageFormat g_asFormats[] =
 			.uiHeightShift = 0
 		},
 	},
-#if defined(__DRI_IMAGE_FOURCC_YVU444_PACK10_IMG)
+#if defined(DRM_FORMAT_YVU444_PACK10_IMG)
 	{
 		.eIMGPixelFormat = IMG_PIXFMT_YVU10_444_1PLANE_PACK10,
-		.iDRIFourCC = __DRI_IMAGE_FOURCC_YVU444_PACK10_IMG,
+		.iDRIFourCC = DRM_FORMAT_YVU444_PACK10_IMG,
 		.iDRIFormat = __DRI_IMAGE_FORMAT_YVU444_PACK10_IMG,
 		.iDRIComponents = __DRI_IMAGE_COMPONENTS_EXTERNAL,
 		.uiNumPlanes = 1,
@@ -294,11 +296,11 @@ static const PVRDRIImageFormat g_asFormats[] =
 	},
 #endif
 #endif
-#if defined(__DRI_IMAGE_FOURCC_MT21)
+#if defined(DRM_FORMAT_MT21)
 	/* We patch this format into Mesa */
 	{
 		.eIMGPixelFormat = IMG_PIXFMT_YVU8_420_2PLANE_PACK8_P,
-		.iDRIFourCC = __DRI_IMAGE_FOURCC_MT21,
+		.iDRIFourCC = DRM_FORMAT_MT21,
 		.iDRIFormat = __DRI_IMAGE_FORMAT_NONE,
 		.iDRIComponents = __DRI_IMAGE_COMPONENTS_Y_UV,
 		.uiNumPlanes = 2,
@@ -318,7 +320,7 @@ static const PVRDRIImageFormat g_asFormats[] =
 #endif
 	{
 		.eIMGPixelFormat = IMG_PIXFMT_YUV420_2PLANE,
-		.iDRIFourCC = __DRI_IMAGE_FOURCC_NV12,
+		.iDRIFourCC = DRM_FORMAT_NV12,
 		.iDRIFormat = __DRI_IMAGE_FORMAT_NONE,
 		.iDRIComponents = __DRI_IMAGE_COMPONENTS_Y_UV,
 		.uiNumPlanes = 2,
@@ -335,10 +337,10 @@ static const PVRDRIImageFormat g_asFormats[] =
 				.uiHeightShift = 1
 		},
 	},
-#if defined(__DRI_IMAGE_FOURCC_NV21)
+#if defined(DRM_FORMAT_NV21)
 	{
 		.eIMGPixelFormat = IMG_PIXFMT_YVU420_2PLANE,
-		.iDRIFourCC = __DRI_IMAGE_FOURCC_NV21,
+		.iDRIFourCC = DRM_FORMAT_NV21,
 		.iDRIFormat = __DRI_IMAGE_FORMAT_NONE,
 		.iDRIComponents = __DRI_IMAGE_COMPONENTS_Y_UV,
 		.uiNumPlanes = 2,
@@ -358,7 +360,7 @@ static const PVRDRIImageFormat g_asFormats[] =
 #endif
 	{
 		.eIMGPixelFormat = IMG_PIXFMT_YUV420_3PLANE,
-		.iDRIFourCC = __DRI_IMAGE_FOURCC_YUV420,
+		.iDRIFourCC = DRM_FORMAT_YUV420,
 		.iDRIFormat = __DRI_IMAGE_FORMAT_NONE,
 		.iDRIComponents = __DRI_IMAGE_COMPONENTS_Y_U_V,
 		.uiNumPlanes = 3,
@@ -383,7 +385,7 @@ static const PVRDRIImageFormat g_asFormats[] =
 	},
 	{
 		.eIMGPixelFormat = IMG_PIXFMT_YVU420_3PLANE,
-		.iDRIFourCC = __DRI_IMAGE_FOURCC_YVU420,
+		.iDRIFourCC = DRM_FORMAT_YVU420,
 		.iDRIFormat = __DRI_IMAGE_FORMAT_NONE,
 		.iDRIComponents = __DRI_IMAGE_COMPONENTS_Y_U_V,
 		.uiNumPlanes = 3,

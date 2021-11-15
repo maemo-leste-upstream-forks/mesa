@@ -40,7 +40,6 @@
 #include "main/version.h"
 #include "main/errors.h"
 
-#include "imports.h"
 #include "dri_support.h"
 #include "dri_util.h"
 #include "glapi.h"

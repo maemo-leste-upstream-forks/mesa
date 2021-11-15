@@ -284,7 +284,9 @@ static bool PVRDRIConfigQuery(const PVRDRIConfig *psConfig,
 			*piValueOut = psConfig->iSupportedAPIs;
 			return true;
 		case PVRDRI_CONFIG_ATTRIB_RGB_MODE:
-			*piValueOut = psConfig->sGLMode.rgbMode;
+			// TODO 366b2e5c19109762cbdb3c31ac487826b6dd903a removed rgbMode
+			*piValueOut = GL_TRUE;
+			//*piValueOut = psConfig->sGLMode.rgbMode;
 			return true;
 		case PVRDRI_CONFIG_ATTRIB_DOUBLE_BUFFER_MODE:
 			*piValueOut = psConfig->sGLMode.doubleBufferMode;

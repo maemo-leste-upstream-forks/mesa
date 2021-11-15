@@ -50,6 +50,8 @@ if with_dri_nouveau
 endif
 if with_dri_pvr
   subdir('pvr')
+  _dri_drivers += libpvr
+  _dri_link += 'pvr_dri.so'
 endif
 
 if _dri_drivers != []
