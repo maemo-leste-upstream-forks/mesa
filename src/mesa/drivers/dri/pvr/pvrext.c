@@ -321,6 +321,7 @@ static const __DRIextension *apsScreenExtensions[] =
 #if defined(__DRI2_FENCE)
 	&pvrDRIFenceExtension.base,
 #endif
+	&dri2ConfigQueryExtension.base,
 	NULL
 };
 

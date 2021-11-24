@@ -501,30 +501,10 @@ const __DRIconfig **PVRDRICreateConfigs(void)
 						 puMSAASamples,
 						 uNumMSAASamples,
 						 GL_FALSE,
-						 GL_FALSE,
 						 GL_FALSE
-#if defined(__DRI_ATTRIB_YUV_BIT)
-						 , __DRI_ATTRIB_YUV_DEPTH_RANGE_NONE,
-						 __DRI_ATTRIB_YUV_CSC_STANDARD_NONE
-#endif
 						 );
 
 		ppsConfigs = driConcatConfigs(ppsConfigs, ppsNewConfigs);
-	}
-
-	if (ppsConfigs)
-	{
-		for (i = 0; ppsConfigs[i]; i++)
-		{
-			ppsConfigs[i]->modes.maxPbufferWidth =
-						PVRDRIMaxPBufferWidth();
-			ppsConfigs[i]->modes.maxPbufferHeight =
-						PVRDRIMaxPBufferHeight();
-
-			ppsConfigs[i]->modes.maxPbufferPixels =
-						PVRDRIMaxPBufferWidth() *
-						PVRDRIMaxPBufferHeight();
-		}
 	}
 
 	return (const __DRIconfig **)ppsConfigs;

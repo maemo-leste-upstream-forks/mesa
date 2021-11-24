@@ -363,10 +363,6 @@ static inline void PVRDRIConfigFromMesa(PVRDRIConfigInfo *psConfigInfo,
 		psConfigInfo->depthBits         = psGLMode->depthBits;
 		psConfigInfo->stencilBits       = psGLMode->stencilBits;
 		psConfigInfo->doubleBufferMode  = psGLMode->doubleBufferMode;
-
-		psConfigInfo->sampleBuffers     = psGLMode->sampleBuffers;
-		psConfigInfo->bindToTextureRgb  = psGLMode->bindToTextureRgb;
-		psConfigInfo->bindToTextureRgba = psGLMode->bindToTextureRgba;
 	}
 }
 
