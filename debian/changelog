@@ -1,3 +1,10 @@
+mesa (21.2.5+pvr2-1) unstable; urgency=medium
+
+  * pvr: Bump version because our CI cannot deal with rebuilding existing
+    tags
+
+ -- Merlijn Wajer <merlijn@wizzup.org>  Fri, 24 Dec 2021 14:14:14 +0100
+
 mesa (21.2.5+pvr1-1) unstable; urgency=medium
 
   * pvr: Fix reported __DRI_IMAGE version
