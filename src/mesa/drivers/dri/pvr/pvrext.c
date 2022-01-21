@@ -75,7 +75,7 @@
 /* Maximum version numbers for each supported extension */
 #define PVR_DRI_TEX_BUFFER_VERSION	2
 #define PVR_DRI2_FLUSH_VERSION		4
-#define PVR_DRI_IMAGE_VERSION		14
+#define PVR_DRI_IMAGE_VERSION		8
 #define PVR_DRI2_ROBUSTNESS_VERSION	1
 #define PVR_DRI2_FENCE_VERSION		2
 
