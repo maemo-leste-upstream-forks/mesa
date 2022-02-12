@@ -1,3 +1,9 @@
+mesa (21.2.5+pvr5-1) unstable; urgency=medium
+
+  * Enable opengles1
+
+ -- Merlijn Wajer <merlijn@wizzup.org>  Sun, 13 Feb 2022 00:28:36 +0100
+
 mesa (21.2.5+pvr4-1) unstable; urgency=medium
 
   * dri: pvr/pvrext: change DRI_IMAGE_VERSION to 8
