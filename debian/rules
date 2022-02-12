@@ -145,7 +145,7 @@ VULKAN_DRIVERS := $(patsubst %,'%',$(VULKAN_DRIVERS))
 VULKAN_DRIVERS_LIST := $(subst $(space),$(comma),$(VULKAN_DRIVERS))
 
 confflags_EGL = -Dplatforms="$(EGL_PLATFORMS)"
-confflags_GLES = -Dgles1=disabled -Dgles2=enabled
+confflags_GLES = -Dgles1=enabled -Dgles2=enabled
 confflags_GALLIUM += -Dgallium-drivers="[$(GALLIUM_DRIVERS_LIST)]"
 
 confflags += \
