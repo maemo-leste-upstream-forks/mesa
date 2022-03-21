@@ -24,6 +24,8 @@ inc_src = include_directories('.')
 inc_gallium = include_directories('gallium/include')
 inc_gallium_aux = include_directories('gallium/auxiliary')
 inc_amd_common = include_directories('amd/common')
+inc_pvr = include_directories('mesa/main', 'mapi/glapi',
+                              'gallium/frontends/dri')
 inc_tool = include_directories('tool')
 inc_virtio_gpu = include_directories('virtio/virtio-gpu')
 pps_datasources = []

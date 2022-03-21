@@ -169,6 +169,18 @@ dri_destroy_screen_helper(struct dri_screen * screen);
 void
 dri_destroy_screen(__DRIscreen * sPriv);
 
+__DRIconfig **
+driCreateConfigs(mesa_format format,
+		 const uint8_t * depth_bits, const uint8_t * stencil_bits,
+		 unsigned num_depth_stencil_bits,
+		 const GLenum * db_modes, unsigned num_db_modes,
+		 const uint8_t * msaa_samples, unsigned num_msaa_modes,
+		 GLboolean enable_accum, GLboolean color_depth_match,
+		 GLint yuv_depth_range, GLint yuv_csc_standard);
+
+__DRIconfig **
+driConcatConfigs(__DRIconfig **a, __DRIconfig **b);
+
 extern const struct __DriverAPIRec dri_swrast_kms_driver_api;
 extern const __DRIextension *dri_swrast_kms_driver_extensions[];
 extern const struct __DriverAPIRec galliumdrm_driver_api;
@@ -179,6 +191,8 @@ extern const struct __DriverAPIRec galliumvk_driver_api;
 extern const __DRIextension *galliumvk_driver_extensions[];
 extern const __DRIconfigOptionsExtension gallium_config_options;
 
+extern const struct __DriverAPIRec pvr_driver_api;
+extern const __DRIextension *pvr_driver_extensions[];
 #endif
 
 /* vim: set sw=3 ts=8 sts=3 expandtab: */

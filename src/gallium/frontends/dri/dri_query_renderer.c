@@ -23,7 +23,7 @@
  * \returns
  * Zero if a recognized value of \c param is supplied, -1 otherwise.
  */
-static int
+int
 driQueryRendererIntegerCommon(__DRIscreen *psp, int param, unsigned int *value)
 {
    switch (param) {

@@ -50,7 +50,7 @@ libgallium_dri = shared_library(
   link_with : [
     libdri, libmesa, libgalliumvl,
     libgallium, libglapi, libpipe_loader_static, libws_null, libwsw, libswdri,
-    libswkmsdri,
+    libswkmsdri, libpvr,
   ],
   dependencies : [
     dep_selinux, dep_libdrm, dep_llvm, dep_thread, idep_xmlconfig, idep_mesautil,
@@ -58,7 +58,7 @@ libgallium_dri = shared_library(
     driver_kmsro, driver_v3d, driver_vc4, driver_freedreno, driver_etnaviv,
     driver_tegra, driver_i915, driver_svga, driver_virgl,
     driver_panfrost, driver_iris, driver_lima, driver_zink, driver_d3d12,
-    driver_asahi, driver_crocus
+    driver_asahi, driver_crocus, driver_pvr, driver_pvr_alias
   ],
   # Will be deleted during installation, see install_megadrivers.py
   install : true,
@@ -115,7 +115,9 @@ foreach d : [[with_gallium_kmsro, [
              [with_gallium_lima, 'lima_dri.so'],
              [with_gallium_zink, 'zink_dri.so'],
              [with_gallium_d3d12, 'd3d12_dri.so'],
-             [with_gallium_asahi, 'asahi_dri.so']]
+             [with_gallium_asahi, 'asahi_dri.so'],
+             [with_gallium_pvr, 'pvr_dri.so'],
+             [with_gallium_pvr_alias, gallium_pvr_alias + '_dri.so']]
   if d[0]
     gallium_dri_drivers += d[1]
   endif

@@ -57,6 +57,10 @@ if with_gallium_softpipe
   libdri_c_args += '-DGALLIUM_SOFTPIPE'
 endif
 
+if with_gallium_pvr
+  libdri_c_args += '-DGALLIUM_PVR'
+endif
+
 libdri = static_library(
   'dri',
   files_libdri,

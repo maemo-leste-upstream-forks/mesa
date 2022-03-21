@@ -41,7 +41,6 @@
 
 #include <stdbool.h>
 #include "dri_util.h"
-#include "dri_context.h"
 #include "dri_screen.h"
 #include "util/u_endian.h"
 #include "util/driconf.h"
@@ -195,6 +194,18 @@ swkmsCreateNewScreen(int scrn, int fd,
                               dri_swrast_kms_driver_extensions,
                               driver_configs, data);
 }
+
+#if defined(GALLIUM_PVR)
+static __DRIscreen *
+pvrCreateNewScreen(int scrn, int fd,
+		   const __DRIextension **extensions,
+		   const __DRIconfig ***driver_configs, void *data)
+{
+   return driCreateNewScreen2(scrn, fd, extensions,
+                              pvr_driver_extensions,
+                              driver_configs, data);
+}
+#endif
 
 /** swrast driver createNewScreen entrypoint. */
 static __DRIscreen *
@@ -639,8 +650,8 @@ driCreateContextAttribs(__DRIscreen *screen, int api,
     context->driDrawablePriv = NULL;
     context->driReadablePriv = NULL;
 
-    if (!dri_create_context(mesa_api, modes, context, &ctx_config, error,
-                            shareCtx)) {
+    if (!screen->driver->CreateContext(mesa_api, modes, context,
+                                       &ctx_config, error, shareCtx)) {
         free(context);
         return NULL;
     }
@@ -679,7 +690,7 @@ static void
 driDestroyContext(__DRIcontext *pcp)
 {
     if (pcp) {
-        dri_destroy_context(pcp);
+        pcp->driScreenPriv->driver->DestroyContext(pcp);
         free(pcp);
     }
 }
@@ -732,7 +743,7 @@ static int driBindContext(__DRIcontext *pcp,
         dri_get_drawable(prp);
     }
 
-    return dri_make_current(pcp, pdp, prp);
+    return pcp->driScreenPriv->driver->MakeCurrent(pcp, pdp, prp);
 }
 
 /**
@@ -765,10 +776,10 @@ static int driUnbindContext(__DRIcontext *pcp)
         return GL_FALSE;
 
     /*
-    ** Call dri_unbind_context before checking for valid drawables
+    ** Call UnbindContext before checking for valid drawables
     ** to handle surfaceless contexts properly.
     */
-    dri_unbind_context(pcp);
+    pcp->driScreenPriv->driver->UnbindContext(pcp);
 
     pdp = pcp->driDrawablePriv;
     prp = pcp->driReadablePriv;
@@ -1002,6 +1013,21 @@ const __DRIdri2Extension swkmsDRI2Extension = {
     .createNewScreen2           = driCreateNewScreen2,
 };
 
+#if defined(GALLIUM_PVR)
+const __DRIdri2Extension pvrDRI2Extension = {
+    .base = { __DRI_DRI2, 4 },
+
+    .createNewScreen            = pvrCreateNewScreen,
+    .createNewDrawable          = driCreateNewDrawable,
+    .createNewContext           = driCreateNewContext,
+    .getAPIMask                 = driGetAPIMask,
+    .createNewContextForAPI     = driCreateNewContextForAPI,
+    .allocateBuffer             = dri2AllocateBuffer,
+    .releaseBuffer              = dri2ReleaseBuffer,
+    .createContextAttribs       = driCreateContextAttribs,
+    .createNewScreen2           = driCreateNewScreen2,
+};
+#endif
 #endif
 
 const __DRIswrastExtension driSWRastExtension = {
