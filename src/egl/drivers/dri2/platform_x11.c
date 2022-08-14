@@ -1405,7 +1405,7 @@ dri2_initialize_x11_dri3(_EGLDisplay *disp)
 
    dri2_set_WL_bind_wayland_display(disp);
 
-   if (!dri2_x11_add_configs_for_visuals(dri2_dpy, disp, true))
+   if (!dri2_x11_add_configs_for_visuals(dri2_dpy, disp, false))
       goto cleanup;
 
    dri2_dpy->loader_dri3_ext.core = dri2_dpy->core;
