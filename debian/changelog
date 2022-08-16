@@ -1,3 +1,9 @@
+mesa (21.2.5+pvr7-1) unstable; urgency=medium
+
+  * pvr: Implement queryDmaBufFormats/queryDmaBufModifiers
+
+ -- Ivaylo Dimitrov <ivo.g.dimitrov.75@gmail.com>  Tue, 16 Aug 2022 19:24:33 +0300
+
 mesa (21.2.5+pvr6-1) unstable; urgency=medium
 
   * Disable mesa patch for EGL_SWAP_BEHAVIOR_PRESERVED_BIT
