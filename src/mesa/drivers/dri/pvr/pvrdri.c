@@ -280,6 +280,7 @@ static void PVRDRIScreenRemoveReference(PVRDRIScreen *psPVRScreen)
 
 	PVRDRIEGLFreeResources(psPVRScreen->psImpl);
 	PVRDRIDestroyFencesImpl(psPVRScreen->psImpl);
+	PVRDRIDestroyFormatInfo(psPVRScreen);
 	PVRDRIDestroyScreenImpl(psPVRScreen->psImpl);
 	PVRMutexDeinit(&psPVRScreen->sMutex);
 
@@ -385,9 +386,15 @@ static const __DRIconfig **PVRDRIInitScreen(__DRIscreen *psDRIScreen)
 	psDRIScreen->extensions = PVRDRIScreenExtensions();
 
 	psPVRScreen->psImpl = PVRDRICreateScreenImpl(psDRIScreen->fd);
+
 	if (psPVRScreen->psImpl == NULL)
 	{
 		goto ErrorScreenMutexDeinit;
+	}
+
+	if (!PVRDRIGetSupportedFormats(psPVRScreen))
+	{
+		goto ErrorScreenImplDeinit;
 	}
 
 	if (PVRDRIIsFirstScreen(psPVRScreen->psImpl))
@@ -401,6 +408,7 @@ static const __DRIconfig **PVRDRIInitScreen(__DRIscreen *psDRIScreen)
 						 PVRDRI_API_SUB_GL_CORE,
 						 psPVRScreen->psImpl);
 	}
+
 	psDRIScreen->max_gl_es1_version =
 				PVRDRIAPIVersion(PVRDRI_API_GLES1,
 						 PVRDRI_API_SUB_NONE,
@@ -412,15 +420,19 @@ static const __DRIconfig **PVRDRIInitScreen(__DRIscreen *psDRIScreen)
 						 psPVRScreen->psImpl);
 
 	configs = PVRDRICreateConfigs();
+
 	if (configs == NULL)
 	{
 		__driUtilMessage("%s: No framebuffer configs", __func__);
-		goto ErrorScreenImplDeinit;
+		goto ErrorDestroyFormatInfo;
 	}
 
 	PVRScreenPrintExtensions(psDRIScreen);
 
 	return configs;
+
+ErrorDestroyFormatInfo:
+	PVRDRIDestroyFormatInfo(psPVRScreen);
 
 ErrorScreenImplDeinit:
 	PVRDRIDestroyScreenImpl(psPVRScreen->psImpl);
