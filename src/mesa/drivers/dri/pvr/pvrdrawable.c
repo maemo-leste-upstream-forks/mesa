@@ -215,7 +215,7 @@ static bool PVRImageDrawableGetNativeInfo(PVRDRIDrawable *psPVRDrawable)
 	assert(psDRIScreen->image.loader != NULL);
 	assert(psDRIScreen->image.loader->getBuffers);
 
-	psFormat = PVRDRIIMGPixelFormatToImageFormat(
+	psFormat = PVRDRIIMGPixelFormatToImageFormat(psPVRDrawable->psPVRScreen,
 			   psPVRDrawable->ePixelFormat);
 	if (!psFormat)
 	{

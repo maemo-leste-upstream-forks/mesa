@@ -85,6 +85,15 @@ typedef struct PVRDRIScreen_TAG
 	struct _glapi_table *psOGLES2Dispatch;
 
 	PVRDRIScreenImpl    *psImpl;
+
+	/*
+	 * Number of supported formats:
+	 *  0 -> uninitialised or initialisation failed
+	 */
+	int                 iNumFormats;
+	/* Indicates which entries in the image format array are supported */
+	bool                *pbHasFormat;
+
 } PVRDRIScreen;
 
 /** Our PVR related context data */
@@ -279,13 +288,26 @@ const PVRDRIImageFormat *PVRDRIFormatToImageFormat(PVRDRIScreen *psPVRScreen,
 						   int iDRIFormat);
 const PVRDRIImageFormat *PVRDRIFourCCToImageFormat(PVRDRIScreen *psPVRScreen,
 						   int iDRIFourCC);
-const PVRDRIImageFormat *PVRDRIIMGPixelFormatToImageFormat(IMG_PIXFMT eIMGPixelFormat);
+const PVRDRIImageFormat *PVRDRIIMGPixelFormatToImageFormat(PVRDRIScreen *psPVRScreen,
+							   IMG_PIXFMT eIMGPixelFormat);
 
 IMG_YUV_COLORSPACE PVRDRIToIMGColourSpace(const PVRDRIImageFormat *psFormat,
 					  enum __DRIYUVColorSpace eDRIColourSpace,
 					  enum __DRISampleRange eDRISampleRange);
 IMG_YUV_CHROMA_INTERP PVRDRIChromaSittingToIMGInterp(const PVRDRIImageFormat *psFormat,
 						     enum __DRIChromaSiting eChromaSitting);
+
+bool PVRDRIGetSupportedFormats(PVRDRIScreen *psPVRScreen);
+
+GLboolean PVRDRIQueryDmaBufFormats(__DRIscreen *screen, int max,
+				   int *formats, int *count);
+
+GLboolean PVRDRIQueryDmaBufModifiers(__DRIscreen *screen, int fourcc,
+				     int max, uint64_t *modifiers,
+				     unsigned int *external_only,
+				     int *count);
+
+void PVRDRIDestroyFormatInfo(PVRDRIScreen *psPVRScreen);
 
 /*************************************************************************/ /*!
  pvrdrawable.c

@@ -133,7 +133,8 @@ CreateImageSharedFromEGLImage(__DRIscreen *screen,
 
 	PVRDRIEGLImageGetAttribs(psEGLImage, &sAttribs);
 
-	psFormat = PVRDRIIMGPixelFormatToImageFormat(sAttribs.ePixFormat);
+	psFormat = PVRDRIIMGPixelFormatToImageFormat(psPVRScreen,
+						     sAttribs.ePixFormat);
 	if (!psFormat)
 	{
 		return NULL;

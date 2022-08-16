@@ -436,6 +436,30 @@ static const PVRDRIImageFormat g_asFormats[] =
 	},
 };
 
+/*
+ * Check if a PVR Screen has support for a particular format based upon its
+ * position in g_asFormats. If querying of this information isn't supported
+ * by pvr_dri_support then assume the format is supported.
+ */
+static inline bool
+PVRDRIScreenHasFormatFromIdx(const PVRDRIScreen * const psPVRScreen,
+			     const unsigned int uiFormatIdx)
+{
+	if (psPVRScreen->iNumFormats > 0)
+	{
+		if (uiFormatIdx < ARRAY_SIZE(g_asFormats))
+		{
+			return psPVRScreen->pbHasFormat[uiFormatIdx];
+		}
+
+		return false;
+	}
+
+	assert(psPVRScreen->iNumFormats == -1);
+
+	return true;
+}
+
 /* Standard error message */
 void PRINTFLIKE(1, 2) errorMessage(const char *f, ...)
 {
@@ -519,10 +543,17 @@ const PVRDRIImageFormat *PVRDRIFormatToImageFormat(PVRDRIScreen *psPVRScreen,
 
 	for (i = 0; i < ARRAY_SIZE(g_asFormats); i++)
 	{
-		if (g_asFormats[i].iDRIFormat == iDRIFormat)
+		if (g_asFormats[i].iDRIFormat != iDRIFormat)
 		{
-			return &g_asFormats[i];
+			continue;
 		}
+
+		if (!PVRDRIScreenHasFormatFromIdx(psPVRScreen, i))
+		{
+			break;
+		}
+
+		return &g_asFormats[i];
 	}
 
 	return NULL;
@@ -540,16 +571,24 @@ const PVRDRIImageFormat *PVRDRIFourCCToImageFormat(PVRDRIScreen *psPVRScreen,
 
 	for (i = 0; i < ARRAY_SIZE(g_asFormats); i++)
 	{
-		if (g_asFormats[i].iDRIFourCC == iDRIFourCC)
+		if (g_asFormats[i].iDRIFourCC != iDRIFourCC)
 		{
-			return &g_asFormats[i];
+			continue;
 		}
+
+		if (!PVRDRIScreenHasFormatFromIdx(psPVRScreen, i))
+		{
+			break;
+		}
+
+		return &g_asFormats[i];
 	}
 
 	return NULL;
 }
 
-const PVRDRIImageFormat *PVRDRIIMGPixelFormatToImageFormat(IMG_PIXFMT eIMGPixelFormat)
+const PVRDRIImageFormat *PVRDRIIMGPixelFormatToImageFormat(
+		PVRDRIScreen *psPVRScreen, IMG_PIXFMT eIMGPixelFormat)
 {
 	unsigned i;
 
@@ -557,10 +596,20 @@ const PVRDRIImageFormat *PVRDRIIMGPixelFormatToImageFormat(IMG_PIXFMT eIMGPixelF
 
 	for (i = 0; i < ARRAY_SIZE(g_asFormats); i++)
 	{
-		if (g_asFormats[i].eIMGPixelFormat == eIMGPixelFormat)
+		if (g_asFormats[i].eIMGPixelFormat != eIMGPixelFormat)
 		{
-			return &g_asFormats[i];
+			continue;
 		}
+
+		/*
+		 * Assume that the screen has the format, i.e. it's supported by
+		 * the HW+SW, since we can only have an IMG_PIXFMT from having
+		 * called one of the other PVRDRI*ToImageFormat functions or
+		 * one of the pvr_dri_support functions.
+		 */
+		assert(PVRDRIScreenHasFormatFromIdx(psPVRScreen, i));
+
+		return &g_asFormats[i];
 	}
 
 	return NULL;
@@ -688,6 +737,165 @@ IMG_YUV_CHROMA_INTERP PVRDRIChromaSittingToIMGInterp(const PVRDRIImageFormat *ps
 			unreachable("unhandled chroma sitting");
 			return IMG_CHROMA_INTERP_UNDEFINED;
 	}
+}
+
+static bool PVRDRIIsFormatSupported(IMG_PIXFMT eImgFormat)
+{
+	switch (eImgFormat)
+	{
+		case IMG_PIXFMT_R10G10B10A2_UNORM:
+		case IMG_PIXFMT_R8G8B8A8_UNORM:
+		case IMG_PIXFMT_R8G8B8X8_UNORM:
+		case IMG_PIXFMT_D32_FLOAT:
+		case IMG_PIXFMT_D24_UNORM_X8_TYPELESS:
+		case IMG_PIXFMT_R8G8_UNORM:
+		case IMG_PIXFMT_D16_UNORM:
+		case IMG_PIXFMT_R8_UNORM:
+		case IMG_PIXFMT_S8_UINT:
+		case IMG_PIXFMT_B5G6R5_UNORM:
+		case IMG_PIXFMT_B5G5R5A1_UNORM:
+		case IMG_PIXFMT_B8G8R8A8_UNORM:
+		case IMG_PIXFMT_B8G8R8X8_UNORM:
+		case IMG_PIXFMT_L8_UNORM:
+		case IMG_PIXFMT_L8A8_UNORM:
+		case IMG_PIXFMT_B4G4R4A4_UNORM:
+		case IMG_PIXFMT_YUYV:
+		case IMG_PIXFMT_YVU420_2PLANE:
+		case IMG_PIXFMT_YUV420_2PLANE:
+		case IMG_PIXFMT_YUV420_3PLANE:
+		case IMG_PIXFMT_YVU420_3PLANE:
+			return true;
+		default:
+			return false;
+	}
+}
+
+static int PVRDRIQuerySupportedFormats(PVRDRIScreenImpl *psScreenImpl,
+				       unsigned uNumFormats,
+				       const int *piFormats,
+				       const IMG_PIXFMT *peImgFormats,
+				       bool *pbSupported)
+{
+	int iNumSupported = 0;
+	unsigned i;
+
+	for (i = 0; i < uNumFormats; i++)
+	{
+		if (*piFormats && PVRDRIIsFormatSupported(*peImgFormats))
+		{
+			*pbSupported = true;
+			iNumSupported++;
+		}
+		else
+		{
+			*pbSupported = false;
+		}
+
+		piFormats++;
+		peImgFormats++;
+		pbSupported++;
+	}
+
+	return iNumSupported;
+}
+
+bool PVRDRIGetSupportedFormats(PVRDRIScreen *psPVRScreen)
+{
+	int *piFormats;
+	IMG_PIXFMT *peImgFormats;
+	bool bRet = false;
+	unsigned i;
+
+	piFormats = malloc(ARRAY_SIZE(g_asFormats) * sizeof(*piFormats));
+	peImgFormats = malloc(ARRAY_SIZE(g_asFormats) * sizeof(*peImgFormats));
+
+	psPVRScreen->pbHasFormat = malloc(ARRAY_SIZE(g_asFormats) *
+					  sizeof(*psPVRScreen->pbHasFormat));
+
+	if (!piFormats || !peImgFormats || !psPVRScreen->pbHasFormat)
+	{
+		errorMessage("Out of memory\n");
+
+		goto err_free;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(g_asFormats); i++)
+	{
+		piFormats[i] = g_asFormats[i].bQueryDmaBufFormatsExclude ?
+			       0 : g_asFormats[i].iDRIFourCC;
+
+		peImgFormats[i] = g_asFormats[i].eIMGPixelFormat;
+	}
+
+	psPVRScreen->iNumFormats =
+			PVRDRIQuerySupportedFormats(psPVRScreen->psImpl,
+						    ARRAY_SIZE(g_asFormats),
+						    piFormats,
+						    peImgFormats,
+						    psPVRScreen->pbHasFormat);
+	if (psPVRScreen->iNumFormats == 0)
+	{
+		__driUtilMessage("Couldn't query supported pixel formats\n");
+		goto err_free;
+	}
+
+	bRet = true;
+	goto cleanup;
+
+err_free:
+	free(psPVRScreen->pbHasFormat);
+	psPVRScreen->pbHasFormat = NULL;
+cleanup:
+	free(peImgFormats);
+	free(piFormats);
+	return bRet;
+}
+
+void PVRDRIDestroyFormatInfo(PVRDRIScreen *psPVRScreen)
+{
+	free(psPVRScreen->pbHasFormat);
+}
+
+GLboolean PVRDRIQueryDmaBufFormats(__DRIscreen *screen, int max,
+				   int *formats, int *count)
+{
+	PVRDRIScreen *psPVRScreen = DRIScreenPrivate(screen);
+	int i, j;
+
+	assert(psPVRScreen->iNumFormats != 0);
+
+	if (psPVRScreen->iNumFormats < 0)
+	{
+		return GL_FALSE;
+	}
+
+	if (!max)
+	{
+		*count = psPVRScreen->iNumFormats;
+		return GL_TRUE;
+	}
+
+	for (i = 0, j = 0; i < ARRAY_SIZE(g_asFormats) && j < max; i++)
+	{
+		if (psPVRScreen->pbHasFormat[i])
+		{
+			formats[j++] = g_asFormats[i].iDRIFourCC;
+		}
+	}
+
+	*count = j;
+
+	return GL_TRUE;
+}
+
+GLboolean PVRDRIQueryDmaBufModifiers(__DRIscreen *screen, int fourcc,
+				     int max, uint64_t *modifiers,
+				     unsigned int *external_only,
+				     int *count)
+{
+	*count = 0;
+
+	return GL_TRUE;
 }
 
 bool PVRMutexInit(pthread_mutex_t *psMutex, int iType)
