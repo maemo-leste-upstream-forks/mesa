@@ -126,7 +126,6 @@
             },
             "features": {
                 "VkPhysicalDeviceFeatures": {
-                    "occlusionQueryPrecise": true,
                     "dualSrcBlend": true
                 },
                 "VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT": {
@@ -334,7 +333,6 @@
             "features": {
                 "VkPhysicalDeviceFeatures": {
                     "samplerAnisotropy": true,
-                    "pipelineStatisticsQuery": true,
                     "depthBiasClamp": true
                 }
             }
