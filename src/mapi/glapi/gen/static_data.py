@@ -1689,6 +1689,9 @@ offsets = {
     "VertexAttribs2hvNV": 1653,
     "VertexAttribs3hvNV": 1654,
     "VertexAttribs4hvNV": 1655,
+    "TexStorage2DEXT": 1656,
+    "RenderbufferStorageMultisampleIMG": 1657,
+    "FramebufferTexture2DMultisampleIMG": 1658,
 }
 
 functions = [
