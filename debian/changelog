@@ -1,3 +1,9 @@
+mesa (21.2.5+pvr8-1) unstable; urgency=medium
+
+  * add GL_EXT_texture_storage and GL_IMG_multisampled_render_to_texture
+
+ -- Ivaylo Dimitrov <ivo.g.dimitrov.75@gmail.com>  Wed, 04 Jan 2023 11:56:21 +0200
+
 mesa (21.2.5+pvr7-1) unstable; urgency=medium
 
   * pvr: Implement queryDmaBufFormats/queryDmaBufModifiers
