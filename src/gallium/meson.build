@@ -161,6 +161,16 @@ if with_gallium_pvr_alias
 else
   driver_pvr_alias = declare_dependency()
 endif
+if with_gallium_sgx
+  subdir('drivers/sgx')
+else
+  driver_sgx = declare_dependency()
+endif
+if with_gallium_sgx_alias
+  subdir('drivers/sgx_alias')
+else
+  driver_sgx_alias = declare_dependency()
+endif
 if with_gallium_virgl
   subdir('winsys/virgl/common')
   subdir('winsys/virgl/drm')
@@ -201,6 +211,11 @@ if with_gallium_pvr
   subdir('frontends/pvr')
 else
   libpvr = []
+endif
+if with_gallium_sgx
+  subdir('frontends/sgx')
+else
+  libsgx = []
 endif
 if with_dri
   subdir('frontends/dri')

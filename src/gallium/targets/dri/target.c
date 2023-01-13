@@ -20,6 +20,17 @@ PUBLIC const __DRIextension **__driDriverGetExtensions_##drivername(void) \
 #define DEFINE_LOADER_PVR_ALIAS_ENTRYPOINT(drivername)                    \
    DEFINE_LOADER_PVR_ENTRYPOINT(drivername)
 
+#define DEFINE_LOADER_SGX_ENTRYPOINT(drivername)                          \
+const __DRIextension **__driDriverGetExtensions_##drivername(void);       \
+PUBLIC const __DRIextension **__driDriverGetExtensions_##drivername(void) \
+{                                                                         \
+   globalDriverAPI = &sgx_driver_api;                                     \
+   return sgx_driver_extensions;                                          \
+}
+
+#define DEFINE_LOADER_SGX_ALIAS_ENTRYPOINT(drivername)                    \
+   DEFINE_LOADER_SGX_ENTRYPOINT(drivername)
+
 #if defined(GALLIUM_SOFTPIPE)
 
 const __DRIextension **__driDriverGetExtensions_swrast(void);
@@ -161,4 +172,12 @@ DEFINE_LOADER_PVR_ENTRYPOINT(pvr);
 
 #if defined(GALLIUM_PVR_ALIAS)
 DEFINE_LOADER_PVR_ALIAS_ENTRYPOINT(GALLIUM_PVR_ALIAS);
+#endif
+
+#if defined(GALLIUM_SGX)
+DEFINE_LOADER_SGX_ENTRYPOINT(sgx);
+#endif
+
+#if defined(GALLIUM_SGX_ALIAS)
+DEFINE_LOADER_SGX_ALIAS_ENTRYPOINT(GALLIUM_SGX_ALIAS);
 #endif

@@ -81,7 +81,8 @@ option(
   choices : [
     'auto', 'kmsro', 'radeonsi', 'r300', 'r600', 'nouveau', 'freedreno',
     'swrast', 'v3d', 'vc4', 'etnaviv', 'tegra', 'i915', 'svga', 'virgl',
-    'panfrost', 'iris', 'lima', 'zink', 'd3d12', 'asahi', 'crocus', 'pvr'
+    'panfrost', 'iris', 'lima', 'zink', 'd3d12', 'asahi', 'crocus', 'pvr',
+    'sgx'
   ],
   description : 'List of gallium drivers to build. If this is set to auto all drivers applicable to the target OS/architecture will be built'
 )
@@ -90,6 +91,12 @@ option(
   type : 'string',
   value : '',
   description : 'Gallium PVR alias. This must match the name of the kernel display driver.'
+)
+option(
+  'gallium-sgx-alias',
+  type : 'string',
+  value : '',
+  description : 'Gallium SGX alias. This must match the name of the kernel display driver.'
 )
 option(
   'gallium-extra-hud',
