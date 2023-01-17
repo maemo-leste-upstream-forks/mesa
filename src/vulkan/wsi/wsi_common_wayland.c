@@ -1940,8 +1940,10 @@ wsi_wl_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
    wsi_wl_surface->chain = chain;
 
    result = wsi_wl_surface_init(wsi_wl_surface, wsi_device);
-   if (result != VK_SUCCESS)
-      goto fail;
+   if (result != VK_SUCCESS) {
+      vk_free(pAllocator, chain);
+      return result;
+   }
 
    enum wsi_wl_buffer_type buffer_type;
    struct wsi_base_image_params *image_params = NULL;
@@ -2039,7 +2041,6 @@ wsi_wl_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
 fail_image_init:
    wsi_wl_swapchain_images_free(chain);
 
-fail:
    wsi_wl_swapchain_chain_free(chain, pAllocator);
 
    return result;
