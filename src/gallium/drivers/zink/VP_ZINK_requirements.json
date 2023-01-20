@@ -216,6 +216,33 @@
                 }
             }
         },
+        "gl43_baseline_rb2": {
+            "extensions": {
+                "VK_EXT_robustness2": 1
+            },
+            "features": {
+                "VkPhysicalDeviceRobustness2FeaturesEXT": {
+                    "robustImageAccess2": true
+                }
+            }
+        },
+        "gl43_baseline_rb_image_vk13": {
+            "features": {
+                "VkPhysicalDeviceVulkan13Features": {
+                    "robustImageAccess": true
+                }
+            }
+        },
+        "gl43_baseline_rb_image_ext": {
+            "extensions": {
+                "VK_EXT_image_robustness": 1
+            },
+            "features": {
+                "VkPhysicalDeviceImageRobustnessFeaturesEXT": {
+                    "robustImageAccess": true
+                }
+            }
+        },
         "gl43_baseline": {
             "features": {
                 "VkPhysicalDeviceFeatures": {
@@ -711,7 +738,8 @@
                 "gl41_baseline",
                 "gl42_baseline",
                 [ "gl42_baseline_vk10", "gl42_baseline_vk12" ],
-                "gl43_baseline"
+                "gl43_baseline",
+                [ "gl43_baseline_rb2", "gl43_baseline_rb_image_vk13", "gl43_baseline_rb_image_ext" ]
             ]
         },
         "VP_ZINK_gl44_baseline": {
@@ -732,6 +760,7 @@
                 "gl42_baseline",
                 [ "gl42_baseline_vk10", "gl42_baseline_vk12" ],
                 "gl43_baseline",
+                [ "gl43_baseline_rb2", "gl43_baseline_rb_image_vk13", "gl43_baseline_rb_image_ext" ],
                 "gl44_baseline",
                 [ "gl44_baseline_ext", "gl44_baseline_vk12" ]
             ]
@@ -754,6 +783,7 @@
                 "gl42_baseline",
                 [ "gl42_baseline_vk10", "gl42_baseline_vk12" ],
                 "gl43_baseline",
+                [ "gl43_baseline_rb2", "gl43_baseline_rb_image_vk13", "gl43_baseline_rb_image_ext" ],
                 "gl44_baseline",
                 [ "gl44_baseline_ext", "gl44_baseline_vk12" ],
                 "gl45_baseline"
@@ -777,6 +807,7 @@
                 "gl42_baseline",
                 [ "gl42_baseline_vk10", "gl42_baseline_vk12" ],
                 "gl43_baseline",
+                [ "gl43_baseline_rb2", "gl43_baseline_rb_image_vk13", "gl43_baseline_rb_image_ext" ],
                 "gl44_baseline",
                 [ "gl44_baseline_ext", "gl44_baseline_vk12" ],
                 "gl45_baseline",
@@ -801,6 +832,7 @@
                 "gl42_baseline",
                 [ "gl42_baseline_vk10", "gl42_baseline_vk12" ],
                 "gl43_baseline",
+                [ "gl43_baseline_rb2", "gl43_baseline_rb_image_vk13", "gl43_baseline_rb_image_ext" ],
                 "gl44_baseline",
                 [ "gl44_baseline_ext", "gl44_baseline_vk12" ],
                 "gl45_baseline",
