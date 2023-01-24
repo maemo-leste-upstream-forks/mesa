@@ -291,12 +291,10 @@ wsi_device_finish(struct wsi_device *wsi,
 #endif
 }
 
-VKAPI_ATTR void VKAPI_CALL
-wsi_DestroySurfaceKHR(VkInstance _instance,
-                      VkSurfaceKHR _surface,
-                      const VkAllocationCallbacks *pAllocator)
+void
+wsi_surface_destroy(VkSurfaceKHR _surface,
+                    const VkAllocationCallbacks *pAllocator)
 {
-   VK_FROM_HANDLE(vk_instance, instance, _instance);
    ICD_FROM_HANDLE(VkIcdSurfaceBase, surface, _surface);
 
    if (!surface)
@@ -304,12 +302,28 @@ wsi_DestroySurfaceKHR(VkInstance _instance,
 
 #ifdef VK_USE_PLATFORM_WAYLAND_KHR
    if (surface->platform == VK_ICD_WSI_PLATFORM_WAYLAND) {
-      wsi_wl_surface_destroy(surface, _instance, pAllocator);
+      wsi_wl_surface_destroy(surface, pAllocator);
       return;
    }
 #endif
 
-   vk_free2(&instance->alloc, pAllocator, surface);
+   vk_free(pAllocator, surface);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+wsi_DestroySurfaceKHR(VkInstance _instance,
+                      VkSurfaceKHR _surface,
+                      const VkAllocationCallbacks *pAllocator)
+{
+   VK_FROM_HANDLE(vk_instance, instance, _instance);
+   const VkAllocationCallbacks *allocator;
+
+   if (pAllocator)
+     allocator = pAllocator;
+   else
+     allocator = &instance->alloc;
+
+   wsi_surface_destroy(_surface, allocator);
 }
 
 void

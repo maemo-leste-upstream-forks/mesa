@@ -393,6 +393,10 @@ wsi_common_bind_swapchain_image(const struct wsi_device *wsi,
                                 VkSwapchainKHR _swapchain,
                                 uint32_t image_idx);
 
+void
+wsi_surface_destroy(VkSurfaceKHR _surface,
+                    const VkAllocationCallbacks *pAllocator);
+
 #ifdef __cplusplus
 }
 #endif

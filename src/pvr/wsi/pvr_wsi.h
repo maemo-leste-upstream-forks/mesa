@@ -37,7 +37,7 @@
 #define MAKE_STRING(x) _MAKE_STRING(x)
 
 #define LOOKUP_DDK(mwsi, sym) \
-   mwsi->symtab.pvr_vk_mesa_wsi_sym_addr(MAKE_STRING(sym))
+   mwsi->symtab.pvr_vk_mesa_wsi_sym_addr(mwsi->physicalDevice, MAKE_STRING(sym))
 
 #define JUMP_DDK(mwsi, sym, ...)                          \
    do {                                                   \
@@ -61,6 +61,8 @@ struct pvr_vk_mesa_wsi_sym_tab
 {
    PFN_vkVoidFunction (VKAPI_PTR *pvr_vk_mesa_wsi_sym_addr)
       (VkPhysicalDevice physicalDevice, const char *);
+
+   uint32_t (*pvr_vk_mesa_wsi_get_version)(VkPhysicalDevice physicalDevice);
 };
 
 struct pvr_mesa_wsi
@@ -68,6 +70,7 @@ struct pvr_mesa_wsi
    struct wsi_device wsi;
    struct pvr_vk_mesa_wsi_sym_tab symtab;
    VkPhysicalDevice physicalDevice;
+   uint32_t pvr_vk_wsi_version;
 };
 
 static inline struct pvr_mesa_wsi *pvr_mesa_wsi(struct wsi_device *wsi_ptr)

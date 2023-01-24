@@ -42,6 +42,8 @@ struct pvr_mesa_wsi;
 /*
  * Functions defined in Mesa for use by the PowerVR DDK.
  * All functions have a "pvr_mesa_wsi" prefix.
+ * Since the introduction of version 1 of the interface, the following
+ * functions are now regarded as forming version 0 of the interface.
  */
 
 void *
@@ -296,11 +298,33 @@ pvr_mesa_wsi_get_swapchain_counter(struct pvr_mesa_wsi *mwsi,
                                    uint64_t *pValue);
 
 /*
+ * The following are available in version 1 of the interface.
+ * Version 1 also supports the version 0 interface.
+ */
+
+uint32_t
+pvr_mesa_wsi_get_version(struct pvr_mesa_wsi *mwsi);
+
+void
+pvr_mesa_wsi_surface_destroy(struct pvr_mesa_wsi *mwsi,
+                             VkSurfaceKHR surface,
+                             const VkAllocationCallbacks *pAllocator);
+
+/*
  * Functions defined in the PowerVR DDK for use by Mesa.
  * All functions have a "pvr_vk_mesa_wsi" prefix.
+ * Since the introduction of version 1 of the interface, the following
+ * function is now regarded as forming version 0 of the interface.
  */
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 pvr_vk_mesa_wsi_sym_addr(VkPhysicalDevice physicalDevice,
                          const char *name);
+
+/*
+ * The following is available in version 1 of the interface.
+ * Version 1 also supports the version 0 interface.
+ */
+uint32_t
+pvr_vk_mesa_wsi_get_version(VkPhysicalDevice physicalDevice);
 
 #endif /* PVR_MESA_WSI_INTERFACE_H */

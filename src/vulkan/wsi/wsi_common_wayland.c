@@ -1273,10 +1273,9 @@ wsi_wl_surface_get_present_rectangles(VkIcdSurfaceBase *surface,
 }
 
 void
-wsi_wl_surface_destroy(VkIcdSurfaceBase *icd_surface, VkInstance _instance,
+wsi_wl_surface_destroy(VkIcdSurfaceBase *icd_surface,
                        const VkAllocationCallbacks *pAllocator)
 {
-   VK_FROM_HANDLE(vk_instance, instance, _instance);
    struct wsi_wl_surface *wsi_wl_surface =
       wl_container_of((VkIcdSurfaceWayland *)icd_surface, wsi_wl_surface, base);
 
@@ -1292,7 +1291,7 @@ wsi_wl_surface_destroy(VkIcdSurfaceBase *icd_surface, VkInstance _instance,
       dmabuf_feedback_fini(&wsi_wl_surface->pending_dmabuf_feedback);
    }
 
-   vk_free2(&instance->alloc, pAllocator, wsi_wl_surface);
+   vk_free(pAllocator, wsi_wl_surface);
 }
 
 static struct wsi_wl_format *

@@ -27,6 +27,16 @@
 #include "pvr_wsi.h"
 #include "pvr_mesa_wsi_interface.h"
 
+static inline uint32_t
+pvr_vk_wsi_get_version(struct pvr_mesa_wsi *mwsi)
+{
+   JUMP_DDK(mwsi, pvr_vk_mesa_wsi_get_version,
+                  mwsi->physicalDevice);
+
+   return 0;
+}
+
+
 VkResult
 pvr_mesa_wsi_init(struct pvr_mesa_wsi **pmwsi,
                   VkPhysicalDevice physicalDevice,
@@ -46,6 +56,12 @@ pvr_mesa_wsi_init(struct pvr_mesa_wsi **pmwsi,
 
    mwsi->symtab.pvr_vk_mesa_wsi_sym_addr = pvr_vk_mesa_wsi_sym_addr;
    mwsi->physicalDevice = physicalDevice;
+
+   mwsi->pvr_vk_wsi_version = pvr_vk_wsi_get_version(mwsi);
+   if (mwsi->pvr_vk_wsi_version < 1) {
+      vk_free(alloc, mwsi);
+      return VK_ERROR_FEATURE_NOT_PRESENT;
+   }
 
    result = wsi_device_init2(&mwsi->wsi,
                              physicalDevice,
@@ -227,6 +243,20 @@ pvr_mesa_wsi_common_get_present_rectangles(struct pvr_mesa_wsi *mwsi,
                                             pRects);
 }
 
+uint32_t
+pvr_mesa_wsi_get_version(UNUSED struct pvr_mesa_wsi *mwsi)
+{
+   return 1;
+}
+
+void
+pvr_mesa_wsi_surface_destroy(UNUSED struct pvr_mesa_wsi *mwsi,
+			     VkSurfaceKHR surface,
+			     const VkAllocationCallbacks *pAllocator)
+{
+   wsi_surface_destroy(surface, pAllocator);
+}
+
 /*
  * The mwsi parameter is currently unused. Note that it is invalid for
  * pvr_mesa_wsi_init, which is responsible for allocating it.
@@ -322,6 +352,10 @@ pvr_mesa_wsi_sym_addr(UNUSED struct pvr_mesa_wsi *mwsi, const char *name)
             pvr_mesa_wsi_register_display_event },
       { "pvr_mesa_wsi_get_swapchain_counter",
             pvr_mesa_wsi_get_swapchain_counter },
+      { "pvr_mesa_wsi_get_version",
+            pvr_mesa_wsi_get_version },
+      { "pvr_mesa_wsi_surface_destroy",
+            pvr_mesa_wsi_surface_destroy },
    };
    unsigned i;
 
