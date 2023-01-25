@@ -36,8 +36,6 @@ if with_platform_tizen
   libsgx_dep += dep_dlog
 endif
 
-libsgx_dep += cc.find_library('pvr_dri_support', required : true)
-
 libsgx = static_library(
   'sgx',
   [files_libsgx, main_dispatch_h],
