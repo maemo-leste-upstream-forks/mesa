@@ -1884,6 +1884,8 @@ wsi_wl_swapchain_chain_free(struct wsi_wl_swapchain *chain,
 
    wsi_swapchain_finish(&chain->base);
 
+   vk_free(pAllocator, (void *)chain->drm_modifiers);
+
    vk_free(pAllocator, chain);
 }
 
@@ -2022,8 +2024,24 @@ wsi_wl_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
    } else {
       chain->shm_format = wl_shm_format_for_vk_format(chain->vk_format, alpha);
    }
+
    chain->num_drm_modifiers = num_drm_modifiers;
-   chain->drm_modifiers = drm_modifiers;
+   if (num_drm_modifiers > 0) {
+      uint64_t *modifiers;
+
+      modifiers = vk_alloc(pAllocator, sizeof(*modifiers) * num_drm_modifiers,
+                           8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+      if (!modifiers) {
+         result = VK_ERROR_OUT_OF_HOST_MEMORY;
+         goto fail_modifiers_alloc;
+      }
+
+      for (uint32_t i = 0; i < num_drm_modifiers; i++)
+         modifiers[i] = drm_modifiers[i];
+
+      chain->drm_modifiers = modifiers;
+   }
+
    chain->fifo_ready = true;
 
    for (uint32_t i = 0; i < chain->base.image_count; i++) {
@@ -2041,6 +2059,7 @@ wsi_wl_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
 fail_image_init:
    wsi_wl_swapchain_images_free(chain);
 
+fail_modifiers_alloc:
    wsi_wl_swapchain_chain_free(chain, pAllocator);
 
    return result;
