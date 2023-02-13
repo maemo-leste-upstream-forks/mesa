@@ -1346,6 +1346,7 @@ struct zink_ctx_surface {
    /* TODO: use VK_EXT_multisampled_render_to_single_sampled */
    struct zink_ctx_surface *transient; //for use with EXT_multisample_render_to_texture
    bool transient_init; //whether the transient surface has data
+   bool needs_mutable;
 };
 
 /* use this cast for framebuffer surfaces */
