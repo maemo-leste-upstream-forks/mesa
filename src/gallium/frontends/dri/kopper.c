@@ -1044,8 +1044,12 @@ const __DRIkopperExtension driKopperExtension = {
 const struct __DriverAPIRec galliumvk_driver_api = {
    .InitScreen = kopper_init_screen,
    .DestroyScreen = dri_destroy_screen,
+   .CreateContext = dri_create_context,
+   .DestroyContext = dri_destroy_context,
    .CreateBuffer = kopper_create_buffer,
    .DestroyBuffer = dri_destroy_buffer,
+   .MakeCurrent = dri_make_current,
+   .UnbindContext = dri_unbind_context,
    .SwapBuffers = kopper_swap_buffers,
    .CopySubBuffer = NULL,
 };
