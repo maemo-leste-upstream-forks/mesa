@@ -2430,6 +2430,17 @@ init_driver_workarounds(struct zink_screen *screen)
       screen->driver_workarounds.needs_sanitised_layer = false;
       break;
    }
+   /* these drivers will produce undefined results when using swizzle 1 with combined z/s textures
+    * TODO: use a future device property when available
+    */
+   switch (screen->info.driver_props.driverID) {
+   case VK_DRIVER_ID_IMAGINATION_PROPRIETARY:
+      screen->driver_workarounds.needs_zs_shader_swizzle = true;
+      break;
+   default:
+      screen->driver_workarounds.needs_zs_shader_swizzle = false;
+      break;
+   }
 
    /* When robust contexts are advertised but robustImageAccess2 is not available */
    screen->driver_workarounds.lower_robustImageAccess2 =
@@ -2785,7 +2796,8 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
                           !screen->driver_workarounds.no_linestipple &&
                           !screen->driver_workarounds.no_linesmooth &&
                           !screen->driver_workarounds.no_hw_gl_point &&
-                          !screen->driver_workarounds.lower_robustImageAccess2;
+                          !screen->driver_workarounds.lower_robustImageAccess2 &&
+                          !screen->driver_workarounds.needs_zs_shader_swizzle;
    if (!screen->optimal_keys)
       screen->info.have_EXT_graphics_pipeline_library = false;
 
