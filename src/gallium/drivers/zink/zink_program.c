@@ -143,7 +143,7 @@ create_shader_module_for_stage(struct zink_context *ctx, struct zink_screen *scr
       assert(ctx); //TODO async
       mod = zink_shader_tcs_compile(screen, zs, patch_vertices);
    } else {
-      mod = zink_shader_compile(screen, zs, prog->nir[stage], key, &ctx->di.shadow);
+      mod = zink_shader_compile(screen, zs, prog->nir[stage], key, &ctx->di.shadow[stage]);
    }
    if (!mod) {
       FREE(zm);
@@ -170,8 +170,8 @@ create_shader_module_for_stage(struct zink_context *ctx, struct zink_screen *scr
    else
       zm->hash = shader_module_hash(zm);
    if (unlikely(shadow_needs_shader_swizzle)) {
-      memcpy(zm->key + key->size + nonseamless_size + inline_size * sizeof(uint32_t), &ctx->di.shadow, sizeof(struct zink_fs_shadow_key));
-      zm->hash ^= _mesa_hash_data(&ctx->di.shadow, sizeof(struct zink_fs_shadow_key));
+      memcpy(zm->key + key->size + nonseamless_size + inline_size * sizeof(uint32_t), &ctx->di.shadow[stage], sizeof(struct zink_fs_shadow_key));
+      zm->hash ^= _mesa_hash_data(&ctx->di.shadow[stage], sizeof(struct zink_fs_shadow_key));
    }
    zm->default_variant = !inline_size && !util_dynarray_contains(&prog->shader_cache[stage][0][0], void*);
    if (inline_size)
@@ -210,7 +210,7 @@ get_shader_module_for_stage(struct zink_context *ctx, struct zink_screen *screen
          if (unlikely(shadow_needs_shader_swizzle)) {
             /* shadow swizzle data needs a manual compare since it's so fat */
             if (memcmp(iter->key + iter->key_size + nonseamless_size + iter->num_uniforms * sizeof(uint32_t),
-                       &ctx->di.shadow, sizeof(struct zink_fs_shadow_key)))
+                       &ctx->di.shadow[stage], sizeof(struct zink_fs_shadow_key)))
                continue;
          }
       }
@@ -256,7 +256,7 @@ create_shader_module_for_stage_optimal(struct zink_context *ctx, struct zink_scr
       struct zink_tcs_key *tcs = (struct zink_tcs_key*)key;
       mod = zink_shader_tcs_compile(screen, zs, tcs->patch_vertices);
    } else {
-      mod = zink_shader_compile(screen, zs, prog->nir[stage], (struct zink_shader_key*)key, shadow_needs_shader_swizzle ? &ctx->di.shadow : NULL);
+      mod = zink_shader_compile(screen, zs, prog->nir[stage], (struct zink_shader_key*)key, shadow_needs_shader_swizzle ? &ctx->di.shadow[stage] : NULL);
    }
    if (!mod) {
       FREE(zm);
@@ -271,7 +271,7 @@ create_shader_module_for_stage_optimal(struct zink_context *ctx, struct zink_scr
       /* sanitize actual key bits */
       *data = (*key) & mask;
       if (unlikely(shadow_needs_shader_swizzle))
-         memcpy(&data[1], &ctx->di.shadow, sizeof(struct zink_fs_shadow_key));
+         memcpy(&data[1], &ctx->di.shadow[stage], sizeof(struct zink_fs_shadow_key));
    }
    zm->default_variant = !util_dynarray_contains(&prog->shader_cache[stage][0][0], void*);
    util_dynarray_append(&prog->shader_cache[stage][0][0], void*, zm);
@@ -313,7 +313,7 @@ get_shader_module_for_stage_optimal(struct zink_context *ctx, struct zink_screen
             continue;
          if (unlikely(shadow_needs_shader_swizzle)) {
             /* shadow swizzle data needs a manual compare since it's so fat */
-            if (memcmp(iter->key + sizeof(uint16_t), &ctx->di.shadow, sizeof(struct zink_fs_shadow_key)))
+            if (memcmp(iter->key + sizeof(uint16_t), &ctx->di.shadow[stage], sizeof(struct zink_fs_shadow_key)))
                continue;
          }
       }

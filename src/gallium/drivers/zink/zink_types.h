@@ -1656,7 +1656,7 @@ struct zink_context {
       VkDescriptorImageInfo fbfetch;
 
       /* the current state of the shadow swizzle data */
-      struct zink_fs_shadow_key shadow;
+      struct zink_fs_shadow_key shadow[MESA_SHADER_STAGES];
 
       struct zink_resource *descriptor_res[ZINK_DESCRIPTOR_BASE_TYPES][MESA_SHADER_STAGES][PIPE_MAX_SAMPLERS];
 
