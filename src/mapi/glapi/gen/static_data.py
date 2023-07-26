@@ -1740,6 +1740,9 @@ offsets = {
     "TexStorage1DEXT": 1704,
     "TexStorage2DEXT": 1705,
     "TexStorage3DEXT": 1706,
+    "DrawArraysInstancedNV" : 1707,
+    "DrawElementsInstancedNV" : 1708,
+    "VertexAttribDivisorNV" : 1709,
 }
 
 functions = [

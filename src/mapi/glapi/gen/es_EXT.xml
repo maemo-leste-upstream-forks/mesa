@@ -885,6 +885,37 @@
     </function>
 </category>
 
+<!-- 141. GL_NV_draw_instanced -->
+<category name="GL_NV_draw_instanced" number="141">
+
+    <function name="DrawArraysInstancedNV" es2="2.0" exec="dynamic">
+        <param name="mode" type="GLenum"/>
+        <param name="first" type="GLint"/>
+        <param name="count" type="GLsizei"/>
+        <param name="primcount" type="GLsizei"/>
+    </function>
+
+    <function name="DrawElementsInstancedNV" es2="2.0" exec="dynamic">
+        <param name="mode" type="GLenum"/>
+        <param name="count" type="GLsizei"/>
+        <param name="type" type="GLenum"/>
+        <param name="indices" type="const GLvoid *"/>
+        <param name="primcount" type="GLsizei"/>
+    </function>
+
+</category>
+
+<!-- 145. GL_NV_instanced_arrays -->
+<category name="GL_NV_instanced_arrays" number="145">
+    <enum name="VERTEX_ATTRIB_ARRAY_DIVISOR_NV" value="0x88FE"/>
+
+    <function name="VertexAttribDivisorNV" es2="2.0" exec="dynamic">
+        <param name="index" type="GLuint"/>
+        <param name="divisor" type="GLuint"/>
+    </function>
+
+</category>
+
 <!-- 150. GL_EXT_disjoint_timer_query -->
 <category name="GL_EXT_disjoint_timer_query" number="150">
     <enum name="QUERY_COUNTER_BITS_EXT"     value="0x8864"/>
