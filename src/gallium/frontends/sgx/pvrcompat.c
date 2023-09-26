@@ -22,12 +22,12 @@
  * THE SOFTWARE.
  */
 
+#include <assert.h>
+#include <dlfcn.h>
+#include <pthread.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
-#include <dlfcn.h>
-#include <pthread.h>
-#include <assert.h>
 
 #include <drm_fourcc.h>
 
@@ -37,7 +37,7 @@
 #define DRM_FORMAT_MOD_INVALID ((1ULL << 56) - 1)
 #endif
 
-#define _MAKESTRING(x) # x
+#define _MAKESTRING(x) #x
 #define MAKESTRING(x) _MAKESTRING(x)
 
 #define PVRDRI_SUPPORT_LIB "libpvr_dri_support.so"
@@ -50,823 +50,494 @@ static struct SGXDRISupportInterfaceV0 gsSupV0;
 static pthread_mutex_t gsCompatLock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Lookup a function, and set the pointer to the function address */
-#define LookupFunc(func, ptr)                   \
-   do {                                         \
-      ptr = dlsym(gpvSupLib, MAKESTRING(func)); \
-   } while(0)
+#define LookupFunc(func, ptr)                                                  \
+  do {                                                                         \
+    ptr = dlsym(gpvSupLib, MAKESTRING(func));                                  \
+  } while (0)
 
 /* Check if a function exists in the DRI Support interface structure */
-#define HaveFuncV0(field)                       \
-      ((gsSupV0.field) != NULL)                 \
+#define HaveFuncV0(field) ((gsSupV0.field) != NULL)
 
 /* Call a function via the DRI Support interface structure */
-#define CallFuncV0(field, ...)                  \
-   do {                                         \
-      if (gsSupV0.field)                        \
-         return gsSupV0.field(__VA_ARGS__);     \
-   } while(0)
+#define CallFuncV0(field, ...)                                                 \
+  do {                                                                         \
+    if (gsSupV0.field)                                                         \
+      return gsSupV0.field(__VA_ARGS__);                                       \
+  } while (0)
 
 /* Calculate the start of the SGXDRISupportInterfaceV0 structure */
-#define SGXDRIInterfaceV0Start(field)                   \
-   (offsetof(struct SGXDRISupportInterfaceV0, field))
+#define SGXDRIInterfaceV0Start(field)                                          \
+  (offsetof(struct SGXDRISupportInterfaceV0, field))
 
 /* Calculate the end of the SGXDRISupportInterfaceV0 structure */
-#define SGXDRIInterfaceV0End(field)                             \
-   (offsetof(struct SGXDRISupportInterfaceV0, field) +          \
-    sizeof((struct SGXDRISupportInterfaceV0 *)0)->field)
+#define SGXDRIInterfaceV0End(field)                                            \
+  (offsetof(struct SGXDRISupportInterfaceV0, field) +                          \
+   sizeof((struct SGXDRISupportInterfaceV0 *)0)->field)
 
-static void
-CompatLock(void)
-{
-   int ret;
+static void CompatLock(void) {
+  int ret;
 
-   ret = pthread_mutex_lock(&gsCompatLock);
-   if (ret) {
-      errorMessage("%s: Failed to lock mutex (%d)", __func__, ret);
-      abort();
-   }
+  ret = pthread_mutex_lock(&gsCompatLock);
+  if (ret) {
+    mesa_loge("%s: Failed to lock mutex (%d)", __func__, ret);
+    abort();
+  }
 }
 
-static void
-CompatUnlock(void)
-{
-   int ret;
+static void CompatUnlock(void) {
+  int ret;
 
-   ret = pthread_mutex_unlock(&gsCompatLock);
-   if (ret) {
-      errorMessage("%s: Failed to unlock mutex (%d)", __func__, ret);
-      abort();
-   }
+  ret = pthread_mutex_unlock(&gsCompatLock);
+  if (ret) {
+    mesa_loge("%s: Failed to unlock mutex (%d)", __func__, ret);
+    abort();
+  }
 }
 
-static void *
-LoadLib(const char *path)
-{
-   void *handle;
+static void *LoadLib(const char *path) {
+  void *handle;
 
-   /* Clear the error */
-   (void) dlerror();
+  /* Clear the error */
+  (void)dlerror();
 
-   handle = dlopen(path, RTLD_NOW);
-   if (handle) {
-      __driUtilMessage("Loaded %s", path);
-   } else {
-      const char *error;
+  handle = dlopen(path, RTLD_NOW);
+  if (handle) {
+    mesa_logi("Loaded %s", path);
+  } else {
+    const char *error;
 
-      error = dlerror();
-      if (!error)
-         error = "unknown error";
+    error = dlerror();
+    if (!error)
+      error = "unknown error";
 
-      errorMessage("%s: Couldn't load %s: %s", __func__, path, error);
-   }
+    mesa_loge("%s: Couldn't load %s: %s", __func__, path, error);
+  }
 
-   return handle;
+  return handle;
 }
 
-static void
-UnloadLib(void *handle, const char *name)
-{
-   if (!handle)
-      return;
+static void UnloadLib(void *handle, const char *name) {
+  if (!handle)
+    return;
 
-   /* Clear the error */
-   (void) dlerror();
+  /* Clear the error */
+  (void)dlerror();
 
-   if (dlclose(handle)) {
-      const char *error;
+  if (dlclose(handle)) {
+    const char *error;
 
-      error = dlerror();
-      if (!error)
-         error = "unknown error";
+    error = dlerror();
+    if (!error)
+      error = "unknown error";
 
-      errorMessage("%s: Couldn't unload %s: %s", __func__, name, error);
-   } else {
-      __driUtilMessage("Unloaded %s", name);
-   }
+    mesa_loge("%s: Couldn't unload %s: %s", __func__, name, error);
+  } else {
+    mesa_logi("Unloaded %s", name);
+  }
 }
 
-static bool
-LoadSupportLib(void)
-{
-   gpvSupLib = LoadLib(PVRDRI_SUPPORT_LIB);
+static bool LoadSupportLib(void) {
+  gpvSupLib = LoadLib(PVRDRI_SUPPORT_LIB);
 
-   return gpvSupLib != NULL;
+  return gpvSupLib != NULL;
 }
 
-static void
-UnloadSupportLib(void)
-{
-   UnloadLib(gpvSupLib, PVRDRI_SUPPORT_LIB);
-   gpvSupLib = NULL;
+static void UnloadSupportLib(void) {
+  UnloadLib(gpvSupLib, PVRDRI_SUPPORT_LIB);
+  gpvSupLib = NULL;
 }
 
-static void
-CompatDeinit(void)
-{
-   UnloadSupportLib();
-   memset(&gsSupV0, 0, sizeof(gsSupV0));
+static void CompatDeinit(void) {
+  UnloadSupportLib();
+  memset(&gsSupV0, 0, sizeof(gsSupV0));
 }
 
-bool
-PVRDRICompatInit(const struct PVRDRICallbacks *psCallbacks,
-                 unsigned int uVersionV0, unsigned int uMinVersionV0)
-{
-   bool (*pfPVRDRIRegisterCallbacks)(const void *pvCallbacks,
-                                          unsigned int uVersion,
-                                          unsigned int uMinVersion);
-   bool res;
+bool PVRDRICompatInit(const PVRDRICallbacks *psCallbacks,
+                      unsigned int uVersionV0, unsigned int uMinVersionV0) {
+  bool (*pfPVRDRIRegisterCallbacks)(
+      const void *pvCallbacks, unsigned int uVersion, unsigned int uMinVersion);
+  bool res;
 
-   CompatLock();
-   res = (giSupLibRef++ != 0);
-   if (res)
-      goto Exit;
+  CompatLock();
+  res = (giSupLibRef++ != 0);
+  if (res)
+    goto Exit;
 
-   res = LoadSupportLib();
-   if (!res)
-      goto Exit;
+  res = LoadSupportLib();
+  if (!res)
+    goto Exit;
 
-   LookupFunc(PVRDRIRegisterCallbacks,
-              pfPVRDRIRegisterCallbacks);
+  LookupFunc(PVRDRIRegisterCallbacks, pfPVRDRIRegisterCallbacks);
 
-   res = (pfPVRDRIRegisterCallbacks != NULL);
-   if (!res)
-      goto Exit;
+  res = (pfPVRDRIRegisterCallbacks != NULL);
+  if (!res)
+    goto Exit;
 
-   res = pfPVRDRIRegisterCallbacks(psCallbacks,
-                                        uVersionV0, uMinVersionV0);
+  res = pfPVRDRIRegisterCallbacks(psCallbacks, uVersionV0, uMinVersionV0);
 
 Exit:
-   if (!res) {
-      CompatDeinit();
-      giSupLibRef--;
-   }
-   CompatUnlock();
+  if (!res) {
+    CompatDeinit();
+    giSupLibRef--;
+  }
+  CompatUnlock();
 
-   return res;
+  return res;
 }
 
-void
-PVRDRICompatDeinit(void)
-{
-   CompatLock();
-   if (--giSupLibRef == 0)
-      CompatDeinit();
-   CompatUnlock();
+void PVRDRICompatDeinit(void) {
+  CompatLock();
+  if (--giSupLibRef == 0)
+    CompatDeinit();
+  CompatUnlock();
 }
 
-bool
-MODSUPRegisterSupportInterfaceV2(const void *pvInterface,
-                                 unsigned int uVersion,
-                                 unsigned int uMinVersion)
-{
-   size_t uStart, uEnd;
-
-   memset(&gsSupV0, 0, sizeof(gsSupV0));
-
-   if (uVersion < uMinVersion)
-      return false;
-
-   /*
-    * Minimum versions we support. To prevent the accumulation of old unused
-    * interfaces in the PVRDRIInterfaceV2 structure, the caller specifies the
-    * minimum version it supports. This will be pointed to be the psInterface
-    * argument. Assuming we support that version, we must copy the structure
-    * passed to us into the correct place in our version of the interface
-    * structure.
-    */
-   switch (uMinVersion) {
-   case 0:
-      uStart = SGXDRIInterfaceV0Start(v0);
-      break;
-   default:
-      return false;
-   }
-
-   /* The "default" case should be associated with the latest version */
-   switch (uVersion) {
-   default:
-   case 0:
-      uEnd = SGXDRIInterfaceV0End(v0);
-      break;
-   }
-
-   memcpy(((char *) &gsSupV0) + uStart, pvInterface, uEnd - uStart);
-
-   PVRDRIAdjustExtensions(uVersion, uMinVersion);
-
-   return true;
+PVRDRIDeviceType PVRDRIGetDeviceTypeFromFd(int iFd) {
+  CallFuncV0(v0.PVRDRIGetDeviceTypeFromFd, iFd);
+  return PVRDRI_DEVICE_TYPE_UNKNOWN;
 }
 
-struct DRISUPScreen *
-DRISUPCreateScreen(struct __DRIscreenRec *psDRIScreen, int iFD,
-                   bool bUseInvalidate, void *pvLoaderPrivate,
-                   const struct __DRIconfigRec ***pppsConfigs,
-                   int *piMaxGLES1Version, int *piMaxGLES2Version)
-{
-   CallFuncV0(v0.CreateScreen,
-              psDRIScreen, iFD, bUseInvalidate, pvLoaderPrivate, pppsConfigs,
-              piMaxGLES1Version, piMaxGLES2Version);
-
-   return NULL;
+bool PVRDRIIsFirstScreen(PVRDRIScreenImpl *psScreenImpl) {
+  CallFuncV0(v0.PVRDRIIsFirstScreen, psScreenImpl);
+  return false;
 }
 
-void
-DRISUPDestroyScreen(struct DRISUPScreen *psDRISUPScreen)
-{
-   CallFuncV0(v0.DestroyScreen,
-              psDRISUPScreen);
+uint32_t PVRDRIPixFmtGetDepth(IMG_PIXFMT eFmt) {
+  CallFuncV0(v0.PVRDRIPixFmtGetDepth, eFmt);
+  return 0;
+}
+uint32_t PVRDRIPixFmtGetBPP(IMG_PIXFMT eFmt) {
+  CallFuncV0(v0.PVRDRIPixFmtGetBPP, eFmt);
+  return 0;
+}
+uint32_t PVRDRIPixFmtGetBlockSize(IMG_PIXFMT eFmt) {
+  CallFuncV0(v0.PVRDRIPixFmtGetBlockSize, eFmt);
+  return 0;
 }
 
-unsigned int
-DRISUPCreateContext(PVRDRIAPIType eAPI, PVRDRIConfig *psPVRDRIConfig,
-                    struct PVRDRIContextConfig *psCtxConfig,
-                    struct __DRIcontextRec *psDRIContext,
-                    struct DRISUPContext *psDRISUPSharedContext,
-                    struct DRISUPScreen *psDRISUPScreen,
-                    struct DRISUPContext **ppsDRISUPContext)
-{
-   CallFuncV0(v0.CreateContext,
-              eAPI, psPVRDRIConfig, psCtxConfig, psDRIContext,
-              psDRISUPSharedContext, psDRISUPScreen, ppsDRISUPContext);
-
-   return __DRI_CTX_ERROR_BAD_API;
+/* ScreenImpl functions */
+PVRDRIScreenImpl *PVRDRICreateScreenImpl(int iFd) {
+  CallFuncV0(v0.PVRDRICreateScreenImpl, iFd);
+  return NULL;
+}
+void PVRDRIDestroyScreenImpl(PVRDRIScreenImpl *psScreenImpl) {
+  CallFuncV0(v0.PVRDRIDestroyScreenImpl, psScreenImpl);
 }
 
-void
-DRISUPDestroyContext(struct DRISUPContext *psDRISUPContext)
-{
-   CallFuncV0(v0.DestroyContext,
-              psDRISUPContext);
+int PVRDRIAPIVersion(PVRDRIAPIType eAPI, PVRDRIAPISubType eAPISub,
+                     PVRDRIScreenImpl *psScreenImpl) {
+  CallFuncV0(v0.PVRDRIAPIVersion, eAPI, eAPISub, psScreenImpl);
+  return 0;
 }
 
-struct DRISUPDrawable *
-DRISUPCreateDrawable(struct __DRIdrawableRec *psDRIDrawable,
-                     struct DRISUPScreen *psDRISUPScreen,
-                     void *pvLoaderPrivate, PVRDRIConfig *psPVRDRIConfig)
-{
-   CallFuncV0(v0.CreateDrawable,
-              psDRIDrawable, psDRISUPScreen, pvLoaderPrivate, psPVRDRIConfig);
-
-   return NULL;
+void *PVRDRIEGLGetLibHandle(PVRDRIAPIType eAPI,
+                            PVRDRIScreenImpl *psScreenImpl) {
+  CallFuncV0(v0.PVRDRIEGLGetLibHandle, eAPI, psScreenImpl);
+  return NULL;
+}
+PVRDRIGLAPIProc PVRDRIEGLGetProcAddress(PVRDRIAPIType eAPI,
+                                        PVRDRIScreenImpl *psScreenImpl,
+                                        const char *psProcName) {
+  CallFuncV0(v0.PVRDRIEGLGetProcAddress, eAPI, psScreenImpl, psProcName);
+  return NULL;
 }
 
-void
-DRISUPDestroyDrawable(struct DRISUPDrawable *psDRISUPDrawable)
-{
-   CallFuncV0(v0.DestroyDrawable,
-              psDRISUPDrawable);
+bool PVRDRIEGLFlushBuffers(PVRDRIAPIType eAPI, PVRDRIScreenImpl *psScreenImpl,
+                           PVRDRIContextImpl *psContextImpl,
+                           PVRDRIDrawableImpl *psDrawableImpl,
+                           bool bFlushAllSurfaces, bool bSwapBuffers,
+                           bool bWaitForHW) {
+  CallFuncV0(v0.PVRDRIEGLFlushBuffers, eAPI, psScreenImpl, psContextImpl,
+             psDrawableImpl, bFlushAllSurfaces, bSwapBuffers, bWaitForHW);
+  return false;
+}
+bool PVRDRIEGLFreeResources(PVRDRIScreenImpl *psPVRScreenImpl) {
+  CallFuncV0(v0.PVRDRIEGLFreeResources, psPVRScreenImpl);
+  return false;
+}
+void PVRDRIEGLMarkRendersurfaceInvalid(PVRDRIAPIType eAPI,
+                                       PVRDRIScreenImpl *psScreenImpl,
+                                       PVRDRIContextImpl *psContextImpl) {
+  CallFuncV0(v0.PVRDRIEGLMarkRendersurfaceInvalid, eAPI, psScreenImpl,
+             psContextImpl);
+}
+void PVRDRIEGLSetFrontBufferCallback(PVRDRIAPIType eAPI,
+                                     PVRDRIScreenImpl *psScreenImpl,
+                                     PVRDRIDrawableImpl *psDrawableImpl,
+                                     void pfnCallback(PVRDRIDrawable *)) {
+  CallFuncV0(v0.PVRDRIEGLSetFrontBufferCallback, eAPI, psScreenImpl,
+             psDrawableImpl, pfnCallback);
 }
 
-bool
-DRISUPMakeCurrent(struct DRISUPContext *psDRISUPContext,
-                  struct DRISUPDrawable *psDRISUPWrite,
-                  struct DRISUPDrawable *psDRISUPRead)
-{
-   CallFuncV0(v0.MakeCurrent,
-              psDRISUPContext, psDRISUPWrite, psDRISUPRead);
-
-   return false;
+unsigned PVRDRICreateContextImpl(PVRDRIContextImpl **ppsContextImpl,
+                                 PVRDRIAPIType eAPI, PVRDRIAPISubType eAPISub,
+                                 PVRDRIScreenImpl *psScreenImpl,
+                                 const PVRDRIConfigInfo *psConfigInfo,
+                                 unsigned uMajorVersion, unsigned uMinorVersion,
+                                 uint32_t uFlags, bool bNotifyReset,
+                                 unsigned uPriority,
+                                 PVRDRIContextImpl *psSharedContextImpl) {
+  CallFuncV0(v0.PVRDRICreateContextImpl, ppsContextImpl, eAPI, eAPISub,
+             psScreenImpl, psConfigInfo, uMajorVersion, uMinorVersion, uFlags,
+             bNotifyReset, uPriority, psSharedContextImpl);
+  return 0;
 }
 
-bool
-DRISUPUnbindContext(struct DRISUPContext *psDRISUPContext)
-{
-   CallFuncV0(v0.UnbindContext,
-              psDRISUPContext);
-
-   return false;
+void PVRDRIDestroyContextImpl(PVRDRIContextImpl *psContextImpl,
+                              PVRDRIAPIType eAPI,
+                              PVRDRIScreenImpl *psScreenImpl) {
+  CallFuncV0(v0.PVRDRIDestroyContextImpl, psContextImpl, eAPI, psScreenImpl);
 }
 
-struct DRISUPBuffer *
-DRISUPAllocateBuffer(struct DRISUPScreen *psDRISUPScreen,
-                     unsigned int uAttachment, unsigned int uFormat,
-                     int iWidth, int iHeight, unsigned int *puName,
-                     unsigned int *puPitch, unsigned int *puCPP,
-                     unsigned int *puFlags)
-{
-   CallFuncV0(v0.AllocateBuffer,
-              psDRISUPScreen, uAttachment, uFormat, iWidth, iHeight, puName,
-              puPitch, puCPP, puFlags);
-
-   return NULL;
+bool PVRDRIMakeCurrentGC(PVRDRIAPIType eAPI, PVRDRIScreenImpl *psScreenImpl,
+                         PVRDRIContextImpl *psContextImpl,
+                         PVRDRIDrawableImpl *psWriteImpl,
+                         PVRDRIDrawableImpl *psReadImpl) {
+  CallFuncV0(v0.PVRDRIMakeCurrentGC, eAPI, psScreenImpl, psContextImpl,
+             psWriteImpl, psReadImpl);
+  return false;
 }
 
-void
-DRISUPReleaseBuffer(struct DRISUPScreen *psDRISUPScreen,
-                    struct DRISUPBuffer *psDRISUPBuffer)
-{
-   CallFuncV0(v0.ReleaseBuffer,
-              psDRISUPScreen, psDRISUPBuffer);
+void PVRDRIMakeUnCurrentGC(PVRDRIAPIType eAPI, PVRDRIScreenImpl *psScreenImpl) {
+  CallFuncV0(v0.PVRDRIMakeUnCurrentGC, eAPI, psScreenImpl);
 }
 
-void
-DRISUPSetTexBuffer2(struct DRISUPContext *psDRISUPContext, int iTarget,
-                    int iFormat, struct DRISUPDrawable *psDRISUPDrawable)
-{
-   CallFuncV0(v0.SetTexBuffer2,
-              psDRISUPContext, iTarget, iFormat, psDRISUPDrawable);
+unsigned PVRDRIGetImageSource(PVRDRIAPIType eAPI,
+                              PVRDRIScreenImpl *psScreenImpl,
+                              PVRDRIContextImpl *psContextImpl,
+                              uint32_t uiTarget, uintptr_t uiBuffer,
+                              uint32_t uiLevel, __EGLImage *psEGLImage) {
+  CallFuncV0(v0.PVRDRIGetImageSource, eAPI, psScreenImpl, psContextImpl,
+             uiTarget, uiBuffer, uiLevel, psEGLImage);
+  return 0;
 }
 
-void
-DRISUPReleaseTexBuffer(struct DRISUPContext *psDRISUPContext, int iTarget,
-                       struct DRISUPDrawable *psDRISUPDrawable)
-{
-   CallFuncV0(v0.ReleaseTexBuffer,
-              psDRISUPContext, iTarget, psDRISUPDrawable);
+bool PVRDRI2BindTexImage(PVRDRIAPIType eAPI, PVRDRIScreenImpl *psScreenImpl,
+                         PVRDRIContextImpl *psContextImpl,
+                         PVRDRIDrawableImpl *psDrawableImpl) {
+  CallFuncV0(v0.PVRDRI2BindTexImage, eAPI, psScreenImpl, psContextImpl,
+             psDrawableImpl);
+  return false;
 }
 
-void
-DRISUPFlush(struct DRISUPDrawable *psDRISUPDrawable)
-{
-   CallFuncV0(v0.Flush,
-              psDRISUPDrawable);
+void PVRDRI2ReleaseTexImage(PVRDRIAPIType eAPI, PVRDRIScreenImpl *psScreenImpl,
+                            PVRDRIContextImpl *psContextImpl,
+                            PVRDRIDrawableImpl *psDrawableImpl) {
+  CallFuncV0(v0.PVRDRI2ReleaseTexImage, eAPI, psScreenImpl, psContextImpl,
+             psDrawableImpl);
 }
 
-void
-DRISUPInvalidate(struct DRISUPDrawable *psDRISUPDrawable)
-{
-   CallFuncV0(v0.Invalidate,
-              psDRISUPDrawable);
+/* DrawableImpl functions */
+PVRDRIDrawableImpl *PVRDRICreateDrawableImpl(PVRDRIDrawable *psPVRDrawable) {
+  CallFuncV0(v0.PVRDRICreateDrawableImpl, psPVRDrawable);
+  return NULL;
+}
+void PVRDRIDestroyDrawableImpl(PVRDRIDrawableImpl *psScreenImpl) {
+  CallFuncV0(v0.PVRDRIDestroyDrawableImpl, psScreenImpl);
+}
+bool PVREGLDrawableCreate(PVRDRIScreenImpl *psScreenImpl,
+                          PVRDRIDrawableImpl *psDrawableImpl) {
+  CallFuncV0(v0.PVREGLDrawableCreate, psScreenImpl, psDrawableImpl);
+  return false;
+}
+bool PVREGLDrawableRecreate(PVRDRIScreenImpl *psScreenImpl,
+                            PVRDRIDrawableImpl *psDrawableImpl) {
+  CallFuncV0(v0.PVREGLDrawableRecreate, psScreenImpl, psDrawableImpl);
+  return false;
+}
+bool PVREGLDrawableDestroy(PVRDRIScreenImpl *psScreenImpl,
+                           PVRDRIDrawableImpl *psDrawableImpl) {
+  CallFuncV0(v0.PVREGLDrawableDestroy, psScreenImpl, psDrawableImpl);
+  return false;
+}
+void PVREGLDrawableDestroyConfig(PVRDRIDrawableImpl *psDrawableImpl) {
+  CallFuncV0(v0.PVREGLDrawableDestroyConfig, psDrawableImpl);
 }
 
-void
-DRISUPFlushWithFlags(struct DRISUPContext *psDRISUPContext,
-                     struct DRISUPDrawable *psDRISUPDrawable,
-                     unsigned int uFlags, unsigned int uThrottleReason)
-{
-   CallFuncV0(v0.FlushWithFlags,
-              psDRISUPContext, psDRISUPDrawable, uFlags, uThrottleReason);
+/* Buffer functions */
+PVRDRIBufferImpl *PVRDRIBufferCreate(PVRDRIScreenImpl *psScreenImpl, int iWidth,
+                                     int iHeight, unsigned int uiBpp,
+                                     unsigned int uiUseFlags,
+                                     unsigned int *puiStride) {
+  CallFuncV0(v0.PVRDRIBufferCreate, psScreenImpl, iWidth, iHeight, uiBpp,
+             uiUseFlags, puiStride);
+  return NULL;
 }
 
-__DRIimage *
-DRISUPCreateImageFromName(struct DRISUPScreen *psDRISUPScreen,
-                          int iWidth, int iHeight, int iFourCC, int iName,
-                          int iPitch, void *pvLoaderPrivate)
-{
-   CallFuncV0(v0.CreateImageFromName,
-              psDRISUPScreen, iWidth, iHeight, iFourCC, iName, iPitch,
-              pvLoaderPrivate);
-
-   return NULL;
+PVRDRIBufferImpl *PVRDRIBufferCreateFromNames(
+    PVRDRIScreenImpl *psScreenImpl, int iWidth, int iHeight,
+    unsigned uiNumPlanes, const int *piName, const int *piStride,
+    const int *piOffset, const unsigned int *puiWidthShift,
+    const unsigned int *puiHeightShift) {
+  CallFuncV0(v0.PVRDRIBufferCreateFromNames, psScreenImpl, iWidth, iHeight,
+             uiNumPlanes, piName, piStride, piOffset, puiWidthShift,
+             puiHeightShift);
+  return NULL;
 }
 
-__DRIimage *
-DRISUPCreateImageFromRenderbuffer(struct DRISUPContext *psDRISUPContext,
-                                  int iRenderBuffer, void *pvLoaderPrivate)
-{
-   CallFuncV0(v0.CreateImageFromRenderbuffer,
-              psDRISUPContext, iRenderBuffer, pvLoaderPrivate);
-
-   return NULL;
+PVRDRIBufferImpl *PVRDRIBufferCreateFromName(PVRDRIScreenImpl *psScreenImpl,
+                                             int iName, int iWidth, int iHeight,
+                                             int iStride, int iOffset) {
+  CallFuncV0(v0.PVRDRIBufferCreateFromName, psScreenImpl, iName, iWidth,
+             iHeight, iStride, iOffset);
+  return NULL;
 }
 
-void
-DRISUPDestroyImage(__DRIimage *psImage)
-{
-   CallFuncV0(v0.DestroyImage, psImage);
+PVRDRIBufferImpl *
+PVRDRIBufferCreateFromFds(PVRDRIScreenImpl *psScreenImpl, int iWidth,
+                          int iHeight, unsigned uiNumPlanes, const int *piFd,
+                          const int *piStride, const int *piOffset,
+                          const unsigned int *puiWidthShift,
+                          const unsigned int *puiHeightShift) {
+  CallFuncV0(v0.PVRDRIBufferCreateFromFds, psScreenImpl, iWidth, iHeight,
+             uiNumPlanes, piFd, piStride, piOffset, puiWidthShift,
+             puiHeightShift);
+  return NULL;
 }
 
-__DRIimage *
-DRISUPCreateImage(struct DRISUPScreen *psDRISUPScreen,
-                  int iWidth, int iHeight, int iFourCC, unsigned int uUse,
-                  void *pvLoaderPrivate)
-{
-   CallFuncV0(v0.CreateImage,
-              psDRISUPScreen, iWidth, iHeight, iFourCC, uUse, pvLoaderPrivate);
-
-   return NULL;
+void PVRDRIBufferDestroy(PVRDRIBufferImpl *psBuffer) {
+  CallFuncV0(v0.PVRDRIBufferDestroy, psBuffer);
 }
 
-bool
-DRISUPQueryImage(__DRIimage *psImage, int iAttrib, int *piValue)
-{
-   CallFuncV0(v0.QueryImage,
-              psImage, iAttrib, piValue);
-
-   return false;
+int PVRDRIBufferGetFd(PVRDRIBufferImpl *psBuffer) {
+  CallFuncV0(v0.PVRDRIBufferGetFd, psBuffer);
+  return 0;
 }
 
-__DRIimage *
-DRISUPDupImage(__DRIimage *psImage, void *pvLoaderPrivate)
-{
-   CallFuncV0(v0.DupImage,
-              psImage, pvLoaderPrivate);
-
-   return NULL;
+int PVRDRIBufferGetHandle(PVRDRIBufferImpl *psBuffer) {
+  CallFuncV0(v0.PVRDRIBufferGetHandle, psBuffer);
+  return 0;
 }
 
-bool
-DRISUPValidateImageUsage(__DRIimage *psImage, unsigned int uUse)
-{
-   CallFuncV0(v0.ValidateImageUsage,
-              psImage, uUse);
-
-   return false;
+int PVRDRIBufferGetName(PVRDRIBufferImpl *psBuffer) {
+  CallFuncV0(v0.PVRDRIBufferGetName, psBuffer);
+  return 0;
 }
 
-__DRIimage *
-DRISUPCreateImageFromNames(struct DRISUPScreen *psDRISUPScreen,
-                           int iWidth, int iHeight, int iFourCC,
-                           int *piNames, int iNumNames,
-                           int *piStrides, int *piOffsets,
-                           void *pvLoaderPrivate)
-{
-   CallFuncV0(v0.CreateImageFromNames,
-              psDRISUPScreen, iWidth, iHeight, iFourCC, piNames, iNumNames,
-              piStrides, piOffsets, pvLoaderPrivate);
-
-   return NULL;
+/* Image functions */
+__EGLImage *PVRDRIEGLImageCreate(void) {
+  CallFuncV0(v0.PVRDRIEGLImageCreate);
+  return NULL;
+}
+__EGLImage *PVRDRIEGLImageCreateFromBuffer(int iWidth, int iHeight, int iStride,
+                                           IMG_PIXFMT ePixelFormat,
+                                           IMG_YUV_COLORSPACE eColourSpace,
+                                           IMG_YUV_CHROMA_INTERP eChromaUInterp,
+                                           IMG_YUV_CHROMA_INTERP eChromaVInterp,
+                                           PVRDRIBufferImpl *psBuffer) {
+  CallFuncV0(v0.PVRDRIEGLImageCreateFromBuffer, iWidth, iHeight, iStride,
+             ePixelFormat, eColourSpace, eChromaUInterp, eChromaVInterp,
+             psBuffer);
+  return NULL;
 }
 
-__DRIimage *
-DRISUPFromPlanar(__DRIimage *psImage, int iPlane, void *pvLoaderPrivate)
-{
-   CallFuncV0(v0.FromPlanar,
-              psImage, iPlane, pvLoaderPrivate);
-
-   return NULL;
+__EGLImage *PVRDRIEGLImageDup(__EGLImage *psIn) {
+  CallFuncV0(v0.PVRDRIEGLImageDup, psIn);
+  return NULL;
 }
 
-__DRIimage *
-DRISUPCreateImageFromTexture(struct DRISUPContext *psDRISUPContext,
-                             int iTarget, unsigned int uTexture, int iDepth,
-                             int iLevel, unsigned int *puError,
-                             void *pvLoaderPrivate)
-{
-   CallFuncV0(v0.CreateImageFromTexture,
-              psDRISUPContext, iTarget, uTexture, iDepth, iLevel, puError,
-              pvLoaderPrivate);
-
-   return NULL;
+void PVRDRIEGLImageSetCallbackData(__EGLImage *psEGLImage, __DRIimage *image) {
+  CallFuncV0(v0.PVRDRIEGLImageSetCallbackData, psEGLImage, image);
 }
 
-__DRIimage *
-DRISUPCreateImageFromFDs(struct DRISUPScreen *psDRISUPcreen,
-                         int iWidth, int iHeight, int iFourCC,
-                         int *piFDs, int iNumFDs, int *piStrides,
-                         int *piOffsets, void *pvLoaderPrivate)
-{
-   CallFuncV0(v0.CreateImageFromFDs,
-              psDRISUPcreen, iWidth, iHeight, iFourCC, piFDs, iNumFDs,
-              piStrides, piOffsets, pvLoaderPrivate);
-
-   return NULL;
+void PVRDRIEGLImageDestroyExternal(PVRDRIScreenImpl *psScreenImpl,
+                                   __EGLImage *psEGLImage,
+                                   PVRDRIEGLImageType eglImageType) {
+  CallFuncV0(v0.PVRDRIEGLImageDestroyExternal, psScreenImpl, psEGLImage,
+             eglImageType);
+}
+void PVRDRIEGLImageFree(__EGLImage *psEGLImage) {
+  CallFuncV0(v0.PVRDRIEGLImageFree, psEGLImage);
 }
 
-__DRIimage *
-DRISUPCreateImageFromDmaBufs(struct DRISUPScreen *psDRISUPScreen,
-                             int iWidth, int iHeight, int iFourCC,
-                             int *piFDs, int iNumFDs,
-                             int *piStrides, int *piOffsets,
-                             unsigned int uColorSpace,
-                             unsigned int uSampleRange,
-                             unsigned int uHorizSiting,
-                             unsigned int uVertSiting,
-                             unsigned int *puError,
-                             void *pvLoaderPrivate)
-{
-   CallFuncV0(v0.CreateImageFromDMABufs,
-              psDRISUPScreen, iWidth, iHeight, iFourCC, piFDs, iNumFDs,
-              piStrides, piOffsets, uColorSpace, uSampleRange,
-              uHorizSiting, uVertSiting, puError, pvLoaderPrivate);
-
-   return NULL;
+void PVRDRIEGLImageGetAttribs(__EGLImage *psEGLImage,
+                              PVRDRIBufferAttribs *psAttribs) {
+  CallFuncV0(v0.PVRDRIEGLImageGetAttribs, psEGLImage, psAttribs);
 }
 
-int
-DRISUPGetImageCapabilities(struct DRISUPScreen *psDRISUPScreen)
-{
-   CallFuncV0(v0.GetImageCapabilities,
-              psDRISUPScreen);
-
-   return 0;
+/* Sync functions */
+void *PVRDRICreateFenceImpl(PVRDRIAPIType eAPI, PVRDRIScreenImpl *psScreenImpl,
+                            PVRDRIContextImpl *psContextImpl) {
+  CallFuncV0(v0.PVRDRICreateFenceImpl, eAPI, psScreenImpl, psContextImpl);
+  return NULL;
 }
 
-void
-DRISUPBlitImage(struct DRISUPContext *psDRISUPContext,
-                __DRIimage *psDst, __DRIimage *psSrc, int iDstX0, int iDstY0,
-                int iDstWidth, int iDstHeight, int iSrcX0, int iSrcY0,
-                int iSrcWidth, int iSrcHeight, int iFlushFlag)
-{
-   CallFuncV0(v0.BlitImage,
-              psDRISUPContext, psDst, psSrc, iDstX0, iDstY0,
-              iDstWidth, iDstHeight, iSrcX0, iSrcY0,
-              iSrcWidth, iSrcHeight, iFlushFlag);
+void PVRDRIDestroyFenceImpl(void *psDRIFence) {
+  CallFuncV0(v0.PVRDRIDestroyFenceImpl, psDRIFence);
 }
 
-void *
-DRISUPMapImage(struct DRISUPContext *psDRISUPContext, __DRIimage* psImage,
-               int iX0, int iY0, int iWidth, int iHeight, unsigned int uFlags,
-               int *piStride, void **ppvData)
-{
-   CallFuncV0(v0.MapImage,
-              psDRISUPContext, psImage, iX0, iY0, iWidth, iHeight, uFlags,
-              piStride, ppvData);
-
-   return NULL;
+bool PVRDRIClientWaitSyncImpl(PVRDRIAPIType eAPI,
+                              PVRDRIContextImpl *psContextImpl,
+                              void *psDRIFence, bool bFlushCommands,
+                              bool bTimeout, uint64_t uiTimeout) {
+  CallFuncV0(v0.PVRDRIClientWaitSyncImpl, eAPI, psContextImpl, psDRIFence,
+             bFlushCommands, bTimeout, uiTimeout);
+  return false;
 }
 
-void
-DRISUPUnmapImage(struct DRISUPContext *psDRISUPContext, __DRIimage *psImage,
-                 void *pvData)
-{
-   CallFuncV0(v0.UnmapImage,
-              psDRISUPContext, psImage, pvData);
+bool PVRDRIServerWaitSyncImpl(PVRDRIAPIType eAPI,
+                              PVRDRIContextImpl *psContextImpl,
+                              void *psDRIFence) {
+  CallFuncV0(v0.PVRDRIServerWaitSyncImpl, eAPI, psContextImpl, psDRIFence);
+  return false;
 }
 
-__DRIimage *
-DRISUPCreateImageWithModifiers(struct DRISUPScreen *psDRISUPScreen,
-                               int iWidth, int iHeight, int iFourCC,
-                               const uint64_t *puModifiers,
-                               const unsigned int uModifierCount,
-                               void *pvLoaderPrivate)
-{
-   CallFuncV0(v0.CreateImageWithModifiers,
-              psDRISUPScreen, iWidth, iHeight, iFourCC, puModifiers,
-              uModifierCount, pvLoaderPrivate);
-
-   return NULL;
+void PVRDRIDestroyFencesImpl(PVRDRIScreenImpl *psScreenImpl) {
+  CallFuncV0(v0.PVRDRIDestroyFencesImpl, psScreenImpl);
 }
 
-__DRIimage *
-DRISUPCreateImageFromDMABufs2(struct DRISUPScreen *psDRISUPScreen,
-                              int iWidth, int iHeight, int iFourCC,
-                              uint64_t uModifier, int *piFDs, int iNumFDs,
-                              int *piStrides, int *piOffsets,
-                              unsigned int uColorSpace,
-                              unsigned int uSampleRange,
-                              unsigned int uHorizSiting,
-                              unsigned int uVertSiting,
-                              unsigned int *puError, void *pvLoaderPrivate)
-{
-   CallFuncV0(v0.CreateImageFromDMABufs2,
-              psDRISUPScreen, iWidth, iHeight, iFourCC, uModifier,
-              piFDs, iNumFDs, piStrides, piOffsets, uColorSpace, uSampleRange,
-              uHorizSiting, uVertSiting, puError, pvLoaderPrivate);
-
-   return NULL;
+/* EGL interface functions */
+bool PVRDRIEGLDrawableConfigFromGLMode(PVRDRIDrawableImpl *psPVRDrawable,
+                                       PVRDRIConfigInfo *psConfigInfo,
+                                       int supportedAPIs, IMG_PIXFMT ePixFmt) {
+  CallFuncV0(v0.PVRDRIEGLDrawableConfigFromGLMode, psPVRDrawable, psConfigInfo,
+             supportedAPIs, ePixFmt);
+  return false;
 }
 
-bool
-DRISUPQueryDMABufFormats(struct DRISUPScreen *psDRISUPScreen, int iMax,
-                         int *piFormats, int *piCount)
-{
-   CallFuncV0(v0.QueryDMABufFormats,
-              psDRISUPScreen, iMax, piFormats, piCount);
-
-   return false;
+void PVRDRIRegisterCallbacks(PVRDRICallbacks *callbacks) {
+  CallFuncV0(v0.PVRDRIRegisterCallbacks, callbacks);
 }
 
-bool
-DRISUPQueryDMABufModifiers(struct DRISUPScreen *psDRISUPScreen, int iFourCC,
-                           int iMax, uint64_t *puModifiers,
-                           unsigned int *piExternalOnly, int *piCount)
-{
-   CallFuncV0(v0.QueryDMABufModifiers,
-              psDRISUPScreen, iFourCC, iMax, puModifiers, piExternalOnly,
-              piCount);
-
-   return false;
+/* PVR utility support functions */
+bool PVRDRIMesaFormatSupported(unsigned fmt) {
+  CallFuncV0(v0.PVRDRIMesaFormatSupported, fmt);
+  return false;
+}
+unsigned PVRDRIDepthStencilBitArraySize(void) {
+  CallFuncV0(v0.PVRDRIDepthStencilBitArraySize);
+  return 0;
+}
+const uint8_t *PVRDRIDepthBitsArray(void) {
+  CallFuncV0(v0.PVRDRIDepthBitsArray);
+  return 0;
+}
+const uint8_t *PVRDRIStencilBitsArray(void) {
+  CallFuncV0(v0.PVRDRIStencilBitsArray);
+  return 0;
+}
+unsigned PVRDRIMSAABitArraySize(void) {
+  CallFuncV0(v0.PVRDRIMSAABitArraySize);
+  return 0;
+}
+const uint8_t *PVRDRIMSAABitsArray(void) {
+  CallFuncV0(v0.PVRDRIMSAABitsArray);
+  return 0;
+}
+uint32_t PVRDRIMaxPBufferWidth(void) {
+  CallFuncV0(v0.PVRDRIMaxPBufferWidth);
+  return 0;
+}
+uint32_t PVRDRIMaxPBufferHeight(void) {
+  CallFuncV0(v0.PVRDRIMaxPBufferHeight);
+  return 0;
 }
 
-bool
-DRISUPQueryDMABufFormatModifierAttribs(struct DRISUPScreen *psDRISUPScreen,
-                                       uint32_t iFourCC, uint64_t uModifier,
-                                       int iAttrib, uint64_t *puValue)
-{
-   CallFuncV0(v0.QueryDMABufFormatModifierAttribs,
-              psDRISUPScreen, iFourCC, uModifier, iAttrib, puValue);
-
-   return false;
+unsigned PVRDRIGetNumAPIFuncs(PVRDRIAPIType eAPI) {
+  CallFuncV0(v0.PVRDRIGetNumAPIFuncs, eAPI);
+  return 0;
 }
-
-__DRIimage *
-DRISUPCreateImageFromRenderBuffer2(struct DRISUPContext *psDRISUPContext,
-                                   int iRenderBuffer, void *pvLoaderPrivate,
-                                   unsigned int *puError)
-{
-   CallFuncV0(v0.CreateImageFromRenderBuffer2,
-              psDRISUPContext, iRenderBuffer, pvLoaderPrivate, puError);
-
-   return NULL;
-}
-
-__DRIimage *
-DRISUPCreateImageFromBuffer(struct DRISUPContext *psDRISUPContext,
-                            int iTarget, void *pvBuffer,
-                            unsigned int *puError, void *pvLoaderPrivate)
-{
-   CallFuncV0(v0.CreateImageFromBuffer,
-              psDRISUPContext, iTarget, pvBuffer, puError, pvLoaderPrivate);
-
-   return NULL;
-}
-
-int
-DRISUPQueryRendererInteger(struct DRISUPScreen *psDRISUPScreen,
-                           int iAttribute, unsigned int *puValue)
-{
-   CallFuncV0(v0.QueryRendererInteger,
-              psDRISUPScreen, iAttribute, puValue);
-
-   return -1;
-}
-
-int
-DRISUPQueryRendererString(struct DRISUPScreen *psDRISUPScreen,
-                          int iAttribute, const char **ppszValue)
-{
-   CallFuncV0(v0.QueryRendererString,
-              psDRISUPScreen, iAttribute, ppszValue);
-
-   return -1;
-}
-
-void *
-DRISUPCreateFence(struct DRISUPContext *psDRISUPContext)
-{
-   CallFuncV0(v0.CreateFence,
-              psDRISUPContext);
-
-   return NULL;
-}
-
-void
-DRISUPDestroyFence(struct DRISUPScreen *psDRISUPScreen, void *pvFence)
-{
-   CallFuncV0(v0.DestroyFence,
-              psDRISUPScreen, pvFence);
-}
-
-bool
-DRISUPClientWaitSync(struct DRISUPContext *psDRISUPContext, void *pvFence,
-                     unsigned int uFlags, uint64_t uTimeout)
-{
-   CallFuncV0(v0.ClientWaitSync,
-              psDRISUPContext, pvFence, uFlags, uTimeout);
-
-   return false;
-}
-
-void
-DRISUPServerWaitSync(struct DRISUPContext *psDRISUPContext, void *pvFence,
-                     unsigned int uFlags)
-{
-   CallFuncV0(v0.ServerWaitSync,
-              psDRISUPContext, pvFence, uFlags);
-}
-
-unsigned int
-DRISUPGetFenceCapabilities(struct DRISUPScreen *psDRISUPScreen)
-{
-   CallFuncV0(v0.GetFenceCapabilities,
-              psDRISUPScreen);
-
-   return 0;
-}
-
-void *
-DRISUPCreateFenceFD(struct DRISUPContext *psDRISUPContext, int iFD)
-{
-   CallFuncV0(v0.CreateFenceFD,
-              psDRISUPContext, iFD);
-
-   return NULL;
-}
-
-int
-DRISUPGetFenceFD(struct DRISUPScreen *psDRISUPScreen, void *pvFence)
-{
-   CallFuncV0(v0.GetFenceFD,
-              psDRISUPScreen, pvFence);
-
-   return -1;
-}
-
-void *
-DRISUPGetFenceFromCLEvent(struct DRISUPScreen *psDRISUPScreen,
-                          intptr_t iCLEvent)
-{
-   CallFuncV0(v0.GetFenceFromCLEvent,
-              psDRISUPScreen, iCLEvent);
-
-   return NULL;
-}
-
-int
-DRISUPGetAPIVersion(struct DRISUPScreen *psDRISUPScreen,
-                    PVRDRIAPIType eAPI)
-{
-   CallFuncV0(v0.GetAPIVersion,
-              psDRISUPScreen, eAPI);
-
-   return 0;
-}
-
-unsigned int
-DRISUPGetNumAPIProcs(struct DRISUPScreen *psDRISUPScreen,
-                     PVRDRIAPIType eAPI)
-{
-   CallFuncV0(v0.GetNumAPIProcs,
-              psDRISUPScreen, eAPI);
-
-   return 0;
-}
-
-const char *
-DRISUPGetAPIProcName(struct DRISUPScreen *psDRISUPScreen, PVRDRIAPIType eAPI,
-                     unsigned int uIndex)
-{
-   CallFuncV0(v0.GetAPIProcName,
-              psDRISUPScreen, eAPI, uIndex);
-
-   return NULL;
-}
-
-void *
-DRISUPGetAPIProcAddress(struct DRISUPScreen *psDRISUPScreen,
-                        PVRDRIAPIType eAPI, unsigned int uIndex)
-{
-   CallFuncV0(v0.GetAPIProcAddress,
-              psDRISUPScreen, eAPI, uIndex);
-
-   return NULL;
-}
-
-void
-DRISUPSetDamageRegion(struct DRISUPDrawable *psDRISUPDrawable,
-                      unsigned int uNRects, int *piRects)
-{
-   CallFuncV0(v0.SetDamageRegion,
-              psDRISUPDrawable, uNRects, piRects);
-}
-
-bool
-DRISUPHaveGetFenceFromCLEvent(void)
-{
-   CallFuncV0(v0.HaveGetFenceFromCLEvent);
-
-   return true;
-}
-
-__DRIimage *
-DRISUPCreateImageFromDMABufs3(struct DRISUPScreen *psDRISUPScreen,
-                              int iWidth, int iHeight, int iFourCC,
-                              uint64_t uModifier, int *piFDs, int iNumFDs,
-                              int *piStrides, int *piOffsets,
-                              unsigned int uColorSpace,
-                              unsigned int uSampleRange,
-                              unsigned int uHorizSiting,
-                              unsigned int uVertSiting,
-                              uint32_t uFlags,
-                              unsigned int *puError, void *pvLoaderPrivate)
-{
-   CallFuncV0(v0.CreateImageFromDMABufs3,
-              psDRISUPScreen, iWidth, iHeight, iFourCC, uModifier,
-              piFDs, iNumFDs, piStrides, piOffsets, uColorSpace, uSampleRange,
-              uHorizSiting, uVertSiting, uFlags, puError, pvLoaderPrivate);
-
-   return NULL;
-}
-
-__DRIimage *
-DRISUPCreateImageWithModifiers2(struct DRISUPScreen *psDRISUPScreen,
-                                int iWidth, int iHeight, int iFourCC,
-                                const uint64_t *puModifiers,
-                                const unsigned int uModifierCount,
-                                unsigned int uUse,
-                                void *pvLoaderPrivate)
-{
-   CallFuncV0(v0.CreateImageWithModifiers2,
-              psDRISUPScreen, iWidth, iHeight, iFourCC, puModifiers,
-              uModifierCount, uUse, pvLoaderPrivate);
-
-   return NULL;
-}
-
-__DRIimage *
-DRISUPCreateImageFromFDs2(struct DRISUPScreen *psDRISUPcreen,
-                          int iWidth, int iHeight, int iFourCC,
-                          int *piFDs, int iNumFDs, uint32_t uFlags,
-                          int *piStrides, int *piOffsets,
-                          void *pvLoaderPrivate)
-{
-   CallFuncV0(v0.CreateImageFromFDs2,
-              psDRISUPcreen, iWidth, iHeight, iFourCC, piFDs, iNumFDs,
-              uFlags, piStrides, piOffsets, pvLoaderPrivate);
-
-   return NULL;
-}
-
-bool
-DRISUPHaveSetInFenceFd(void)
-{
-	return HaveFuncV0(v0.SetInFenceFD);
-}
-
-void
-DRISUPSetInFenceFd(__DRIimage *psImage, int iFd)
-{
-   CallFuncV0(v0.SetInFenceFD,
-              psImage, iFd);
+const char *PVRDRIGetAPIFunc(PVRDRIAPIType eAPI, unsigned index) {
+  CallFuncV0(v0.PVRDRIGetAPIFunc, eAPI, index);
+  return 0;
 }
