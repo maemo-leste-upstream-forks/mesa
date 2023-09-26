@@ -24,6 +24,7 @@ files_libsgx = files(
   'mesa_context.c',
   'pvr_object_cache.c',
   'pvrdrawable.c',
+  'pvrcompat.c',
   'pvrdri.c',
   'pvrext.c',
   'pvrutil.c',
