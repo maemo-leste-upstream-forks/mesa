@@ -794,9 +794,7 @@ static IMG_PIXFMT PVRDRIGetPixelFormat(const struct gl_config *psGLMode)
             return IMG_PIXFMT_R8G8B8X8_UNORM;
       }
 
-      mesa_loge("%s: Unsupported buffer format", __func__);
-      return IMG_PIXFMT_UNKNOWN;
-
+      break;
    case 16:
       if (psGLMode->redMask == 0xF800 &&
           psGLMode->greenMask == 0x07E0 &&
@@ -804,10 +802,14 @@ static IMG_PIXFMT PVRDRIGetPixelFormat(const struct gl_config *psGLMode)
          return IMG_PIXFMT_B5G6R5_UNORM;
       }
 
+      break;
+
    default:
-      mesa_loge("%s: Unsupported screen format\n", __func__);
-      return IMG_PIXFMT_UNKNOWN;
+      break;
    }
+
+   mesa_loge("%s: Unsupported screen format\n", __func__);
+   return IMG_PIXFMT_UNKNOWN;
 }
 
 static GLboolean
