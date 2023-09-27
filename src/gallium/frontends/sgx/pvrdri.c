@@ -440,6 +440,7 @@ PVRDRIScreenRemoveReference(PVRDRIScreen *psPVRScreen)
    PVRDRIDestroyScreenImpl(psPVRScreen->psImpl);
    PVRMutexDeinit(&psPVRScreen->sMutex);
 
+   PVRDRICompatDeinit();
    free(psPVRScreen);
 }
 
@@ -533,12 +534,13 @@ PVRDRIInitScreen(__DRIscreen *psDRIScreen)
    if (!PVRLoaderIsSupported(psDRIScreen))
       return NULL;
 
-   PVRDRIRegisterCallbacks(&sDRICallbacks);
+   if (!PVRDRICompatInit(&sDRICallbacks, 0, 0))
+      return NULL;
 
    psPVRScreen = calloc(1, sizeof(*psPVRScreen));
    if (psPVRScreen == NULL) {
       mesa_loge("%s: Couldn't allocate PVRDRIScreen", __func__);
-      return NULL;
+      goto ErrorCompatDeinit;
    }
 
    psDRIScreen->driverPrivate = psPVRScreen;
@@ -599,6 +601,9 @@ ErrorScreenMutexDeinit:
 
 ErrorScreenFree:
    free(psPVRScreen);
+
+ErrorCompatDeinit:
+   PVRDRICompatDeinit();
 
    return NULL;
 }
