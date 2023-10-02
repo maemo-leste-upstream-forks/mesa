@@ -614,17 +614,9 @@ PVRDRIDestroyScreen(__DRIscreen *psDRIScreen)
    PVRDRIScreen *psPVRScreen = psDRIScreen->driverPrivate;
 
 #if defined(DEBUG)
-   if (psPVRScreen->iBufferAlloc != 0 ||
-       psPVRScreen->iDrawableAlloc != 0 ||
-       psPVRScreen->iContextAlloc != 0) {
-      mesa_loge("%s: Outstanding allocations: Contexts: %d Drawables: %d Buffers: %d",
-                   __func__, psPVRScreen->iContextAlloc,
-                   psPVRScreen->iDrawableAlloc, psPVRScreen->iBufferAlloc);
-
-      if (psPVRScreen->iRefCount > 1) {
-         mesa_loge("%s: PVRDRIScreen resources will not be freed until its %d references are removed",
-                      __func__, psPVRScreen->iRefCount - 1);
-      }
+   if (psPVRScreen->iRefCount > 1) {
+      mesa_loge("%s: PVRDRIScreen resources will not be freed until its %d references are removed",
+                   __func__, psPVRScreen->iRefCount - 1);
    }
 #endif
 
