@@ -519,16 +519,17 @@ PVRDRIInitScreen(__DRIscreen *psDRIScreen)
 {
    PVRDRIScreen *psPVRScreen;
    const __DRIconfig **ppsConfigs;
-   PVRDRICallbacks sDRICallbacks = {
-         .DrawableRecreate = PVRDRIDrawableRecreate,
-         .DrawableGetParameters = PVRDRIDrawableGetParameters,
-         .ImageGetSharedType = PVRDRIImageGetSharedType,
-         .ImageGetSharedBuffer = PVRDRIImageGetSharedBuffer,
-         .ImageGetSharedEGLImage = PVRDRIImageGetSharedEGLImage,
-         .ImageGetEGLImage = PVRDRIImageGetEGLImage,
-         .ScreenGetDRIImage = PVRDRIScreenGetDRIImage,
-         .RefImage = PVRDRIRefImage,
-         .UnrefImage = PVRDRIUnrefImage,
+   const struct SGXDRICallbacksV0 sDRICallbacks = {
+         .v0.DrawableRecreate = PVRDRIDrawableRecreate,
+         .v0.DrawableGetParameters = PVRDRIDrawableGetParameters,
+         .v0.ImageGetSharedType = PVRDRIImageGetSharedType,
+         .v0.ImageGetSharedBuffer = PVRDRIImageGetSharedBuffer,
+         .v0.ImageGetSharedEGLImage = PVRDRIImageGetSharedEGLImage,
+         .v0.ImageGetEGLImage = PVRDRIImageGetEGLImage,
+         .v0.ScreenGetDRIImage = PVRDRIScreenGetDRIImage,
+         .v0.RefImage = PVRDRIRefImage,
+         .v0.UnrefImage = PVRDRIUnrefImage,
+         .v0.RegisterSupportInterface = MODSUPRegisterSupportInterfaceV0,
    };
 
    if (!PVRLoaderIsSupported(psDRIScreen))

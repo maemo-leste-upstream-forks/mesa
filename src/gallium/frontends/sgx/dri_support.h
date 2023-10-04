@@ -337,6 +337,27 @@ typedef struct {
 
 void PVRDRIRegisterCallbacks(PVRDRICallbacks *callbacks);
 
+struct SGXDRICallbacksV0 {
+  struct {
+    bool (*DrawableRecreate)(PVRDRIDrawable *psPVRDrawable);
+    bool (*DrawableGetParameters)(PVRDRIDrawable *psPVRDrawable,
+                                  PVRDRIBufferImpl **ppsDstBuffer,
+                                  PVRDRIBufferImpl **ppsAccumBuffer,
+                                  PVRDRIBufferAttribs *psAttribs,
+                                  bool *pbDoubleBuffered);
+    PVRDRIImageType (*ImageGetSharedType)(__DRIimage *image);
+    PVRDRIBufferImpl *(*ImageGetSharedBuffer)(__DRIimage *image);
+    __EGLImage *(*ImageGetSharedEGLImage)(__DRIimage *image);
+    __EGLImage *(*ImageGetEGLImage)(__DRIimage *image);
+    __DRIimage *(*ScreenGetDRIImage)(void *hEGLImage);
+    void (*RefImage)(__DRIimage *image);
+    void (*UnrefImage)(__DRIimage *image);
+    bool (*RegisterSupportInterface)(const void *pvInterface,
+                                     unsigned int uVersion,
+                                     unsigned int uMinVersion);
+  } v0;
+};
+
 /* PVR utility support functions */
 bool PVRDRIMesaFormatSupported(unsigned fmt);
 unsigned PVRDRIDepthStencilBitArraySize(void);
@@ -511,8 +532,6 @@ struct SGXDRISupportInterfaceV0 {
                                               int supportedAPIs,
                                               IMG_PIXFMT ePixFmt);
 
-    void (*PVRDRIRegisterCallbacks)(PVRDRICallbacks *callbacks);
-
     /* PVR utility support functions */
     bool (*PVRDRIMesaFormatSupported)(unsigned fmt);
     unsigned (*PVRDRIDepthStencilBitArraySize)(void);
@@ -529,7 +548,7 @@ struct SGXDRISupportInterfaceV0 {
   } v0;
 };
 
-bool PVRDRICompatInit(const PVRDRICallbacks *psCallbacks,
+bool PVRDRICompatInit(const struct SGXDRICallbacksV0 *psCallbacks,
                       unsigned int uVersionV0, unsigned int uMinVersionV0);
 
 void PVRDRICompatDeinit(void);

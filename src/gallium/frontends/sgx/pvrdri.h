@@ -254,4 +254,12 @@ __DRIimage *PVRDRIScreenGetDRIImage(void *hEGLImage);
 void PVRDRIRefImage(__DRIimage *image);
 void PVRDRIUnrefImage(__DRIimage *image);
 
+/*************************************************************************//*!
+ pvrcompat.c
+ *//**************************************************************************/
+
+bool MODSUPRegisterSupportInterfaceV0(const void *pvInterface,
+                                      unsigned int uVersion,
+                                      unsigned int uMinVersion);
+
 #endif /* defined(__PVRDRI_H__) */

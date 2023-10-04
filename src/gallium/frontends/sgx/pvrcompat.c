@@ -52,7 +52,11 @@ static pthread_mutex_t gsCompatLock = PTHREAD_MUTEX_INITIALIZER;
 /* Lookup a function, and set the pointer to the function address */
 #define LookupFunc(func, ptr)                                                  \
   do {                                                                         \
+    char *error;                                                               \
+    (void)dlerror();                                                           \
     ptr = dlsym(gpvSupLib, MAKESTRING(func));                                  \
+    if ((error = dlerror()) != NULL)                                           \
+      mesa_logi("error looking up %s: %s", MAKESTRING(func), error);           \
   } while (0)
 
 /* Check if a function exists in the DRI Support interface structure */
@@ -63,6 +67,8 @@ static pthread_mutex_t gsCompatLock = PTHREAD_MUTEX_INITIALIZER;
   do {                                                                         \
     if (gsSupV0.field)                                                         \
       return gsSupV0.field(__VA_ARGS__);                                       \
+    else                                                                       \
+      mesa_logi("Failed to lookup %s", MAKESTRING(field));                     \
   } while (0)
 
 /* Calculate the start of the SGXDRISupportInterfaceV0 structure */
@@ -152,7 +158,7 @@ static void CompatDeinit(void) {
   memset(&gsSupV0, 0, sizeof(gsSupV0));
 }
 
-bool PVRDRICompatInit(const PVRDRICallbacks *psCallbacks,
+bool PVRDRICompatInit(const struct SGXDRICallbacksV0 *psCallbacks,
                       unsigned int uVersionV0, unsigned int uMinVersionV0) {
   bool (*pfPVRDRIRegisterCallbacks)(
       const void *pvCallbacks, unsigned int uVersion, unsigned int uMinVersion);
@@ -167,13 +173,17 @@ bool PVRDRICompatInit(const PVRDRICallbacks *psCallbacks,
   if (!res)
     goto Exit;
 
-  LookupFunc(PVRDRIRegisterCallbacks, pfPVRDRIRegisterCallbacks);
+  LookupFunc(PVRDRIRegisterVersionedCallbacksV0, pfPVRDRIRegisterCallbacks);
 
   res = (pfPVRDRIRegisterCallbacks != NULL);
   if (!res)
     goto Exit;
 
   res = pfPVRDRIRegisterCallbacks(psCallbacks, uVersionV0, uMinVersionV0);
+  if (!res) {
+    mesa_loge("%s: Unable to register callbacks %i", __func__, res);
+    goto Exit;
+  }
 
 Exit:
   if (!res) {
@@ -190,6 +200,45 @@ void PVRDRICompatDeinit(void) {
   if (--giSupLibRef == 0)
     CompatDeinit();
   CompatUnlock();
+}
+
+bool MODSUPRegisterSupportInterfaceV0(const void *pvInterface,
+                                      unsigned int uVersion,
+                                      unsigned int uMinVersion) {
+  size_t uStart, uEnd;
+
+  memset(&gsSupV0, 0, sizeof(gsSupV0));
+
+  if (uVersion < uMinVersion)
+    return false;
+
+  /*
+   * Minimum versions we support. To prevent the accumulation of old unused
+   * interfaces in the PVRDRIInterfaceV0 structure, the caller specifies the
+   * minimum version it supports. This .v0.RegisterSupportInterfacewill be
+   * pointed to be the psInterface argument. Assuming we support that version,
+   * we must copy the structure passed to us into the correct place in our
+   * version of the interface structure.
+   */
+  switch (uMinVersion) {
+  case 0:
+    uStart = SGXDRIInterfaceV0Start(v0);
+    break;
+  default:
+    return false;
+  }
+
+  /* The "default" case should be associated with the latest version */
+  switch (uVersion) {
+  default:
+  case 0:
+    uEnd = SGXDRIInterfaceV0End(v0);
+    break;
+  }
+
+  memcpy(((char *)&gsSupV0) + uStart, pvInterface, uEnd - uStart);
+
+  return true;
 }
 
 PVRDRIDeviceType PVRDRIGetDeviceTypeFromFd(int iFd) {
@@ -493,10 +542,6 @@ bool PVRDRIEGLDrawableConfigFromGLMode(PVRDRIDrawableImpl *psPVRDrawable,
   CallFuncV0(v0.PVRDRIEGLDrawableConfigFromGLMode, psPVRDrawable, psConfigInfo,
              supportedAPIs, ePixFmt);
   return false;
-}
-
-void PVRDRIRegisterCallbacks(PVRDRICallbacks *callbacks) {
-  CallFuncV0(v0.PVRDRIRegisterCallbacks, callbacks);
 }
 
 /* PVR utility support functions */
