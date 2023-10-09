@@ -65,9 +65,10 @@ static pthread_mutex_t gsCompatLock = PTHREAD_MUTEX_INITIALIZER;
 /* Call a function via the DRI Support interface structure */
 #define CallFuncV0(field, ...)                                                 \
   do {                                                                         \
-    if (gsSupV0.field)                                                         \
+    if (gsSupV0.field) {                                                       \
+      mesa_logd("Calling %s", MAKESTRING(field));                              \
       return gsSupV0.field(__VA_ARGS__);                                       \
-    else                                                                       \
+    } else                                                                     \
       mesa_logi("Failed to lookup %s", MAKESTRING(field));                     \
   } while (0)
 
