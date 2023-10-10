@@ -33,9 +33,6 @@ files_libsgx = files(
 libsgx_c_args = []
 
 libsgx_dep = [dep_libdrm]
-if with_platform_tizen
-  libsgx_dep += dep_dlog
-endif
 
 libsgx = static_library(
   'sgx',

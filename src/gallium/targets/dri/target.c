@@ -24,7 +24,6 @@ PUBLIC const __DRIextension **__driDriverGetExtensions_##drivername(void) \
 const __DRIextension **__driDriverGetExtensions_##drivername(void);       \
 PUBLIC const __DRIextension **__driDriverGetExtensions_##drivername(void) \
 {                                                                         \
-   globalDriverAPI = &sgx_driver_api;                                     \
    return sgx_driver_extensions;                                          \
 }
 

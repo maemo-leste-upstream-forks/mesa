@@ -27,9 +27,9 @@
 #include <assert.h>
 
 #include "util/log.h"
-#include "utils.h"
 #include "GL/gl.h"
 
+#include "dri_screen.h"
 #include "pvrdri.h"
 
 #define	PVRDRIMesaFormatEntry(f) {f, PVRDRI_ ## f }
