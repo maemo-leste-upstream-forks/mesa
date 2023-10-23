@@ -23,7 +23,7 @@
 files_libsgx = files(
   'sgx_context.c',
   'sgx_object_cache.c',
-  'pvrdrawable.c',
+  'sgx_drawable.c',
   'sgx_compat.c',
   'pvrdri.c',
   'pvrext.c',

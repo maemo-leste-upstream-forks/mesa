@@ -228,7 +228,7 @@ const __DRIextension **SGXDRIScreenExtensions(void);
 const __DRIextension *SGXDRIScreenExtensionVersionInfo(void);
 
 /*************************************************************************//*!
- pvrdrawable.c
+ sgx_drawable.c
  *//**************************************************************************/
 
 void PVRDRIDrawableLock(PVRDRIDrawable *psPVRDrawable);
