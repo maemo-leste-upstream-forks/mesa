@@ -27,7 +27,7 @@ files_libsgx = files(
   'sgx_compat.c',
   'sgx_dri.c',
   'sgx_ext.c',
-  'pvrutil.c',
+  'sgx_util.c',
 )
 
 libsgx_c_args = []

@@ -204,7 +204,7 @@ bool PVRDRIFlushBuffersForSwap(PVRDRIContext *psPVRContext,
                                PVRDRIDrawable *psPVRDrawable);
 
 /*************************************************************************//*!
- pvrutil.c
+ sgx_util.c
  *//**************************************************************************/
 void __attribute__((format(printf, 1, 2))) __driUtilMessage(const char *f, ...);
 
