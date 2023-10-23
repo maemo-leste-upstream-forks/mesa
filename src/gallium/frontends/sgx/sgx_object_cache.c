@@ -1,5 +1,5 @@
 /*************************************************************************/ /*!
-@File           pvr_object_cache.c
+@File           sgx_object_cache.c
 @Title          Cache for objects.
 @Copyright      Copyright (c) Imagination Technologies Ltd. All Rights Reserved
 @License        MIT
@@ -29,7 +29,7 @@ THE SOFTWARE.
 #include <search.h>
 
 #include "pvrqueue.h"
-#include "pvr_object_cache.h"
+#include "sgx_object_cache.h"
 
 #define	FOR_QELEM_QOBJ(psCache, psQElem, psObj)				\
 	for ((psQElem) = (psCache)->sQHead.pvForw;			\

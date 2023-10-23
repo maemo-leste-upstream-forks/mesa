@@ -36,7 +36,7 @@
 
 #include "sgx_support.h"
 #include "pvrqueue.h"
-#include "pvr_object_cache.h"
+#include "sgx_object_cache.h"
 
 #if !defined(ARRAY_SIZE)
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))

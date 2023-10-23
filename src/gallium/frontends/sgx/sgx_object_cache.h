@@ -1,5 +1,5 @@
 /*************************************************************************/ /*!
-@File           pvr_object_cache.h
+@File           sgx_object_cache.h
 @Title          Cache for objects.
 @Copyright      Copyright (c) Imagination Technologies Ltd. All Rights Reserved
 @License        MIT
