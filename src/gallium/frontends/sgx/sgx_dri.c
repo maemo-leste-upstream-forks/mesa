@@ -33,7 +33,7 @@
 #include "dri_util.h"
 
 #include "sgx_dri.h"
-#include "pvrmesa.h"
+#include "sgx_mesa.h"
 
 #define PVR_IMAGE_LOADER_VER_MIN 1
 #define PVR_DRI2_LOADER_VER_MIN 3

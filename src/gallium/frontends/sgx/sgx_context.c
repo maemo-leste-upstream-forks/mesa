@@ -41,7 +41,7 @@
 #include "dri_util.h"
 #include "glapi/glapi.h"
 #include "main/dispatch.h"
-#include "pvrmesa.h"
+#include "sgx_mesa.h"
 
 #include "sgx_support.h"
 
