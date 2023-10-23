@@ -35,7 +35,7 @@
 #include "util/log.h"
 
 #include "sgx_support.h"
-#include "pvrqueue.h"
+#include "sgx_queue.h"
 #include "sgx_object_cache.h"
 
 #if !defined(ARRAY_SIZE)

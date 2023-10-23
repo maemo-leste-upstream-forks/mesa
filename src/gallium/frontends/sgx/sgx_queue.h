@@ -1,5 +1,5 @@
 /*************************************************************************/ /*!
-@File           pvrqueue.h
+@File           sgx_queue.h
 @Title          Queue related definitions
 @Copyright      Copyright (c) Imagination Technologies Ltd. All Rights Reserved
 @License        MIT

@@ -28,7 +28,7 @@ THE SOFTWARE.
 #include <stdlib.h>
 #include <search.h>
 
-#include "pvrqueue.h"
+#include "sgx_queue.h"
 #include "sgx_object_cache.h"
 
 #define	FOR_QELEM_QOBJ(psCache, psQElem, psObj)				\
