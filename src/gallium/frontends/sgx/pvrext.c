@@ -64,7 +64,7 @@
 #include "dri_util.h"
 
 #include "sgx_support.h"
-#include "pvrdri.h"
+#include "sgx_dri.h"
 
 #include "EGL/egl.h"
 #include "EGL/eglext.h"

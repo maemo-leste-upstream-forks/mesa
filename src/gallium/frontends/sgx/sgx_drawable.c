@@ -29,7 +29,7 @@
 
 #include "dri_util.h"
 
-#include "pvrdri.h"
+#include "sgx_dri.h"
 
 /***********************************************************************************
  Function Name : PVRDRIDrawableLock

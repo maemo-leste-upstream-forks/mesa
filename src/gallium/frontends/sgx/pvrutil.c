@@ -30,7 +30,7 @@
 #include "GL/gl.h"
 
 #include "dri_screen.h"
-#include "pvrdri.h"
+#include "sgx_dri.h"
 
 #define	PVRDRIMesaFormatEntry(f) {f, PVRDRI_ ## f }
 

@@ -25,7 +25,7 @@
 #if !defined(__PVRMESA_H__)
 #define __PVRMESA_H__
 
-#include "pvrdri.h"
+#include "sgx_dri.h"
 
 void pvrdri_free_dispatch_tables(PVRDRIScreen *psPVRScreen);
 bool pvrdri_create_dispatch_table(PVRDRIScreen *psPVRScreen,

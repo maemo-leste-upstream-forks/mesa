@@ -191,7 +191,7 @@ typedef struct PVRDRIImageFormat_TAG
 
 
 /*************************************************************************//*!
- pvrdri.c
+ sgx_dri.c
  *//**************************************************************************/
 
 void PVRDRIScreenLock(PVRDRIScreen *psPVRScreen);
