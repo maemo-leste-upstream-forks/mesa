@@ -255,7 +255,7 @@ void PVRDRIRefImage(__DRIimage *image);
 void PVRDRIUnrefImage(__DRIimage *image);
 
 /*************************************************************************//*!
- pvrcompat.c
+ sgx_compat.c
  *//**************************************************************************/
 
 bool MODSUPRegisterSupportInterfaceV0(const void *pvInterface,
