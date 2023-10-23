@@ -221,7 +221,7 @@ IMG_YUV_CHROMA_INTERP PVRDRIChromaSittingToIMGInterp(const PVRDRIImageFormat *ps
 						     enum __DRIChromaSiting eChromaSitting);
 
 /*************************************************************************//*!
- pvrext.c
+ sgx_ext.c
  *//**************************************************************************/
 
 const __DRIextension **SGXDRIScreenExtensions(void);
