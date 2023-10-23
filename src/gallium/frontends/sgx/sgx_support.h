@@ -33,7 +33,7 @@ THE SOFTWARE.
 #include <stdbool.h>
 #include <stdint.h>
 
-#include <imgpixfmts.h>
+#include <sgx_pixfmts.h>
 
 typedef enum {
   PVRDRI_DEVICE_TYPE_INVALID = 0,

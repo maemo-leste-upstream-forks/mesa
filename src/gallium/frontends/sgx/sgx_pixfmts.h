@@ -1,5 +1,5 @@
 /*************************************************************************/ /*!
-@File           imgpixfmts.h
+@File           sgx_pixfmts.h
 @Copyright      Copyright (c) Imagination Technologies Ltd. All Rights Reserved
 @License        MIT
 
