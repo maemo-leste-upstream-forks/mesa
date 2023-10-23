@@ -34,7 +34,7 @@ THE SOFTWARE.
 #if !defined(IMGPIXFMTS_H)
 #define IMGPIXFMTS_H
 
-#include "imgyuv.h"
+#include "sgx_yuv.h"
 
 typedef enum _IMG_PIXFMT_
 {
