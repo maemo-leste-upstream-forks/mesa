@@ -43,7 +43,7 @@
 #include "main/dispatch.h"
 #include "pvrmesa.h"
 
-#include "dri_support.h"
+#include "sgx_support.h"
 
 #include "compiler/glsl/glsl_parser_extras.h"
 

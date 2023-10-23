@@ -63,7 +63,7 @@
 
 #include "dri_util.h"
 
-#include "dri_support.h"
+#include "sgx_support.h"
 #include "pvrdri.h"
 
 #include "EGL/egl.h"

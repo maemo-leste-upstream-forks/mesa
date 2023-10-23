@@ -34,7 +34,7 @@
 #include "drm-uapi/drm_fourcc.h"
 #include "util/log.h"
 
-#include "dri_support.h"
+#include "sgx_support.h"
 #include "pvrqueue.h"
 #include "pvr_object_cache.h"
 
