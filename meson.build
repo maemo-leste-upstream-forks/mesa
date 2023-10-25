@@ -271,6 +271,9 @@ if with_gallium_sgx
     gallium_sgx_alias = ''
   endif
   with_gallium_sgx_alias = gallium_sgx_alias != ''
+  if with_gallium_pvr
+    error('The SGX Gallium frontend cannot currently be used in tandem with PVR due to a compatibility library collision')
+  endif
 else
   gallium_sgx_alias = ''
   with_gallium_sgx_alias = false

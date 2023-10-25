@@ -119,7 +119,7 @@ foreach d : [[with_gallium_kmsro, [
              [with_gallium_asahi, 'asahi_dri.so'],
              [with_gallium_pvr, 'pvr_dri.so'],
              [with_gallium_pvr_alias, gallium_pvr_alias + '_dri.so'],
-             [with_gallium_sgx, 'sgx_dri.so'],
+             [with_gallium_sgx, ['sgx_dri.so', 'pvr_dri.so']],
              [with_gallium_sgx_alias, gallium_sgx_alias + '_dri.so']]
   if d[0]
     gallium_dri_drivers += d[1]
