@@ -180,9 +180,7 @@ _eglAddDevice(int fd, bool software)
 #ifdef HAVE_LIBDRM
    drmDevicePtr device;
 
-   int ret = drmGetDevices2(0, &device, 1);
-   if (ret < 1) {
-      _eglLog(_EGL_FATAL, "Could not drmGetDevices2: %d", ret);
+   if (drmGetDevice2(fd, 0, &device) != 0) {
       dev = NULL;
       goto out;
    }
