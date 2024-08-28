@@ -61,6 +61,10 @@ if with_gallium_pvr
   libdri_c_args += '-DGALLIUM_PVR'
 endif
 
+if with_gallium_sgx
+  libdri_c_args += '-DGALLIUM_SGX'
+endif
+
 libdri = static_library(
   'dri',
   files_libdri,

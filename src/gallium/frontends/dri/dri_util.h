@@ -76,7 +76,7 @@ extern const __DRIdri2Extension swkmsDRI2Extension;
 extern const __DRI2configQueryExtension dri2ConfigQueryExtension;
 extern const __DRI2flushControlExtension dri2FlushControlExtension;
 
-#if defined(GALLIUM_PVR)
+#if defined(GALLIUM_PVR) || defined(GALLIUM_SGX)
 extern const __DRIdri2Extension pvrDRI2Extension;
 #endif
 

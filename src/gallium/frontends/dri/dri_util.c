@@ -208,6 +208,18 @@ pvrCreateNewScreen(int scrn, int fd,
 }
 #endif
 
+#if defined(GALLIUM_SGX)
+static __DRIscreen *
+pvrCreateNewScreen(int scrn, int fd,
+		   const __DRIextension **extensions,
+		   const __DRIconfig ***driver_configs, void *data)
+{
+   return driCreateNewScreen2(scrn, fd, extensions,
+                              sgx_driver_extensions,
+                              driver_configs, data);
+}
+#endif
+
 /** swrast driver createNewScreen entrypoint. */
 static __DRIscreen *
 driSWRastCreateNewScreen(int scrn, const __DRIextension **extensions,
@@ -1035,7 +1047,7 @@ const __DRIdri2Extension swkmsDRI2Extension = {
     .createNewScreen2           = driCreateNewScreen2,
 };
 
-#if defined(GALLIUM_PVR)
+#if defined(GALLIUM_PVR) || defined(GALLIUM_SGX)
 const __DRIdri2Extension pvrDRI2Extension = {
     .base = { __DRI_DRI2, 4 },
 

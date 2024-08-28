@@ -27,6 +27,8 @@
 #include <pthread.h>
 #include <xf86drm.h>
 
+#include <util/driconf.h>
+
 #include "EGL/egl.h"
 #include "EGL/eglext.h"
 
@@ -1056,6 +1058,22 @@ PVRDRIReleaseBuffer(__DRIscreen *psDRIScreen, __DRIbuffer *psDRIBuffer)
    free(psPVRBuffer);
 }
 
+static char *
+PVRDRIGetXMLConfigOptions(const char *pszDriverName)
+{
+   const driOptionDescription asConfigOptions[] =
+   {
+      DRI_CONF_SECTION_MISCELLANEOUS
+      DRI_CONF_OPT_B("pvr_driconf_not_used", true,
+                     "The PowerVR driver does not use DRIConf")
+      DRI_CONF_SECTION_END
+   };
+
+   (void) pszDriverName;
+
+   return driGetOptionsXml(&asConfigOptions[0], ARRAY_SIZE(asConfigOptions));
+}
+
 const struct __DriverAPIRec sgx_driver_api = {
    .InitScreen = PVRDRIInitScreen,
    .DestroyScreen = PVRDRIDestroyScreen,
@@ -1075,10 +1093,16 @@ static const struct __DRIDriverVtableExtensionRec pvr_vtable = {
    .vtable = &sgx_driver_api,
 };
 
+const __DRIconfigOptionsExtension pvr_config_options = {
+   .base = { __DRI_CONFIG_OPTIONS, 2 },
+   .getXml = PVRDRIGetXMLConfigOptions,
+};
+
 const __DRIextension *sgx_driver_extensions[] = {
    &driCoreExtension.base,
    &driImageDriverExtension.base,
-   &driDRI2Extension.base,
+   &pvrDRI2Extension.base,
    &pvr_vtable.base,
+   &pvr_config_options.base,
    NULL
 };

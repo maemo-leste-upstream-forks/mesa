@@ -30,7 +30,7 @@ files_libsgx = files(
   'sgx_util.c',
 )
 
-libsgx_c_args = []
+libsgx_c_args = ['-DGALLIUM_SGX']
 
 libsgx_dep = [dep_libdrm]
 

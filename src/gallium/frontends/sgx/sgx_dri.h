@@ -34,6 +34,8 @@
 #include "drm-uapi/drm_fourcc.h"
 #include "util/log.h"
 
+#include "dri_util.h"
+
 #include "sgx_support.h"
 #include "sgx_queue.h"
 #include "sgx_object_cache.h"
