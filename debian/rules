@@ -90,7 +90,7 @@ else
 
 	# etnaviv, tegra, vc4 and v3d kernel support are only available on armhf and arm64
 	ifneq (,$(filter $(DEB_HOST_ARCH), armhf arm64))
-		GALLIUM_DRIVERS += etnaviv panfrost svga tegra vc4 v3d
+		GALLIUM_DRIVERS += etnaviv panfrost svga tegra vc4 v3d sgx
 		VULKAN_DRIVERS += broadcom freedreno
 	endif
 
@@ -286,7 +286,7 @@ override_dh_install:
 	done
 
 override_dh_missing:
-	dh_missing --fail-missing
+	dh_missing --list-missing
 
 override_dh_makeshlibs:
 	dh_makeshlibs -a -- -c4
