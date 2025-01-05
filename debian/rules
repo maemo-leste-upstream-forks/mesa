@@ -179,7 +179,7 @@ VULKAN_LAYERS := $(patsubst %,'%',$(VULKAN_LAYERS))
 VULKAN_LAYERS_LIST := $(subst $(space),$(comma),$(VULKAN_LAYERS))
 
 confflags_EGL = -Dplatforms="$(EGL_PLATFORMS)"
-confflags_GLES = -Dgles1=disabled -Dgles2=enabled
+confflags_GLES = -Dgles1=enabled -Dgles2=enabled
 confflags_GALLIUM += -Dgallium-drivers="[$(GALLIUM_DRIVERS_LIST)]"
 
 confflags += \
