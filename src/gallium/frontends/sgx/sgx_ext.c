@@ -1411,6 +1411,7 @@ static const __DRIextension *apsScreenExtensions[] = {
 #if defined(__DRI_QUERY_BUFFERS)
    &pvrDRIQueryBuffers.base,
 #endif
+   &dri2ConfigQueryExtension.base,
    NULL
 };
 
@@ -1428,6 +1429,7 @@ static const __DRIextension asScreenExtensionVersionInfo[] = {
 #if defined(__DRI_QUERY_BUFFERS)
    {.name = __DRI_QUERY_BUFFERS,.version = __DRI_QUERY_BUFFERS_VERSION},
 #endif
+   {.name = __DRI2_CONFIG_QUERY,.version = __DRI2_CONFIG_QUERY_VERSION},
    {.name = NULL,.version = 0},
 };
 
