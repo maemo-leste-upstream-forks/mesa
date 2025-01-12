@@ -1,3 +1,9 @@
+mesa (22.3.6+sgx2-1) testing-proposed-updates; urgency=medium
+
+  * sgx: add missing __DRI2_CONFIG_QUERY extension
+
+ -- Ivaylo Dimitrov <ivo.g.dimitrov.75@gmail.com>  Sun, 12 Jan 2025 19:59:25 +0200
+
 mesa (22.3.6+sgx1-1) testing-proposed-updates; urgency=medium
 
   * enable SGX driver.
