@@ -54,8 +54,8 @@ Build-Depends:
  valgrind [amd64 arm64 armhf i386 mips64el mipsel powerpc ppc64 ppc64el s390x],
  rustc [amd64 arm64 armel armhf i386 mips64el mipsel ppc64el s390x],
  bindgen [amd64 arm64 armel armhf i386 mips64el mipsel ppc64el s390x],
- llvm-spirv-15 [amd64 arm64 armel armhf i386 mips64el mipsel ppc64el s390x],
- libclc-15 [amd64 arm64 armel armhf i386 mips64el mipsel ppc64el s390x],
+ llvm-spirv-17 [amd64 arm64 armel armhf i386 mips64el mipsel ppc64el s390x],
+ libclc-17 [amd64 arm64 armel armhf i386 mips64el mipsel ppc64el s390x],
  libllvmspirvlib-17-dev [amd64 arm64 armel armhf i386 mips64el mipsel ppc64el s390x],
 Rules-Requires-Root: no
 Vcs-Git: https://salsa.debian.org/xorg-team/lib/mesa.git
@@ -423,7 +423,7 @@ Section: libs
 Architecture: amd64 arm64 armel armhf i386 mips64el mipsel powerpc ppc64 ppc64el riscv64 s390x sparc64 x32
 Pre-Depends: ${misc:Pre-Depends}
 Depends:
- libclc-15,
+ libclc-17,
  ocl-icd-libopencl1 | libopencl1,
  ${shlibs:Depends},
  ${misc:Depends},
